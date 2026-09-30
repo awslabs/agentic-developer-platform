@@ -12,7 +12,7 @@ ROOT.mkdir(exist_ok=True)
 spec = importlib.util.spec_from_file_location('client', '/home/ubuntu/task-delivery/release/examples/task-api/client.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-c = m.Client('https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev', json.loads(Path('/home/ubuntu/task-delivery-tmp/isolation/isolated-token.json').read_text())['access_token'])
+c = m.Client('https://gateway-1.example.com/dev', json.loads(Path('/home/ubuntu/task-delivery-tmp/isolation/isolated-token.json').read_text())['access_token'])
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()

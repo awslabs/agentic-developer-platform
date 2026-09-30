@@ -1,7 +1,7 @@
 {
   "at": "2026-09-25T06:09:27.494703+00:00",
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
-  "actual_image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+  "actual_image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
   "fixture_sha256": "9d24886087bad08a57a5f5c2375d3bc21dbba7bb7e783d70da7d2c1ac282779b",
   "fixture_source": "423188d97",
   "installed_source_hashes": {

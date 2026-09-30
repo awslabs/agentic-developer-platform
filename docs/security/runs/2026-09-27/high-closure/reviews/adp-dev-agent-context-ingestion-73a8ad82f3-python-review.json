@@ -1,7 +1,7 @@
 {
   "config_digest": "sha256:7a490f09b0907a556ec3bd553d130f4f93b6fde2617f858de71814b74fb1ecbf",
   "raw_receipt": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
     "docker_root_descriptor": "sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
     "config_digest": "sha256:7a490f09b0907a556ec3bd553d130f4f93b6fde2617f858de71814b74fb1ecbf",
     "time": "2026-09-27T22:19:29.748595+00:00",

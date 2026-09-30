@@ -12,7 +12,7 @@
         "status": "no_op",
         "reason": "event_type_unhandled"
       },
-      "http_ms": 707.711548981024,
+      "http_ms": 707.000000000224,
       "owned_consistent_table_read_ms": 65.60520597849973
     },
     {
@@ -24,7 +24,7 @@
         "status": "no_op",
         "reason": "event_type_unhandled"
       },
-      "http_ms": 813.779443007661,
+      "http_ms": 813.000000000226,
       "owned_consistent_table_read_ms": 4.833832994336262
     },
     {
@@ -84,7 +84,7 @@
         "status": "no_op",
         "reason": "event_type_unhandled"
       },
-      "http_ms": 622.938754997449,
+      "http_ms": 622.000000000233,
       "owned_consistent_table_read_ms": 4.327645001467317
     },
     {

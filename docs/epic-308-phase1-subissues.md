@@ -10,7 +10,7 @@ Live component audit against the design:
 
 | # | Component | State |
 |---|-----------|-------|
-| 1 | API Gateway HTTP API v2 (`adp-dev-webhook-ingress`) | ✅ Live at `ppor9iu1h3.execute-api.us-east-1.amazonaws.com`, route `POST /github` |
+| 1 | API Gateway HTTP API v2 (`adp-dev-webhook-ingress`) | ✅ Live at `gateway-19.example.com`, route `POST /github` |
 | 2 | Webhook Lambda (`adp-dev-github-webhook`) | ⚠️ Function Active but **returns a stub response**. Live env vars (`SQS_QUEUE_URL`, `WEBHOOK_SECRET_ARN`) don't match `handler.py` reads (`SUBMIT_QUEUE_URL`, `WEBHOOK_SECRET`). |
 | 3 | Webhook HMAC secret | ✅ `adp/dev/webhook-ingress/github-webhook-secret` |
 | 4 | SQS FIFO submit queue | ✅ `adp-dev-agent-submit.fifo` |
@@ -184,7 +184,7 @@ Each sub-issue below should be filed by agent-pm with:
 
 **Acceptance:**
 - Public GitHub App `ADP Agent Platform` created (name globally unique — may need prefix if taken)
-- Webhook URL: `https://ppor9iu1h3.execute-api.us-east-1.amazonaws.com/github` (or the production equivalent when DNS is wired)
+- Webhook URL: `https://gateway-19.example.com/github` (or the production equivalent when DNS is wired)
 - Webhook secret: value from `adp/dev/webhook-ingress/github-webhook-secret`
 - App private key stored in `adp/<env>/github-app/adp-agent-platform-key`
 - App ID stored in `adp/<env>/github-app/adp-agent-platform-id`

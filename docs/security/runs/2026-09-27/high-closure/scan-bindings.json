@@ -1,7 +1,7 @@
 {
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
       "docker_root_descriptor": "sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
       "config_digest": "sha256:c8008e499d2f014f1ba17709419b20d0b0f7e514aca96a9271afd6316a45f01c",
       "time": "2026-09-27T18:10:47.308653+00:00",
@@ -16,9 +16,9 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/aws-s3-csi-driver-515896d39c-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:d0ee442234387584edc3611a017e84fb8966ccc0b235d8bb87d5abafccb87896": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:d0ee442234387584edc3611a017e84fb8966ccc0b235d8bb87d5abafccb87896": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.14.6-eksbuild.4",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.14.6-eksbuild.4",
       "docker_root_descriptor": "sha256:d0ee442234387584edc3611a017e84fb8966ccc0b235d8bb87d5abafccb87896",
       "config_digest": "sha256:079a437c664412cbe08a43d6c0d3bb8e7bfc383a51bfe0ce8a91eac80646bfe4",
       "time": "2026-09-27T19:55:56.113175+00:00",
@@ -32,9 +32,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/coredns-candidate-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
       "docker_root_descriptor": "sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
       "config_digest": "sha256:6c8adc90ca0fb864266047f502147d8fc289784acba8c3f9887f6c670818dc9a",
       "time": "2026-09-27T18:10:45.893336+00:00",
@@ -49,9 +49,9 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/csi-node-driver-registrar-55c3eed041-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
       "docker_root_descriptor": "sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
       "config_digest": "sha256:05d5bac536dce05bdbe8be1bcfdae16570887640c87a8a65afb25ffa8d0b798d",
       "time": "2026-09-27T18:11:23.497888+00:00",
@@ -66,9 +66,9 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/livenessprobe-8e00443e13-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:cc90a6c951a64fcef683759a3c562453cb315fbd137c4d2a82f2aae2f4d1b795": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:cc90a6c951a64fcef683759a3c562453cb315fbd137c4d2a82f2aae2f4d1b795": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.11",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.11",
       "docker_root_descriptor": "sha256:cc90a6c951a64fcef683759a3c562453cb315fbd137c4d2a82f2aae2f4d1b795",
       "config_digest": "sha256:bb70ceada98135ed7ee65158a1deb35b0efeaada6563a3415c0b837ef3520fc6",
       "time": "2026-09-27T19:55:46.362658+00:00",
@@ -83,9 +83,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/metrics-server-candidate-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
       "docker_root_descriptor": "sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
       "config_digest": "sha256:c1f318cc05776763bc18e1977385d42aea50b928c25e0e108d45885d23abb8ee",
       "time": "2026-09-27T13:33:53.668342+00:00",
@@ -99,9 +99,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/adot-autoinstrumentation-dotnet-fde075c90e-live-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
       "docker_root_descriptor": "sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
       "config_digest": "sha256:810bd7624a893e7073d05175a4b030567eeb0c99b8cb49fe6d9d6ada413e4b3a",
       "time": "2026-09-27T13:33:53.818256+00:00",
@@ -116,9 +116,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/adot-autoinstrumentation-node-d28ba22730-live-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
       "docker_root_descriptor": "sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
       "config_digest": "sha256:4946653b34a802331aaac708c54665ed3d06b1335733859894747b0bb77b7bb8",
       "time": "2026-09-27T13:34:29.200919+00:00",
@@ -130,9 +130,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/adot-autoinstrumentation-python-45ecbbde07-live-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:3.4.16",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:3.4.16",
       "docker_root_descriptor": "sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc",
       "config_digest": "sha256:bb6722f9ecd95e79deddf4998a52b5ad1ddc64225347447bfa012f4e73aa0883",
       "time": "2026-09-27T13:06:48.209793+00:00",
@@ -148,9 +148,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/fluent-bit-vendor-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
       "platform_digest": "sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
       "config_digest": "sha256:b627a5f7c0240e1aaa84e6ec91e7bf0550ed2e5094eca9aed1c342f9e705aa65",
       "source": "registry transport; Docker could not export cached layers",
@@ -165,9 +165,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/cloudwatch-registry-scan"
   },
-  "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687": {
+  "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687": {
     "receipt": {
-      "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
+      "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
       "docker_root_descriptor": "sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687",
       "config_digest": "sha256:6201b95d63b54245e3ee7ce6f82dc665e1a2c87be4d7ca2d50ce64cf937fb9d0",
       "time": "2026-09-27T13:06:13.422368+00:00",
@@ -184,7 +184,7 @@
     },
     "directory": "/workspaces/projects/security27-continuation/cloudwatch-agent-vendor-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af": {
     "receipt": {
       "image": "security27/legacy-gateway:fixed",
       "docker_root_descriptor": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
@@ -204,9 +204,9 @@
     },
     "directory": "/workspaces/projects/security27-continuation/legacy-gateway-fixed-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:83acce2d8694b298d5bc2c3830cf8edbedcd443ea91cc57c425add42a6fac981": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:83acce2d8694b298d5bc2c3830cf8edbedcd443ea91cc57c425add42a6fac981": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:83acce2d8694b298d5bc2c3830cf8edbedcd443ea91cc57c425add42a6fac981",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:83acce2d8694b298d5bc2c3830cf8edbedcd443ea91cc57c425add42a6fac981",
       "docker_root_descriptor": "sha256:83acce2d8694b298d5bc2c3830cf8edbedcd443ea91cc57c425add42a6fac981",
       "config_digest": "sha256:1bf78a5809ae59b10cc4e88e983ca5f4eac91820daf24eba91c1d1da56441aed",
       "time": "2026-09-27T22:36:45.903286+00:00",
@@ -225,9 +225,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-agent-runtime-83acce2d86-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
       "docker_root_descriptor": "sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
       "config_digest": "sha256:0182c4f12026a6b2dc4e4e3429540106210c83bf04d08be834f59fbfbfb857d9",
       "time": "2026-09-27T22:03:49.776130+00:00",
@@ -246,7 +246,7 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-agent-runtime-90a473eb16-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50": {
     "receipt": {
       "image": "security27/arc-controller:compatible",
       "docker_root_descriptor": "sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
@@ -262,9 +262,9 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/arc-compatible-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
       "docker_root_descriptor": "sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
       "config_digest": "sha256:c6b1de5ebc371f93fdc8407880e3c0399a9810ba50a8b8f0f5e85cd652ba2c44",
       "time": "2026-09-27T21:28:21.825096+00:00",
@@ -282,9 +282,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-arc-runner-eb58f1878d-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6227b6881afd10776f895023ebed938b10ee88c73a5f360fdcfd5b5b98a6fe84": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6227b6881afd10776f895023ebed938b10ee88c73a5f360fdcfd5b5b98a6fe84": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6227b6881afd10776f895023ebed938b10ee88c73a5f360fdcfd5b5b98a6fe84",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6227b6881afd10776f895023ebed938b10ee88c73a5f360fdcfd5b5b98a6fe84",
       "docker_root_descriptor": "sha256:6227b6881afd10776f895023ebed938b10ee88c73a5f360fdcfd5b5b98a6fe84",
       "config_digest": "sha256:4ae2516d9c5461331633a046dd6a1bc9f3ef69611baa05e668e3f877a0d5608b",
       "time": "2026-09-27T21:46:40.259924+00:00",
@@ -298,9 +298,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-chat-agent-6227b6881a-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0",
       "docker_root_descriptor": "sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0",
       "config_digest": "sha256:db8a6d8add7e63354296810747c3cb525de6cddc0c612d08f9ce5430e2b1221a",
       "time": "2026-09-27T21:23:25.804844+00:00",
@@ -317,9 +317,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-context-mcp-58659289d1-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
       "docker_root_descriptor": "sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
       "config_digest": "sha256:b0d9ddb37e0abfa6fb5839dc831f442743efdc85ceffc7447dabe2c9ef1ad312",
       "time": "2026-09-27T22:00:33.448735+00:00",
@@ -337,9 +337,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-deepwiki-c66e7312d5-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
       "docker_root_descriptor": "sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
       "config_digest": "sha256:7a490f09b0907a556ec3bd553d130f4f93b6fde2617f858de71814b74fb1ecbf",
       "time": "2026-09-27T22:19:29.748595+00:00",
@@ -358,9 +358,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-ingestion-73a8ad82f3-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
       "docker_root_descriptor": "sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
       "config_digest": "sha256:a8d9de2754809cb2a9eb8c8cc491bb1159a5ebf1a0868a4a72ef05121bea4ca7",
       "time": "2026-09-27T21:30:33.872401+00:00",
@@ -377,7 +377,7 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-litellm-proxy-0065a2da6b-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f": {
     "receipt": {
       "image": "security27/zoekt:high-fixed",
       "docker_root_descriptor": "sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f",
@@ -395,9 +395,9 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/zoekt-final-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
       "docker_root_descriptor": "sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
       "config_digest": "sha256:db10214d8e0c13d6c479c3fa92e0970346dd4b29e0ddc4a18a2e1d5b7d859c14",
       "time": "2026-09-27T16:26:03.763737+00:00",
@@ -414,9 +414,9 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/gateway-current-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:f25cc79970b27248682793760a05037bd1412a81085584100804e3c437eee7aa": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:f25cc79970b27248682793760a05037bd1412a81085584100804e3c437eee7aa": {
     "receipt": {
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:f25cc79970b27248682793760a05037bd1412a81085584100804e3c437eee7aa",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:f25cc79970b27248682793760a05037bd1412a81085584100804e3c437eee7aa",
       "docker_root_descriptor": "sha256:f25cc79970b27248682793760a05037bd1412a81085584100804e3c437eee7aa",
       "config_digest": "sha256:e4a437ad5a581ce01aed20430fc55809b091a893879814729ad2be1b02cb7589",
       "time": "2026-09-27T22:34:32.075521+00:00",
@@ -433,7 +433,7 @@
     },
     "directory": "/workspaces/projects/security27-high-closure/adp-gateway-f25cc79970-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e": {
     "receipt": {
       "image": "security27/superplane-api:compat-curl",
       "docker_root_descriptor": "sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
@@ -453,7 +453,7 @@
     },
     "directory": "/workspaces/projects/security27-admin-closure/api-compat-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2": {
     "receipt": {
       "image": "security27/superplane-api:fixed",
       "docker_root_descriptor": "sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
@@ -472,7 +472,7 @@
     },
     "directory": "/workspaces/projects/security27/superplane-api-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a": {
     "receipt": {
       "image": "security27/controller:final",
       "docker_root_descriptor": "sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
@@ -488,7 +488,7 @@
     },
     "directory": "/workspaces/projects/security27/controller-final-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9": {
     "receipt": {
       "image": "security27/monitor:fixed",
       "docker_root_descriptor": "sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
@@ -504,7 +504,7 @@
     },
     "directory": "/workspaces/projects/security27/monitor-fixed-scan"
   },
-  "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4": {
+  "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4": {
     "receipt": {
       "image": "security27/skypilot:high-openssh",
       "docker_root_descriptor": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",

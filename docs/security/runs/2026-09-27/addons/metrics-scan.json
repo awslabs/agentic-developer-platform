@@ -1,5 +1,5 @@
 {
-  "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.11",
+  "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.11",
   "docker_root_descriptor": "sha256:cc90a6c951a64fcef683759a3c562453cb315fbd137c4d2a82f2aae2f4d1b795",
   "config_digest": "sha256:bb70ceada98135ed7ee65158a1deb35b0efeaada6563a3415c0b837ef3520fc6",
   "time": "2026-09-27T09:16:41.974220+00:00",

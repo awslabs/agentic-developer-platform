@@ -12,7 +12,7 @@
       "pod": "bedrockgateway-798cf4f444-2mmwv",
       "pod_uid": "1eb42fd6-02c8-4ccf-91e9-447e3f5caa05",
       "image_ids": [
-        "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+        "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
       ],
       "http_status": 200,
       "snapshot_wire": [
@@ -26,7 +26,7 @@
       "pod": "bedrockgateway-798cf4f444-4tzvm",
       "pod_uid": "0e86665e-93c5-4865-a8c9-070d2325bec7",
       "image_ids": [
-        "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+        "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
       ],
       "http_status": 200,
       "snapshot_wire": [

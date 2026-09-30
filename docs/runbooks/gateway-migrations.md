@@ -288,7 +288,7 @@ automatic repair, a database constraint, or a runtime authorization barrier.
 Queries neither update/delete rows nor create missing memberships.
 
 The [September 13 read-only audit](https://github.com/aws-e/adp/issues/4924#issuecomment-5652135838)
-found zero ownership/pointer mismatches in adp-dev-embark1 at revision 047 across
+found zero ownership/pointer mismatches in adp-dev-example-profile at revision 047 across
 three transactions. Its successful source reads contained 25 users, 32 teams,
 27 orgs and 25 memberships. No data repair was justified there; this is a
 point-in-time observation for that environment only.

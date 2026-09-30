@@ -152,7 +152,7 @@ live provider, browser or CAPE qualification. The standalone service image has
 also passed a local build and isolated import/refusal smoke test.
 
 On 2026-09-25, the development gateway configuration was inspected read-only in
-AWS account `879318057152`. Neither the cyber enablement flag nor the new backend
+AWS account `000000000101`. Neither the cyber enablement flag nor the new backend
 configuration keys were present in its environment/config maps. No production
 readiness or deployed cyber persona is claimed.
 

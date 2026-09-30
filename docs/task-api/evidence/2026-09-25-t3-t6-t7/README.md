@@ -22,7 +22,7 @@ The earlier clarification run failed after consuming its reply because the child
 
 The earlier running-cancellation task exited without queue acknowledgment and was moved to the submit DLQ after three receives. Its exact committed envelope was identified, compared with the canonical dispatch envelope, and redriven through the existing publisher attributes. The new gateway drained it without executing the cancelled task and durably confirmed acknowledgment. Only then was that owned DLQ message deleted; unrelated messages were not deleted. `cancel-redrive.json` records the native acknowledgment and DLQ deletion request IDs. This operator action repairs a historical fixture; automatic fault/recovery behavior is established by the named deterministic tests, not by relabeling this intervention.
 
-All evidence is scoped to AWS account 879318057152, us-east-1 dev. The engine remained paused; none of these tests or evidence updates resumed it.
+All evidence is scoped to AWS account 000000000101, us-east-1 dev. The engine remained paused; none of these tests or evidence updates resumed it.
 
 ## Legacy coexistence follow-up
 

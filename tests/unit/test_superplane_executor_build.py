@@ -183,7 +183,7 @@ def test_eval_oidc_trust_is_exact_dev_environment_and_sts_audience():
             "Sid": "GithubOidcProtectedDev",
             "Effect": "Allow",
             "Principal": {
-                "Federated": "arn:aws:iam::879318057152:oidc-provider/token.actions.githubusercontent.com"
+                "Federated": "arn:aws:iam::000000000101:oidc-provider/token.actions.githubusercontent.com"
             },
             "Action": "sts:AssumeRoleWithWebIdentity",
             "Condition": {

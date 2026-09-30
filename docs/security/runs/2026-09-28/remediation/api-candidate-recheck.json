@@ -1,5 +1,5 @@
 {
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:f714b4c0a7d7961a8b8227fca228290322edb84ab52fb69c9c2e21cbf3125b0a",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:f714b4c0a7d7961a8b8227fca228290322edb84ab52fb69c9c2e21cbf3125b0a",
   "returncode": 0,
   "stdout": "{\"HS256\": \"passed\", \"ES256\": \"passed\", \"RS256\": \"passed\", \"invalid_tokens\": \"rejected\", \"tarfile\": \"adf18eec412186452efada4deaa1d2b5185b9f24d75845caee0f5694cedea6b8\"}\n",
   "stderr": ""

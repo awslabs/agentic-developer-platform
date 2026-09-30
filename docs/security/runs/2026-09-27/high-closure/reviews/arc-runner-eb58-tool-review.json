@@ -1,7 +1,7 @@
 {
   "config_digest": "sha256:c6b1de5ebc371f93fdc8407880e3c0399a9810ba50a8b8f0f5e85cd652ba2c44",
   "raw_receipt": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
     "docker_root_descriptor": "sha256:eb58f1878dbb5cf1be774b7cee95102ed053f9e6091569ce848124dc735a9349",
     "config_digest": "sha256:c6b1de5ebc371f93fdc8407880e3c0399a9810ba50a8b8f0f5e85cd652ba2c44",
     "time": "2026-09-27T21:28:21.825096+00:00",

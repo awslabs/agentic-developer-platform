@@ -1,5 +1,5 @@
 {
-  "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
+  "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
   "docker_root_descriptor": "sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687",
   "config_digest": "sha256:6201b95d63b54245e3ee7ce6f82dc665e1a2c87be4d7ca2d50ce64cf937fb9d0",
   "time": "2026-09-27T13:06:13.422368+00:00",

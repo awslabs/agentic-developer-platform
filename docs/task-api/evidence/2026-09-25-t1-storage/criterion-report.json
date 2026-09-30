@@ -2,7 +2,7 @@
   "story": 5794,
   "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "reviewer": "runtime_contracts independent operator review",
-  "environment": "879318057152/us-east-1 dev",
+  "environment": "000000000101/us-east-1 dev",
   "criteria": {
     "T1-AC01": {
       "status": "PASS",

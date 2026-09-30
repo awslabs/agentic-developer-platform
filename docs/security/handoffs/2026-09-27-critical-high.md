@@ -139,7 +139,7 @@ The scanner uses Syft 1.52, Grype 0.119 and the frozen database at `/workspaces/
 
 ## Environment and operational continuity
 
-Target AWS account **879318057152**, region **us-east-1**, EKS cluster **adp-dev-eks-cluster**. Confirm active credentials with `aws sts get-caller-identity` before deployment. Follow `docs/adp-platform-deployment/deploy-with-agent.md` and its canonical quickstart, using the existing authorization and deployment state.
+Target AWS account **000000000101**, region **us-east-1**, EKS cluster **adp-dev-eks-cluster**. Confirm active credentials with `aws sts get-caller-identity` before deployment. Follow `docs/adp-platform-deployment/deploy-with-agent.md` and its canonical quickstart, using the existing authorization and deployment state.
 
 Do not overwrite unrelated `/home/ubuntu/adp` changes: `.adp-deploy-state.json`, `docs/adp-cli/getting-started.md`, `data/investigations/`. Concurrent work is repairing CI/deployment identities; do not duplicate or overwrite it. Use isolated worktrees. No subagents are authorized for this continuation.
 

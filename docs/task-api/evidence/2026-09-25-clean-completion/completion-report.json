@@ -4,7 +4,7 @@
   "lane": "live public API and real worker/provider",
   "evaluator": "t5_runtime direct delivery verification",
   "environment": {
-    "account": "879318057152",
+    "account": "000000000101",
     "region": "us-east-1",
     "stage": "dev",
     "tenant": "task-api-5792-isolation",
@@ -21,7 +21,7 @@
   "qualification_task_limit": 6,
   "max_usd_per_task": 1,
   "api_contract": "docs/task-api/contracts/v1",
-  "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify2 --key task-api-5792-20260925-clarify2",
+  "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://gateway-1.example.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify2 --key task-api-5792-20260925-clarify2",
   "exit_code": 0,
   "result": {
     "status": "completed",

@@ -18,7 +18,7 @@
     "grype_sha256": "71ac34d2d0f2a8e0040991fb6afd9f94e0f14aaf9f97bf7c91e9fede8231a874",
     "archive_sha256": "4c96c7bccf4b724355bc0f3303ab4af89875974c17028aa975e5175e7bb35fd5"
   },
-  "package_artifact": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352",
+  "package_artifact": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352",
   "binary_observations": {
     "packages": {
       "libacl1": {

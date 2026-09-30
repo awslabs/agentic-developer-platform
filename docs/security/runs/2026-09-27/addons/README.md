@@ -1,6 +1,6 @@
 # Managed EKS add-on candidates
 
-Target: account 879318057152, cluster adp-dev-eks-cluster, us-east-1, Kubernetes 1.35.
+Target: account 000000000101, cluster adp-dev-eks-cluster, us-east-1, Kubernetes 1.35.
 
 | Add-on | Installed | Candidate | Candidate raw Critical / High |
 |---|---|---|---|

@@ -1,7 +1,7 @@
 {
   "config_digest": "sha256:a8d9de2754809cb2a9eb8c8cc491bb1159a5ebf1a0868a4a72ef05121bea4ca7",
   "raw_receipt": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
     "docker_root_descriptor": "sha256:0065a2da6b47fc4a0dfc35c3f3b30a01630627ddef6a7403c9d937d679b428ba",
     "config_digest": "sha256:a8d9de2754809cb2a9eb8c8cc491bb1159a5ebf1a0868a4a72ef05121bea4ca7",
     "time": "2026-09-27T21:30:33.872401+00:00",

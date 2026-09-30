@@ -92,7 +92,7 @@ Each step is idempotent and re-runnable.
 | 8b | Create + wire the GitHub App | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
 
 > The webhook agent path (Phases 7–8) is **verified end-to-end** (account
-> `919157478356`): GitHub mention → webhook → SQS → KEDA → worker → gateway →
+> `000000000229`): GitHub mention → webhook → SQS → KEDA → worker → gateway →
 > Bedrock → PR. Two fixes from that run are now on `main` and assumed here:
 > the `execute-api` VPC endpoint is removed (PR #1304) and the agent uses the
 > `us.anthropic.claude-opus-4-6-v1` inference profile. The warm pool +

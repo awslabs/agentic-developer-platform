@@ -1,5 +1,15 @@
 # Agent Instructions — ADP (Agentic Developer Platform)
 
+## Public documentation
+
+This is an open-source repository. Follow [docs/PUBLISHING.md](docs/PUBLISHING.md):
+never publish real AWS account IDs, deployment URLs, customer/environment
+identities, resource IDs, operator profiles, or private evidence in documentation.
+Use fictional examples and private configuration. Run
+`python3 scripts/check-public-docs.py` before publishing documentation changes.
+
+## Deployment
+
 To deploy ADP, read and follow the canonical agent-deploy guide:
 
 **[`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)**

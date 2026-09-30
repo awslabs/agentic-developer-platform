@@ -9,7 +9,7 @@ This record promotes previously validated artifacts; it does not assert live dep
 | API | `adp-superplane-api@sha256:f1897a677fa7a5e21b7a1aa8c0ab6a2a03b37b66a98443a06b200d72f4a9b259` | S02 build35847435952 and advisory evidence; ECR digest/tag re-read2026-09-25 |
 | Executor | `adp-superplane-executor@sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891` | Reviewed build36102456290, repository-root packaging, pinned Python3.12.14 base; ECR digest/tag re-read2026-09-25 |
 
-Registry for these artifacts: `879318057152.dkr.ecr.us-east-1.amazonaws.com`. This is actual publication provenance, not an invented deployment account. A different deployment account requires reviewed pull access or digest-preserving replication.
+Registry for these artifacts: `000000000101.dkr.ecr.us-east-1.amazonaws.com`. This is actual publication provenance, not an invented deployment account. A different deployment account requires reviewed pull access or digest-preserving replication.
 
 SkyPilot publication receipt: `evidence/S21-skypilot-publication.json`. The new repository is immutable, AES256-encrypted, and selected by the lock's existing Terraform ECR discovery. Before the next control-plane apply in this existing account, adopt the published repository into the owning state with the reviewed import address `aws_ecr_repository.superplane["adp-superplane-skypilot"]`; do not recreate it. Its normal lifecycle policy is applied by that owning module. No control-plane apply was performed here.
 

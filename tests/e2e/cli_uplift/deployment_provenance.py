@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import ssl
@@ -28,7 +29,16 @@ def require(value, message):
 
 def binding(cfg):
     name = cfg.get("gateway_deployment")
-    catalog = json.loads(CATALOG.read_text())
+    # Public receipts are sanitized examples. Live jobs receive the reviewed
+    # catalog through their protected GitHub environment, never through docs.
+    raw = os.environ.get("CLI_UPLIFT_EVAL_GATEWAY_CATALOG", "").strip()
+    try:
+        catalog = json.loads(raw if raw else CATALOG.read_text())
+    except (ValueError, OSError):
+        raise PortError(
+            "Gateway deployment catalog is unavailable or invalid"
+        ) from None
+    require(isinstance(catalog, dict), "Gateway deployment catalog must be an object")
     require(
         isinstance(name, str) and name in catalog, "Unknown gateway deployment binding"
     )

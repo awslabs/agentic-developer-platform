@@ -3,7 +3,7 @@
   "docker_root_descriptor": "sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
   "config_digest": "sha256:b0d9ddb37e0abfa6fb5839dc831f442743efdc85ceffc7447dabe2c9ef1ad312",
   "raw_receipt": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
     "docker_root_descriptor": "sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
     "config_digest": "sha256:b0d9ddb37e0abfa6fb5839dc831f442743efdc85ceffc7447dabe2c9ef1ad312",
     "time": "2026-09-27T22:00:33.448735+00:00",

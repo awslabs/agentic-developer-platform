@@ -63,7 +63,7 @@ All findings below were produced **in this architect ScaledJob pod**, not from d
 | Item | Value (observed) |
 |------|-------------------|
 | Codex CLI | `codex-cli 0.142.5` (`codex --version`) |
-| Identity | `arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/...` (the KEDA pod IRSA role) |
+| Identity | `arn:aws:sts::000000000101:assumed-role/adp-dev-agent-scaledjob-role/...` (the KEDA pod IRSA role) |
 | Provider (LIVE) | `~/.codex/config.toml` → `model_provider = "adp-gateway"` → sigv4-proxy sidecar `127.0.0.1:9090` (port **open**) → API GW `/agent/{proxy+}` → gateway `/openai/v1/responses`. This is the **#2713 v2 cutover, already live.** |
 | `AGENT_TYPE` in Bash | **`architect`** — present in the skill's shell context |
 | Soak safety | The `amazon-bedrock` direct-IRSA fallback was **never activated**; provider stayed `adp-gateway` throughout. |

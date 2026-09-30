@@ -1,5 +1,5 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
   "root_digest": "sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
   "platform_digest": "sha256:767d1a2e568e8f9cceaaf07943648e606b5a054bab54af0e38525257c0c42b33",
   "config_digest": "sha256:5475c46f92a7642773f46274ede90eda800e38f46e7bf4ef0ae3ade36958e1b4",

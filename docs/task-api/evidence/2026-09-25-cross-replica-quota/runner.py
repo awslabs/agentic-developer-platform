@@ -84,7 +84,7 @@ try:
             out['lease_hold']['heartbeats'][i].append({'received_at': now(), 'wire': frame})
     out['lease_hold']['ended_at'] = now()
     out['lease_hold']['seconds'] = time.monotonic() - held_start
-    base = 'https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev'
+    base = 'https://gateway-1.example.com/dev'
     try:
         third = request(base)
         responses.append(third)

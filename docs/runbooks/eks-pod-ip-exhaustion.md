@@ -166,7 +166,7 @@ any AWS lookup happens.
 ### 5.1 — Prerequisite: the provider/schema mismatch (#5831)
 
 **A full `terraform plan`/`apply` of `platform/infra` is not currently an
-available route on `879318057152/dev`, and this is a hard prerequisite rather
+available route on `000000000101/dev`, and this is a hard prerequisite rather
 than a caveat.** The platform source constrains AWS to `~> 5.0` and resolves
 provider 5.100.0, while existing state for `module.eks.aws_eks_addon.coredns`
 carries newer schema fields (`namespace_config`, and resource identity

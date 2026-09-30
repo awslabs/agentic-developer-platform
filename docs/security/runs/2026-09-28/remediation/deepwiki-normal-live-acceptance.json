@@ -1,6 +1,6 @@
 {
   "time": "2026-09-28T17:57:10.560316+00:00",
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:680f2b69230b638ef47b314fd0cbdc49df96723f934b5ac6b56d04b77d7ece3a",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:680f2b69230b638ef47b314fd0cbdc49df96723f934b5ac6b56d04b77d7ece3a",
   "generation": 21,
   "ready_replicas": 1,
   "api_health": 200,

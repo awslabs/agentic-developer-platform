@@ -1,5 +1,5 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
   "platform_digest": "sha256:b3af83e845c9204aeb3afc85b682a7ea862f7012202a03476b498fad57fe929a",
   "config_digest": "sha256:10716ab167a23f81c48f9077651248280e5ef57740fb36217b972e5dc0739ab2",
   "manifest_byte_identity_verified": true,

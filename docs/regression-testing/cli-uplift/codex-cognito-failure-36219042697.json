@@ -30,7 +30,7 @@
     "gateway_release": "8cfd14826112915ee984ebf3b38d2c0a65bedb4c",
     "remote_bundle_digest": "461f9cb0733f0bf930d988e1e1352f2e78081a2c32d3484a3bcd798220c788a5",
     "harness_commit_meaning": "Pinned tenant-validation harness dependency; not a claim that this is the scenario checkout SHA.",
-    "platform_account": "879318057152",
+    "platform_account": "000000000101",
     "region": "us-east-1",
     "tenant": "aws-e",
     "client_tool_versions": {
@@ -75,11 +75,11 @@
           "request_id": "2e6c17aa-b415-4cc8-beb6-085c20f4ae88",
           "timestamp": "2026-09-26T04:57:23.261271+00:00",
           "gateway_role": "adp-dev-role-gateway-service",
-          "pool": "us-east-1_JEhv9xSGG"
+          "pool": "us-east-1_Example002"
         },
         "readonly_reconciliation": {
           "owned_name": "owned-cognito-f1fb17a35ba429226f74cbf27ecfc587",
-          "cognito_pool": "us-east-1_JEhv9xSGG",
+          "cognito_pool": "us-east-1_Example002",
           "cognito_pages_read": 1,
           "cognito_exact_matches": [],
           "metadata_exact_matches": []
@@ -165,10 +165,10 @@
       "artifact_zip_sha256": "dcf7fb92c9ddbf782c647df143c14ab206494c5cdf5867ab5628cc1ee69cf9a7",
       "report_sha256": "bae810c9c4e1a5e5c53761b5cfd1798c168e617a8612b4b7d6903ac7c9f1fc3f",
       "report_matches_prior_download": true,
-      "instance_id": "i-0d322f22912ca5ffa",
+      "instance_id": "i-0000000000000002c",
       "instance_state": "terminated",
       "launch_time": "2026-09-26T04:55:08+00:00",
-      "account": "879318057152",
+      "account": "000000000101",
       "region": "us-east-1"
     },
     "qualification": "EC2 termination plus canonical alias/principal retirement; Cognito exact client absence is not retirement."

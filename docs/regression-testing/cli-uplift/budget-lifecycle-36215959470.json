@@ -66,7 +66,7 @@
           "owned_mutations_authorized": true,
           "tenant_id": "aws-e"
         },
-        "gateway": "https://d1g6cal2ts4iis.cloudfront.net/api",
+        "gateway": "https://gateway-101.example.com/api",
         "purpose": "budget_lifecycle",
         "rate_limit": {
           "scope": "user",
@@ -339,7 +339,7 @@
     "suite": "budget-lifecycle",
     "summary": "Owned ordinary budget periods/ledgers and rate-limit dimensions with revision-fenced cleanup; no inference"
   },
-  "instance_id": "i-021ad1502068eab11",
+  "instance_id": "i-00000000000000009",
   "independent_instance_state": "terminated",
   "workflow_source_sha": "1599df2c3a082289ac78a0f40cf66cd1aee51fd7",
   "harness_commit_meaning": "Pinned tenant-validation dependency; workflow_source_sha identifies the CLI-uplift scenario checkout"

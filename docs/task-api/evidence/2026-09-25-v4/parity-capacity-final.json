@@ -1,10 +1,10 @@
 {
   "at": "2026-09-25T05:36:07.084017+00:00",
-  "gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+  "gateway_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
   "desired_replicas": 9,
   "ready_replicas": 9,
   "updated_replicas": 9,
-  "engine_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+  "engine_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
   "engine_update_status": "Successful",
   "gateway_source": "fe9396e67264029277a12499890a583c1d4a22e6",
   "worker_source": "029fdfe9dc7e2593db028093a64fc93e05c0c657"

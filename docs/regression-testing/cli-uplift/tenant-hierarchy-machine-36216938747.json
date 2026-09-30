@@ -15,7 +15,7 @@
   "workflow_source_sha": "306fe195b9722e92922a43ac98448c38f9d2795a",
   "harness_commit_meaning": "Pinned tenant-validation dependency; workflow_source_sha identifies the CLI-uplift checkout",
   "report_sha256": "50af6e33ad6dfc4ede4ecb53918c3053c18e808fd11f6e1d256eedc45ab7ebaa",
-  "instance_id": "i-065fe7830571600d2",
+  "instance_id": "i-00000000000000018",
   "independent_instance_state": "terminated",
   "cases": [
     {
@@ -95,7 +95,7 @@
             "owned_mutations_authorized": true,
             "tenant_id": "aws-e"
           },
-          "gateway": "https://d1g6cal2ts4iis.cloudfront.net/api",
+          "gateway": "https://gateway-101.example.com/api",
           "purpose": "machine_lifecycle",
           "registration_id": "71885afa-6a90-5019-ac49-4445c9be9e08",
           "version": 1
@@ -198,7 +198,7 @@
             "owned_mutations_authorized": true,
             "tenant_id": "aws-e"
           },
-          "gateway": "https://d1g6cal2ts4iis.cloudfront.net/api",
+          "gateway": "https://gateway-101.example.com/api",
           "org_id": "adp-eval-org-d8f0d9b88a5e7963",
           "restore": {
             "membership_status": "active",

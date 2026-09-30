@@ -5,9 +5,9 @@
   "cli_revision": "8f3c47dc1894ad955bd610e51341476160321299",
   "evaluation_id": "adp-e2e-5413-20260919T044314Z",
   "runner": "EC2 via SSM",
-  "instance_id": "i-01cfaf9677737ffe4",
-  "platform_account": "879318057152",
-  "bedrock_account_required": "938500344975",
+  "instance_id": "i-00000000000000006",
+  "platform_account": "000000000101",
+  "bedrock_account_required": "000000000232",
   "tools": {
     "claude": "2.1.236",
     "codex": "0.154.0",
@@ -17,18 +17,18 @@
   "gateways": [
     {
       "name": "development",
-      "url": "https://d1g6cal2ts4iis.cloudfront.net/api",
-      "account": "879318057152"
+      "url": "https://gateway-101.example.com/api",
+      "account": "000000000101"
     },
     {
       "name": "integration",
-      "url": "https://d1izytom2ipldy.cloudfront.net/api",
-      "account": "608380991969"
+      "url": "https://gateway-9.example.com/api",
+      "account": "000000000220"
     },
     {
       "name": "preprod",
-      "url": "https://dw4gomrsecmzn.cloudfront.net/api",
-      "account": "615296308642"
+      "url": "https://gateway-102.example.com/api",
+      "account": "000000000103"
     }
   ],
   "gateway_images": {
@@ -213,7 +213,7 @@
     "Public installer artifact"
   ],
   "blockers": [
-    "All three test users resolve to platform routing. Development destinations in 938500344975 belong to other organizations; integration and preprod have no destinations for that account.",
+    "All three test users resolve to platform routing. Development destinations in 000000000232 belong to other organizations; integration and preprod have no destinations for that account.",
     "Story #5413 excludes role creation. No IAM roles or CloudFormation stacks were created or modified. Pending ADP download-only registrations were removed.",
     "The inference harness does not yet enforce the 48-request/256-output-token bounds for Codex; a short-reply prompt is not a hard bound."
   ],

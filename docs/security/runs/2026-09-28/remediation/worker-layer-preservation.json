@@ -1,5 +1,5 @@
 {
-  "base": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0a1818251face459588d3e7082649314de0a4512242a192bc95f88d9c8f7b2c",
+  "base": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0a1818251face459588d3e7082649314de0a4512242a192bc95f88d9c8f7b2c",
   "candidate": "security28/worker:security-source",
   "base_layers_byte_identical": true,
   "runtime_config_identical": true,

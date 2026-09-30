@@ -10,7 +10,7 @@
         "cognito-idp:AdminAddUserToGroup",
         "cognito-idp:AdminDeleteUser"
       ],
-      "Resource": "arn:aws:cognito-idp:us-east-1:879318057152:userpool/us-east-1_JEhv9xSGG"
+      "Resource": "arn:aws:cognito-idp:us-east-1:000000000101:userpool/us-east-1_Example002"
     },
     {
       "Sid": "ProvisionE02FixtureSecret",
@@ -23,7 +23,7 @@
         "secretsmanager:DescribeSecret",
         "secretsmanager:DeleteSecret"
       ],
-      "Resource": "arn:aws:secretsmanager:us-east-1:879318057152:secret:adp/cli-uplift-eval/adp-e2e-*"
+      "Resource": "arn:aws:secretsmanager:us-east-1:000000000101:secret:adp/cli-uplift-eval/adp-e2e-*"
     }
   ]
 }

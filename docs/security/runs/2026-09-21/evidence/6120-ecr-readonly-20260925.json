@@ -1,7 +1,7 @@
 [
     {
         "name": "adp-gateway",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-gateway",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-gateway",
         "mutability": "MUTABLE",
         "encryption": {
             "encryptionType": "AES256"
@@ -9,7 +9,7 @@
     },
     {
         "name": "adp-agent-runtime",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-agent-runtime",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-agent-runtime",
         "mutability": "MUTABLE",
         "encryption": {
             "encryptionType": "AES256"
@@ -17,7 +17,7 @@
     },
     {
         "name": "adp-chat-agent",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-chat-agent",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-chat-agent",
         "mutability": "MUTABLE",
         "encryption": {
             "encryptionType": "AES256"
@@ -25,7 +25,7 @@
     },
     {
         "name": "adp-agent-gateway",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-agent-gateway",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-agent-gateway",
         "mutability": "MUTABLE",
         "encryption": {
             "encryptionType": "AES256"
@@ -33,16 +33,16 @@
     },
     {
         "name": "adp-skill-registry",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-skill-registry",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-skill-registry",
         "mutability": "MUTABLE",
         "encryption": {
             "encryptionType": "KMS",
-            "kmsKey": "arn:aws:kms:us-east-1:879318057152:key/f380852a-edef-4037-ab60-c009f68ee3a7"
+            "kmsKey": "arn:aws:kms:us-east-1:000000000101:key/f380852a-edef-4037-ab60-c009f68ee3a7"
         }
     },
     {
         "name": "adp-superplane-skypilot",
-        "arn": "arn:aws:ecr:us-east-1:879318057152:repository/adp-superplane-skypilot",
+        "arn": "arn:aws:ecr:us-east-1:000000000101:repository/adp-superplane-skypilot",
         "mutability": "IMMUTABLE",
         "encryption": {
             "encryptionType": "AES256"

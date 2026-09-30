@@ -118,7 +118,7 @@
       "uid": "b7d46c14-7b07-4a3b-9476-fae7b3457da6"
     },
     "container": "refresh",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   },
   {
@@ -130,7 +130,7 @@
       "uid": "660b55a8-f6be-4499-ab3e-d99dd1a41b2a"
     },
     "container": "vuln-scan",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   },
   {
@@ -142,7 +142,7 @@
       "uid": "0c987d4d-257a-4736-8838-c3436cbc376e"
     },
     "container": "agent-worker",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   },
   {
@@ -154,7 +154,7 @@
       "uid": "429aa0b6-2fb0-48f9-9030-b2507d1e2c1a"
     },
     "container": "agent-worker",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   },
   {
@@ -166,7 +166,7 @@
       "uid": "a7450496-1380-40bf-a184-ea34bca20b9b"
     },
     "container": "chat-agent",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2ee40d54e1b1d878fc2017ffe712bed379e52d0e52522e80736d83ce6a673153",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2ee40d54e1b1d878fc2017ffe712bed379e52d0e52522e80736d83ce6a673153",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   },
   {
@@ -178,7 +178,7 @@
       "uid": "d470c825-5f4f-4c28-983d-959891dce293"
     },
     "container": "worker",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "impact": "desired/future execution; tag resolution cannot establish an executed digest"
   }
 ]

@@ -5,7 +5,7 @@ preflight is read-only. Exit zero means its evidence checks passed; it neither
 deploys nor authorizes an enforcement flip. Follow #3186 for the actual flip.
 
 ```bash
-AWS_PROFILE=embark1 bash platform/scripts/flip-gate-check.sh \
+AWS_PROFILE=example-profile bash platform/scripts/flip-gate-check.sh \
   --environment dev --aws-region us-east-1 --window-days 7 --repo aws-e/adp
 ```
 

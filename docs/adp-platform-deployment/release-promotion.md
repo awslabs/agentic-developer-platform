@@ -45,14 +45,14 @@ AWS DevOps Agent is outside this implementation.
 
 | Stage | Account | Profile | Terraform environment |
 |---|---|---|---|
-| Integration-test | `608380991969` | `adp-integration-test` | `dev` |
-| Pre-production | `615296308642` | `adp-pre-production` | `dev` |
+| Integration-test | `000000000220` | `adp-integration-test` | `dev` |
+| Pre-production | `000000000103` | `adp-pre-production` | `dev` |
 
 Both stages use `us-east-1` even though their Terraform environment name remains
 `dev` for compatibility with the installed resource names.
 
 > **Current boundary:** the implemented chain stops at pre-production.
-> Production and customer-demo promotion are not implemented. Do not treat a
+> Production and demo-environment promotion are not implemented. Do not treat a
 > successful pre-production run as production approval. Installed agent-context
 > fails release preflight because `deploy-all.sh --update` would include it but
 > the manifest does not cover its artifacts. Superplane has its own deploy flow;
@@ -82,19 +82,19 @@ Each target account also needs its own operator tfvars for the gateway and webho
 ingress. Store these in that account's private Terraform state bucket, not in the
 repository or release artifacts. The release workflow reads them before checking
 out the selected source SHA and passes their paths to `deploy-all.sh --update`.
-For integration-test, after verifying the AWS profile resolves to `608380991969`:
+For integration-test, after verifying the AWS profile resolves to `000000000220`:
 
 ```bash
 AWS_PROFILE=adp-integration-test aws s3api put-object \
-  --bucket adp-terraform-state-608380991969 \
+  --bucket adp-terraform-state-000000000220 \
   --key adp-release-config/integration-test/gateway.tfvars.json \
   --body /path/to/integration/gateway.tfvars.json \
-  --server-side-encryption AES256 --expected-bucket-owner 608380991969
+  --server-side-encryption AES256 --expected-bucket-owner 000000000220
 AWS_PROFILE=adp-integration-test aws s3api put-object \
-  --bucket adp-terraform-state-608380991969 \
+  --bucket adp-terraform-state-000000000220 \
   --key adp-release-config/integration-test/webhook-ingress.tfvars.json \
   --body /path/to/integration/webhook-ingress.tfvars.json \
-  --server-side-encryption AES256 --expected-bucket-owner 608380991969
+  --server-side-encryption AES256 --expected-bucket-owner 000000000220
 ```
 
 Use the corresponding account, profile and `pre-production` prefix before
@@ -150,7 +150,7 @@ In GitHub, open **Actions → ADP Release and Promote → Run workflow** and sel
 This dispatch is not a dry run. For a new release it:
 
 1. verifies GitHub environment protection and runs the release/upgrade contracts;
-2. assumes `adp-release-build` in integration account `608380991969`;
+2. assumes `adp-release-build` in integration account `000000000220`;
 3. builds images, Lambda ZIPs, layers, the frontend and Terraform provider locks;
 4. writes and publishes the manifest last, so a partial upload is not a release;
 5. invokes the reusable upgrade workflow for integration-test;
@@ -172,7 +172,7 @@ Dispatching this workflow is the approval decision.
 Before assuming any pre-production role, the workflow verifies the actor, source
 workflow, branch, successful conclusion, release ID, source SHA and manifest
 SHA256. It then downloads the exact artifacts that passed integration, upgrades
-account `615296308642`, runs the same acceptance checks and uploads
+account `000000000103`, runs the same acceptance checks and uploads
 `acceptance-pre-production`.
 
 The approver must verify the pre-production run is successful and retain its run
@@ -181,13 +181,13 @@ step.
 
 ## Artifact storage and immutability
 
-The canonical release store is in integration account `608380991969`, region
+The canonical release store is in integration account `000000000220`, region
 `us-east-1`:
 
 | Content | Location |
 |---|---|
-| Release manifest | `s3://adp-release-artifacts-608380991969/releases/<release-id>/manifest.json` |
-| Packaged files and exported image archives | `s3://adp-release-artifacts-608380991969/objects/sha256/<artifact-sha256>` |
+| Release manifest | `s3://adp-release-artifacts-000000000220/releases/<release-id>/manifest.json` |
+| Packaged files and exported image archives | `s3://adp-release-artifacts-000000000220/objects/sha256/<artifact-sha256>` |
 | Built container images | ECR repositories `adp-gateway`, `adp-agent-runtime`, `adp-agent-gateway` and `adp-chat-agent` |
 
 The release bucket is private, encrypted, versioned and protected against object

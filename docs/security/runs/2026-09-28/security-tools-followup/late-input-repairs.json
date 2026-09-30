@@ -44,7 +44,7 @@
     }
   ],
   "curl_standalone_base": {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
     "user": "appuser"
   },
   "restored_curl_base_digest": "sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",

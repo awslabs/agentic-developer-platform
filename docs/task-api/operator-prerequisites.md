@@ -14,9 +14,9 @@ support), after confirming the account. The command performs only reads:
 
 ```bash
 python modules/gateway/scripts/prepare-task-api-deployment.py \
-  --account 879318057152 --region us-east-1 --environment dev \
-  --user-pool-id us-east-1_JEhv9xSGG \
-  --artifact-bucket adp-dev-chat-artifacts-879318057152 \
+  --account 000000000101 --region us-east-1 --environment dev \
+  --user-pool-id us-east-1_Example002 \
+  --artifact-bucket adp-dev-chat-artifacts-000000000101 \
   --output-dir /home/ubuntu/task-delivery-tmp/deploy-prepared
 ```
 
@@ -38,7 +38,7 @@ aws accessanalyzer validate-policy --region us-east-1 --policy-type IDENTITY_POL
 aws iam create-policy --policy-name adp-dev-policy-gateway-task-api \
   --policy-document file:///home/ubuntu/task-delivery-tmp/deploy-prepared/gateway-task-api-policy.json
 aws iam attach-role-policy --role-name adp-dev-role-gateway-service \
-  --policy-arn arn:aws:iam::879318057152:policy/adp-dev-policy-gateway-task-api
+  --policy-arn arn:aws:iam::000000000101:policy/adp-dev-policy-gateway-task-api
 aws cognito-idp create-resource-server --region us-east-1 \
   --cli-input-json file:///home/ubuntu/task-delivery-tmp/deploy-prepared/cognito-task-resource-server.json
 aws cognito-idp update-user-pool --region us-east-1 \
@@ -130,20 +130,20 @@ existing owning state. The gateway module is the working directory below:
 cd modules/gateway/infra
 terraform import -var-file=../../../environments/dev/modules/gateway.tfvars \
   'aws_iam_policy.gateway_task_api[0]' \
-  'arn:aws:iam::879318057152:policy/adp-dev-policy-gateway-task-api'
+  'arn:aws:iam::000000000101:policy/adp-dev-policy-gateway-task-api'
 terraform import -var-file=../../../environments/dev/modules/gateway.tfvars \
   'aws_iam_role_policy_attachment.gateway_task_api[0]' \
-  'adp-dev-role-gateway-service/arn:aws:iam::879318057152:policy/adp-dev-policy-gateway-task-api'
+  'adp-dev-role-gateway-service/arn:aws:iam::000000000101:policy/adp-dev-policy-gateway-task-api'
 terraform import -var-file=../../../environments/dev/modules/gateway.tfvars \
   'module.cognito.aws_cognito_resource_server.tasks' \
-  'us-east-1_JEhv9xSGG|adp-tasks'
+  'us-east-1_Example002|adp-tasks'
 ```
 
 The five `adp-tasks/*` OAuth scopes are embedded in that resource server and have
 no separate Terraform import address. Cognito V3 is an update of the existing
 `module.cognito.aws_cognito_user_pool.main`, already owned by gateway state; do
 not import it twice or replace the pool. If recovering a genuinely absent state
-entry, its import ID is `us-east-1_JEhv9xSGG`.
+entry, its import ID is `us-east-1_Example002`.
 
 The manually added public `/v1/tasks` resource/method/integration is represented
 by the OpenAPI `body` of existing

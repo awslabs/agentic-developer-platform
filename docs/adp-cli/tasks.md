@@ -42,7 +42,7 @@ requests only the scopes needed by the command, including read when `--wait` is
 used. OAuth tokens refresh automatically before expiry and once after HTTP 401.
 
 For an API Gateway stage whose task routes do not use the CLI's `/api` prefix,
-add `task_api_url`, for example `https://your-api.execute-api.us-east-1.amazonaws.com/dev`.
+add `task_api_url`, for example `https://your-api.gateway-14.example.com/dev`.
 It may change the path, but must retain the selected gateway's origin. It cannot
 silently send Task credentials to another host.
 

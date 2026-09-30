@@ -1,5 +1,5 @@
 {
-  "old_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+  "old_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
   "new_image": "security27/superplane-api:compat-curl",
   "old_app_sha256": "617f890b345fbe5d8a73b2d380f4e03e64fbdcdf7247f2f0fb10d82a9bb018e6",
   "new_app_sha256": "617f890b345fbe5d8a73b2d380f4e03e64fbdcdf7247f2f0fb10d82a9bb018e6",

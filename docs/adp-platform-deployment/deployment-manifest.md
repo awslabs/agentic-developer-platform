@@ -167,10 +167,10 @@ The deploy-all.sh script and the agent both read/write this file to track progre
   },
   "outputs": {
     "eks_cluster": "adp-dev-eks-cluster",
-    "cloudfront_domain": "d1234.cloudfront.net",
+    "cloudfront_domain": "gateway-7.example.com",
     "cognito_user_pool_id": "us-east-1_abc123",
     "ecr_registry": "123456789012.dkr.ecr.us-east-1.amazonaws.com",
-    "gateway_ws_endpoint": "wss://abc123.execute-api.us-east-1.amazonaws.com/prod"
+    "gateway_ws_endpoint": "wss://abc123.gateway-14.example.com/prod"
   },
   "validation": {
     "eks_cluster": "ACTIVE",

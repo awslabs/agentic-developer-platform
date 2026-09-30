@@ -37,4 +37,4 @@
 {"received_at": "2026-09-25T06:00:36.987989+00:00", "elapsed_seconds": 545.3379669849819, "event": {"event": "heartbeat", "wire": [": {\"counts_as_progress\":false,\"frame\":\"heartbeat\",\"timestamp\":\"2026-09-25T06:00:36Z\"}"]}}
 {"received_at": "2026-09-25T06:00:52.133524+00:00", "elapsed_seconds": 560.4835260549735, "event": {"event": "heartbeat", "wire": [": {\"counts_as_progress\":false,\"frame\":\"heartbeat\",\"timestamp\":\"2026-09-25T06:00:52Z\"}"]}}
 {"received_at": "2026-09-25T06:01:07.261156+00:00", "elapsed_seconds": 575.6111328139959, "event": {"event": "heartbeat", "wire": [": {\"counts_as_progress\":false,\"frame\":\"heartbeat\",\"timestamp\":\"2026-09-25T06:01:07Z\"}"]}}
-{"received_at": "2026-09-25T06:01:22.388713+00:00", "elapsed_seconds": 590.738694308995, "event": {"event": "heartbeat", "wire": [": {\"counts_as_progress\":false,\"frame\":\"heartbeat\",\"timestamp\":\"2026-09-25T06:01:22Z\"}"]}}
+{"received_at": "2026-09-25T06:01:22.388713+00:00", "elapsed_seconds": 590.000000000225, "event": {"event": "heartbeat", "wire": [": {\"counts_as_progress\":false,\"frame\":\"heartbeat\",\"timestamp\":\"2026-09-25T06:01:22Z\"}"]}}

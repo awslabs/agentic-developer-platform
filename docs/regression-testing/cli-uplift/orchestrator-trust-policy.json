@@ -5,8 +5,8 @@
       "Effect": "Allow",
       "Principal": {
         "AWS": [
-          "arn:aws:iam::879318057152:role/adp-dev-agent-scaledjob-role",
-          "arn:aws:iam::879318057152:role/adp-dev-agent-runner-role"
+          "arn:aws:iam::000000000101:role/adp-dev-agent-scaledjob-role",
+          "arn:aws:iam::000000000101:role/adp-dev-agent-runner-role"
         ]
       },
       "Action": [
@@ -18,7 +18,7 @@
       "Sid": "GithubOidcProtectedDev",
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::879318057152:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "arn:aws:iam::000000000101:oidc-provider/token.actions.githubusercontent.com"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {

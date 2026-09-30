@@ -8,7 +8,7 @@
   "lane": "actual built image, installed production modules; controlled external APIs and subprocess results",
   "evaluator": "t5_runtime",
   "image_digest": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
-  "actual_image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "actual_image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
   "image_source_sha": "029fdfe9dc7e2593db028093a64fc93e05c0c657",
   "fixture_source_sha": "0cf34e510",
   "started_at": "2026-09-25T05:18:23Z",

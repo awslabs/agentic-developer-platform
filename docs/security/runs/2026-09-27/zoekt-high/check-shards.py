@@ -1,6 +1,6 @@
 import json, pathlib, subprocess, time, urllib.request
 root = pathlib.Path(__file__).resolve().parent
-old = '879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66'
+old = '000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66'
 new = 'security27/zoekt:high-fixed'
 binary = root.parent / 'build/bin/zoekt-git-index'
 with (root/'new-index.log').open('w') as log:

@@ -11,7 +11,7 @@ Its original report matches a second download byte for byte (report SHA-256
 `bae810c9c4e1a5e5c53761b5cfd1798c168e617a8612b4b7d6903ac7c9f1fc3f`).
 The gateway served `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`; the report's
 `harness_commit` identifies the pinned tenant-validation dependency, not the
-scenario checkout. AWS independently confirmed EC2 `i-0d322f22912ca5ffa`
+scenario checkout. AWS independently confirmed EC2 `i-0000000000000002c`
 terminated at the readback recorded in the evidence.
 
 D05 completed all six canonical-principal checks, revoked its two owned aliases

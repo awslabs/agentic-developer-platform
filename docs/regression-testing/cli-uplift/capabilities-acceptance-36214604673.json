@@ -8,16 +8,16 @@
   "harness_commit": "62b03d343181978aeb54ef1b29634204d050637d",
   "expected_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
   "environment": {
-    "platform_account": "879318057152",
+    "platform_account": "000000000101",
     "region": "us-east-1",
-    "gateway_url": "https://d1g6cal2ts4iis.cloudfront.net/api"
+    "gateway_url": "https://gateway-101.example.com/api"
   },
   "correlation": {
     "attempt_id": "adp-e2e-20260926-031300-df33b4-a1",
     "attempts": 1,
     "deployed_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
     "evaluation_id": "adp-e2e-20260926-031300-df33b4",
-    "instance_id": "i-05483b598ae8fd528",
+    "instance_id": "i-00000000000000012",
     "remote_bundle_digest": "27cc814da9acecf1253ce1714ac3ec1d6ecb4361a63be5273845c4e4affbe685"
   },
   "case": {

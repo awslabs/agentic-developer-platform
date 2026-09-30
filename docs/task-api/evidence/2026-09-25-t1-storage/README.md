@@ -2,7 +2,7 @@
 
 Independent operator review of #5794 against accepted design `b5761a4a2502aceaa9133afef552b567a19cb46e`: **T1-AC01–05 PASS**. This closes the storage implementation criteria; it does not declare V1, V3, or the end-to-end epic complete. The engine flow stayed paused.
 
-Live evidence was collected in account `879318057152`, `us-east-1`, against deployed gateway source `573d71ef312a52ad60d9f805f7c17c98506154e5`. The separate **220 passing regressions** cover candidate `42b1d989672fa49e916c181838e2d5d5488eccfd`; they are not presented as a live deployment test of that candidate.
+Live evidence was collected in account `000000000101`, `us-east-1`, against deployed gateway source `573d71ef312a52ad60d9f805f7c17c98506154e5`. The separate **220 passing regressions** cover candidate `42b1d989672fa49e916c181838e2d5d5488eccfd`; they are not presented as a live deployment test of that candidate.
 
 | Criterion | Evidence |
 |---|---|

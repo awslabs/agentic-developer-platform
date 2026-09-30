@@ -1,6 +1,6 @@
 # September 28 security remediation
 
-Work began at 16:49 UTC against AWS account `879318057152`, EKS `adp-dev-eks-cluster`, `us-east-1`, with a requested two-hour window. This report distinguishes deployed fixes, source repairs, scanner findings, and remaining blockers. Private state and credentials are retained outside the repository.
+Work began at 16:49 UTC against AWS account `000000000101`, EKS `adp-dev-eks-cluster`, `us-east-1`, with a requested two-hour window. This report distinguishes deployed fixes, source repairs, scanner findings, and remaining blockers. Private state and credentials are retained outside the repository.
 
 The 18:21 final image inventory has **0 reviewed Critical / 71 unique High / 738 occurrences**, down from the 16:49 baseline of **0 / 73 / 751**. Observed running images alone changed from **0 / 68 / 622** to **0 / 66 / 609**. The two removed unique advisories are `CVE-2026-7210` and `CVE-2026-15308`, with 13 fewer occurrences. The temporary coexistence of old and new worker images was retained in intermediate counts until the pre-pull rollout completed and the inventory no longer observed the old image as active. These are image/package counts against the frozen September 27 vulnerability database, not a claim that all repository security findings are closed. See [image-counts.json](image-counts.json) and the exact [remaining advisory matrix](remaining-advisory-matrix.json).
 

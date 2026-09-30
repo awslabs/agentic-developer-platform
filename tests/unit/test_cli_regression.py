@@ -76,7 +76,7 @@ def test_summary_cli_preserves_failure_and_appends_evidence(tmp_path, monkeypatc
 
 
 class Aws:
-    def __init__(self, account="879318057152", tags=None):
+    def __init__(self, account="000000000101", tags=None):
         self.account = account
         self.tags = tags if tags is not None else [SHA, "latest"]
         self.calls = []
@@ -966,8 +966,8 @@ def test_parent_snapshot_uses_reviewed_gateway_binding(tmp_path, monkeypatch):
 
     def snapshot(cfg, aws, http):
         assert cfg["gateway_deployment"] == "dev"
-        assert cfg["platform_account"] == "879318057152"
-        assert cfg["gateway_url"] == "https://d1g6cal2ts4iis.cloudfront.net/api"
+        assert cfg["platform_account"] == "000000000101"
+        assert cfg["gateway_url"] == "https://gateway-101.example.com/api"
         return SHA, "gateway_deployment_receipt"
 
     monkeypatch.setattr(ports, "default_ports", transport)

@@ -35,7 +35,7 @@
   },
   "baseline_active_open_occurrences": 3231,
   "retired_baseline_platform_references": [
-    "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d"
+    "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d"
   ],
   "gateway_native_counts": {
     "High": 50,
@@ -50,7 +50,7 @@
   "gateway_zlib_dispositions": [
     {
       "occurrence_id": "gateway-live:1",
-      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:23db69c8109c3e521ad8e1fda347ba7c3eb1e510c6f2b23044658206fc994900",
+      "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:23db69c8109c3e521ad8e1fda347ba7c3eb1e510c6f2b23044658206fc994900",
       "config_digest": "sha256:41020caec92828177761e7495c9ad747ecbdc816672e42002de9c7d8751e8f8c",
       "scope": "active",
       "canonical_id": "CVE-2026-85091",

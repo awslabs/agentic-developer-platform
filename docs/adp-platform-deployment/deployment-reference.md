@@ -14,7 +14,7 @@ repo root.
 > **Status of this guide:** Phases 1–6c (Bootstrap → Preflight → Platform infra →
 > Gateway infra → Gateway backend → Frontend → ALB second-pass → Broker) plus the
 > webhook agent path are **verified end-to-end against a real run** (account
-> `919157478356`, macOS, 2026-06-06/07). Each step is backed by a re-runnable
+> `000000000229`, macOS, 2026-06-06/07). Each step is backed by a re-runnable
 > script. Bugs
 > found during that run are **fixed on `main`** across PRs #1210 (sed/preflight/CI),
 > #1218 (gateway count arg + Lambda-layer auto-build + gateway CI), and #1221
@@ -591,7 +591,7 @@ for t in tenant-registry webhook-events rate-limits; do aws dynamodb describe-ta
 kubectl get scaledjobs -n adp-agents        # agent-scaledjob, READY=True
 # Smoke test — an UNSIGNED POST returns 401 (HMAC rejection = path is live & correct):
 ID=$(aws apigateway get-rest-apis --query 'items[?name==`adp-dev-webhook-ingress`].id' --output text)
-curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://${ID}.execute-api.us-east-1.amazonaws.com/dev/github" -d '{}'   # 401 = good
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://${ID}.gateway-14.example.com/dev/github" -d '{}'   # 401 = good
 ```
 
 ### Gotchas
@@ -607,7 +607,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://${ID}.execute-api.us-e
 
 ### ⚠️ Two account-level blockers that make the agent hang silently after "Session initialized"
 
-Both were hit on a real run (account `919157478356`). The agent clones the repo,
+Both were hit on a real run (account `000000000229`). The agent clones the repo,
 posts a live status comment, reaches `Session initialized`, then **hangs with no
 further updates** — its first Bedrock call never completes. Neither surfaces a
 clear error in the live GitHub comment, so check for these directly. (Both are
@@ -629,7 +629,7 @@ diagnosing the symptom.)
      `10.x` IPs = hijacked (broken); public IPs = good.
      ```bash
      # broken: resolves to the VPCE private ENIs
-     getent hosts <bedrock-api-id>.execute-api.us-east-1.amazonaws.com
+     getent hosts <bedrock-api-id>.gateway-14.example.com
      # confirm the culprit endpoint exists:
      aws ec2 describe-vpc-endpoints \
        --filters Name=service-name,Values=com.amazonaws.us-east-1.execute-api \
@@ -672,7 +672,7 @@ first live comment lands in 1-2 min, vs 10-15s on a warm multi-node cluster.
 Confirmed via pod events: `Pulled image ... in 31s` on a cold node vs `174ms`
 when cached.
 
-**Fix — two complementary mechanisms in `warm-pool.tf`** (mirrors how embark1 stays
+**Fix — two complementary mechanisms in `warm-pool.tf`** (mirrors how example-profile stays
 fast: warm nodes + a `chat-agent-image-prepull` DaemonSet):
 
 1. **Warm pool** (`agent_warm_pool_replicas`, default `1`) — N "balloon" pods run

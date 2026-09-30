@@ -6,4 +6,4 @@ D06 passed all four checks: six independent personal/cloud-agent daily/weekly/mo
 
 This advances #5589 and #5627 configuration acceptance. Actual Claude/Codex enforcement and restoration, spend-through, other hierarchy scopes, person-policy defaults and TPM accounting remain unqualified. The [machine-readable evidence](budget-lifecycle-36215959470.json) retains checks, exact policy revisions, cleanup, full-report hash and remaining holds.
 
-The overall batch remains failed: D05 completed its six canonical identity checks and retired its exact principal/aliases, but its harness omitted the final success marker. #6309 repairs that reporting bug and tests failure/cleanup paths. The original result is not rewritten. EC2 `i-021ad1502068eab11` was independently confirmed terminated.
+The overall batch remains failed: D05 completed its six canonical identity checks and retired its exact principal/aliases, but its harness omitted the final success marker. #6309 repairs that reporting bug and tests failure/cleanup paths. The original result is not rewritten. EC2 `i-00000000000000009` was independently confirmed terminated.

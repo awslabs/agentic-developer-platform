@@ -4922,9 +4922,9 @@ agentcore add harness --name internal-agent \
 
   --network-mode VPC \
 
-  --subnets subnet-0abc1234def56789a \
+  --subnets subnet-0000000000000003e \
 
-  --security-groups sg-0abc1234def56789a
+  --security-groups sg-00000000000000037
 
 agentcore deploy
 
@@ -4938,9 +4938,9 @@ aws bedrock-agentcore-control create-harness \
 
   --environment '{"agentCoreRuntimeEnvironment": {"networkConfiguration":
 
- {"networkMode": "VPC", "vpcConfig": {"securityGroupIds": ["sg-0abc1234def56789a"],
+ {"networkMode": "VPC", "vpcConfig": {"securityGroupIds": ["sg-00000000000000037"],
 
- "subnetIds": ["subnet-0abc1234def56789a"]}}}}'
+ "subnetIds": ["subnet-0000000000000003e"]}}}}'
 
 Learn more: AgentCore VPC · VPC interface endpoints
 
@@ -22979,7 +22979,7 @@ east-1_nnnnnnnnn/.well-known/openid-configuration
 
 • Check the issuer url - "issuer": "https://cognito-idp.us-
 
-east-1.amazonaws.com/us-east-1_12345566" . This should match the iss claim value
+east-1.amazonaws.com/us-east-1_Example001" . This should match the iss claim value
 in the token.
 
 • client_id claim in the token must match one of the authorizer allowedClients entries if
@@ -44935,12 +44935,12 @@ Developer Guide
 
         "managedVpcResource": {
 
-          "vpcIdentifier": "vpc-0abc123def456",
+          "vpcIdentifier": "vpc-0000000000043",
           "subnetIds": ["subnet-0abc123", "subnet-0def456"],
 
           "endpointIpAddressType": "IPV4",
 
-          "securityGroupIds": ["sg-0abc123def"]
+          "securityGroupIds": ["sg-0000000038"]
 
         }
 
@@ -55859,7 +55859,7 @@ The following example shows a CloudTrail log entry for a successful InvokeGatewa
 
       "awsRegion": "us-west-2",
 
-      "sourceIPAddress": "35.88.103.184",
+      "sourceIPAddress": "192.0.2.10",
 
       "userAgent": "python-httpx/0.28.1",
 
@@ -55940,7 +55940,7 @@ server-id/read",
 
             "auth_time": 1752459276,
 
-            "iss": "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_Fxxxxxhtq",
+            "iss": "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_Example999",
 
             "exp": 1752462876,
 
@@ -64468,7 +64468,7 @@ source setup_cognito.sh
 
 3. Record the output values, which will look similar to:
 
-Pool id: us-east-1_poolid
+Pool id: us-east-1_Example005
 
 Discovery URL: https://cognito-idp.us-east-1.amazonaws.com/us-
 
@@ -64575,7 +64575,7 @@ Developer Guide
 Note
 
 Remove any underscore from the UserPoolId when creating the domain. For example,
-if your user pool ID is "us-west-2_gmSGKKGr9", use "us-west-2gmSGKKGr9" as the
+if your user pool ID is "us-west-2_Example007", use "us-west-2gmSGKKGr9" as the
 
 domain.
 
@@ -66913,7 +66913,7 @@ configuration",
       "privateEndpoint": {
 
         "managedVpcResource": {
-          "vpcIdentifier": "vpc-0abc123def456",
+          "vpcIdentifier": "vpc-0000000000043",
 
           "subnetIds": [
 
@@ -66927,7 +66927,7 @@ configuration",
 
           "securityGroupIds": [
 
-            "sg-0abc123def"
+            "sg-0000000038"
 
           ]
 
@@ -66977,7 +66977,7 @@ Developer Guide
 
         "managedVpcResource": {
 
-          "vpcIdentifier": "vpc-0abc123def456",
+          "vpcIdentifier": "vpc-0000000000043",
 
           "subnetIds": [
 
@@ -66991,7 +66991,7 @@ Developer Guide
 
           "securityGroupIds": [
 
-            "sg-0abc123def"
+            "sg-0000000038"
 
           ]
 
@@ -67162,7 +67162,7 @@ openid-connect/token"
 
       "managedVpcResource": {
 
-        "vpcIdentifier": "vpc-0abc123def456",
+        "vpcIdentifier": "vpc-0000000000043",
 
         "subnetIds": [
 
@@ -67176,7 +67176,7 @@ openid-connect/token"
 
         "securityGroupIds": [
 
-          "sg-0abc123def"
+          "sg-0000000038"
 
         ]
 
@@ -88996,7 +88996,7 @@ Developer Guide
 
   "sub": "12345678-1234-1234-1234-123456789012",
 
-  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Vg2efaoGO",
+  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example003",
   "username": "refund-agent",
 
   "scope": "aws.cognito.signin.user.admin refund:write",
@@ -89139,7 +89139,7 @@ Authorization ﬂow
 
     "username": "refund-agent",
 
-    "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Vg2efaoGO",
+    "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Example003",
 
     "scope": "aws.cognito.signin.user.admin refund:write",
 
@@ -125138,13 +125138,13 @@ The following example creates a private MCP server target using managed Lattice:
 
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0abc123def456",
+      "vpcIdentifier": "vpc-0000000000043",
 
       "subnetIds": ["subnet-0abc123", "subnet-0def456"],
 
       "endpointIpAddressType": "IPV4",
 
-      "securityGroupIds": ["sg-0abc123def"]
+      "securityGroupIds": ["sg-0000000038"]
 
     }
 
@@ -125358,13 +125358,13 @@ The following example creates a private OpenAPI target using managed Lattice:
 
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0abc123def456",
+      "vpcIdentifier": "vpc-0000000000043",
 
       "subnetIds": ["subnet-0abc123", "subnet-0def456"],
 
       "endpointIpAddressType": "IPV4",
 
-      "securityGroupIds": ["sg-0abc123def"]
+      "securityGroupIds": ["sg-0000000038"]
 
     }
 
@@ -125624,7 +125624,7 @@ matches your public TLS certiﬁcate.
 
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0123456789abcdef0",
+      "vpcIdentifier": "vpc-00000000000000041",
 
 VPC and AWS PrivateLink
 
@@ -125634,7 +125634,7 @@ VPC and AWS PrivateLink
 
 Developer Guide
 
-      "subnetIds": ["subnet-0123456789abcdef0", "subnet-0abcdef1234567890"],
+      "subnetIds": ["subnet-0000000000000003b", "subnet-0000000000000003f"],
 
       "endpointIpAddressType": "IPV4",
       "routingDomain": "<vpce-id>.execute-api.<region>.vpce.amazonaws.com"
@@ -126161,7 +126161,7 @@ privateEndpoint.managedVpcResource block in your create request.
   "privateEndpoint": {
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0abc123def456",
+      "vpcIdentifier": "vpc-0000000000043",
 
       "subnetIds": ["subnet-0abc123", "subnet-0def456"],
 
@@ -126175,7 +126175,7 @@ Developer Guide
 
       "endpointIpAddressType": "IPV4",
 
-      "securityGroupIds": ["sg-0abc123def"]
+      "securityGroupIds": ["sg-0000000038"]
     }
 
   },
@@ -126244,13 +126244,13 @@ Amazon Bedrock AgentCore
 
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0abc123def456",
+      "vpcIdentifier": "vpc-0000000000043",
 
       "subnetIds": ["subnet-0abc123", "subnet-0def456"],
 
       "endpointIpAddressType": "IPV4",
 
-      "securityGroupIds": ["sg-0abc123def"]
+      "securityGroupIds": ["sg-0000000038"]
 
     }
 
@@ -126327,11 +126327,11 @@ aws vpc-lattice create-resource-gateway \
 
   --name my-resource-gateway \
 
-  --vpc-identifier vpc-0abc123def456 \
+  --vpc-identifier vpc-0000000000043 \
 
   --subnet-ids subnet-0abc123 subnet-0def456 \
 
-  --security-group-ids sg-0abc123def \
+  --security-group-ids sg-0000000038 \
   --ip-address-type IPV4
 
 2. Create a Resource Conﬁguration that points to your private endpoint. Use the ARN of the
@@ -126549,7 +126549,7 @@ requests with the private API hostname as the TLS SNI, ensuring correct routing 
 • Internal Application Load Balancer (ALB) - Use the internal ALB DNS name
 
 as the routingDomain , for example internal-<alb-name>-<id>.us-
-west-2.elb.amazonaws.com . Set the target URL to the DNS name of the resource behind the
+gateway-21.example.com . Set the target URL to the DNS name of the resource behind the
 ALB.
 
 • Internal Network Load Balancer (NLB) - Use the internal NLB DNS name as
@@ -126592,9 +126592,9 @@ routingDomain is the VPCE DNS name:
 
     "managedVpcResource": {
 
-      "vpcIdentifier": "vpc-0123456789abcdef0",
+      "vpcIdentifier": "vpc-00000000000000041",
 
-      "subnetIds": ["subnet-0123456789abcdef0", "subnet-0abcdef1234567890"],
+      "subnetIds": ["subnet-0000000000000003b", "subnet-0000000000000003f"],
 
       "endpointIpAddressType": "IPV4",
 
@@ -126653,7 +126653,7 @@ https://my-server.my-company.com ).
 
 2. Set the routingDomain to the internal ALB DNS name (for example, internal-my-
 
-alb-1234567890.us-west-2.elb.amazonaws.com ).
+gateway-5.example.com ).
 
 3. VPC Lattice routes traﬃc to the ALB via the routing domain. The TLS SNI is set to my-
 
@@ -126777,7 +126777,7 @@ Use the ALB DNS name as the routingDomain and the public cert domain as the targ
       "subnetIds": ["<subnet-id-1>", "<subnet-id-2>"],
       "endpointIpAddressType": "IPV4",
 
-      "routingDomain": "internal-my-alb-1234567890.us-west-2.elb.amazonaws.com"
+      "routingDomain": "gateway-18.example.com"
 
     }
 
@@ -127196,7 +127196,7 @@ creation.
 
 To identify the Availability Zone ID of your subnets, you can use the following CLI command:
 
-aws ec2 describe-subnets --subnet-ids subnet-12345678 --query
+aws ec2 describe-subnets --subnet-ids subnet-00000040 --query
 
  'Subnets[0].AvailabilityZoneId'
 
@@ -127349,9 +127349,9 @@ aws bedrock-agentcore-control create-agent-runtime \
 
       "networkModeConfig": {
 
-        "subnets": ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"],
+        "subnets": ["subnet-0000000000000003b", "subnet-0000000000000003c"],
 
-        "securityGroups": ["sg-0123456789abcdef0"]
+        "securityGroups": ["sg-00000000000000034"]
 
       }
 
@@ -127375,9 +127375,9 @@ response = client.create_runtime(
 
         'networkModeConfig': {
 
-            'subnets': ['subnet-0123456789abcdef0', 'subnet-0123456789abcdef1'],
+            'subnets': ['subnet-0000000000000003b', 'subnet-0000000000000003c'],
 
-            'securityGroups': ['sg-0123456789abcdef0']
+            'securityGroups': ['sg-00000000000000034']
 
         }
 
@@ -127453,9 +127453,9 @@ aws bedrock-agentcore-control create-code-interpreter \
 
     "networkModeConfig": {
 
-      "subnets": ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"],
+      "subnets": ["subnet-0000000000000003b", "subnet-0000000000000003c"],
 
-      "securityGroups": ["sg-0123456789abcdef0"]
+      "securityGroups": ["sg-00000000000000034"]
 
     }
 
@@ -127502,9 +127502,9 @@ response = cp_client.create_code_interpreter(
 
         'networkModeConfig': {
 
-            'subnets': ['subnet-0123456789abcdef0', 'subnet-0123456789abcdef1'],
+            'subnets': ['subnet-0000000000000003b', 'subnet-0000000000000003c'],
 
-            'securityGroups': ['sg-0123456789abcdef0']
+            'securityGroups': ['sg-00000000000000034']
 
         }
 
@@ -127572,9 +127572,9 @@ aws bedrock-agentcore-control create-browser \
 
     "networkModeConfig": {
 
-      "subnets": ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"],
+      "subnets": ["subnet-0000000000000003b", "subnet-0000000000000003c"],
 
-      "securityGroups": ["sg-0123456789abcdef0"]
+      "securityGroups": ["sg-00000000000000034"]
 
     }
 
@@ -127634,9 +127634,9 @@ VPC and AWS PrivateLink
 
 Developer Guide
 
-            'subnets': ['subnet-0123456789abcdef0', 'subnet-0123456789abcdef1'],
+            'subnets': ['subnet-0000000000000003b', 'subnet-0000000000000003c'],
 
-            'securityGroups': ['sg-0123456789abcdef0']
+            'securityGroups': ['sg-00000000000000034']
         }
 
     },
@@ -128026,8 +128026,8 @@ the context key values in the request does not match the context key values in t
 
 requests that include any unapproved values. The following example enforces that users can
 
-only use subnet-0123456789abcdef0 and subnet-0123456789abcdef1 for subnets, and
-sg-0123456789abcdef0 and sg-0123456789abcdef1 for security groups.
+only use subnet-0000000000000003b and subnet-0000000000000003c for subnets, and
+sg-00000000000000034 and sg-00000000000000035 for security groups.
 
 [
 
@@ -128055,9 +128055,9 @@ sg-0123456789abcdef0 and sg-0123456789abcdef1 for security groups.
 
       "ForAnyValue:StringNotEquals": {
 
-        "bedrock-agentcore:subnets": ["subnet-0123456789abcdef0",
+        "bedrock-agentcore:subnets": ["subnet-0000000000000003b",
 
- "subnet-0123456789abcdef1"]
+ "subnet-0000000000000003c"]
 
       }
 
@@ -128095,9 +128095,9 @@ Developer Guide
 
       "ForAnyValue:StringNotEquals": {
 
-        "bedrock-agentcore:securityGroups": ["sg-0123456789abcdef0",
+        "bedrock-agentcore:securityGroups": ["sg-00000000000000034",
 
- "sg-0123456789abcdef1"]
+ "sg-00000000000000035"]
 
       }
 
@@ -128113,8 +128113,8 @@ To deny users access to speciﬁc subnets and security groups, use the ForAnyVal
 with StringEquals . The condition returns true if any one of the context key values in the request
 matches any one of the context key values in the policy. The following example denies users
 
-access to subnet-0123456789abcdef0 and subnet-0123456789abcdef1 for subnets, and
-sg-0123456789abcdef0 and sg-0123456789abcdef1 for security groups.
+access to subnet-0000000000000003b and subnet-0000000000000003c for subnets, and
+sg-00000000000000034 and sg-00000000000000035 for security groups.
 
 [
 
@@ -128141,9 +128141,9 @@ sg-0123456789abcdef0 and sg-0123456789abcdef1 for security groups.
     "Condition": {
 
       "ForAnyValue:StringEquals": {
-        "bedrock-agentcore:subnets": ["subnet-0123456789abcdef0",
+        "bedrock-agentcore:subnets": ["subnet-0000000000000003b",
 
- "subnet-0123456789abcdef1"]
+ "subnet-0000000000000003c"]
 
       }
 
@@ -128181,9 +128181,9 @@ Developer Guide
 
       "ForAnyValue:StringEquals": {
 
-        "bedrock-agentcore:securityGroups": ["sg-0123456789abcdef0",
+        "bedrock-agentcore:securityGroups": ["sg-00000000000000034",
 
- "sg-0123456789abcdef1"]
+ "sg-00000000000000035"]
 
       }
 
@@ -131627,7 +131627,7 @@ AGENTID",
 
                 "StringNotEquals": {
 
-                    "aws:SourceVpc": "vpc-1a2b3c4d"
+                    "aws:SourceVpc": "vpc-00000046"
 
                 }
 
@@ -131670,7 +131670,7 @@ AGENTID",
             "Condition": {
 
                 "StringEquals": {
-                    "aws:SourceVpc": "vpc-1a2b3c4d"
+                    "aws:SourceVpc": "vpc-00000046"
 
                 }
 
@@ -131949,7 +131949,7 @@ AGENTID",
             "Condition": {
 
                 "StringNotEquals": {
-                    "aws:SourceVpc": "vpc-12345678"
+                    "aws:SourceVpc": "vpc-00000045"
 
                 },
 

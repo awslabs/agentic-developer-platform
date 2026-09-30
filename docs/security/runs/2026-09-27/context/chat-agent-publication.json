@@ -2,8 +2,8 @@
   {
     "component": "chat-agent-final",
     "source_commit": "0e74707d2",
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:c60108dfb9cf2930ea2990cbc668f955cfbde679a289fae14e380784ca9b1554",
-    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent:security27-0e74707d2",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:c60108dfb9cf2930ea2990cbc668f955cfbde679a289fae14e380784ca9b1554",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent:security27-0e74707d2",
     "matches_local_root": true,
     "deployed": false
   }

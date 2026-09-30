@@ -35,7 +35,7 @@ uses `credential_source = Environment`.
 
 The examples use Terraform environment `dev` in `us-east-1`. The AWS profile
 selects the account; `--env` selects resource names within that account. For
-example, a customer-demo account can still use `--env dev`.
+example, a demo account can still use `--env dev`.
 
 ## 2. Install or upgrade
 

@@ -774,7 +774,7 @@ def _sessions(aws, cfg):
 
     R7: every deleter used to close over the platform session, so deleting the
     destination account's CloudFormation stack sent platform credentials at
-    `605440105851` — AccessDenied at best, and the stack left standing while the
+    `000000000102` — AccessDenied at best, and the stack left standing while the
     run reported a clean sweep. The account a resource lives in decides which
     session deletes it, and if no role can reach that account this raises rather
     than falling back to the session at hand.

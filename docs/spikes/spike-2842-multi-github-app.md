@@ -26,7 +26,7 @@ lifted independently and shipped in order:
 GitHub login (OAuth broker) stays pinned to exactly ONE App via a `login_app` boolean on
 the registry — today's behavior preserved, first-registered-with-OAuth wins.
 
-This design is **additive**: embark1's existing public App keeps working as "row zero"; per-org
+This design is **additive**: example-profile's existing public App keeps working as "row zero"; per-org
 private Apps are new rows. It does **not** require ripping out the `adp-agent-platform-*` paths on
 day one — a grandfather shim reads the legacy paths as a synthetic registry row until migrated.
 
@@ -80,7 +80,7 @@ CREATE TABLE github_apps (
     owner_login   VARCHAR(255) NOT NULL,               -- org/user that owns the App on GitHub
     owner_type    VARCHAR(16)  NOT NULL,               -- 'org' | 'user'
     tenant_id     VARCHAR(255) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    is_public     BOOLEAN      NOT NULL DEFAULT FALSE, -- embark1 public App = TRUE
+    is_public     BOOLEAN      NOT NULL DEFAULT FALSE, -- example-profile public App = TRUE
     login_app     BOOLEAN      NOT NULL DEFAULT FALSE, -- see Q6 (exactly one TRUE per deployment)
     secret_prefix VARCHAR(255) NOT NULL,               -- adp/<env>/github-apps/<github_app_id>
     created_by    VARCHAR(255),                        -- users.id of registering admin
@@ -130,7 +130,7 @@ account breaks on deploy):
 
 | Account | Today | Registry row |
 |---|---|---|
-| embark1 | public `aws-e-adp-agent-dev` at `adp-agent-platform-*` | 1 row, `is_public=TRUE`, `login_app=TRUE`; `secret_prefix` points at LEGACY path (see shim) |
+| example-profile | public `aws-e-adp-agent-dev` at `adp-agent-platform-*` | 1 row, `is_public=TRUE`, `login_app=TRUE`; `secret_prefix` points at LEGACY path (see shim) |
 | 261 | pending re-register | no row until it registers; register flow creates the row |
 | 812 | private App 4210311 at `adp-agent-platform-*` | 1 row, `is_public=FALSE`, `login_app=TRUE`, legacy path |
 
@@ -184,7 +184,7 @@ secret = _webhook_secret_cache.get(app_id) or read adp/<env>/github-apps/<app_id
 **This subsumes #2824**: with per-App meta secrets, the webhook secret is written where the
 validator reads it *by construction* (validator reads `github-apps/<id>/meta.webhook_secret`;
 register writes the same). The #2824 fix (write-through to the ingress secret) becomes moot
-for new Apps but is still needed for the legacy grandfather path until 261/812/embark1 migrate.
+for new Apps but is still needed for the legacy grandfather path until 261/812/example-profile migrate.
 
 ## Q4 — Registration authz + tenancy
 
@@ -243,7 +243,7 @@ Per-App bot logins: each registered App has its own `<slug>[bot]` identity. Two 
 
 ## Q8 — Coexistence with the public-App model
 
-- embark1's public `aws-e-adp-agent-dev` = registry row `is_public=TRUE`. Nothing about the
+- example-profile's public `aws-e-adp-agent-dev` = registry row `is_public=TRUE`. Nothing about the
   per-org private path removes it. Public and private Apps coexist as rows.
 - **Interaction with #2724**: #2724's fix (a tenant-existence check before webhook
   auto-register) must **not** block a properly-registered private App. Because a private App is
@@ -276,7 +276,7 @@ Per-App bot logins: each registered App has its own `<slug>[bot]` identity. Two 
    Idempotent (ON CONFLICT on `github_app_id` DO NOTHING).
 3. Deploy webhook Lambda with header-based resolution + legacy fallback. Deploy gateway with
    registry-aware readers + legacy fallback. Both fall back to legacy paths when a row's
-   `secret_prefix` is the legacy path → **embark1/261/812 keep working with zero changes**.
+   `secret_prefix` is the legacy path → **example-profile/261/812 keep working with zero changes**.
 4. New registrations write new `github-apps/<id>/` paths + rows. Optional later housekeeping
    copies legacy→new.
 

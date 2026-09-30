@@ -1,5 +1,5 @@
 {
-  "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
+  "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
   "platform_digest": "sha256:a8c76fa2ffc7cec7a0a1ff6e917fcb999eedfea7b635d4e6105f77eb5a7093e3",
   "config_digest": "sha256:b627a5f7c0240e1aaa84e6ec91e7bf0550ed2e5094eca9aed1c342f9e705aa65",
   "source": "registry transport; Docker could not export cached layers",

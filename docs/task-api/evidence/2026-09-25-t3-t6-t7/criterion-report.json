@@ -6,7 +6,7 @@
   "deployed_gateway_source": "a070f971a",
   "deployed_gateway_image": "sha256:dc18d65636a9fb7e4724053bc2fc15b4fe83af84849723ec2c077e860f883b66",
   "source_difference": "ee8dcdf89 adds only an event-contention test to deployed a070f971a runtime.",
-  "environment": "AWS account 879318057152, us-east-1, dev",
+  "environment": "AWS account 000000000101, us-east-1, dev",
   "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
   "no_operator_repair_on_clean_task": false,
   "tests": [

@@ -1,50 +1,50 @@
 {
   "captured_at": "2026-09-25T05:29:50Z",
-  "shared_queue": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo",
+  "shared_queue": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-agent-submit.fifo",
   "worker_pods": [
     {
       "pod": "agent-scaledjob-hbmm6-ptx4s",
       "phase": "Succeeded",
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
       "queue_configuration": {
-        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo"
+        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-agent-submit.fifo"
       },
       "shared_queue": true
     },
     {
       "pod": "agent-scaledjob-p5p28-2fp2n",
       "phase": "Succeeded",
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
       "queue_configuration": {
-        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo"
+        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-agent-submit.fifo"
       },
       "shared_queue": true
     },
     {
       "pod": "w2-fixture-worker-20260925-archive-wl4qf",
       "phase": "Succeeded",
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:005acf7147d38a24bc18b3e7d7751f6fecba580eb0f837f016d7d4e2b5f44fa2",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:005acf7147d38a24bc18b3e7d7751f6fecba580eb0f837f016d7d4e2b5f44fa2",
       "queue_configuration": {
-        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo",
-        "ADP_RUN_TASK_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo",
-        "AGENT_DISPATCH_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo"
+        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo",
+        "ADP_RUN_TASK_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo",
+        "AGENT_DISPATCH_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo"
       },
       "shared_queue": false
     },
     {
       "pod": "w2-fixture-worker-20260925-queue-trust-rkx5c",
       "phase": "Running",
-      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:005acf7147d38a24bc18b3e7d7751f6fecba580eb0f837f016d7d4e2b5f44fa2",
+      "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:005acf7147d38a24bc18b3e7d7751f6fecba580eb0f837f016d7d4e2b5f44fa2",
       "queue_configuration": {
-        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo",
-        "ADP_RUN_TASK_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo",
-        "AGENT_DISPATCH_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-w2-fixture-20260925-closure.fifo"
+        "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo",
+        "ADP_RUN_TASK_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo",
+        "AGENT_DISPATCH_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-w2-fixture-20260925-closure.fifo"
       },
       "shared_queue": false
     }
   ],
   "scaledjob_images": [
-    "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"
+    "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"
   ],
   "excluded_components": {
     "agent-image-prepull": "DaemonSet caches image only; not a queue consumer",

@@ -1,6 +1,6 @@
 {
   "source_sha": "060a3c2764a408b6c3207db8795e0c8159ef28ea",
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed",
   "build_run": "https://github.com/aws-e/adp/actions/runs/35663521595",
   "validation_run": "https://github.com/aws-e/adp/actions/runs/35669683518",
   "provenance": {
@@ -8,7 +8,7 @@
     "source_sha": "060a3c2764a408b6c3207db8795e0c8159ef28ea",
     "source_build_id": "adp-dev-superplane-controller:9728edb4-ed6e-4c1b-ad79-fd45785e037c",
     "image_digest": "sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed",
-    "evidence_prefix": "s3://adp-terraform-state-879318057152/codebuild/evidence/controller-060a3c2764a408b6c3207db8795e0c8159ef28ea-35669683518/",
+    "evidence_prefix": "s3://adp-terraform-state-000000000101/codebuild/evidence/controller-060a3c2764a408b6c3207db8795e0c8159ef28ea-35669683518/",
     "execute": true,
     "validation_build_id": "adp-dev-superplane-controller:98144599-08f0-471d-8846-7dcfe6b1558f",
     "validation_status": "SUCCEEDED"
@@ -21,7 +21,7 @@
   },
   "startup": {
     "mode": "management-only",
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed",
     "fixture": "local empty registry; no cloud or Kubernetes credentials",
     "startup_ready": true,
     "status_requires_authentication": true,

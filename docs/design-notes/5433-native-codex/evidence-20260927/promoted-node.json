@@ -1,6 +1,6 @@
 {
   "runId": "q-80ec1ecfadf9",
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
   "startedAt": "2026-09-27T13:17:36.854171+00:00",
   "passed": true,
   "cleanup": [
@@ -16,7 +16,7 @@
           },
           "containerID": "containerd://4ab1edac224bb210b6fac7aad9980af4c1cf116d62df9ccfd11a46bbd30f1cc3",
           "image": "sha256:fa7ffdada64b5fca60920b34492ec998d69f667e3ac4ba7b1ff0ec292cd3db2a",
-          "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+          "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
           "lastState": {},
           "name": "probe",
           "ready": false,
@@ -72,7 +72,7 @@
           },
           "containerID": "containerd://6779da5117ea4aea6dbda6e3568358abb9aa82f5cd23408ae9e9a9bccec905e8",
           "image": "sha256:fa7ffdada64b5fca60920b34492ec998d69f667e3ac4ba7b1ff0ec292cd3db2a",
-          "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+          "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
           "lastState": {},
           "name": "probe",
           "ready": false,
@@ -117,7 +117,7 @@
       "observedTermination": true
     }
   ],
-  "node": "i-05caf244ac5c94618",
+  "node": "i-00000000000000015",
   "nodeUid": "3a367d56-aaec-4717-b5f9-472e63e3b2d4",
   "podPidsLimit": 128,
   "control": {

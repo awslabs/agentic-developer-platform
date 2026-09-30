@@ -3,7 +3,7 @@
 Scheduled run [36233688786](https://github.com/aws-e/adp/actions/runs/36233688786)
 ran source `6b1a153e5aa6ad88935fba3bacde1b800986a7e5`.
 The offline orchestration guards passed, but deployment snapshot job
-`108381553085` failed with `lambda.get_function failed: AccessDeniedException`.
+`000000000210` failed with `lambda.get_function failed: AccessDeniedException`.
 Onboarding, budget enforcement and EC2 were all skipped. The combined verdict
 correctly failed; this run supplies no live acceptance or EC2 cleanup evidence.
 

@@ -1,6 +1,6 @@
 {
-  "previous": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
-  "candidate": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c8bfa66f605cfb1fce19d6af9fc6e4b1c65643596cccc1d75577efa182bf4cc5",
+  "previous": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
+  "candidate": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c8bfa66f605cfb1fce19d6af9fc6e4b1c65643596cccc1d75577efa182bf4cc5",
   "generation": 20,
   "ready_replicas": 1,
   "api_health": 200,

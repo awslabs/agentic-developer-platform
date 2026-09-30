@@ -1,8 +1,8 @@
 # Stage 1 ownership rollout and acceptance
 
 Scope: #5127/#5161 (shared ownership) and #5128 (accepted execution policy),
-coordinated by #5134. Target: existing embark1 dev, AWS account `879318057152`,
-region `us-east-1`, registered connection `adp-embark1`. Stage 2 and Q1 are outside
+coordinated by #5134. Target: existing example-profile dev, AWS account `000000000101`,
+region `us-east-1`, registered connection `example-profile`. Stage 2 and Q1 are outside
 this work. Code merge, deployed revision and feature acceptance are separate
 milestones. This document records a rollout contract, not a live PASS.
 
@@ -70,7 +70,7 @@ must be compatible before any cohort is opted in.
 | Component | Required configuration |
 | --- | --- |
 | Gateway | `AGENT_AUTHORITY_ENABLED=true`, protected table/key material, approved worker image digests and service account; `ADP_WORK_CLAIMS_ENABLED=true` |
-| Gateway producer authentication | `ADP_WORK_CLAIM_PRODUCER_ROLES=arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role` |
+| Gateway producer authentication | `ADP_WORK_CLAIM_PRODUCER_ROLES=arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role` |
 | Webhook | Protected authority enabled, `ADP_WORK_CLAIMS_ENABLED=true`, `ADP_AGENT_CONTROL_ENDPOINT=<verified API Gateway stage URL>/internal/v1/agent` |
 | Tick | Protected authority enabled, protected table/events/KMS permissions, `ADP_WORK_CLAIMS_ENABLED=true`, explicitly selected dispatch repository and accepted fixture flow |
 | Worker | Protected worker service account/permissions boundary, approved immutable image, projected bootstrap audience token, control endpoint and `ADP_AGENT_AUTHORITY_ENABLED=true` |
@@ -96,7 +96,7 @@ migration workflow against the release image. No new schema is introduced here.
 ## Observed prerequisite gap — 2026-09-15
 
 [Read-only inventory and targeted plan](https://github.com/aws-e/adp/actions/runs/34938324082)
-ran as the existing deployment runner in account `879318057152`. It observed:
+ran as the existing deployment runner in account `000000000101`. It observed:
 
 - Gateway image `d2fbf63683138d8572d1e38f5a6679de4736181a`.
 - Gateway authority disabled; worker image digest allowlist `disabled`.

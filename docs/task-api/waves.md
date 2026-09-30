@@ -177,7 +177,7 @@ interaction is owned by [#5329](https://github.com/aws-e/adp/issues/5329).
 ## Display release record
 
 The display capability was built from merge `de3227b36c7956c181cfd486876c90c19bec354e`
-and deployed to dev account `879318057152` through the documented operator path.
+and deployed to dev account `000000000101` through the documented operator path.
 Gateway, orchestration tick, AI-DLC worker and hosted planning worker images are
 recorded in [the deployment state](../../.adp-deploy-state.json). The frontend and
 served CLI were verified against their release sources. The mobile account-header

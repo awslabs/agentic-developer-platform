@@ -4,17 +4,17 @@
   "results": [
     {
       "EvalActionName": "s3:GetObject",
-      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-879318057152/tasks/qualification/denied-object",
+      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-000000000101/tasks/qualification/denied-object",
       "EvalDecision": "explicitDeny"
     },
     {
       "EvalActionName": "s3:PutObject",
-      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-879318057152/tasks/qualification/denied-object",
+      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-000000000101/tasks/qualification/denied-object",
       "EvalDecision": "explicitDeny"
     },
     {
       "EvalActionName": "s3:DeleteObject",
-      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-879318057152/tasks/qualification/denied-object",
+      "EvalResourceName": "arn:aws:s3:::adp-dev-chat-artifacts-000000000101/tasks/qualification/denied-object",
       "EvalDecision": "explicitDeny"
     }
   ]

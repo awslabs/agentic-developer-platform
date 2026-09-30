@@ -10,7 +10,7 @@
     "reason": "Caller model overrides and unknown outcomes carrying model content are forbidden."
   },
   "protocol_version": 1,
-  "request_id": "293041a5-2c6d-4e7f-b081-920314253647",
+  "request_id": "293041a5-2c6d-4e7f-b081-000000000230",
   "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
   "type": "model.result",
   "turn_id": "59f3bda9-b511-4bf3-aad4-d3b71dd7b01b",

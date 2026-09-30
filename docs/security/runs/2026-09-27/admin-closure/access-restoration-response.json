@@ -1,6 +1,6 @@
 {
     "clusterName": "adp-dev-eks-cluster",
-    "principalArn": "arn:aws:iam::879318057152:role/adp-dev-box-prsaws-InstanceRole-d4vWBvnYsVUy",
+    "principalArn": "arn:aws:iam::000000000101:role/adp-dev-box-prsaws-InstanceRole-d4vWBvnYsVUy",
     "associatedAccessPolicy": {
         "policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
         "accessScope": {

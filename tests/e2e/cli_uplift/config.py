@@ -195,7 +195,8 @@ def validate(config):
 
     if result.get("gateway_deployment") is not None:
         require(
-            result["gateway_deployment"] in ("dev", "pre-production", "customer-demo"),
+            result["gateway_deployment"]
+            in ("dev", "pre-production", "customer-demo", "example-demo"),
             "Unknown gateway_deployment binding",
         )
     url = str(result["gateway_url"]).rstrip("/")
@@ -669,16 +670,11 @@ def from_environment(env, *, base=None):
     account, and an absent GitHub fixture must block its cases rather than
     downgrade them to something weaker that passes.
 
-    `CLI_UPLIFT_EVAL_BINDINGS` may name a reviewed non-secret binding file
-    (tests/e2e/cli_uplift/bindings.dev.json) that layers between the example and
-    the environment overlay. It exists because the identifiers below are carried
-    by repository VARIABLES that the executing identity cannot write (HTTP 403 on
-    the Actions variables API), and blocking the evaluation on a privileged
-    GitHub write is worse than carrying the same non-secret references in review.
-    It is layered UNDER the overlay, so a repository variable always wins once
-    set and this file never has to be removed to hand control back. It is passed
-    through the same validate()/no_secrets() gate as every other config, so it
-    cannot introduce a credential.
+    `CLI_UPLIFT_EVAL_BINDINGS` can name a local binding example. Real target
+    identifiers belong in private configuration: CLI_UPLIFT_EVAL_BINDINGS_JSON
+    overlays the example before individual environment overrides. Both forms
+    pass the same structural credential guard; only fixture references belong
+    in bindings, never passwords, tokens, or credential values.
     """
     document = dict(base) if base is not None else json.loads(EXAMPLE_PATH.read_text())
     if base is None:
@@ -712,6 +708,20 @@ def from_environment(env, *, base=None):
             # fails before it is merged into the run config.
             no_secrets(bindings, "bindings")
             document.update(bindings)
+    raw_bindings = str(env.get("CLI_UPLIFT_EVAL_BINDINGS_JSON") or "").strip()
+    if base is None and raw_bindings:
+        try:
+            private_bindings = json.loads(raw_bindings)
+        except ValueError:
+            raise ConfigError(
+                "CLI_UPLIFT_EVAL_BINDINGS_JSON is not valid JSON"
+            ) from None
+        require(
+            isinstance(private_bindings, dict),
+            "CLI_UPLIFT_EVAL_BINDINGS_JSON must be a JSON object",
+        )
+        no_secrets(private_bindings, "bindings")
+        document.update(private_bindings)
     for name, key in OVERLAY.items():
         value = str(env.get(name) or "").strip()
         if not value:

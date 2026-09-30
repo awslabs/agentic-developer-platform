@@ -254,6 +254,7 @@ adp/
 | **Operator Onboarding Walkthrough (start here)** | [docs/onboarding-walkthrough.md](docs/onboarding-walkthrough.md) — day-1 → week-1 path: setup, first agent run, governance, troubleshooting, best practices |
 | **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — install, upgrade and verify |
 | Deployment phase reference | [docs/adp-platform-deployment/deployment-reference.md](docs/adp-platform-deployment/deployment-reference.md) |
+| Public documentation policy | [docs/PUBLISHING.md](docs/PUBLISHING.md) — fictional examples and private deployment configuration |
 | Regression testing | [docs/regression-testing/README.md](docs/regression-testing/README.md) — workflows, scopes, target setup, and results |
 | Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |
 | Gateway OpenAPI Spec | [modules/gateway/docs/openapi.yaml](modules/gateway/docs/openapi.yaml) |

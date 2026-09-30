@@ -266,8 +266,8 @@ jobs:
       EVAL_OUT_DIR: /tmp/cli-uplift-eval/out
       EVAL_RUN_CONFIG: /tmp/cli-uplift-eval/run-config.json
       # The config overlay, read by `config.from_environment()`. Repository
-      # VARIABLES, not secrets: every value is an identifier (an account number, a
-      # role ARN, a bucket, a Secrets Manager secret NAME), never a credential.
+      # Target identities come from protected secrets below. Existing VARIABLES
+      # remain optional operator overrides, never credential values.
       # The recovery job declares the SAME block, which is what makes it able to
       # rebuild this run's config on its own runner (R5).
       CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
@@ -299,15 +299,12 @@ jobs:
       # supplies real integration and pre-production gateways.
       CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
-      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
-      # overlay by `config.from_environment()`. The repository variables are
-      # unset and the identity executing this evaluation gets HTTP 403 on the
-      # Actions variables API, so it cannot set them; every value in this file is
-      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
-      # refuses a credential-shaped key structurally. Because it is layered under
-      # the overlay, setting the real variables later silently takes precedence —
-      # this needs no revert to hand control back.
+      # Public binding files contain fictional examples. Protected environment
+      # secrets supply reviewed live identities; individual variable overrides
+      # retain their existing precedence for operator configuration.
       CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
 
     steps:
       - name: Refuse an untrusted ref
@@ -359,6 +356,14 @@ jobs:
 
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
+
+      - name: Require private target configuration
+        run: |
+          set -euo pipefail
+          if [ -z "$CLI_UPLIFT_EVAL_BINDINGS_JSON" ] || [ -z "$CLI_UPLIFT_EVAL_GATEWAY_CATALOG" ]; then
+            echo "::error::Configure CLI_UPLIFT_EVAL_BINDINGS_JSON and CLI_UPLIFT_EVAL_GATEWAY_CATALOG in the protected GitHub environment. Public examples are not live targets."
+            exit 1
+          fi
 
       - name: Require an explicit OIDC role (fail closed)
         # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
@@ -655,15 +660,12 @@ jobs:
       # supplies real integration and pre-production gateways.
       CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
-      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
-      # overlay by `config.from_environment()`. The repository variables are
-      # unset and the identity executing this evaluation gets HTTP 403 on the
-      # Actions variables API, so it cannot set them; every value in this file is
-      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
-      # refuses a credential-shaped key structurally. Because it is layered under
-      # the overlay, setting the real variables later silently takes precedence —
-      # this needs no revert to hand control back.
+      # Public binding files contain fictional examples. Protected environment
+      # secrets supply reviewed live identities; individual variable overrides
+      # retain their existing precedence for operator configuration.
       CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
     steps:
       - name: Refuse an untrusted ref
         # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
@@ -693,6 +695,14 @@ jobs:
         # `statestore.default_store` imports boto3 lazily and would have raised
         # ImportError, which the step then swallowed into a warning.
         run: pip install boto3
+
+      - name: Require private target configuration
+        run: |
+          set -euo pipefail
+          if [ -z "$CLI_UPLIFT_EVAL_BINDINGS_JSON" ] || [ -z "$CLI_UPLIFT_EVAL_GATEWAY_CATALOG" ]; then
+            echo "::error::Configure CLI_UPLIFT_EVAL_BINDINGS_JSON and CLI_UPLIFT_EVAL_GATEWAY_CATALOG in the protected GitHub environment. Public examples are not live targets."
+            exit 1
+          fi
 
       - name: Require an explicit OIDC role (fail closed)
         # Same fail-closed guard as the evaluate job, and it must stay identical:

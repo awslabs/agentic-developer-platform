@@ -5,7 +5,7 @@
       "Sid": "DescribeOnlyGatewayCluster",
       "Effect": "Allow",
       "Action": "eks:DescribeCluster",
-      "Resource": "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
+      "Resource": "arn:aws:eks:us-east-1:000000000101:cluster/adp-dev-eks-cluster"
     },
     {
       "Sid": "VerifyImmutableGatewaySourceTags",
@@ -14,7 +14,7 @@
         "ecr:DescribeRepositories",
         "ecr:DescribeImages"
       ],
-      "Resource": "arn:aws:ecr:us-east-1:879318057152:repository/adp-gateway"
+      "Resource": "arn:aws:ecr:us-east-1:000000000101:repository/adp-gateway"
     }
   ]
 }

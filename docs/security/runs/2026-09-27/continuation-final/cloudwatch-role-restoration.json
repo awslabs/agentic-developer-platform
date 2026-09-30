@@ -10,7 +10,7 @@
             },
             {
                 "type": "ServiceAccountRoleArn",
-                "value": "arn:aws:iam::879318057152:role/adp-dev-role-cw-observability"
+                "value": "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
             },
             {
                 "type": "ResolveConflicts",

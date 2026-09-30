@@ -1,5 +1,5 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:af0c204e3b18ea74e64c6dc5b93abfae3f952c40a79dee7a490de49108f5499d",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:af0c204e3b18ea74e64c6dc5b93abfae3f952c40a79dee7a490de49108f5499d",
   "config_digest": "sha256:0125f87218a6cfd1884dd56343aae0c20e12862d6a74de6d688b0a27955abf93",
   "package_count": 218,
   "native_counts": {

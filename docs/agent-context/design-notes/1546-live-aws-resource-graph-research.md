@@ -85,7 +85,7 @@ This document evaluates approaches for building a **live AWS account resource gr
   ```json
   {
     "resourceType": "AWS::EC2::SecurityGroup",
-    "resourceId": "sg-0abc1234",
+    "resourceId": "sg-00000036",
     "relationshipName": "Is associated with SecurityGroup"
   }
   ```
@@ -207,8 +207,8 @@ Distinct from code graph (#1529: `Symbol`, `File`, `Module`) and IaC graph (#154
 ~id format: live|{account_id}|{resource_type}|{resource_id}
 
 Examples:
-  live|123456789012|AWS::EC2::Instance|i-0abc1234def567890
-  live|123456789012|AWS::EC2::VPC|vpc-0abc1234
+  live|123456789012|AWS::EC2::Instance|i-00000000000000025
+  live|123456789012|AWS::EC2::VPC|vpc-00000042
   live|123456789012|AWS::IAM::Role|MyServiceRole
   live|account|123456789012
   live|region|123456789012|us-east-1

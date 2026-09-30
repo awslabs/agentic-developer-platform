@@ -265,8 +265,8 @@ certification by this audit.
 
 **Lesson:** a narrow real journey with explicit evidence and limitations is more
 useful than an unqualified completion claim. The later choice of destination
-account `938500344975` does not retroactively make the previously authorized
-`605440105851` runs erroneous. Account selection must remain configurable.
+account `000000000232` does not retroactively make the previously authorized
+`000000000102` runs erroneous. Account selection must remain configurable.
 
 ## Why the live execution loop kept expanding
 

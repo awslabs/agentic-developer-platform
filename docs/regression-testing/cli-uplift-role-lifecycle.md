@@ -8,27 +8,27 @@ claim that bootstrap roles, the new suite or its live evidence already exist.
 ## Selected configuration
 
 Account IDs and region are configurable. This evaluation uses platform
-**879318057152** and destination **938500344975**, in **us-east-1**. Keep those
+**000000000101** and destination **000000000232**, in **us-east-1**. Keep those
 values in dev bindings and examples, with assertions against resolved config.
-Existing `config.example.json` still contains the old destination 605440105851;
+Existing `config.example.json` still contains the old destination 000000000102;
 updating it is implementation work in #5282. Retain the cross-account guard.
 
 | Item | Value / meaning |
 |---|---|
-| Platform / EC2 / Actions account | **embark1 — 879318057152**, region **us-east-1** |
-| User AWS connection and Bedrock proxy destination | **ai-super-plane — 938500344975**, region **us-east-1**, explicitly selected by the user on 2026-09-17 |
-| Coordinator profile | `embark1`; this is a local operator alias, never an Actions/EC2 authentication mechanism |
-| Earlier destination reference | `embark2` / **605440105851** is superseded for this ticket. Do not provision this ticket's destination roles there. Historical evidence remains historical. |
-| Gateway | `https://d1g6cal2ts4iis.cloudfront.net/api` |
-| VPC / private subnet | `vpc-0d6115bead9301d25` / `subnet-0860c744097c41a03` |
-| Default SG | `sg-0dec921af9dbcbb18` |
-| Cognito pool | `us-east-1_JEhv9xSGG` |
+| Platform / EC2 / Actions account | **example-profile — 000000000101**, region **us-east-1** |
+| User AWS connection and Bedrock proxy destination | **ai-super-plane — 000000000232**, region **us-east-1**, explicitly selected by the user on 2026-09-17 |
+| Coordinator profile | `example-profile`; this is a local operator alias, never an Actions/EC2 authentication mechanism |
+| Earlier destination reference | `embark2` / **000000000102** is superseded for this ticket. Do not provision this ticket's destination roles there. Historical evidence remains historical. |
+| Gateway | `https://gateway-101.example.com/api` |
+| VPC / private subnet | `vpc-00000000000000044` / `subnet-0000000000000003d` |
+| Default SG | `sg-00000000000000039` |
+| Cognito pool | `us-east-1_Example002` |
 | Retained EC2 role/profile | `adp-cli-uplift-eval-instance` |
-| Retained orchestration role | `arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator` |
-| Private state bucket | `adp-cli-uplift-eval-state-879318057152` |
+| Retained orchestration role | `arn:aws:iam::000000000101:role/adp-cli-uplift-eval-orchestrator` |
+| Private state bucket | `adp-cli-uplift-eval-state-000000000101` |
 | Retained Cognito credential secret reference | `adp/dev/gateway/test-admin-credentials` — values must not be published or reset |
 | GitHub tooling dependency | **#5279 is OPEN**, branch `fix/cli-eval-github-cli-ssm`, head `e512fe9e08e6882ca7185f2ef580b21a0caef202`, as of ticket creation |
-| GitHub PAT reference | SSM **SecureString** `adp-pat-testin` in 879318057152/us-east-1; dev variable `CLI_UPLIFT_EVAL_GITHUB_PAT_PARAMETER` is set |
+| GitHub PAT reference | SSM **SecureString** `adp-pat-testin` in 000000000101/us-east-1; dev variable `CLI_UPLIFT_EVAL_GITHUB_PAT_PARAMETER` is set |
 
 #5279 installs pinned gh and the `adp-eval-gh` wrapper. Its fresh EC2 smoke passed and all 375 offline tests passed on Linux ARC (run 35157041441). Reuse that change when integrated; do not recreate it or require GitHub credentials to run independent AWS cases. The PAT authenticates as **PranavSharma1000**, not a newly created regression user. Do not use it to claim GitHub OAuth/test-identity coverage.
 
@@ -108,7 +108,7 @@ permissions, never general AWS administration or removal of boundaries.
 ## Known implementation traps
 
 - Reuse `.github/workflows/eval-cli-uplift.yml`, `tests/e2e/cli_uplift/{config,preflight,stages,live,cleanup,statestore,report}.py`, `personal_aws_worker.py`, `remote/{personal_aws,bedrock_routing,personal_inference,common}.py`, and the pinned #5173 harness (`62b03d343181978aeb54ef1b29634204d050637d`).
-- `docs/regression-testing/cli-uplift-destination-roles.md` describes the **old cross-account fixture request**. Its IAM examples are starting points to review against actual behavior, not a verified bootstrap for the new target. Correct its stale case references and change destination resource/trust bindings to **938500344975** while keeping source principals in **879318057152**; do not blindly replace source-account ARNs.
+- `docs/regression-testing/cli-uplift-destination-roles.md` describes the **old cross-account fixture request**. Its IAM examples are starting points to review against actual behavior, not a verified bootstrap for the new target. Correct its stale case references and change destination resource/trust bindings to **000000000232** while keeping source principals in **000000000101**; do not blindly replace source-account ARNs.
 - **#5274 is an open prerequisite for L05.** Current `_usage_record()` can accept one Claude row for both clients. Fix/integrate that assertion under its existing issue and require separate client/model/request correlations. Missing Codex usage must fail.
 - `_cloudtrail_invocation()` currently uses `LookupEvents` and derives `recorded_account` from config; this is not sufficient invocation proof. Determine the actually configured Bedrock invocation/data-event evidence source, use the supported log/query path, and match observed account, role/session, request and run/time window. CloudTrail management-event history is not a substitute for Bedrock data events. Do not enable broad logging changes in a shared account without a scoped, reviewed configuration.
 - Existing E06 destination deletion may leave a registry row when the API lacks a supported delete/unlink route. Leaving it behind is not successful cleanup. Reproduce and fix necessary product deletion support through normal reviewed changes; never patch the database directly or weaken the outstanding-resource assertion.

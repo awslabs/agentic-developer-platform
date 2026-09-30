@@ -4218,7 +4218,7 @@
           "grype_sha256": "790000939515ec7b4f1f2ab2f35863b4102533ebd303bc0610e2063b7f956fd1",
           "archive_sha256": "047e1b6fc586806cc8f0de4104a7b37edccdff5132f4beb384768ddcb1a35105"
         },
-        "package_artifact": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352",
+        "package_artifact": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352",
         "binary_observations": {
           "packages": {
             "perl-modules-5.40": {

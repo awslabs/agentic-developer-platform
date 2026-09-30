@@ -1,8 +1,7 @@
 # Runbooks
 
 Operational runbooks for the ADP platform. Each runbook covers a specific
-subsystem and is intended to be actionable — all commands should run as-is
-(no placeholder substitution beyond `<profile>`).
+subsystem and is intended to be actionable — replace illustrative identities using private operator configuration before running commands.
 
 ## Index
 

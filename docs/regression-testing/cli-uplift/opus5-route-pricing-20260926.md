@@ -1,6 +1,6 @@
 # Opus 5 route pricing investigation — 26 September 2026
 
-Account 879318057152, us-east-1: US and global Opus 5 inference profiles are
+Account 000000000101, us-east-1: US and global Opus 5 inference profiles are
 ACTIVE. Pricing refresh published generations 158–160 at 06:00:40, 06:01:46,
 and 06:04:05 UTC; each retained 264 of 1,500 variants. AWS's current pricing
 page lists Opus 5 regionally but omits it from the global widget. Keeping the

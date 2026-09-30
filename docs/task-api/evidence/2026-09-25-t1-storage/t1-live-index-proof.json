@@ -1,7 +1,7 @@
 {
   "at": "2026-09-25T04:37:08.253928+00:00",
   "task_id": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15",
-  "table_arn": "arn:aws:dynamodb:us-east-1:879318057152:table/adp-dev-webhook-events",
+  "table_arn": "arn:aws:dynamodb:us-east-1:000000000101:table/adp-dev-webhook-events",
   "table_created_at": "2026-05-01 21:46:39.015000+00:00",
   "indexes": {
     "tenant-index": [

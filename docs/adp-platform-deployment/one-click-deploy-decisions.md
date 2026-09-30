@@ -184,7 +184,7 @@ the bar — it transparently shows `needs_human` states, which is honest UX. "No
 ready for customers" means we don't market it or make it the default onboarding
 path.
 
-**Current state:** deploy #2899 (979157915401) succeeded but with mid-flight fixes.
+**Current state:** deploy #2899 (000000000235) succeeded but with mid-flight fixes.
 EPIC #2571 / #684 still OPEN. The gate is NOT yet met.
 
 ---

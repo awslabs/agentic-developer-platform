@@ -27,7 +27,7 @@ Task acceptance did not commit
 {"at": "2026-09-25T05:46:48.784781+00:00", "kind": "PASS", "check": "competing recovery lease denied"}
 {"at": "2026-09-25T05:46:48.895158+00:00", "kind": "PASS", "check": "competing publisher denied"}
 {"at": "2026-09-25T05:46:48.895252+00:00", "kind": "cleanup_queue_name", "queue_name": "task-v3-native-d20d08c6af0240088c290395ea59069c.fifo"}
-{"at": "2026-09-25T05:46:48.995476+00:00", "kind": "cleanup_queue", "queue": "https://sqs.us-east-1.amazonaws.com/879318057152/task-v3-native-d20d08c6af0240088c290395ea59069c.fifo"}
+{"at": "2026-09-25T05:46:48.995476+00:00", "kind": "cleanup_queue", "queue": "https://sqs.us-east-1.amazonaws.com/000000000101/task-v3-native-d20d08c6af0240088c290395ea59069c.fifo"}
 {"at": "2026-09-25T05:46:49.064902+00:00", "kind": "PASS", "check": "expired publication lease reclaims identical envelope"}
 {"at": "2026-09-25T05:46:49.095392+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_EVENTS#tsk_2bf319de-8fc9-4f86-97a5-f3fe0647abaf"}, "arrived_at": {"S": "SEQ#00000000000000000002"}}}
 {"at": "2026-09-25T05:46:49.121777+00:00", "kind": "PASS", "check": "stale publisher cannot settle after lease takeover"}
@@ -46,5 +46,5 @@ Task acceptance did not commit
 {"at": "2026-09-25T05:46:50.397452+00:00", "kind": "PASS", "check": "explicit attempt history preserves predecessor and versions"}
 {"at": "2026-09-25T05:46:50.402971+00:00", "kind": "PASS", "check": "attempt replacement preserves task and run identity"}
 {"at": "2026-09-25T05:46:50.403005+00:00", "kind": "summary", "status": "PASS", "checks": 19, "limitations": ["No production scheduled recovery wake-up or public identity qualification in this isolated lane", "No model effects dispatched", "Queue deletion fault is transport evidence, not runtime acknowledgment authority proof"]}
-{"at": "2026-09-25T05:46:50.455711+00:00", "kind": "queue_deleted", "queue": "https://sqs.us-east-1.amazonaws.com/879318057152/task-v3-native-d20d08c6af0240088c290395ea59069c.fifo"}
+{"at": "2026-09-25T05:46:50.455711+00:00", "kind": "queue_deleted", "queue": "https://sqs.us-east-1.amazonaws.com/000000000101/task-v3-native-d20d08c6af0240088c290395ea59069c.fifo"}
 {"at": "2026-09-25T05:46:50.643506+00:00", "kind": "cleanup", "keys": 23, "all_owned_keys_absent": true, "errors": []}

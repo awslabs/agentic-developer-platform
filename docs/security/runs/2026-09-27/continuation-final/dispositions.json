@@ -1,7 +1,7 @@
 [
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:1:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -35,7 +35,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:2:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -69,7 +69,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:3:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -103,7 +103,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:4:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -137,7 +137,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:5:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -171,7 +171,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:6:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -205,7 +205,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:7:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -239,7 +239,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:8:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -273,7 +273,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:9:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -307,7 +307,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:11:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -341,7 +341,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:12:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -375,7 +375,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:13:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -409,7 +409,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:14:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -443,7 +443,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:15:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -477,7 +477,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:16:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -511,7 +511,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:17:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -545,7 +545,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:18:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -579,7 +579,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:19:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -613,7 +613,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:20:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -647,7 +647,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:21:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -681,7 +681,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:22:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -715,7 +715,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:23:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -749,7 +749,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:24:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -783,7 +783,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:25:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -817,7 +817,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:30:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-85091",
@@ -836,7 +836,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:31:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -870,7 +870,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:32:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -904,7 +904,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:33:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -938,7 +938,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:38:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -972,7 +972,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:39:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -1006,7 +1006,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:40:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -1040,7 +1040,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:41:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -1074,7 +1074,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:42:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -1108,7 +1108,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:43:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -1142,7 +1142,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:44:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -1176,7 +1176,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:45:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -1210,7 +1210,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:46:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -1244,7 +1244,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:47:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -1278,7 +1278,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:48:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -1312,7 +1312,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:49:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -1346,7 +1346,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:52:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -1380,7 +1380,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:53:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -1414,7 +1414,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:54:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -1448,7 +1448,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:55:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -1482,7 +1482,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:56:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -1516,7 +1516,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:57:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -1550,7 +1550,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:73:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -1584,7 +1584,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:74:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -1618,7 +1618,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:75:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -1652,7 +1652,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:76:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -1686,7 +1686,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:77:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -1720,7 +1720,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:78:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -1754,7 +1754,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:83:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -1788,7 +1788,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:84:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -1822,7 +1822,7 @@
   },
   {
     "occurrence_id": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af:85:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -1856,7 +1856,7 @@
   },
   {
     "occurrence_id": "sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd:32:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd",
     "config_digest": "sha256:e8b889b30b748b1f4ce9b1e811af03d67126af8391506b77c556e190cd806448",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-85091",
@@ -1875,7 +1875,7 @@
   },
   {
     "occurrence_id": "sha256:f85fef27d28bb817b9a6ebbaaab8698f2cde71e8786fefadff302b84c82e38cb:32:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f85fef27d28bb817b9a6ebbaaab8698f2cde71e8786fefadff302b84c82e38cb",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f85fef27d28bb817b9a6ebbaaab8698f2cde71e8786fefadff302b84c82e38cb",
     "config_digest": "sha256:286ddc5d9ec16369fb3d3e63a1f980e7291c3ff7a7aceb4a34bc1cc89ad21347",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -1894,7 +1894,7 @@
   },
   {
     "occurrence_id": "sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f:1:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f",
     "config_digest": "sha256:f928bec263e23a3e51bde1d93bdac0e3e31663231b5fedb73129220c4b80da89",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -1913,7 +1913,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:7:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -1947,7 +1947,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:8:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -1981,7 +1981,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:9:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -2015,7 +2015,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:10:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -2049,7 +2049,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:11:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -2083,7 +2083,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:12:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -2117,7 +2117,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:14:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -2151,7 +2151,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:15:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -2185,7 +2185,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:16:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -2219,7 +2219,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:18:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -2253,7 +2253,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:19:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -2287,7 +2287,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:20:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -2321,7 +2321,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:21:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -2355,7 +2355,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:22:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -2389,7 +2389,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:23:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -2423,7 +2423,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:24:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -2457,7 +2457,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:25:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -2491,7 +2491,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:26:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -2525,7 +2525,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:27:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -2559,7 +2559,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:28:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -2593,7 +2593,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:29:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -2627,7 +2627,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:31:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -2661,7 +2661,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:32:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -2695,7 +2695,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:33:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -2729,7 +2729,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:42:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -2748,7 +2748,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:43:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -2782,7 +2782,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:44:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -2816,7 +2816,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:45:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -2850,7 +2850,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:46:CVE-2026-60002",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-60002",
@@ -2878,7 +2878,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:53:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -2912,7 +2912,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:54:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -2946,7 +2946,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:55:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -2980,7 +2980,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:56:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -3014,7 +3014,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:57:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -3048,7 +3048,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:58:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -3082,7 +3082,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:59:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -3116,7 +3116,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:60:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -3150,7 +3150,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:61:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -3184,7 +3184,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:62:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -3218,7 +3218,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:63:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -3252,7 +3252,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:64:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -3286,7 +3286,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:70:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -3320,7 +3320,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:71:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -3354,7 +3354,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:72:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -3388,7 +3388,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:73:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -3422,7 +3422,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:74:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -3456,7 +3456,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:75:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -3490,7 +3490,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:103:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -3524,7 +3524,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:104:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -3558,7 +3558,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:105:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -3592,7 +3592,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:106:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -3626,7 +3626,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:107:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -3660,7 +3660,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:108:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -3694,7 +3694,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:113:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -3728,7 +3728,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:114:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -3762,7 +3762,7 @@
   },
   {
     "occurrence_id": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144:115:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "config_digest": "sha256:e753890fec926a1e9642629ff798c4debf8b081d6c3428086b8de1d79f2506ee",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -3796,7 +3796,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:5:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -3830,7 +3830,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:6:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -3864,7 +3864,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:7:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-19931",
@@ -3898,7 +3898,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:8:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -3932,7 +3932,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:9:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -3966,7 +3966,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:10:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80229",
@@ -4000,7 +4000,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:11:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -4034,7 +4034,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:12:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -4068,7 +4068,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:13:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-11856",
@@ -4102,7 +4102,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:15:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -4136,7 +4136,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:16:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -4170,7 +4170,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:17:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8924",
@@ -4204,7 +4204,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:18:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -4238,7 +4238,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:19:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -4272,7 +4272,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:20:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-10536",
@@ -4306,7 +4306,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:21:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -4340,7 +4340,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:22:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -4374,7 +4374,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:23:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9079",
@@ -4408,7 +4408,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:26:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -4442,7 +4442,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:27:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -4476,7 +4476,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:28:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-18924",
@@ -4510,7 +4510,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:36:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -4544,7 +4544,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:37:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -4578,7 +4578,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:38:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80255",
@@ -4612,7 +4612,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:46:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-85091",
@@ -4631,7 +4631,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:47:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -4665,7 +4665,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:48:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -4699,7 +4699,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:49:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8927",
@@ -4733,7 +4733,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:70:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -4767,7 +4767,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:71:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -4801,7 +4801,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:72:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-80230",
@@ -4835,7 +4835,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:73:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -4869,7 +4869,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:74:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -4903,7 +4903,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:75:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-82209",
@@ -4937,7 +4937,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:76:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -4971,7 +4971,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:77:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -5005,7 +5005,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:78:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8286",
@@ -5039,7 +5039,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:79:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -5073,7 +5073,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:80:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -5107,7 +5107,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:81:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8926",
@@ -5141,7 +5141,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:87:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -5175,7 +5175,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:88:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -5209,7 +5209,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:89:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9080",
@@ -5243,7 +5243,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:90:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -5277,7 +5277,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:91:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -5311,7 +5311,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:92:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-13608",
@@ -5345,7 +5345,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:103:CVE-2026-6653",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-6653",
@@ -5373,7 +5373,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:117:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -5407,7 +5407,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:118:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -5441,7 +5441,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:119:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-9545",
@@ -5475,7 +5475,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:123:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -5509,7 +5509,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:124:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -5543,7 +5543,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:125:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-12064",
@@ -5577,7 +5577,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:130:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -5611,7 +5611,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:131:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -5645,7 +5645,7 @@
   },
   {
     "occurrence_id": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d:132:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
     "scope": "desired-registry-resolution",
     "canonical_id": "CVE-2026-8932",
@@ -5679,7 +5679,7 @@
   },
   {
     "occurrence_id": "sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd:1:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd",
     "config_digest": "sha256:381cdcca4ddeeb6b68c76c2e1716e10a63c91e0742af8322a4932a5c4defde47",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -5698,7 +5698,7 @@
   },
   {
     "occurrence_id": "sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f:1:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f",
     "config_digest": "sha256:82bbdb6f989acaf6cdbda66eb214574f7a549365900a575dc0f3351b32584b81",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -5717,7 +5717,7 @@
   },
   {
     "occurrence_id": "sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2:1:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "config_digest": "sha256:066130cd6875b3b7691fc94893fae18d83586eaeb3970ac17510dc304f009c4e",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -5736,7 +5736,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:13:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -5770,7 +5770,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:14:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -5804,7 +5804,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:15:CVE-2026-19931",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-19931",
@@ -5838,7 +5838,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:19:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -5872,7 +5872,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:20:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -5906,7 +5906,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:21:CVE-2026-80229",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80229",
@@ -5940,7 +5940,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:33:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -5974,7 +5974,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:34:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -6008,7 +6008,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:35:CVE-2026-11856",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-11856",
@@ -6042,7 +6042,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:36:CVE-2026-70461",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70461",
@@ -6081,7 +6081,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:37:CVE-2026-53791",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53791",
@@ -6120,7 +6120,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:38:CVE-2026-53790",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53790",
@@ -6159,7 +6159,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:39:CVE-2026-70464",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70464",
@@ -6198,7 +6198,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:40:CVE-2026-70455",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70455",
@@ -6237,7 +6237,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:41:CVE-2026-70453",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70453",
@@ -6276,7 +6276,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:46:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -6310,7 +6310,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:47:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -6344,7 +6344,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:48:CVE-2026-8924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8924",
@@ -6378,7 +6378,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:49:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -6412,7 +6412,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:50:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -6446,7 +6446,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:51:CVE-2026-10536",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-10536",
@@ -6480,7 +6480,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:52:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -6514,7 +6514,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:53:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -6548,7 +6548,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:54:CVE-2026-9079",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9079",
@@ -6582,7 +6582,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:57:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -6616,7 +6616,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:58:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -6650,7 +6650,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:59:CVE-2026-18924",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-18924",
@@ -6684,7 +6684,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:60:CVE-2026-70452",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70452",
@@ -6723,7 +6723,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:65:CVE-2026-70460",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70460",
@@ -6762,7 +6762,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:66:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -6796,7 +6796,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:67:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -6830,7 +6830,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:68:CVE-2026-80255",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80255",
@@ -6864,7 +6864,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:84:CVE-2026-85091",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-85091",
@@ -6883,7 +6883,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:90:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -6917,7 +6917,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:91:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -6951,7 +6951,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:92:CVE-2026-8927",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8927",
@@ -6985,7 +6985,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:97:CVE-2026-53793",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53793",
@@ -7024,7 +7024,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:98:CVE-2026-70456",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70456",
@@ -7063,7 +7063,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:99:CVE-2026-70458",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70458",
@@ -7102,7 +7102,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:100:CVE-2026-60002",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-60002",
@@ -7142,7 +7142,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:101:CVE-2026-60002",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-60002",
@@ -7182,7 +7182,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:102:CVE-2026-60002",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-60002",
@@ -7214,7 +7214,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:120:CVE-2026-53789",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53789",
@@ -7253,7 +7253,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:131:CVE-2026-53795",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53795",
@@ -7292,7 +7292,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:132:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -7326,7 +7326,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:133:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -7360,7 +7360,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:134:CVE-2026-80230",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-80230",
@@ -7394,7 +7394,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:135:CVE-2026-70457",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70457",
@@ -7433,7 +7433,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:137:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -7467,7 +7467,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:138:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -7501,7 +7501,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:139:CVE-2026-82209",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-82209",
@@ -7535,7 +7535,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:140:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -7569,7 +7569,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:141:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -7603,7 +7603,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:142:CVE-2026-8286",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8286",
@@ -7637,7 +7637,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:143:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -7671,7 +7671,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:144:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -7705,7 +7705,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:145:CVE-2026-8926",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8926",
@@ -7739,7 +7739,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:147:CVE-2026-53783",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53783",
@@ -7778,7 +7778,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:149:CVE-2026-70463",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70463",
@@ -7817,7 +7817,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:150:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -7851,7 +7851,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:151:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -7885,7 +7885,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:152:CVE-2026-9080",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9080",
@@ -7919,7 +7919,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:153:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -7953,7 +7953,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:154:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -7987,7 +7987,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:155:CVE-2026-13608",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-13608",
@@ -8021,7 +8021,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:164:CVE-2026-70462",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70462",
@@ -8060,7 +8060,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:165:CVE-2026-53792",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53792",
@@ -8099,7 +8099,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:177:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -8133,7 +8133,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:178:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -8167,7 +8167,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:179:CVE-2026-9545",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-9545",
@@ -8201,7 +8201,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:184:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -8235,7 +8235,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:185:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -8269,7 +8269,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:186:CVE-2026-12064",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-12064",
@@ -8303,7 +8303,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:191:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -8337,7 +8337,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:192:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -8371,7 +8371,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:193:CVE-2026-8932",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-8932",
@@ -8405,7 +8405,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:209:CVE-2026-53801",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53801",
@@ -8444,7 +8444,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:275:CVE-2026-70454",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-70454",
@@ -8483,7 +8483,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:297:CVE-2026-53784",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53784",
@@ -8522,7 +8522,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:298:CVE-2026-53802",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53802",
@@ -8561,7 +8561,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:304:CVE-2026-53803",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53803",
@@ -8600,7 +8600,7 @@
   },
   {
     "occurrence_id": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a:407:CVE-2026-53799",
-    "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
     "scope": "active",
     "canonical_id": "CVE-2026-53799",

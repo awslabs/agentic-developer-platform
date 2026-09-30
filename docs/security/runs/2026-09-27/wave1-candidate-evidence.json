@@ -4,7 +4,7 @@
   "results": [
     {
       "repository": "adp-superplane-controller",
-      "baseline_platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+      "baseline_platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
       "baseline_grype_sha256": "2ed2c9c86d63d18251e82e89e4bb19337c3eca1cb991ec4a01d22e27d2d6ace0",
       "baseline_raw_counts": {
         "Critical": 26,
@@ -486,7 +486,7 @@
     },
     {
       "repository": "adp-superplane-platform-monitor",
-      "baseline_platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
+      "baseline_platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
       "baseline_grype_sha256": "39c0105347caae47d4e249572c87bae170c51a64cc4410edf9daba72473a42fd",
       "baseline_raw_counts": {
         "High": 25,
@@ -616,7 +616,7 @@
     },
     {
       "repository": "adp-dev-agent-context-context-mcp",
-      "baseline_platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a",
+      "baseline_platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a",
       "baseline_grype_sha256": "7a7dffddd5ae7e8282f0015d4b19e15611a9ed2a5ed62d9144df6f14d7a143ef",
       "baseline_raw_counts": {
         "Critical": 16,

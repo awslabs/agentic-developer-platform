@@ -13,7 +13,7 @@ calls `_reserve_upload_session`: the merged existing-session requirement has
 **not** reached that artifact. LastModified alone cannot establish code identity.
 
 The operator applied the reviewed Terraform storage changes to
-`adp-dev-chat-artifacts-879318057152`: versioning is Enabled, current objects
+`adp-dev-chat-artifacts-000000000101`: versioning is Enabled, current objects
 expire after 30 days, and noncurrent versions after 7 days. These protections
 are live; repeat readback before rollout, without recreating the bucket.
 The inspected live sweeper role still allowed bucket-wide ListBucket and

@@ -1,7 +1,7 @@
 # V4 external integration evidence
 
 This evaluation uses the authorized ADP development deployment in AWS account
-879318057152, us-east-1. AI-DLC remains paused. The external observer ran on the
+000000000101, us-east-1. AI-DLC remains paused. The external observer ran on the
 operator EC2 host through the public API Gateway endpoint, outside Kubernetes.
 Accepted design: `b5761a4a2502aceaa9133afef552b567a19cb46e`.
 

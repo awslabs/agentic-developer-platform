@@ -1,5 +1,8 @@
 # CLI-uplift evaluation — IAM artifacts
 
+Public examples and historical evidence have sanitized deployment identities.
+See [publishing documentation](../../PUBLISHING.md); obtain real targets from private configuration.
+
 Least-privilege policy documents applied to the evaluation's own roles, kept here
 so a live grant is reviewable in the repo rather than existing only as console
 state. These roles are not Terraform-managed (they were created for the
@@ -210,7 +213,7 @@ that the story scenarios have passed.
 ### EC2 launch security-group binding
 
 Evaluation 36207990534 reached preflight and then `RunInstances` was refused for
-`sg-0f497fc6d4ec88610`. The configured group has no ingress and only TCP 80/443
+`sg-0000000000000003a`. The configured group has no ingress and only TCP 80/443
 egress; the previous allowed default group has no egress and could not register
 with SSM. `orchestrator-policy.json` preserves every existing base-policy
 statement and replaces only that security-group ARN in

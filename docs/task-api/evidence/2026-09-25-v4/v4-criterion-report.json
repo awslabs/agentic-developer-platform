@@ -8,9 +8,9 @@
   "gateway_image": "sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
   "evaluator": "t5_runtime with independent native financial/coexistence audit by t3_integration and root; runtime_contracts authority audit; root final independent approval",
   "environment": {
-    "account_id": "879318057152",
+    "account_id": "000000000101",
     "region": "us-east-1",
-    "api_url": "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev",
+    "api_url": "https://gateway-1.example.com/dev",
     "engine_paused": true
   },
   "captured_at": "2026-09-25T05:40:21.287635+00:00",
@@ -108,7 +108,7 @@
   "commands": [
     {
       "lane": "held-live-task",
-      "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify3 --key task-api-5792-20260925-clarify3 --input-release-file /home/ubuntu/task-delivery-tmp/live-run/clarify3/release-input",
+      "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://gateway-1.example.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify3 --key task-api-5792-20260925-clarify3 --input-release-file /home/ubuntu/task-delivery-tmp/live-run/clarify3/release-input",
       "new_task_bound": 1,
       "max_usd_per_task": 1,
       "result": "Observer window expired during deliberate inputhold; original prematureFAIL retained, taskcompleted in read-only resumedobservation."

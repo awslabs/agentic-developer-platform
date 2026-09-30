@@ -49,8 +49,8 @@ artifacts; no new artifact was inferred clean from a version label.
 
 ## Remaining prerequisites
 
-Target identity resolves to account 879318057152, cluster
-`adp-dev-eks-cluster`, region `us-east-1`. `embark1` still returns ExpiredToken.
+Target identity resolves to account 000000000101, cluster
+`adp-dev-eks-cluster`, region `us-east-1`. `example-profile` still returns ExpiredToken.
 The current instance role permits the two namespace operations above, but:
 
 - KEDA and ARC deployment patches are denied. KEDA authentication and

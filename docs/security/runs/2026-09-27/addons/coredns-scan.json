@@ -1,5 +1,5 @@
 {
-  "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.14.6-eksbuild.4",
+  "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.14.6-eksbuild.4",
   "docker_root_descriptor": "sha256:d0ee442234387584edc3611a017e84fb8966ccc0b235d8bb87d5abafccb87896",
   "config_digest": "sha256:079a437c664412cbe08a43d6c0d3bb8e7bfc383a51bfe0ce8a91eac80646bfe4",
   "time": "2026-09-27T09:16:42.018924+00:00",

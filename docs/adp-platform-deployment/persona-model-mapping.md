@@ -21,7 +21,7 @@ not expand its legacy Claude model directives. UI and CLI catalogue reads use
 the gateway authority and filter by the selected persona's runtime.
 
 Bedrock account availability and US/global inference profiles for these models
-were verified on 24 September 2026 in account `879318057152`, `us-east-1`.
+were verified on 24 September 2026 in account `000000000101`, `us-east-1`.
 OpenAI canonical IDs stay bare for accounting; the existing Responses proxy
 adds its configured inference-profile prefix when forwarding to Bedrock.
 Opus 5.5 follows the existing global Claude catalogue convention.

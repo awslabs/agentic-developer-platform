@@ -31,7 +31,7 @@
       "Action": [
         "ec2:RunInstances"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:879318057152:instance/*",
+      "Resource": "arn:aws:ec2:us-east-1:000000000101:instance/*",
       "Condition": {
         "StringLike": {
           "aws:RequestTag/adp:cli-uplift-eval": "adp-e2e-*"
@@ -58,7 +58,7 @@
         "ec2:TerminateInstances",
         "ec2:StopInstances"
       ],
-      "Resource": "arn:aws:ec2:us-east-1:879318057152:instance/*",
+      "Resource": "arn:aws:ec2:us-east-1:000000000101:instance/*",
       "Condition": {
         "StringLike": {
           "ec2:ResourceTag/adp:cli-uplift-eval": "adp-e2e-*"
@@ -71,7 +71,7 @@
       "Action": [
         "iam:PassRole"
       ],
-      "Resource": "arn:aws:iam::879318057152:role/adp-cli-uplift-eval-instance",
+      "Resource": "arn:aws:iam::000000000101:role/adp-cli-uplift-eval-instance",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "ec2.amazonaws.com"
@@ -85,7 +85,7 @@
         "ssm:SendCommand"
       ],
       "Resource": [
-        "arn:aws:ec2:us-east-1:879318057152:instance/*"
+        "arn:aws:ec2:us-east-1:000000000101:instance/*"
       ],
       "Condition": {
         "StringLike": {
@@ -120,8 +120,8 @@
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::adp-cli-uplift-eval-state-879318057152",
-        "arn:aws:s3:::adp-cli-uplift-eval-state-879318057152/*"
+        "arn:aws:s3:::adp-cli-uplift-eval-state-000000000101",
+        "arn:aws:s3:::adp-cli-uplift-eval-state-000000000101/*"
       ]
     },
     {
@@ -130,7 +130,7 @@
       "Action": [
         "secretsmanager:DescribeSecret"
       ],
-      "Resource": "arn:aws:secretsmanager:us-east-1:879318057152:secret:adp/dev/gateway/test-admin-credentials-1yZDSy"
+      "Resource": "arn:aws:secretsmanager:us-east-1:000000000101:secret:adp/dev/gateway/test-admin-credentials-1yZDSy"
     },
     {
       "Sid": "LaunchDependenciesInApprovedSubnet",
@@ -138,10 +138,10 @@
       "Action": "ec2:RunInstances",
       "Resource": [
         "arn:aws:ec2:us-east-1::image/*",
-        "arn:aws:ec2:us-east-1:879318057152:subnet/subnet-0860c744097c41a03",
-        "arn:aws:ec2:us-east-1:879318057152:security-group/sg-0f497fc6d4ec88610",
-        "arn:aws:ec2:us-east-1:879318057152:network-interface/*",
-        "arn:aws:ec2:us-east-1:879318057152:volume/*"
+        "arn:aws:ec2:us-east-1:000000000101:subnet/subnet-0000000000000003d",
+        "arn:aws:ec2:us-east-1:000000000101:security-group/sg-0000000000000003a",
+        "arn:aws:ec2:us-east-1:000000000101:network-interface/*",
+        "arn:aws:ec2:us-east-1:000000000101:volume/*"
       ]
     }
   ]

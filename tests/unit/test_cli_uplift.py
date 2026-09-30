@@ -413,21 +413,21 @@ def test_multi_deployment_direct_execution_blocks_before_setup_or_inference(
 def config_fixture(**overrides):
     """A minimal valid config using the approved dev test targets."""
     base = {
-        "gateway_url": "https://d1g6cal2ts4iis.cloudfront.net/api",
+        "gateway_url": "https://gateway-101.example.com/api",
         "region": "us-east-1",
-        "platform_account": "879318057152",
-        "destination_account": "605440105851",
+        "platform_account": "000000000101",
+        "destination_account": "000000000102",
         "expected_revision": "91ae8043125c990a349b9acf68b1c604cfdbf18e",
-        "vpc_id": "vpc-0d6115bead9301d25",
-        "private_subnet_id": "subnet-0860c744097c41a03",
-        "cognito_user_pool_id": "us-east-1_JEhv9xSGG",
+        "vpc_id": "vpc-00000000000000044",
+        "private_subnet_id": "subnet-0000000000000003d",
+        "cognito_user_pool_id": "us-east-1_Example002",
         # The R3 destination bindings. A run that reaches a mutating suite without
         # these fails on the instance with "No destination role is configured",
         # hours in, so the fixture carries them and a dedicated test below proves
         # their absence is refused up front. These are REFERENCES — a role ARN and
         # a secret NAME — never credential material.
-        "destination_role_arn": "arn:aws:iam::605440105851:role/adp-eval-destination",
-        "provisioner_role_arn": "arn:aws:iam::605440105851:role/adp-eval-provisioner",
+        "destination_role_arn": "arn:aws:iam::000000000102:role/adp-eval-destination",
+        "provisioner_role_arn": "arn:aws:iam::000000000102:role/adp-eval-provisioner",
         "credential_secret_name": "adp/cli-uplift-eval/destination-fixture",
     }
     base.update(overrides)
@@ -1048,7 +1048,7 @@ def test_tally_always_reports_every_status_key():
 def test_injected_wrong_account_makes_acceptance_non_successful():
     """A destination-account mismatch must fail config validation outright."""
     with pytest.raises(config.ConfigError):
-        config.validate(config_fixture(destination_account="879318057152"))
+        config.validate(config_fixture(destination_account="000000000101"))
 
 
 def test_injected_missing_usage_makes_acceptance_non_successful():
@@ -1144,7 +1144,7 @@ def test_account_and_region_shapes_are_enforced():
 
 def test_second_destination_must_be_genuinely_distinct():
     with pytest.raises(config.ConfigError):
-        config.validate(config_fixture(second_destination_account="605440105851"))
+        config.validate(config_fixture(second_destination_account="000000000102"))
     result = config.validate(config_fixture(second_destination_account="111122223333"))
     assert cases.SECOND_DESTINATION in config.fixture_classes(result)
 
@@ -1277,7 +1277,7 @@ def test_a_shared_credential_reference_is_refused():
 
 def test_a_deployment_binding_carries_a_reference_never_a_credential():
     """The fixture password lives in Secrets Manager; this file holds its NAME."""
-    for bad in ("arn:aws:secretsmanager:us-east-1:879318057152:secret:x", "https://x"):
+    for bad in ("arn:aws:secretsmanager:us-east-1:000000000101:secret:x", "https://x"):
         entries = deployment_bindings()
         entries[0]["credential_secret_name"] = bad
         with pytest.raises(config.ConfigError, match="secret NAME"):
@@ -1412,7 +1412,7 @@ def test_deployment_bindings_are_proven_reachable_before_the_fixture_counts():
     """
     cfg = config.validate(config_fixture(deployments=deployment_bindings()))
     discovery = {
-        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "user_pool_id": "us-east-1_Example002",
         "client_id": "c",
         "cli_client_id": "cli",
         "region": "us-east-1",
@@ -1461,7 +1461,7 @@ def test_deployments_sharing_an_identity_provider_are_still_a_valid_fixture():
     cfg = config.validate(config_fixture(deployments=deployment_bindings()))
     record = {}
     shared = {
-        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "user_pool_id": "us-east-1_Example002",
         "client_id": "c",
         "cli_client_id": "cli",
         "region": "us-east-1",
@@ -1552,7 +1552,7 @@ def test_load_accepts_a_valid_file(tmp_path):
 
 def test_redaction_removes_credential_shaped_values():
     payload = {
-        "account_id": "605440105851",
+        "account_id": "000000000102",
         "password": "hunter2",
         "access_token": "eyJhbGciOiJIUzI1NiJ9.abc.def",
         "external_id": "secret-external",
@@ -1560,7 +1560,7 @@ def test_redaction_removes_credential_shaped_values():
         "cookie": "session=1",
     }
     clean = report.redact(payload)
-    assert clean["account_id"] == "605440105851"
+    assert clean["account_id"] == "000000000102"
     assert clean["nested"][0]["input_tokens"] == 12  # token COUNTS are evidence
     for banned in ("password", "access_token", "external_id", "cookie"):
         assert banned not in clean
@@ -1590,7 +1590,7 @@ def test_report_is_serializable_and_carries_revisions_and_correlation():
             "ended_at": "2026-09-15T01:00:00Z",
         },
         correlation={
-            "aws_account": "879318057152",
+            "aws_account": "000000000101",
             "adp_org": "adp-e2e-x",
             "github_repo": "adp-eval/sandbox",
         },
@@ -1690,7 +1690,7 @@ def test_sanitize_command_keeps_shape_but_drops_argument_values():
             "aws",
             "connect",
             "--account",
-            "605440105851",
+            "000000000102",
             "--external-id-file",
             "/tmp/x",
             "--yes",
@@ -1730,7 +1730,7 @@ def published_report(**overrides):
             "ended_at": "2026-09-15T15:10:00Z",
             "duration_seconds": 2378,
         },
-        "correlation": {"aws_account": "879318057152"},
+        "correlation": {"aws_account": "000000000101"},
     }
     payload.update(overrides)
     return report.build(**payload)
@@ -2029,8 +2029,8 @@ def test_isolated_config_dir_passes():
 def test_wrong_account_credentials_abort():
     identities = {
         "platform": {
-            "Account": "879318057152",
-            "Arn": "arn:aws:sts::879318057152:assumed-role/eval/x",
+            "Account": "000000000101",
+            "Arn": "arn:aws:sts::000000000101:assumed-role/eval/x",
         },
         "destination": {
             "Account": "999988887777",
@@ -2044,23 +2044,23 @@ def test_wrong_account_credentials_abort():
 
 def test_unresolved_credentials_abort():
     with pytest.raises(preflight.PreflightError):
-        preflight.check_accounts({"platform": {"Account": "879318057152"}}, VALID, {})
+        preflight.check_accounts({"platform": {"Account": "000000000101"}}, VALID, {})
 
 
 def test_matching_accounts_are_recorded_for_correlation():
     record = {}
     identities = {
         "platform": {
-            "Account": "879318057152",
-            "Arn": "arn:aws:sts::879318057152:assumed-role/eval/p",
+            "Account": "000000000101",
+            "Arn": "arn:aws:sts::000000000101:assumed-role/eval/p",
         },
         "destination": {
-            "Account": "605440105851",
-            "Arn": "arn:aws:sts::605440105851:assumed-role/eval/d",
+            "Account": "000000000102",
+            "Arn": "arn:aws:sts::000000000102:assumed-role/eval/d",
         },
     }
     assert preflight.check_accounts(identities, VALID, record) is True
-    assert record["destination_account"] == "605440105851"
+    assert record["destination_account"] == "000000000102"
     assert "assumed-role" in record["platform_arn"]
 
 
@@ -2114,7 +2114,7 @@ def test_cognito_pool_without_a_client_is_rejected():
 def test_cognito_pool_owned_by_another_account_is_rejected():
     pool = {
         "Id": VALID["cognito_user_pool_id"],
-        "Arn": "arn:aws:cognito-idp:us-east-1:999988887777:userpool/us-east-1_JEhv9xSGG",
+        "Arn": "arn:aws:cognito-idp:us-east-1:999988887777:userpool/us-east-1_Example002",
     }
     with pytest.raises(preflight.PreflightError):
         preflight.check_cognito(pool, {"ClientId": "abc"}, VALID, {})
@@ -2198,7 +2198,7 @@ def test_worker_transcript_keeps_flags_and_drops_values():
             "aws",
             "connect",
             "--account",
-            "605440105851",
+            "000000000102",
             "--profile",
             "destination",
             "--yes",
@@ -2206,7 +2206,7 @@ def test_worker_transcript_keeps_flags_and_drops_values():
     )
     assert "aws connect" in line
     assert "--account" in line and "--profile" in line
-    assert "605440105851" not in line
+    assert "000000000102" not in line
     assert "destination" not in line
 
 
@@ -2223,12 +2223,12 @@ def test_worker_refuses_to_run_off_the_owned_instance(monkeypatch):
     monkeypatch.setattr(
         personal_aws_worker,
         "instance_identity",
-        lambda: {"instanceId": "i-someoneelse", "accountId": "879318057152"},
+        lambda: {"instanceId": "i-someoneelse", "accountId": "000000000101"},
     )
     evidence = {"checks": [], "transcript": []}
     with pytest.raises(RuntimeError) as excinfo:
         personal_aws_worker.execute(
-            {"instance_id": "i-ours", "platform_account": "879318057152"}, evidence
+            {"instance_id": "i-ours", "platform_account": "000000000101"}, evidence
         )
     assert "owned EC2 instance" in str(excinfo.value)
 
@@ -2239,12 +2239,12 @@ def test_worker_main_reports_failure_without_leaking_details(
     """A crashed worker must emit a machine-readable, non-successful envelope."""
     path = tmp_path / "worker.json"
     path.write_text(
-        json.dumps({"instance_id": "i-ours", "platform_account": "879318057152"})
+        json.dumps({"instance_id": "i-ours", "platform_account": "000000000101"})
     )
     monkeypatch.setattr(
         personal_aws_worker,
         "instance_identity",
-        lambda: {"instanceId": "i-other", "accountId": "879318057152"},
+        lambda: {"instanceId": "i-other", "accountId": "000000000101"},
     )
     monkeypatch.setattr(personal_aws_worker.sys, "argv", ["worker", str(path)])
     assert personal_aws_worker.main() == 1
@@ -2262,8 +2262,8 @@ PREFIX = "adp-e2e-20260915-120000-ab12cd"
 # The two accounts a resource can live in. `cleanup.record()` demands the location
 # for any kind that could be in either (R7), so the tests must say which too —
 # that is the point: a location is part of the resource's identity, not context.
-PLATFORM_ACCOUNT = "879318057152"
-DESTINATION_ACCOUNT = "605440105851"
+PLATFORM_ACCOUNT = "000000000101"
+DESTINATION_ACCOUNT = "000000000102"
 REGION = "us-east-1"
 
 
@@ -3653,9 +3653,9 @@ def worker_evidence():
         "personal_aws_provision": {
             "success": True,
             "stage": "complete",
-            "stack_id": "arn:aws:cloudformation:us-east-1:605440105851:stack/s/1",
+            "stack_id": "arn:aws:cloudformation:us-east-1:000000000102:stack/s/1",
             "connection_id": "conn-provision",
-            "provisioner_caller_arn": "arn:aws:sts::605440105851:assumed-role/prov/i",
+            "provisioner_caller_arn": "arn:aws:sts::000000000102:assumed-role/prov/i",
             "checks": [
                 "connect_provisions_role",
                 "disconnect_removes_adp_record_preserves_aws_role",
@@ -3674,22 +3674,22 @@ def worker_evidence():
         "bedrock_routing": {
             "success": True,
             "stage": "complete",
-            "stack_id": "arn:aws:cloudformation:us-east-1:605440105851:stack/b/2",
+            "stack_id": "arn:aws:cloudformation:us-east-1:000000000102:stack/b/2",
             "resources": [
                 ["bedrock_destination", "dest-1"],
                 [
                     "cloudformation_stack",
-                    "arn:aws:cloudformation:us-east-1:605440105851:stack/b/2",
+                    "arn:aws:cloudformation:us-east-1:000000000102:stack/b/2",
                 ],
             ],
-            "correlation": {"bedrock_destination_account": "605440105851"},
+            "correlation": {"bedrock_destination_account": "000000000102"},
             "checks": ["verified_destination_becomes_effective_rule"],
         },
         "personal_inference": {
             "success": True,
             "stage": "complete",
-            "usage": {"destination_account": "605440105851"},
-            "correlation": {"inference_destination_account": "605440105851"},
+            "usage": {"destination_account": "000000000102"},
+            "correlation": {"inference_destination_account": "000000000102"},
             "checks": ["claude_returned_marker", "codex_returned_marker"],
         },
         # E13 creates one ADP connection through `adp aws connect --download` and
@@ -3789,7 +3789,7 @@ def live_doubles(
         {
             "sts.get_caller_identity": lambda **_k: {
                 "Account": cfg["platform_account"],
-                "Arn": "arn:aws:sts::879318057152:assumed-role/runner/x",
+                "Arn": "arn:aws:sts::000000000101:assumed-role/runner/x",
             },
             # An assumed session in the destination account is what makes the
             # cross-account identity real; `FakeAws.assume` records it.
@@ -4491,7 +4491,7 @@ def test_a_foreign_exception_contributes_its_type_and_never_its_text(tmp_path):
         """Shaped like botocore's, which is the exception that really lands here."""
 
     leak = (
-        "An error occurred (AccessDenied): arn:aws:iam::879318057152:role/secret-role"
+        "An error occurred (AccessDenied): arn:aws:iam::000000000101:role/secret-role"
     )
 
     def doubles(cfg):
@@ -4527,7 +4527,7 @@ def deployment_evidence(
     return {
         "lambda.get_function": {
             "Code": {
-                "ResolvedImageUri": f"879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@{digest}"
+                "ResolvedImageUri": f"000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@{digest}"
             }
         },
         "ecr.describe_images": {
@@ -4635,7 +4635,7 @@ def test_an_unpinned_deployment_cannot_bind_a_run(tmp_path):
         ports_double = health_without_a_revision(cfg)
         ports_double["aws"].replies["lambda.get_function"] = {
             "Code": {
-                "ResolvedImageUri": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:latest"
+                "ResolvedImageUri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:latest"
             }
         }
         return ports_double
@@ -5317,7 +5317,7 @@ def run_e14(
         # double, and the assertion it feeds still runs.
         common.instance_identity = lambda: {
             "instanceId": "i-0eval",
-            "accountId": "879318057152",
+            "accountId": "000000000101",
         }
         payload = tmp_path / "payload.json"
         work_dir = tmp_path / "adp-eval"
@@ -5326,7 +5326,7 @@ def run_e14(
         )
         document = {
             "instance_id": "i-0eval",
-            "platform_account": "879318057152",
+            "platform_account": "000000000101",
             "gateway_url": gateway,
             "region": "us-east-1",
             "sts_endpoint": "https://sts-fips.us-east-1.amazonaws.com",
@@ -6098,7 +6098,7 @@ def test_a_cognito_identity_already_deleted_is_a_successful_cleanup():
         }
     )["cognito_user"]
     delete(
-        "us-east-1_JEhv9xSGG/adp-e2e-gone", account=PLATFORM_ACCOUNT
+        "us-east-1_Example002/adp-e2e-gone", account=PLATFORM_ACCOUNT
     )  # must not raise
 
     # Any OTHER failure is still a real one: a pool we cannot reach must not be
@@ -6111,7 +6111,7 @@ def test_a_cognito_identity_already_deleted_is_a_successful_cleanup():
         }
     )["cognito_user"]
     with pytest.raises(ports.PortError, match="AccessDenied"):
-        denied("us-east-1_JEhv9xSGG/adp-e2e-live", account=PLATFORM_ACCOUNT)
+        denied("us-east-1_Example002/adp-e2e-live", account=PLATFORM_ACCOUNT)
 
 
 def test_a_run_owned_secret_already_deleted_is_a_successful_cleanup():
@@ -6906,11 +6906,11 @@ def test_a_suite_without_e02_provisions_no_identities_at_all(tmp_path):
 def test_destination_identity_comes_from_an_assumed_role_not_the_runner(tmp_path):
     """Otherwise cross-account access is 'proven' by the runner's own session."""
     cfg = config.validate(
-        config_fixture(destination_role_arn="arn:aws:iam::605440105851:role/prov")
+        config_fixture(destination_role_arn="arn:aws:iam::000000000102:role/prov")
     )
     aws = FakeAws(
         {
-            "sts.get_caller_identity": {"Account": "879318057152", "Arn": "arn:x"},
+            "sts.get_caller_identity": {"Account": "000000000101", "Arn": "arn:x"},
             "sts.assume_role": {
                 "Credentials": {
                     "AccessKeyId": "A",
@@ -8781,7 +8781,7 @@ def credential_row(**overrides):
         "label": "existing",
         "credential_type": "aws_role",
         "scope": "user",
-        "scopes": {"account_id": "605440105851", "status": "verified"},
+        "scopes": {"account_id": "000000000102", "status": "verified"},
         "expires_at": None,
         "last_used_at": None,
         "strict": False,
@@ -8796,7 +8796,7 @@ def destination_row(**overrides):
     row = {
         "connection_id": None,
         "id": "dest-1",
-        "account_id": "605440105851",
+        "account_id": "000000000102",
         "label": "dest",
         "region": "us-east-1",
         "source": "admin-registered",
@@ -8820,7 +8820,7 @@ def mapping_row(**overrides):
         "scope_id_user": None,
         "scope": "org:org-eval",
         "destination_id": "dest-1",
-        "destination_account_id": "605440105851",
+        "destination_account_id": "000000000102",
         "destination_label": "dest",
         "destination_usable": True,
         "source": "platform_admin",
@@ -8838,7 +8838,7 @@ def api_fixture_state(**overrides):
         "row_template": credential_row(),
         "next_id": "conn-created",
         "setup": {
-            "account_id": "605440105851",
+            "account_id": "000000000102",
             "region": "us-east-1",
             "download_base64": "",
         },
@@ -8964,8 +8964,8 @@ def run_e13(
 
         document = {
             "instance_id": "i-0eval",
-            "platform_account": "879318057152",
-            "destination_account": "605440105851",
+            "platform_account": "000000000101",
+            "destination_account": "000000000102",
             "gateway_url": gateway,
             "region": "us-east-1",
             "sts_endpoint": "https://sts-fips.us-east-1.amazonaws.com",
@@ -8993,7 +8993,7 @@ def run_e13(
         document.update(overrides or {})
         payload = tmp_path / "payload.json"
         payload.write_text(json.dumps(document))
-        identity = {"instanceId": "i-0eval", "accountId": "879318057152"}
+        identity = {"instanceId": "i-0eval", "accountId": "000000000101"}
         finished = subprocess.run(  # noqa: S603 - our own source, no shell
             [
                 sys.executable,
@@ -9063,7 +9063,7 @@ def test_the_shipped_e13_script_runs_the_real_consumers_against_the_live_api(
     assert reads["destination_rows"] == 1 and reads["destinations_usable"] == 1
     # `current_mapping` resolved through the CLI's own scope shape.
     assert reads["org_mapping_resolved"] is True
-    assert reads["org_mapping_destination_account"] == "605440105851"
+    assert reads["org_mapping_destination_account"] == "000000000102"
 
     # All three surfaces were checked against the browser's declaration, and the
     # declaration was the extracted one, not a list written in this file.
@@ -9363,7 +9363,7 @@ def test_readiness_names_missing_bindings_before_writing_config(tmp_path, monkey
     monkeypatch.setenv("EVAL_ROLE_ARN", "")
     with pytest.raises(config.ConfigError, match="AWS_CLI_UPLIFT_EVAL_ROLE_ARN"):
         build_run_config.main([str(target), "--check-ready"])
-    monkeypatch.setenv("EVAL_ROLE_ARN", "arn:aws:iam::879318057152:role/eval-actions")
+    monkeypatch.setenv("EVAL_ROLE_ARN", "arn:aws:iam::000000000101:role/eval-actions")
     build_run_config.main([str(target), "--check-ready"])
     assert config.load(target)["credential_secret_name"] == "adp/test/login"
 
@@ -9642,7 +9642,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.reply(401, {"detail": "invalid credentials"})
         if self.path not in ("/api/auth/cli/password", "/api/auth/cli/refresh"):
             return self.reply(404, {})
-        return self.reply(200, {"access_token": "fixture-access", "id_token": "fixture-id", "refresh_token": "fixture-refresh", "expires_in": 3600, "client_id": "cli123", "user_pool_id": "us-east-1_JEhv9xSGG", "region": "us-east-1"})
+        return self.reply(200, {"access_token": "fixture-access", "id_token": "fixture-id", "refresh_token": "fixture-refresh", "expires_in": 3600, "client_id": "cli123", "user_pool_id": "us-east-1_Example002", "region": "us-east-1"})
 with http.server.HTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=sys.argv[1])) as server:
     pathlib.Path(sys.argv[2]).write_text(str(server.server_port))
     server.serve_forever()
@@ -9703,7 +9703,7 @@ def test_shipped_login_checkpoint_installs_and_uses_real_cli(tmp_path, password)
 import sys
 sys.path.insert(0, sys.argv[1])
 import common, dispatcher
-common.instance_identity = lambda: {"instanceId": "i-test", "accountId": "879318057152"}
+common.instance_identity = lambda: {"instanceId": "i-test", "accountId": "000000000101"}
 fixture = {"admin_username": "test-admin", "admin_password": sys.argv[3]}
 common.fixture_secret = lambda cfg, env, key, **kw: fixture.get(key, kw.get("default", ""))
 sys.exit(dispatcher.main(["install_auth", sys.argv[2]]))
@@ -10192,7 +10192,7 @@ def test_unproven_gateway_fails_without_lambda_fallback(observed, mutation):
     elif mutation == "unready":
         d["status"]["readyReplicas"] = 1
     elif mutation == "wrong_cluster":
-        cluster["arn"] = cluster["arn"].replace("879318057152", "123456789012")
+        cluster["arn"] = cluster["arn"].replace("000000000101", "123456789012")
     elif mutation == "cluster_inactive":
         cluster["status"] = "UPDATING"
     elif mutation == "foreign_endpoint":
@@ -10300,7 +10300,7 @@ def test_observer_artifacts_grant_only_two_named_reads():
     assert policy["Statement"][0]["Action"] == "eks:DescribeCluster"
     assert (
         policy["Statement"][0]["Resource"]
-        == "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
+        == "arn:aws:eks:us-east-1:000000000101:cluster/adp-dev-eks-cluster"
     )
 
 
@@ -10688,7 +10688,7 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     tmp_path, bad_group
 ):
     launches = []
-    group_id = "sg-0123456789abcdef0"
+    group_id = "sg-00000000000000034"
 
     def doubles(cfg):
         ports_double = live_doubles(cfg)
@@ -14063,10 +14063,10 @@ def test_preproduction_bindings_keep_evaluation_and_cleanup_in_target_account():
             "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "a" * 40,
         }
     )
-    assert cfg["platform_account"] == "615296308642"
-    assert cfg["gateway_url"] == "https://dw4gomrsecmzn.cloudfront.net/api"
+    assert cfg["platform_account"] == "000000000103"
+    assert cfg["gateway_url"] == "https://gateway-102.example.com/api"
     assert cfg["state_bucket"].endswith(cfg["platform_account"])
-    assert cfg["cognito_user_pool_id"] == "us-east-1_PpSUITvxb"
+    assert cfg["cognito_user_pool_id"] == "us-east-1_Example102"
     document, _ = workflow()
     for job in ("evaluate", "recover"):
         guard = next(
@@ -14088,7 +14088,7 @@ def test_preproduction_gateway_receipt_matches_target_and_rejects_dev():
     )
     assert cfg["gateway_deployment"] == "pre-production"
     selected = dp.binding(config.validate(cfg))
-    assert selected["account"] == "615296308642"
+    assert selected["account"] == "000000000103"
     assert selected["cluster_arn"].split(":")[4] == cfg["platform_account"]
     assert selected["image_repository"].startswith(cfg["platform_account"] + ".")
     build = selected["images"][
@@ -14300,15 +14300,81 @@ def test_customer_demo_binding_uses_dedicated_fixture_and_rejects_other_targets(
     )
     config.require_bindings(cfg, ("login",))
     selected = dp.binding(cfg)
-    assert cfg["platform_account"] == selected["account"] == "925091290508"
+    assert cfg["platform_account"] == selected["account"] == "000000000104"
     assert cfg["credential_secret_name"] == "adp/dev/cli-regression/admin-credentials"
     assert cfg["state_bucket"].endswith(cfg["platform_account"])
     assert selected["cluster_arn"].split(":")[4] == cfg["platform_account"]
     assert selected["image_repository"].startswith(cfg["platform_account"] + ".")
     assert selected["images"] == {}  # Resolve the live immutable ECR source tag.
     for field, value in (
-        ("platform_account", "615296308642"),
-        ("gateway_url", "https://dw4gomrsecmzn.cloudfront.net/api"),
+        ("platform_account", "000000000103"),
+        ("gateway_url", "https://gateway-102.example.com/api"),
     ):
         with pytest.raises(PortError, match="does not match evaluation target"):
             dp.binding({**cfg, field: value})
+
+
+def test_private_bindings_override_public_examples_and_respect_explicit_overlay():
+    private = {
+        "gateway_url": "https://private-target.example.com/api",
+        "platform_account": "000000000105",
+    }
+    cfg = config.from_environment(
+        {"CLI_UPLIFT_EVAL_BINDINGS_JSON": json.dumps(private)}
+    )
+    assert cfg["platform_account"] == private["platform_account"]
+    assert cfg["gateway_url"] == private["gateway_url"]
+    cfg = config.from_environment(
+        {
+            "CLI_UPLIFT_EVAL_BINDINGS_JSON": json.dumps(private),
+            "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "b" * 40,
+        }
+    )
+    assert cfg["expected_revision"] == "b" * 40
+
+
+@pytest.mark.parametrize(
+    "raw", ["{private-target-invalid", "[]", '{"admin_password":"do-not-log"}']
+)
+def test_private_bindings_reject_invalid_or_credential_data(raw):
+    with pytest.raises(config.ConfigError) as failure:
+        config.from_environment({"CLI_UPLIFT_EVAL_BINDINGS_JSON": raw})
+    assert "do-not-log" not in str(failure.value)
+    assert "private-target-invalid" not in str(failure.value)
+
+
+def test_private_gateway_catalog_preserves_target_identity_checks(monkeypatch):
+    cfg = config.load(config.EXAMPLE_PATH)
+    cfg["gateway_deployment"] = "dev"
+    reviewed = dp.binding(cfg)
+    reviewed = {**reviewed, "gateway_url": "https://private-target.example.com/api"}
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_GATEWAY_CATALOG", json.dumps({"dev": reviewed}))
+    with pytest.raises(PortError, match="does not match evaluation target"):
+        dp.binding(cfg)
+    cfg["gateway_url"] = reviewed["gateway_url"]
+    assert dp.binding(cfg) == reviewed
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_GATEWAY_CATALOG", "{private-target-invalid")
+    with pytest.raises(PortError) as failure:
+        dp.binding(cfg)
+    assert "private-target-invalid" not in str(failure.value)
+
+
+def test_live_and_recovery_require_private_config_before_aws_credentials():
+    document, _ = workflow()
+    for name in ("evaluate", "recover"):
+        job = document["jobs"][name]
+        for key in ("CLI_UPLIFT_EVAL_BINDINGS_JSON", "CLI_UPLIFT_EVAL_GATEWAY_CATALOG"):
+            assert job["env"][key] == "${{ secrets." + key + " }}"
+        steps = job["steps"]
+        private_at = next(
+            i
+            for i, step in enumerate(steps)
+            if step.get("name") == "Require private target configuration"
+        )
+        credentials_at = next(
+            i
+            for i, step in enumerate(steps)
+            if "configure-aws-credentials" in step.get("uses", "")
+        )
+        assert private_at < credentials_at
+        assert "exit 1" in steps[private_at]["run"]

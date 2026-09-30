@@ -5,7 +5,7 @@
     6112
   ],
   "purpose": "Verified build-only publication of four shared image candidates",
-  "account": "879318057152",
+  "account": "000000000101",
   "region": "us-east-1",
   "reviewed_source": "3f60504a9008276e24b072ba814fcf050739cd1b",
   "source_archive_sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925",
@@ -26,7 +26,7 @@
       "build_id": "adp-dev-gateway-build:9a52a97f-8a08-4249-9874-d981a44877d7",
       "status": "SUCCEEDED",
       "phase": "COMPLETED",
-      "source_location": "adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
       "buildspec": "codebuild/bs-gateway-build.yml",
       "resolved_source_version": null,
       "start_time": "2026-09-25T16:46:30.536000+00:00",
@@ -122,7 +122,7 @@
       ],
       "image": {
         "digest": "sha256:18684248f944b1e5464d6ae323b9049b2f8aff0b184e36e2137ad462b47497d6",
-        "uri": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:18684248f944b1e5464d6ae323b9049b2f8aff0b184e36e2137ad462b47497d6",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:18684248f944b1e5464d6ae323b9049b2f8aff0b184e36e2137ad462b47497d6",
         "tags": [
           "3f60504a9008276e24b072ba814fcf050739cd1b"
         ],
@@ -140,7 +140,7 @@
           "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
         }
       },
-      "source_s3_uri": "s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
       "source_tag_existed_before": false,
       "publication_log_matches_digest": true
     },
@@ -150,7 +150,7 @@
       "build_id": "adp-dev-agent-runtime:ee156348-30a8-4f9c-8ac3-34a0a584347f",
       "status": "SUCCEEDED",
       "phase": "COMPLETED",
-      "source_location": "adp-terraform-state-879318057152/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
       "buildspec": "codebuild/bs-agent-runtime.yml",
       "resolved_source_version": null,
       "start_time": "2026-09-25T16:46:33.122000+00:00",
@@ -246,7 +246,7 @@
       ],
       "image": {
         "digest": "sha256:7ebe1f235780d6d70ffa2adc8f4f84cc96455cdab25cbfbd6761d8773ce04386",
-        "uri": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7ebe1f235780d6d70ffa2adc8f4f84cc96455cdab25cbfbd6761d8773ce04386",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7ebe1f235780d6d70ffa2adc8f4f84cc96455cdab25cbfbd6761d8773ce04386",
         "tags": [
           "3f60504a9008276e24b072ba814fcf050739cd1b"
         ],
@@ -264,7 +264,7 @@
           "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
         }
       },
-      "source_s3_uri": "s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
       "source_tag_existed_before": false,
       "publication_log_matches_digest": true
     },
@@ -274,7 +274,7 @@
       "build_id": "adp-dev-chat-agent:bdffdc56-a56f-447c-a260-4df3e067a9f3",
       "status": "SUCCEEDED",
       "phase": "COMPLETED",
-      "source_location": "adp-terraform-state-879318057152/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
       "buildspec": "codebuild/bs-chat-agent.yml",
       "resolved_source_version": null,
       "start_time": "2026-09-25T16:46:35.616000+00:00",
@@ -370,7 +370,7 @@
       ],
       "image": {
         "digest": "sha256:4dded4e6373a7e7d58afbc8f7958e8705dcaf1af6f2213a8b3dacbc5a285803d",
-        "uri": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:4dded4e6373a7e7d58afbc8f7958e8705dcaf1af6f2213a8b3dacbc5a285803d",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:4dded4e6373a7e7d58afbc8f7958e8705dcaf1af6f2213a8b3dacbc5a285803d",
         "tags": [
           "3f60504a9008276e24b072ba814fcf050739cd1b"
         ],
@@ -388,7 +388,7 @@
           "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
         }
       },
-      "source_s3_uri": "s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
       "source_tag_existed_before": false,
       "publication_log_matches_digest": true
     },
@@ -398,7 +398,7 @@
       "build_id": "adp-dev-agent-gateway:c50ba0b9-9c89-4e4e-9452-06ac03c751e0",
       "status": "SUCCEEDED",
       "phase": "COMPLETED",
-      "source_location": "adp-terraform-state-879318057152/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
       "buildspec": "codebuild/bs-agent-gateway.yml",
       "resolved_source_version": null,
       "start_time": "2026-09-25T16:46:38.129000+00:00",
@@ -494,7 +494,7 @@
       ],
       "image": {
         "digest": "sha256:a3e4a7ae993738609c69c32b87ee194d1f7e5c5aa3fd686d3c3fd0291585f0e5",
-        "uri": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:a3e4a7ae993738609c69c32b87ee194d1f7e5c5aa3fd686d3c3fd0291585f0e5",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:a3e4a7ae993738609c69c32b87ee194d1f7e5c5aa3fd686d3c3fd0291585f0e5",
         "tags": [
           "3f60504a9008276e24b072ba814fcf050739cd1b"
         ],
@@ -512,7 +512,7 @@
           "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
         }
       },
-      "source_s3_uri": "s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
       "source_tag_existed_before": false,
       "publication_log_matches_digest": true
     }

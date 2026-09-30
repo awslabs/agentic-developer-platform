@@ -6,7 +6,7 @@ curl packages and their license/provenance records. Application-tree SHA256:
 `617f890b345fbe5d8a73b2d380f4e03e64fbdcdf7247f2f0fb10d82a9bb018e6`.
 
 Published image:
-`879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e`.
+`000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e`.
 
 The normal release requires schema 042 and remains the installer default. Do not
 replace that lock with this maintenance artifact. An attempted normal-image

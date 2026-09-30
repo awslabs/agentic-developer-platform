@@ -43,7 +43,7 @@
   "responseElements": {
     "tableDescription": {
       "tableId": "c28a668d-c255-472b-a521-7dc65c9cc0fb",
-      "tableArn": "arn:aws:dynamodb:us-east-1:879318057152:table/adp-dev-webhook-events",
+      "tableArn": "arn:aws:dynamodb:us-east-1:000000000101:table/adp-dev-webhook-events",
       "creationDateTime": "2026-05-01T21:46:39Z"
     }
   }

@@ -1,6 +1,6 @@
 {
   "arc-runner": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
     "docker_root_descriptor": "sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
     "config_digest": "sha256:72dcc8f1a3cb8147fe4999bb291bfd53f50f0361c10fa79831e7494d92c547f8",
     "time": "2026-09-27T10:55:03.865305+00:00",
@@ -17,7 +17,7 @@
     "archive_sha256": "a49af5bbad8da88852d621c47e0722c7b65e5888dfb96ea7c1a8ddbbbf729123"
   },
   "chat": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
     "docker_root_descriptor": "sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
     "config_digest": "sha256:e3b0f14ae733ad098f33d4462bfe5c8b9a7c40003311e12cd12518107113d4cd",
     "time": "2026-09-27T10:54:20.159303+00:00",
@@ -30,7 +30,7 @@
     "archive_sha256": "f4a0caab8ba1ee922ce38eb3768bcfc49b3932a0fde7d8299b949d0c0a47227d"
   },
   "gateway": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
     "docker_root_descriptor": "sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
     "config_digest": "sha256:d7c0e62d43c4ccb72b06ff3a3200726108e316eb829a78cd3516257b00c1fc32",
     "time": "2026-09-27T10:54:54.460758+00:00",

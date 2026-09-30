@@ -12,7 +12,7 @@ def raw_frames(response,deadline):
    yield {'event':'heartbeat' if frame[0].startswith(':') else 'frame','wire':frame}
    frame=[]
 spec=importlib.util.spec_from_file_location('client','/home/ubuntu/task-delivery/release/examples/task-api/client.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-c=m.Client('https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev',json.loads(pathlib.Path('/home/ubuntu/task-delivery-tmp/isolation/isolated-token.json').read_text())['access_token'])
+c=m.Client('https://gateway-1.example.com/dev',json.loads(pathlib.Path('/home/ubuntu/task-delivery-tmp/isolation/isolated-token.json').read_text())['access_token'])
 task='tsk_37ce236b-19a2-4d7c-a36d-b3609160b999';cursor=task+':14'
 out={'task_id':task,'cursor':cursor,'lane':'completed-task-natural-connection-window','writes_performed':0,'connections':[]}
 def now():return datetime.datetime.now(datetime.timezone.utc).isoformat()

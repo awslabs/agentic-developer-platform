@@ -2,7 +2,7 @@
 
 Status: source repair; live mutability convergence and Terraform adoption remain open.
 
-Read-only inventory on2026-09-25 in account879318057152/us-east-1 is retained in
+Read-only inventory on2026-09-25 in account000000000101/us-east-1 is retained in
 `runs/2026-09-21/evidence/6120-ecr-readonly-20260925.json` relative to this directory.
 The four workload repositories (`adp-gateway`, `adp-agent-runtime`, `adp-chat-agent`,
 `adp-agent-gateway`) are MUTABLE/AES256. `adp-skill-registry` is MUTABLE/**KMS**,
@@ -79,7 +79,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT/modules/domain-apps/superplane/infra/control-plane"
 terraform init -input=false \
   -backend-config="$REPO_ROOT/environments/dev/modules/superplane-backend.tfvars" \
-  -backend-config=bucket=adp-terraform-state-879318057152
+  -backend-config=bucket=adp-terraform-state-000000000101
 terraform state list
 # Only after serialized ownership verification and a state backup:
 terraform import \

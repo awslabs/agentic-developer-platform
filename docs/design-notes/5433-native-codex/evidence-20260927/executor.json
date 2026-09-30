@@ -1,7 +1,7 @@
 {
   "kind": "operator-executor-qualification",
   "taskAuthorityQualified": false,
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:395939cc84aa442e6e2883f6eafda2708633ceec7dcce460c134c6c4a6f7058c",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:395939cc84aa442e6e2883f6eafda2708633ceec7dcce460c134c6c4a6f7058c",
   "cases": [
     {
       "name": "source",

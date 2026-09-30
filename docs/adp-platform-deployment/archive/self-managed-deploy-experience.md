@@ -144,7 +144,7 @@ The agent hits the real endpoints to confirm the stack is healthy:
 Deployment complete. Status:
 - Platform: EKS cluster adp-dev-eks-cluster active, 3 nodes
 - Gateway: 2 pods running, /health returns 200
-- Frontend: https://d1g6cal2ts4iis.cloudfront.net (200 OK)
+- Frontend: https://gateway-101.example.com (200 OK)
 - API Gateway: routes via VPC Link v2 → ALB direct
 - Database: available, IAM auth working
 - Test credentials stored in Secrets Manager at adp/dev/gateway/test-{user,admin}-credentials

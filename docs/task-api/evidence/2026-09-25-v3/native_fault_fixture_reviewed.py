@@ -25,7 +25,7 @@ if args.moto:
   D.create_table(TableName=table,BillingMode='PAY_PER_REQUEST',KeySchema=[{'AttributeName':pk,'KeyType':'HASH'},{'AttributeName':sk,'KeyType':'RANGE'}],AttributeDefinitions=[{'AttributeName':pk,'AttributeType':'S'},{'AttributeName':sk,'AttributeType':'S'}])
  base=TaskStore(table_name='fixture-request',authority_table_name='fixture-authority',dynamodb_client=D)
 else:
- assert boto3.client('sts').get_caller_identity()['Account']=='879318057152'
+ assert boto3.client('sts').get_caller_identity()['Account']=='000000000101'
  base=TaskStore(dynamodb_client=D)
 uid=uuid.uuid4().hex;tenant='task-v3-native-'+uid;principal='fixture-'+uid;capacity=hashlib.sha256(uid.encode()).hexdigest();now=datetime.now(UTC).replace(microsecond=0)
 ledger={};queue=None;Qname=None;results=[]

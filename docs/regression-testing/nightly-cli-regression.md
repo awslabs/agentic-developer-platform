@@ -2,7 +2,7 @@
 
 [Nightly CLI Regression](../../.github/workflows/nightly-cli-regression.yml) is
 the single scheduled entry point for the three CLI evaluation suites. It runs
-daily at **05:00 UTC**, against **dev (AWS account 879318057152)**. GitHub may
+daily at **05:00 UTC**, against **dev (AWS account 000000000101)**. GitHub may
 start scheduled workflows later when runners are busy.
 
 ```bash

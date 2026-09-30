@@ -1,6 +1,6 @@
 {
   "base": "0.12.3",
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
   "all_skypilot_python_files_identical": true,
   "file_count": 555,
   "files": {

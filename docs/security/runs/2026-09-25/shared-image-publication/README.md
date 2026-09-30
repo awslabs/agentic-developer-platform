@@ -2,7 +2,7 @@
 
 Four existing CodeBuild projects successfully published new immutable image
 candidates from reviewed source `3f60504a9008276e24b072ba814fcf050739cd1b` in account
-`879318057152`, region `us-east-1`. All four source tags were absent before the
+`000000000101`, region `us-east-1`. All four source tags were absent before the
 builds. This exercises the publication contract reviewed in #6181 after the
 repositories were set to `IMMUTABLE` without exclusions.
 

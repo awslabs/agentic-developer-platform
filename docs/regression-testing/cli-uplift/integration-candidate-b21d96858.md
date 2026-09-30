@@ -1,7 +1,7 @@
 # Reviewed CLI integration gateway candidate
 
 Build-only receipt for source `b21d968586747748f3b605247a33fad328d4697a` (reviewed integration PR #6282).
-The image was published to account `879318057152`, region `us-east-1`,
+The image was published to account `000000000101`, region `us-east-1`,
 repository `adp-gateway`. No deployment, rollout, migration, model invocation,
 IAM or infrastructure change was performed while producing this receipt.
 
@@ -10,7 +10,7 @@ IAM or infrastructure change was performed while producing this receipt.
 - Immutable image tag: `b21d968586747748f3b605247a33fad328d4697a`.
 - Git archive and downloaded S3 source ZIP SHA-256:
   `ecbbd8d58d08cb38791cd1f40ef3be34916d381acd046871b2ad5ddba22a61ac`. The two archives are byte-identical.
-- S3 source: `s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/b21d968586747748f3b605247a33fad328d4697a-1790390417-3424226.zip`.
+- S3 source: `s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/b21d968586747748f3b605247a33fad328d4697a-1790390417-3424226.zip`.
 - Build log: `/aws/codebuild/adp-dev-gateway-build`, stream `fa556a4c-a2f6-49b6-91a5-5f62a1ea2c48`.
 
 The canonical `platform/scripts/codebuild-run.sh` ran with

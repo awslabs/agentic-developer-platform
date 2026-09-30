@@ -6,7 +6,7 @@
       "path": "/internal/{proxy+}",
       "method": "ANY",
       "type": "HTTP_PROXY",
-      "uri": "http://internal-k8s-adpgatew-bedrockg-d2e32d8c72-254378198.us-east-1.elb.amazonaws.com/internal/{proxy}",
+      "uri": "http://gateway-17.example.com/internal/{proxy}",
       "connectionType": "VPC_LINK",
       "timeoutInMillis": 900000
     },
@@ -14,14 +14,14 @@
       "path": "/auth/github/{proxy+}",
       "method": "ANY",
       "type": "AWS_PROXY",
-      "uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:879318057152:function:bedrockgw-dev-github-auth-broker/invocations",
+      "uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000101:function:bedrockgw-dev-github-auth-broker/invocations",
       "timeoutInMillis": 29000
     },
     {
       "path": "/v1/tasks",
       "method": "ANY",
       "type": "HTTP_PROXY",
-      "uri": "http://internal-k8s-adpgatew-bedrockg-8c0085afd5-428441231.us-east-1.elb.amazonaws.com/v1/tasks",
+      "uri": "http://gateway-16.example.com/v1/tasks",
       "connectionType": "VPC_LINK",
       "timeoutInMillis": 900000
     },
@@ -29,14 +29,14 @@
       "path": "/v1/tasks",
       "method": "POST",
       "type": "AWS_PROXY",
-      "uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:879318057152:function:adp-dev-github-webhook/invocations",
+      "uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000101:function:adp-dev-github-webhook/invocations",
       "timeoutInMillis": 29000
     },
     {
       "path": "/agent/{proxy+}",
       "method": "ANY",
       "type": "HTTP_PROXY",
-      "uri": "http://internal-k8s-adpgatew-bedrockg-8c0085afd5-428441231.us-east-1.elb.amazonaws.com/{proxy}",
+      "uri": "http://gateway-16.example.com/{proxy}",
       "connectionType": "VPC_LINK",
       "timeoutInMillis": 900000
     },
@@ -44,7 +44,7 @@
       "path": "/{proxy+}",
       "method": "ANY",
       "type": "HTTP_PROXY",
-      "uri": "http://internal-k8s-adpgatew-bedrockg-8c0085afd5-428441231.us-east-1.elb.amazonaws.com/{proxy}",
+      "uri": "http://gateway-16.example.com/{proxy}",
       "connectionType": "VPC_LINK",
       "timeoutInMillis": 900000
     }

@@ -1,5 +1,5 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b9d6895da41693a41fbf682f2ca05456490109abee1ff503b085c1c0743a8d17",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b9d6895da41693a41fbf682f2ca05456490109abee1ff503b085c1c0743a8d17",
   "build_only": true,
   "deployed": false,
   "metadata": {

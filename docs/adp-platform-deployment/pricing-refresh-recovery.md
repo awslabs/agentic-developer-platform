@@ -5,7 +5,7 @@ verified prices and retained last-known-good prices, then raise
 `PartialRefreshError`. Retained prices keep their original verification times;
 partial publication never means those prices were verified again.
 
-On 24 September 2026, account 879318057152 had generation 148 active and its
+On 24 September 2026, account 000000000101 had generation 148 active and its
 06:00 UTC EventBridge schedule disabled. AWS's global Claude pricing widget no
 longer included eight model/tier groups (264 endpoint variants). That prevented
 strict rollout finalization from re-enabling scheduling even though the other
@@ -25,7 +25,7 @@ workflow against the deployed release SHA with `allow_partial_refresh=true`, or:
 
 ```bash
 python3 modules/gateway/scripts/pricing-rollout.py finalize \
-  --account-id 879318057152 --environment dev --region us-east-1 \
+  --account-id 000000000101 --environment dev --region us-east-1 \
   --expected-image '<actual reviewed gateway release image>' \
   --allow-partial-refresh
 ```

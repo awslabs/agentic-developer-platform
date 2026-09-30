@@ -1,9 +1,9 @@
 {
-  "registry": "879318057152.dkr.ecr.us-east-1.amazonaws.com",
+  "registry": "000000000101.dkr.ecr.us-east-1.amazonaws.com",
   "repository": "adp-superplane-skypilot",
   "digest": "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
   "tag": "security27-3717936b4",
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
   "source_commit": "3717936b4",
   "matches_scanned_local_root": true,
   "deployed": false

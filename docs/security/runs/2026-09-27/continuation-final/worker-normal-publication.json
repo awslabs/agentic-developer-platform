@@ -1,5 +1,5 @@
 {
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
   "platform_digest": "sha256:48999db47e679e7208cd4e49de190b1eccab315d464dc011927693d692dcf2ac",
   "config_digest": "sha256:1aa7cea0a1462ee7e6780bacacc5ea753cbef849b3ab7228be31a13fe323732d",
   "native_counts": {

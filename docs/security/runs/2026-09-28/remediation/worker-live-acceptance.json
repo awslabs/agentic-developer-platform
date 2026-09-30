@@ -1,12 +1,12 @@
 {
   "time": "2026-09-28T18:05:34.654614+00:00",
   "pod": "agent-image-prepull-8dr7p",
-  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
+  "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
   "container_status": [
     {
       "name": "prepull",
       "image": "sha256:5475c46f92a7642773f46274ede90eda800e38f46e7bf4ef0ae3ade36958e1b4",
-      "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
+      "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
       "ready": true,
       "restartCount": 0,
       "user": {

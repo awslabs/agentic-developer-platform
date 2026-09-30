@@ -1,5 +1,8 @@
 # Regression testing
 
+Public examples and historical evidence have sanitized deployment identities.
+See [publishing documentation](../PUBLISHING.md); obtain real targets from private configuration.
+
 Start here to run ADP's CLI regression tests, choose coverage, configure a target,
 and interpret the result.
 
@@ -7,7 +10,7 @@ and interpret the result.
 
 | Workflow | Purpose | Target and execution |
 | --- | --- | --- |
-| [CLI Uplift](../../.github/workflows/eval-cli-uplift.yml) | Run a selected CLI suite against an already-deployed revision. | Select a configured GitHub environment, including `customer-demo`. Product commands run on disposable EC2. |
+| [CLI Uplift](../../.github/workflows/eval-cli-uplift.yml) | Run a selected CLI suite against an already-deployed revision. | Select a configured, protected GitHub environment. Product commands run on disposable EC2. |
 | [Nightly CLI Regression](../../.github/workflows/nightly-cli-regression.yml) | Coordinate onboarding/agent conversations, budget/rate-limit enforcement, then CLI Uplift. | Runs daily at 05:00 UTC against platform dev; also supports manual dispatch. Uses clean EKS pods and disposable EC2. |
 
 CLI Uplift is one of the suites called by the combined nightly. Running CLI
@@ -29,16 +32,17 @@ live in [cases.py](../../tests/e2e/cli_uplift/cases.py).
 A passing partial suite does not establish full acceptance. Failed, blocked, and
 not-run cases are reported separately. Cleanup and recovery must also succeed.
 
-## Run against customer-demo
+## Run against your deployment
 
-The [customer-demo setup](cli-uplift-evaluation.md#customer-demo-login-regression)
-uses its own GitHub environment, AWS role, private recovery storage, and dedicated
-MFA test identity. Verify the deployed commit before dispatching:
+Follow [private target setup](cli-uplift-evaluation.md#private-target-configuration).
+Set `EVAL_ENVIRONMENT` to a supported, configured GitHub environment and
+`EVAL_REVISION` to the verified deployed commit. Keep the target's account,
+endpoint, resource IDs, and fixture references in protected environment secrets.
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment=customer-demo \
-  -f expected_revision='<verified-40-character-sha>' \
+  -f environment="$EVAL_ENVIRONMENT" \
+  -f expected_revision="$EVAL_REVISION" \
   -f mode=start -f suites=login
 ```
 

@@ -8,7 +8,7 @@ runtime files byte-match the reviewed #6313 head; the CLI and frontend byte-matc
 Python files pass Ruff lint and formatting.
 
 - CodeBuild: `adp-dev-gateway-build:de39d1c8-7bf4-47e2-b746-24fea0f39992` — SUCCEEDED.
-- Source: `s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/e93e592c7da5aa31cc3e882a7441815c547dd700-1790396865-3663670.zip`.
+- Source: `s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/e93e592c7da5aa31cc3e882a7441815c547dd700-1790396865-3663670.zip`.
 - Downloaded source archive byte-equals Git; SHA256 `b897c2999a065facebce62ca969204427081a677a1a0be2e88a92ab58d6b6844`.
 - Gateway: `sha256:5ca2b38120c45445c0a12d898819a5922db94bcc0f81604478dac9b523588d58`; manifest/config hashes, Linux amd64 and exact
   `GATEWAY_RELEASE=e93e592c7da5aa31cc3e882a7441815c547dd700` verified.

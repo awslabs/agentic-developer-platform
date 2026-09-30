@@ -1,6 +1,6 @@
 {
-  "previous": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:5c96c50f7bc2ed5d591bfcaba0f97c827c4e2d98cc3f3958c58757e5f5178ae8",
-  "candidate": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+  "previous": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:5c96c50f7bc2ed5d591bfcaba0f97c827c4e2d98cc3f3958c58757e5f5178ae8",
+  "candidate": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
   "targets": [
     "ingestion-refresh",
     "vuln-scan",

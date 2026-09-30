@@ -8,7 +8,7 @@
     },
     "container": "persona-model-probe",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e",
     "active_desired_template": false,
     "reason": "suspended",
     "matching_active_observations": [],
@@ -24,7 +24,7 @@
     },
     "container": "refresh",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [],
@@ -40,7 +40,7 @@
     },
     "container": "vuln-scan",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [],
@@ -56,7 +56,7 @@
     },
     "container": "prepull",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -93,7 +93,7 @@
       31
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
     ],
     "node_selector": {}
   },
@@ -106,7 +106,7 @@
     },
     "container": "prepull",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -143,7 +143,7 @@
       64
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c"
     ],
     "node_selector": {}
   },
@@ -156,7 +156,7 @@
     },
     "container": "otc-container",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -193,7 +193,7 @@
       155
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -208,7 +208,7 @@
     },
     "container": "otc-container",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
     "active_desired_template": false,
     "reason": "no desired nodes in snapshot",
     "matching_active_observations": [],
@@ -226,7 +226,7 @@
     },
     "container": "otc-container",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent:1.300073.0b1828",
     "active_desired_template": false,
     "reason": "no desired nodes in snapshot",
     "matching_active_observations": [],
@@ -244,7 +244,7 @@
     },
     "container": "dcgm-exporter",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/dcgm-exporter:4.6.0-4.8.3-distroless",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/dcgm-exporter:4.6.0-4.8.3-distroless",
     "active_desired_template": false,
     "reason": "no desired nodes in snapshot",
     "matching_active_observations": [],
@@ -262,7 +262,7 @@
     },
     "container": "fluent-bit",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:3.4.16",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:3.4.16",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -299,7 +299,7 @@
       186
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -314,7 +314,7 @@
     },
     "container": "fluent-bit",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:2.31.12-windowsservercore",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:2.31.12-windowsservercore",
     "active_desired_template": false,
     "reason": "no desired nodes in snapshot",
     "matching_active_observations": [],
@@ -332,7 +332,7 @@
     },
     "container": "neuron-monitor",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/prod-neuron-monitor:1.12.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/prod-neuron-monitor:1.12.0",
     "active_desired_template": false,
     "reason": "no desired nodes in snapshot",
     "matching_active_observations": [],
@@ -350,7 +350,7 @@
     },
     "container": "s3-plugin",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -387,7 +387,7 @@
       300
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -402,7 +402,7 @@
     },
     "container": "node-driver-registrar",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -439,7 +439,7 @@
       301
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -454,7 +454,7 @@
     },
     "container": "liveness-probe",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -491,7 +491,7 @@
       302
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -526,7 +526,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "active_desired_template": false,
     "reason": "scaled to zero",
     "matching_active_observations": [],
@@ -542,7 +542,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
     "active_desired_template": false,
     "reason": "scaled to zero",
     "matching_active_observations": [],
@@ -558,14 +558,14 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       65
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e"
     ],
     "node_selector": {}
   },
@@ -578,7 +578,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -595,8 +595,8 @@
       106
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90"
     ],
     "node_selector": {}
   },
@@ -609,14 +609,14 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       110
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f"
     ],
     "node_selector": {}
   },
@@ -629,14 +629,14 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       111
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144"
     ],
     "node_selector": {}
   },
@@ -649,14 +649,14 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       115
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd"
     ],
     "node_selector": {}
   },
@@ -669,14 +669,14 @@
     },
     "container": "zoekt-webserver",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       118
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66"
     ],
     "node_selector": {}
   },
@@ -729,14 +729,14 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       124
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -751,14 +751,14 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       198
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50"
     ],
     "node_selector": {}
   },
@@ -837,7 +837,7 @@
     },
     "container": "coredns",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.13.2-eksbuild.31",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.13.2-eksbuild.31",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -845,7 +845,7 @@
       206
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f"
     ],
     "node_selector": {}
   },
@@ -858,7 +858,7 @@
     },
     "container": "metrics-server",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.7",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.7",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
@@ -866,7 +866,7 @@
       208
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74"
     ],
     "node_selector": {}
   },
@@ -879,14 +879,14 @@
     },
     "container": "s3-csi-controller",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       209
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -901,14 +901,14 @@
     },
     "container": "skypilot-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       304
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a"
     ],
     "node_selector": {}
   },
@@ -921,14 +921,14 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       305
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2"
     ],
     "node_selector": {}
   },
@@ -941,14 +941,14 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       306
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e"
     ],
     "node_selector": {}
   },
@@ -961,14 +961,14 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       307
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a"
     ],
     "node_selector": {}
   },
@@ -981,14 +981,14 @@
     },
     "container": "superplane-platform-monitor",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       308
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9"
     ],
     "node_selector": {}
   },
@@ -1001,7 +1001,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1017,7 +1017,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:66a2283f1524ec89083c468f56f46f88bf5f5d743a9e8a18ec60300ea05ecd68",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:66a2283f1524ec89083c468f56f46f88bf5f5d743a9e8a18ec60300ea05ecd68",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1033,7 +1033,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:756a970bab04b876cc7f094ebc18f971dc49945caaebc0e35484f50bc6a28bd5",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:756a970bab04b876cc7f094ebc18f971dc49945caaebc0e35484f50bc6a28bd5",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1049,14 +1049,14 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       33
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
     ],
     "node_selector": {}
   },
@@ -1069,7 +1069,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1085,7 +1085,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:719cf7dce7fd7799830c026c101a0733cd0e7bf07e7ef93784d1dab88c9e84e6",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:719cf7dce7fd7799830c026c101a0733cd0e7bf07e7ef93784d1dab88c9e84e6",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1101,7 +1101,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1117,7 +1117,7 @@
     },
     "container": "persona-model-probe",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1133,7 +1133,7 @@
     },
     "container": "persona-model-probe",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1149,7 +1149,7 @@
     },
     "container": "persona-model-probe",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cf0678b1bef6f1562eab17a06a12568081350b6eac7f187bd1df6b2166ee95cf",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1165,7 +1165,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1181,7 +1181,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1197,7 +1197,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1213,7 +1213,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1229,7 +1229,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1245,7 +1245,7 @@
     },
     "container": "refresh",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1261,7 +1261,7 @@
     },
     "container": "refresh",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1277,7 +1277,7 @@
     },
     "container": "refresh",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1293,7 +1293,7 @@
     },
     "container": "vuln-scan",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1309,7 +1309,7 @@
     },
     "container": "vuln-scan",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1325,7 +1325,7 @@
     },
     "container": "vuln-scan",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:bf6cea67950240b5f46a6315dd35f7ffa1d13ced",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1341,7 +1341,7 @@
     },
     "container": "bootstrap",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1357,7 +1357,7 @@
     },
     "container": "bootstrap",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1373,7 +1373,7 @@
     },
     "container": "migrate",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1389,7 +1389,7 @@
     },
     "container": "migrate",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "terminal job",
     "matching_active_observations": [],
@@ -1457,7 +1457,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:3d19d3fba77538bba11d57c9ef05026e54b70bf465515bca42746f3534cf96e4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:3d19d3fba77538bba11d57c9ef05026e54b70bf465515bca42746f3534cf96e4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1473,7 +1473,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1489,7 +1489,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:2923326ff83e0335cbf9e17a0c0f80b6c2ab0b01c70c76fac9fd059851b6eb94",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:2923326ff83e0335cbf9e17a0c0f80b6c2ab0b01c70c76fac9fd059851b6eb94",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1505,7 +1505,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1521,7 +1521,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1537,7 +1537,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1553,7 +1553,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f85fef27d28bb817b9a6ebbaaab8698f2cde71e8786fefadff302b84c82e38cb",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f85fef27d28bb817b9a6ebbaaab8698f2cde71e8786fefadff302b84c82e38cb",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1569,7 +1569,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1585,7 +1585,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1601,7 +1601,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1617,7 +1617,7 @@
     },
     "container": "balloon",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:4100c2dbfad88251969303347ce09c67ed8345e2fd946d96ea293bb88f811287",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:4100c2dbfad88251969303347ce09c67ed8345e2fd946d96ea293bb88f811287",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1633,7 +1633,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:558745ab5090a74789c08cb25dea3e2352dfe07a4b67091aa81b75fc7e8c236a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:558745ab5090a74789c08cb25dea3e2352dfe07a4b67091aa81b75fc7e8c236a",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1649,7 +1649,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1665,7 +1665,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1681,7 +1681,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1697,7 +1697,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1713,7 +1713,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1729,7 +1729,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:bfac5d37d711bdd8a96b0a3c7fe3b542916dbd52afe4d7cc5d46798aeb168d21",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:bfac5d37d711bdd8a96b0a3c7fe3b542916dbd52afe4d7cc5d46798aeb168d21",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1745,7 +1745,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ee9ad36ba31666872a6d653d1a3814a2f8308c99b8ac36778239dc88c7aa204",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ee9ad36ba31666872a6d653d1a3814a2f8308c99b8ac36778239dc88c7aa204",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1761,7 +1761,7 @@
     },
     "container": "browser-broker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ee9ad36ba31666872a6d653d1a3814a2f8308c99b8ac36778239dc88c7aa204",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ee9ad36ba31666872a6d653d1a3814a2f8308c99b8ac36778239dc88c7aa204",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1777,14 +1777,14 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       65
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e"
     ],
     "node_selector": {}
   },
@@ -1797,7 +1797,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:95fb57109de5695a43b1380dd799e577031af5f0",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:95fb57109de5695a43b1380dd799e577031af5f0",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1813,7 +1813,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1829,7 +1829,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1845,7 +1845,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1861,7 +1861,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:290de988ce291080629841ef0a36b8f603862dd2c8bd9638822b687075fc27a2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:290de988ce291080629841ef0a36b8f603862dd2c8bd9638822b687075fc27a2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1877,7 +1877,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c2a7d1750e23c26e10393f93ccdaa2ab1aa31535035090dc30f54c1795ec8b04",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c2a7d1750e23c26e10393f93ccdaa2ab1aa31535035090dc30f54c1795ec8b04",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1893,7 +1893,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:a96d8f788997df4aaf9e1dce60b16875999dbed31ee2c6986ef549653a5cb9ec",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:a96d8f788997df4aaf9e1dce60b16875999dbed31ee2c6986ef549653a5cb9ec",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1909,7 +1909,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
@@ -1919,7 +1919,7 @@
       78
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94"
     ],
     "node_selector": {}
   },
@@ -1932,7 +1932,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:290de988ce291080629841ef0a36b8f603862dd2c8bd9638822b687075fc27a2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:290de988ce291080629841ef0a36b8f603862dd2c8bd9638822b687075fc27a2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1948,7 +1948,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
@@ -1961,7 +1961,7 @@
       106
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90"
     ],
     "node_selector": {}
   },
@@ -1974,7 +1974,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -1990,7 +1990,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2006,7 +2006,7 @@
     },
     "container": "bedrockgateway",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2022,7 +2022,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2038,7 +2038,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2054,7 +2054,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2070,14 +2070,14 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       110
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f"
     ],
     "node_selector": {}
   },
@@ -2090,7 +2090,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2106,7 +2106,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2122,7 +2122,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2138,7 +2138,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2154,7 +2154,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2170,7 +2170,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:643a6d459ceca3605599b3d7ad430e0468f32d48",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2186,7 +2186,7 @@
     },
     "container": "context-mcp",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2218,14 +2218,14 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       111
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144"
     ],
     "node_selector": {}
   },
@@ -2238,7 +2238,7 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:9785daaa6569a09aefd890a1fddba14ef9e79b871490fd37eeb0ca6d2c0525b5",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:9785daaa6569a09aefd890a1fddba14ef9e79b871490fd37eeb0ca6d2c0525b5",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2270,7 +2270,7 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2318,7 +2318,7 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2334,7 +2334,7 @@
     },
     "container": "deepwiki",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:529dd724e176b8cfc60d82dfaf500b3d0a190fdfc8c4b2cda3b5ccdea3324ea2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:529dd724e176b8cfc60d82dfaf500b3d0a190fdfc8c4b2cda3b5ccdea3324ea2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2346,7 +2346,7 @@
       "kind": "ReplicaSet",
       "namespace": "agent-context",
       "name": "deepwiki-889d8d988",
-      "uid": "ffb89aa1-bfd5-4ea6-841c-652840165171"
+      "uid": "ffb89aa1-bfd5-4ea6-841c-000000000222"
     },
     "container": "deepwiki",
     "container_group": "containers",
@@ -2382,7 +2382,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2398,7 +2398,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2414,7 +2414,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2430,7 +2430,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2446,7 +2446,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2462,7 +2462,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2478,7 +2478,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2494,14 +2494,14 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       115
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd"
     ],
     "node_selector": {}
   },
@@ -2514,7 +2514,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:security27-489f17109",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2530,7 +2530,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2546,7 +2546,7 @@
     },
     "container": "litellm",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:643a6d4",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -2562,14 +2562,14 @@
     },
     "container": "zoekt-webserver",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       118
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66"
     ],
     "node_selector": {}
   },
@@ -2766,7 +2766,7 @@
     },
     "container": "zoekt-webserver",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3006,7 +3006,7 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3024,7 +3024,7 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.4.2",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.4.2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3042,14 +3042,14 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator:3.7.0",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       124
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -3064,14 +3064,14 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       198
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50"
     ],
     "node_selector": {}
   },
@@ -3148,7 +3148,7 @@
     },
     "container": "manager",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:3a1961b09a0275363be9c4c6398a4c970d2ba0781dd252750384899814aa8a3d",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:0.14.2@sha256:3a1961b09a0275363be9c4c6398a4c970d2ba0781dd252750384899814aa8a3d",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3404,7 +3404,7 @@
     },
     "container": "coredns",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.13.2-eksbuild.31",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.13.2-eksbuild.31",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
@@ -3412,7 +3412,7 @@
       206
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f"
     ],
     "node_selector": {}
   },
@@ -3425,7 +3425,7 @@
     },
     "container": "metrics-server",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.7",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
@@ -3433,7 +3433,7 @@
       208
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74"
     ],
     "node_selector": {}
   },
@@ -3446,14 +3446,14 @@
     },
     "container": "s3-csi-controller",
     "container_group": "containers",
-    "requested_image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+    "requested_image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       209
     ],
     "observed_digests": [
-      "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
+      "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526"
     ],
     "node_selector": {
       "kubernetes.io/os": "linux"
@@ -3484,7 +3484,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3516,7 +3516,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3548,7 +3548,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3580,7 +3580,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3612,7 +3612,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3628,14 +3628,14 @@
     },
     "container": "skypilot-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       304
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a"
     ],
     "node_selector": {}
   },
@@ -3648,14 +3648,14 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       305
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2"
     ],
     "node_selector": {}
   },
@@ -3668,7 +3668,7 @@
     },
     "container": "skypilot-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3684,7 +3684,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3716,7 +3716,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3748,7 +3748,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3780,7 +3780,7 @@
     },
     "container": "authenticated-transport",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3796,7 +3796,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3812,7 +3812,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3828,7 +3828,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3844,14 +3844,14 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       306
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e"
     ],
     "node_selector": {}
   },
@@ -3864,7 +3864,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3880,7 +3880,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3896,7 +3896,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3912,7 +3912,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3928,7 +3928,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3944,7 +3944,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3960,7 +3960,7 @@
     },
     "container": "superplane-api",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3976,7 +3976,7 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -3992,7 +3992,7 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4008,7 +4008,7 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4024,7 +4024,7 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4040,14 +4040,14 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       307
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a"
     ],
     "node_selector": {}
   },
@@ -4060,7 +4060,7 @@
     },
     "container": "superplane-controller",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:abb61b8ff2d6a11048ac3ec51ed44eb6c9b992175efc22d4ecf0fc55da6979c7",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4076,7 +4076,7 @@
     },
     "container": "superplane-platform-monitor",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4092,14 +4092,14 @@
     },
     "container": "superplane-platform-monitor",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [
       308
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9"
     ],
     "node_selector": {}
   },
@@ -4112,7 +4112,7 @@
     },
     "container": "superplane-platform-monitor",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4128,7 +4128,7 @@
     },
     "container": "superplane-platform-monitor",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:e0c7ef0537aaceba4c58dcd806af6d715a2103bd7b994bf84b9e7f8fce3256ca",
     "active_desired_template": false,
     "reason": "revision template; parent controller determines desired state",
     "matching_active_observations": [],
@@ -4144,14 +4144,14 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [
       33
     ],
     "observed_digests": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16"
     ],
     "node_selector": {}
   },
@@ -4164,7 +4164,7 @@
     },
     "container": "agent-worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [],
@@ -4180,7 +4180,7 @@
     },
     "container": "chat-agent",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [],
@@ -4196,7 +4196,7 @@
     },
     "container": "worker",
     "container_group": "containers",
-    "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
     "active_desired_template": true,
     "reason": "enabled desired template",
     "matching_active_observations": [],

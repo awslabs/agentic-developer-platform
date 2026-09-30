@@ -9,7 +9,7 @@ gateway audit reason. Store credentials and sensitive response bodies privately.
 
 ## 1. Deployed source and target
 
-Confirm account 879318057152/us-east-1 for dev and record the actual gateway
+Confirm account 000000000101/us-east-1 for dev and record the actual gateway
 Deployment, namespace, API Gateway stage URL and ClusterIP service. Inspect the
 running image/source for provenance enforcement, `hmac.compare_digest` in
 `src.internal.auth_deps._verify_internal_key`, and absence of the unused

@@ -470,7 +470,7 @@
     "two-worker-iam": {
       "root": {
         "role": "adp-e5028-20260913-212933-worker",
-        "pod_ip": "10.0.10.130",
+        "pod_ip": "192.0.2.20",
         "results": [
           {
             "case": "own_correlation_update",
@@ -512,7 +512,7 @@
       },
       "outsider": {
         "role": "adp-e5028-20260913-212933-worker",
-        "pod_ip": "10.0.10.136",
+        "pod_ip": "192.0.2.20",
         "results": [
           {
             "case": "own_correlation_update",
@@ -741,7 +741,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.130",
+            "address": "192.0.2.20",
             "pid": 70,
             "harness": false
           }
@@ -794,7 +794,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.133",
+            "address": "192.0.2.20",
             "pid": 37,
             "harness": true
           }
@@ -838,7 +838,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.136",
+            "address": "192.0.2.20",
             "pid": 29,
             "harness": false
           }
@@ -884,7 +884,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.130",
+            "address": "192.0.2.20",
             "pid": 70,
             "harness": false
           }
@@ -937,7 +937,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.133",
+            "address": "192.0.2.20",
             "pid": 37,
             "harness": true
           }
@@ -981,7 +981,7 @@
           "listener": {
             "started": true,
             "port": 8770,
-            "address": "10.0.10.136",
+            "address": "192.0.2.20",
             "pid": 29,
             "harness": false
           }
@@ -2015,10 +2015,10 @@
           "matches_final_source_build": true
         }
       ],
-      "gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:ad6c7a37fce5bf6d13bcfa1b7a3c7a81d8f02e4b9211d5fc5d7e4af9027079ca",
+      "gateway_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:ad6c7a37fce5bf6d13bcfa1b7a3c7a81d8f02e4b9211d5fc5d7e4af9027079ca",
       "worker_images": {
-        "product": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:69d204555c696f0e563ec1a5c905f57e278bd884fb76802f89219bd9977b5a43",
-        "fixture": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:486cfbe1216da854705fe912dcbe02839eb9b2d3058d6bc7b26aa0a3fff9ab26"
+        "product": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:69d204555c696f0e563ec1a5c905f57e278bd884fb76802f89219bd9977b5a43",
+        "fixture": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:486cfbe1216da854705fe912dcbe02839eb9b2d3058d6bc7b26aa0a3fff9ab26"
       }
     },
     "service-child-scope-live": {
@@ -2111,12 +2111,12 @@
         },
         {
           "kind": "alb-rule",
-          "name": "arn:aws:elasticloadbalancing:us-east-1:879318057152:listener-rule/app/k8s-adpgatew-bedrockg-d2e32d8c72/30c651bf3c5e4135/c7a75d65f3f9936b/2e8e9df33a1f0775",
+          "name": "arn:aws:elasticloadbalancing:us-east-1:000000000101:listener-rule/app/k8s-adpgatew-bedrockg-d2e32d8c72/30c651bf3c5e4135/c7a75d65f3f9936b/2e8e9df33a1f0775",
           "absent": true
         },
         {
           "kind": "target-group",
-          "name": "arn:aws:elasticloadbalancing:us-east-1:879318057152:targetgroup/a5028-20260913-212933/a631b176642f156e",
+          "name": "arn:aws:elasticloadbalancing:us-east-1:000000000101:targetgroup/a5028-20260913-212933/a631b176642f156e",
           "absent": true
         },
         {
@@ -2171,7 +2171,7 @@
         },
         {
           "kind": "iam-boundary",
-          "name": "arn:aws:iam::879318057152:policy/adp-e5028-20260913-212933-boundary",
+          "name": "arn:aws:iam::000000000101:policy/adp-e5028-20260913-212933-boundary",
           "absent": true
         },
         {

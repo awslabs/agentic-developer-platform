@@ -218,7 +218,7 @@ All four retrieval verbs gain an optional `project` parameter:
 The `project` parameter accepts **either** a project UUID or a project name:
 
 ```
-project: "550e8400-e29b-41d4-a716-446655440000"  → UUID lookup
+project: "550e8400-e29b-41d4-a716-000000000216"  → UUID lookup
 project: "client-A"                               → name lookup (scoped to caller's owner_sub)
 ```
 

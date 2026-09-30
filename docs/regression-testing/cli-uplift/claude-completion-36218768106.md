@@ -1,6 +1,6 @@
 # Claude Task completion and stream replay
 
-Disposable EC2 [run 36218768106](https://github.com/aws-e/adp/actions/runs/36218768106) passed E42 against gateway `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`: **1 passed, 0 failed**, selected suite only. Cleanup completed; AWS independently confirmed instance `i-01068f4fd27a28290` terminated.
+Disposable EC2 [run 36218768106](https://github.com/aws-e/adp/actions/runs/36218768106) passed E42 against gateway `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`: **1 passed, 0 failed**, selected suite only. Cleanup completed; AWS independently confirmed instance `i-00000000000000004` terminated.
 
 - Evaluation: `adp-e2e-20260926-044015-612b3d`.
 - Task: `tsk_ae6710aa-48dc-4e15-be0a-b08665c01c95`.

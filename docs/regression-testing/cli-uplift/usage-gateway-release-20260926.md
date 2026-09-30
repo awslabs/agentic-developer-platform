@@ -1,6 +1,6 @@
 # Usage Task lookup and Codex help release — 26 September 2026
 
-Gateway source `37af0ea914a85274ea6c5e0010c57251eeabc5a7` is deployed in dev. Image `879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:ace7376985bb5716b308491e20870a8e84011ae79be726e9bb9559978d1d63ed` contains the reviewed Task usage readthrough fix (#6334) and the Codex-generated tenant help patch (#6333).
+Gateway source `37af0ea914a85274ea6c5e0010c57251eeabc5a7` is deployed in dev. Image `000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:ace7376985bb5716b308491e20870a8e84011ae79be726e9bb9559978d1d63ed` contains the reviewed Task usage readthrough fix (#6334) and the Codex-generated tenant help patch (#6333).
 
 The usage `--run` filter previously returned 404 for an owned Task invocation even when its usage rows existed. It now reuses the existing owner-authorized Task Activity adapter and preserves exact tenant/run ledger filtering. Native Activity and managed-tenant authorization remain unchanged. Independent gateway tests passed 59 cases, including foreign owner/tenant, revoked policy, stale generation and storage failure. All applicable PR CI passed before merge.
 

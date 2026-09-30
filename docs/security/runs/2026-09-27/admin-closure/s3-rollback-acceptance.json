@@ -7,13 +7,13 @@
         "namespace": "security-s15-probe-c1155bf2eed8",
         "name": "probe-writer-rollback-d7wkr",
         "uid": "70821436-4c05-41ff-bcd5-29da6ead6bdf",
-        "node": "i-07b62eb51391bee50",
+        "node": "i-0000000000000001a",
         "phase": "Succeeded",
         "containers": [
           {
             "name": "probe",
             "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
-            "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
             "ready": false,
             "restartCount": 0,
             "state": {
@@ -38,13 +38,13 @@
         "namespace": "security-s15-probe-c1155bf2eed8",
         "name": "probe-reader-rollback-xzdrm",
         "uid": "36382320-d5be-41ca-921c-3a0001c4169b",
-        "node": "i-07b62eb51391bee50",
+        "node": "i-0000000000000001a",
         "phase": "Succeeded",
         "containers": [
           {
             "name": "probe",
             "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
-            "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
             "ready": false,
             "restartCount": 0,
             "state": {
@@ -69,13 +69,13 @@
         "namespace": "security-s15-probe-c1155bf2eed8",
         "name": "probe-outsider-rollback-599h5",
         "uid": "3949c1e0-9fae-4dbe-b67a-733d2ddce296",
-        "node": "i-07b62eb51391bee50",
+        "node": "i-0000000000000001a",
         "phase": "Succeeded",
         "containers": [
           {
             "name": "probe",
             "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
-            "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
             "ready": false,
             "restartCount": 0,
             "state": {

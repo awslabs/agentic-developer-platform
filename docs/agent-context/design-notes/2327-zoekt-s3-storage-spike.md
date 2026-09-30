@@ -61,7 +61,7 @@ But critically, in `--read-only` mode, mkdir is blocked. However, `os.MkdirAll` 
 
 **The mitigation (already in place):**
 ```bash
-$ aws s3api head-object --bucket agent-context-platform-data-879318057152 --key "zoekt-shards/"
+$ aws s3api head-object --bucket agent-context-platform-data-000000000101 --key "zoekt-shards/"
 # Returns: ContentLength: 0, ETag: "d41d8cd98f00b204e9800998ecf8427e"
 ```
 
@@ -140,7 +140,7 @@ For a zoekt-webserver with 15 shards totaling ~1-3GB, a node with 4Gi memory lim
 
 | Component | Status | Version |
 |-----------|--------|---------|
-| S3 bucket (`agent-context-platform-data-879318057152`) | ✅ Active | — |
+| S3 bucket (`agent-context-platform-data-000000000101`) | ✅ Active | — |
 | `zoekt-shards/` prefix (directory marker) | ✅ Exists | Created 2026-06-12 |
 | Mountpoint S3 CSI driver | ✅ Active | v1.15.0-eksbuild.1 |
 | IAM role (`adp-dev-eks-cluster-s3-csi-controller`) | ✅ Active | — |
@@ -342,7 +342,7 @@ spec:
     driver: s3.csi.aws.com
     volumeHandle: s3-csi-zoekt-shards-ro
     volumeAttributes:
-      bucketName: agent-context-platform-data-879318057152
+      bucketName: agent-context-platform-data-000000000101
       prefix: zoekt-shards/
 ```
 

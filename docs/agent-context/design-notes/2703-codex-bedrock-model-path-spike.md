@@ -37,9 +37,9 @@ mantle path (see §6). Cheap to verify in #2704's smoke test.
 
 | Item | Value |
 |------|-------|
-| Account | `879318057152` (dev) — **note:** research comment referenced `193832579677`; findings are account-independent |
+| Account | `000000000101` (dev) — **note:** research comment referenced `000000000214`; findings are account-independent |
 | Region | `us-east-1` |
-| Identity | `arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/...` (the IRSA/ScaledJob role) |
+| Identity | `arn:aws:sts::000000000101:assumed-role/adp-dev-agent-scaledjob-role/...` (the IRSA/ScaledJob role) |
 | Bearer token | `AWS_BEARER_TOKEN_BEDROCK` **unset** throughout (proves SDK-chain-only auth) |
 | Node / npm | v24.18.0 / 11.16.0 |
 

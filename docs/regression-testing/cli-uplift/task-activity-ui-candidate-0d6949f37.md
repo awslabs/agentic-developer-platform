@@ -12,7 +12,7 @@ sets were preserved and all 62 combined CLI tests passed. Production UI/list fil
 are unchanged from the reviewed slice. Deployment requires #6308 to pass and merge.
 
 - CodeBuild: `adp-dev-gateway-build:9042bafa-77f7-4535-93f9-be864d485e69` — SUCCEEDED.
-- Source: `s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/0d6949f37ea33de2d6113302167737262bcea647-1790394738-3619594.zip`.
+- Source: `s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/0d6949f37ea33de2d6113302167737262bcea647-1790394738-3619594.zip`.
 - Downloaded S3 archive equals the source commit's Git archive byte for byte;
   SHA256 `a75cce1ea4ec1b8a9627486659848cd361ab033cef68c85aaf94fac499de9959`.
 - Gateway image: `sha256:f987919546a32077779204be0bce75462a4ea8015885ef41bd70e0a246ba8866`. Manifest/config hashes, Linux amd64,

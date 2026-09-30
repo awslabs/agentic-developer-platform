@@ -5,7 +5,7 @@ base=read(P/'alas-review/reviewed-register.json');targets=read(B/'platform-targe
 for t in targets:
  for ref in [t['reference'],*t['root_references'],*t['observed_refs']]:alias[ref]=t['reference']
 new={'arc-runner':('live-final-arc-runner-scan','adp-arc-runner'),'chat':('live-final-chat-scan','adp-chat-agent'),'gateway':('live-final-gateway-scan','adp-gateway'),'context-mcp':('context-mcp-fixed-scan','adp-dev-agent-context-context-mcp'),'litellm':('litellm-scan','adp-dev-agent-context-litellm-proxy')}
-registry='879318057152.dkr.ecr.us-east-1.amazonaws.com';added={};receipts={}
+registry='000000000101.dkr.ecr.us-east-1.amazonaws.com';added={};receipts={}
 for name,(directory,repo) in new.items():
  r=read(P/directory/'receipt.json');ref=registry+'/'+repo+'@'+r['docker_root_descriptor'];alias[ref]=ref;added[ref]=(name,directory,r);receipts[name]=r
 observed={x['reference'] for x in read(S/'scan-targets.json') if x['active_pod_observations']};missing=observed-set(alias);assert not missing,missing

@@ -1,0 +1,26 @@
+name: Public documentation
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'scripts/check-public-docs.py'
+      - 'tests/unit/test_public_docs.py'
+      - 'tests/e2e/cli_uplift/*.json'
+      - '.github/workflows/public-docs.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python scripts/check-public-docs.py
+      - run: python -m unittest discover -s tests/unit -p test_public_docs.py

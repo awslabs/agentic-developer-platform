@@ -38,8 +38,8 @@ the harness only sees what the config claims. The claim has to be true.
 
 | Requirement | Value / how |
 |---|---|
-| Live target | `879318057152` / `dev` / `embark1` |
-| Credential label | `adp-embark1` |
+| Live target | `000000000101` / `dev` / `example-profile` |
+| Credential label | `example-profile` |
 | Credential path | The supported credential path. Never in the config file, never echoed, never committed. |
 | Isolation | Ingress policy applied **before** the listener starts |
 | Deployed revision | Verify the *deployed* digest, not that a build went green |
@@ -120,9 +120,9 @@ generation and digests with your fixture's actual ones.
 <!-- EXAMPLE-CONFIG-BEGIN -->
 ```json
 {
-  "account_id": "879318057152",
+  "account_id": "000000000101",
   "aws_region": "us-east-1",
-  "environment": "dev-control-fixture-embark1",
+  "environment": "dev-control-fixture-example-profile",
   "fixture_isolated": true,
   "tenant_id": "org-fixture-0001",
   "gateway_url": "https://gateway.dev.internal",
@@ -202,7 +202,7 @@ generation and digests with your fixture's actual ones.
   "resource_teardown": [
     "/opt/adp/fixtures/teardown-control-fixture.sh",
     "--env",
-    "dev-control-fixture-embark1"
+    "dev-control-fixture-example-profile"
   ],
   "resource_teardown_timeout_seconds": 600,
   "cleanup_items": [
@@ -539,7 +539,7 @@ kubectl exec -n adp-agents deploy/agent-worker -- \
 # 5. The flag's scope. The SECOND command is the one that matters.
 kubectl get cm -n adp-agents control-flags -o jsonpath='{.data}'
 # Every other environment, enumerated — the answer must be an empty list.
-for env in dev staging prod embark1; do
+for env in dev staging prod example-profile; do
   aws ssm get-parameter --name "/adp/$env/control/enabled" \
     --query 'Parameter.Value' --output text 2>/dev/null
 done
@@ -653,11 +653,11 @@ audit. `fixture_environment` must equal the config's `environment`.
   "fixture_only_flag_scope": {
     "enabled_in_fixture": true,
     "enabled_elsewhere": [],
-    "fixture_environment": "dev-control-fixture-embark1"
+    "fixture_environment": "dev-control-fixture-example-profile"
   },
   "fixture_identity": {
-    "account_id": "879318057152",
-    "environment": "dev-control-fixture-embark1",
+    "account_id": "000000000101",
+    "environment": "dev-control-fixture-example-profile",
     "run_id": "<the config's live_run_id>"
   },
   "creation_ledger": [
@@ -893,8 +893,8 @@ done
     "gateway": {"revision": "<40-char SHA>", "image_digest": "sha256:<64 hex>"}
   },
   "fixture_identity": {
-    "account_id": "879318057152",
-    "environment": "dev-control-fixture-embark1",
+    "account_id": "000000000101",
+    "environment": "dev-control-fixture-example-profile",
     "run_id": "<the config's live_run_id>"
   },
   "isolation_present": true,
@@ -948,7 +948,7 @@ itself.
 Declare the script in the fixture config as an argv list:
 
 ```json
-"resource_teardown": ["/opt/adp/fixtures/teardown-control-fixture.sh", "--env", "dev-control-fixture-embark1"],
+"resource_teardown": ["/opt/adp/fixtures/teardown-control-fixture.sh", "--env", "dev-control-fixture-example-profile"],
 "resource_teardown_timeout_seconds": 600
 ```
 
@@ -1023,8 +1023,8 @@ kubectl get cm -n adp-agents control-flags -o jsonpath='{.data}'
   "verified_after_teardown": true,
   "captured_at": "2026-09-24T14:32:07Z",
   "fixture_identity": {
-    "account_id": "879318057152",
-    "environment": "dev-control-fixture-embark1",
+    "account_id": "000000000101",
+    "environment": "dev-control-fixture-example-profile",
     "run_id": "<the SAME live_run_id as the capture>"
   },
   "removals": [
@@ -1902,7 +1902,7 @@ complete before wave 3 is accepted at 12/12 with its cleanup confirmed.
 | Exit 2, `missing required fields` | Half-filled config | Fill every field; there are no defaults |
 | Exit 2, `must be exactly true` | `fixture_isolated` is `"true"`, `1`, or absent | Use the JSON boolean. Do not work around it by enabling the flag more widely |
 | Exit 2, `must not contain credentials` | A token pasted into the config | Move it to an env var and name the var under `identity_env` |
-| Exit 3, account mismatch | Ambient credential is not the fixture account | Switch to `adp-embark1`. One of the two is wrong and it may be the credential |
+| Exit 3, account mismatch | Ambient credential is not the fixture account | Switch to `example-profile`. One of the two is wrong and it may be the credential |
 | Exit 3, key schema | Wrong table, or the table changed | Confirm `event_id` HASH + `arrived_at` RANGE |
 | Exit 4, several `not_run` | Artifacts not recorded yet, or `identity_env` vars unset | The message names the missing input per check |
 | Exit 4, W1-02 `enumerate` | The three refusals are distinguishable | The 404 bodies must be byte-identical; a "not yours" body is an oracle |

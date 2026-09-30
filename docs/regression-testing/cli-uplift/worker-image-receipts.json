@@ -1,14 +1,14 @@
 {
   "dev": {
-    "account": "879318057152",
+    "account": "000000000101",
     "region": "us-east-1",
-    "image_repository": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime",
+    "image_repository": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime",
     "images": {
       "sha256:733d382711a5217fbaf5bcd4be1bd8067f76c29db29488600a3daeb95fb9ac22": {
         "source_sha": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
         "build_id": "adp-dev-agent-runtime:d79d8121-6c48-4ff0-90bb-17f8836c885e",
         "build_status": "SUCCEEDED",
-        "source_bucket": "adp-terraform-state-879318057152",
+        "source_bucket": "adp-terraform-state-000000000101",
         "source_key": "codebuild/src/adp-dev-agent-runtime/8822bebf43296fb51fbaf261e76b47efc3072c6d-1790397729-3687383.zip",
         "source_archive_sha256": "0b8a2cb291f5da3bd3fadc7b39eada58f8d8c86a929e9738d5c39823072fb78c",
         "image_tag": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
@@ -63,7 +63,7 @@
         "source_sha": "f1f776f59fd3be3ba9956d90c646a7d39ce1af02",
         "build_id": "adp-dev-agent-runtime:8c783e7b-6522-4906-80bb-1d9228148b7c",
         "build_status": "SUCCEEDED",
-        "source_bucket": "adp-terraform-state-879318057152",
+        "source_bucket": "adp-terraform-state-000000000101",
         "source_key": "codebuild/src/adp-dev-agent-runtime/f1f776f59fd3be3ba9956d90c646a7d39ce1af02-1790399098-3738802.zip",
         "source_archive_sha256": "6937e4060968d1e95d766c349aa900da4d5a9de7b7fa8f0fbabee04da2066557",
         "image_tag": "f1f776f59fd3be3ba9956d90c646a7d39ce1af02",

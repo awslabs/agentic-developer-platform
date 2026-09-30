@@ -2,7 +2,7 @@
 
 The broader CLI-uplift evaluation (#5256) cannot run its destination suites
 (`personal-aws`, `routing`, `inference` — cases E04–E12) until two IAM roles
-exist in the **Bedrock destination account `605440105851`**. This document is the
+exist in the **Bedrock destination account `000000000102`**. This document is the
 ready-to-apply artifact for whoever holds access to that account.
 
 Nothing here needs to be invented: the role names, the trust principals and the
@@ -12,15 +12,15 @@ the harness.
 
 ## Why an external request
 
-Everything else in the evaluation runs in platform account `879318057152`, where
+Everything else in the evaluation runs in platform account `000000000101`, where
 the evaluation already has what it needs. The destination account is a separate
 trust boundary and the evaluation identity has no path into it:
 
 ```
-$ aws sts assume-role --role-arn arn:aws:iam::605440105851:role/OrganizationAccountAccessRole ...
-AccessDenied: User: arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/...
+$ aws sts assume-role --role-arn arn:aws:iam::000000000102:role/OrganizationAccountAccessRole ...
+AccessDenied: User: arn:aws:sts::000000000101:assumed-role/adp-dev-agent-scaledjob-role/...
 is not authorized to perform: sts:AssumeRole on resource:
-arn:aws:iam::605440105851:role/OrganizationAccountAccessRole
+arn:aws:iam::000000000102:role/OrganizationAccountAccessRole
 ```
 
 The same result for `adp-cli-uplift-eval-destination` and
@@ -29,21 +29,21 @@ should not be — creating one would mean granting the evaluation identity
 cross-account role-creation rights, which is a larger grant than the thing being
 requested.
 
-**Deliberately not done:** no existing role in `605440105851` is borrowed or
+**Deliberately not done:** no existing role in `000000000102` is borrowed or
 modified. Existing roles there are not disposable fixtures, and repurposing one
 would both change behaviour for its real owner and make CloudTrail attribution
 ambiguous. No third account is involved.
 
 ## What is requested
 
-Two roles in account `605440105851`, in the same region as the evaluation.
+Two roles in account `000000000102`, in the same region as the evaluation.
 
 | Role | Assumed by | Purpose |
 |---|---|---|
-| `adp-cli-uplift-eval-destination` | `arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator` | Prove cross-account identity and delete destination-account resources during cleanup |
-| `adp-cli-uplift-eval-provisioner` | `arn:aws:iam::879318057152:role/adp-cli-uplift-eval-instance` | Run the CLI's CloudFormation role setup, as a real AWS admin would |
+| `adp-cli-uplift-eval-destination` | `arn:aws:iam::000000000101:role/adp-cli-uplift-eval-orchestrator` | Prove cross-account identity and delete destination-account resources during cleanup |
+| `adp-cli-uplift-eval-provisioner` | `arn:aws:iam::000000000101:role/adp-cli-uplift-eval-instance` | Run the CLI's CloudFormation role setup, as a real AWS admin would |
 
-Both ARNs must name `605440105851`. `config.validate()` refuses an ARN in any
+Both ARNs must name `000000000102`. `config.validate()` refuses an ARN in any
 other account, because a cross-account test that silently ran against the
 platform account would pass while proving nothing.
 
@@ -71,7 +71,7 @@ Trust policy:
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator"
+        "AWS": "arn:aws:iam::000000000101:role/adp-cli-uplift-eval-orchestrator"
       },
       "Action": "sts:AssumeRole"
     }
@@ -99,7 +99,7 @@ Permissions — identity evidence plus cleanup of what the run itself created:
         "cloudformation:DescribeStackEvents",
         "cloudformation:DeleteStack"
       ],
-      "Resource": "arn:aws:cloudformation:*:605440105851:stack/adp-e2e-*/*"
+      "Resource": "arn:aws:cloudformation:*:000000000102:stack/adp-e2e-*/*"
     },
     {
       "Sid": "CleanupRunOwnedRoles",
@@ -112,7 +112,7 @@ Permissions — identity evidence plus cleanup of what the run itself created:
         "iam:ListAttachedRolePolicies",
         "iam:DetachRolePolicy"
       ],
-      "Resource": "arn:aws:iam::605440105851:role/adp-e2e-*"
+      "Resource": "arn:aws:iam::000000000102:role/adp-e2e-*"
     }
   ]
 }
@@ -132,7 +132,7 @@ Trust policy — assumed by the **EC2 instance role**, not the orchestrator:
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::879318057152:role/adp-cli-uplift-eval-instance"
+        "AWS": "arn:aws:iam::000000000101:role/adp-cli-uplift-eval-instance"
       },
       "Action": "sts:AssumeRole"
     }
@@ -164,7 +164,7 @@ template, and nothing more:
         "cloudformation:DescribeStackResources",
         "cloudformation:GetTemplate"
       ],
-      "Resource": "arn:aws:cloudformation:*:605440105851:stack/adp-e2e-*/*"
+      "Resource": "arn:aws:cloudformation:*:000000000102:stack/adp-e2e-*/*"
     },
     {
       "Sid": "RoleSetupRole",
@@ -183,7 +183,7 @@ template, and nothing more:
         "iam:DetachRolePolicy",
         "iam:ListAttachedRolePolicies"
       ],
-      "Resource": "arn:aws:iam::605440105851:role/adp-e2e-*"
+      "Resource": "arn:aws:iam::000000000102:role/adp-e2e-*"
     }
   ]
 }
@@ -205,7 +205,7 @@ existing platform-account roles.
 ## Applying it
 
 ```bash
-# In account 605440105851, with an identity that can create roles.
+# In account 000000000102, with an identity that can create roles.
 aws iam create-role --role-name adp-cli-uplift-eval-destination \
   --assume-role-policy-document file://trust-destination.json \
   --tags Key=adp:cli-uplift-eval,Value=adp-e2e-fixture Key=ManagedBy,Value=manual
@@ -222,18 +222,18 @@ aws iam put-role-policy --role-name adp-cli-uplift-eval-provisioner \
 Then set the two repository variables so the workflow picks them up (they layer
 over `bindings.dev.json`, which deliberately leaves both absent):
 
-- `CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN` = `arn:aws:iam::605440105851:role/adp-cli-uplift-eval-destination`
-- `CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN` = `arn:aws:iam::605440105851:role/adp-cli-uplift-eval-provisioner`
+- `CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN` = `arn:aws:iam::000000000102:role/adp-cli-uplift-eval-destination`
+- `CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN` = `arn:aws:iam::000000000102:role/adp-cli-uplift-eval-provisioner`
 
 ## Verifying it worked
 
 ```bash
 # From the orchestrator's session:
 aws sts assume-role \
-  --role-arn arn:aws:iam::605440105851:role/adp-cli-uplift-eval-destination \
+  --role-arn arn:aws:iam::000000000102:role/adp-cli-uplift-eval-destination \
   --role-session-name cli-uplift-eval-verify \
   --query 'AssumedRoleUser.Arn' --output text
-# Expect an ARN naming 605440105851.
+# Expect an ARN naming 000000000102.
 ```
 
 Then dispatch `eval-cli-uplift.yml` with `suites=personal-aws`. Preflight's

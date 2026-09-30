@@ -42,7 +42,7 @@ revalidation assignment's explicit instruction.
 
 Second, **code remediation is not deployed protection everywhere.** A01 is the one
 package in this scan day with retrievable live evidence (dev gateway, account
-879318057152: forged-identity 403 and direct 401 captured across replicas, per
+000000000101: forged-identity 403 and direct 401 captured across replicas, per
 `S21-evidence-ledger.md:508`). A05's owner records live acceptance as **PENDING**
 (`:512`). Nothing in this document establishes production rollout.
 

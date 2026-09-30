@@ -7,11 +7,11 @@ while verifying this candidate; source CI/merge and rollout verification remain
 separate gates.
 
 - CodeBuild: `adp-dev-gateway-build:ef38bb90-042e-45e4-925b-06cf159bd005`, `SUCCEEDED`.
-- Repository: `879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway`.
+- Repository: `000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway`.
 - Image digest: `sha256:807b5348beb44dbd66dcd13f7b2e1d7435fb2db70c484da25ec3f522593ba2df`.
 - Immutable tag: `91d3f20bfb5cb01a1cca162c85ac97eef05fa9c7`.
 - Source archive SHA-256: `89ff3af55e6c0c463b6e1fced877ed189047a7ee0303e80422801a76560721d4`.
-- Source ZIP: `s3://adp-terraform-state-879318057152/codebuild/src/adp-dev-gateway-build/91d3f20bfb5cb01a1cca162c85ac97eef05fa9c7-1790392727-3543939.zip`.
+- Source ZIP: `s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/91d3f20bfb5cb01a1cca162c85ac97eef05fa9c7-1790392727-3543939.zip`.
 - Log group: `/aws/codebuild/adp-dev-gateway-build`; stream: `ef38bb90-042e-45e4-925b-06cf159bd005`.
 
 Independent fresh AWS reads confirmed the successful build, exact source

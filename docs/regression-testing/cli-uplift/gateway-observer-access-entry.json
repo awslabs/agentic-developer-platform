@@ -1,6 +1,6 @@
 {
   "clusterName": "adp-dev-eks-cluster",
-  "principalArn": "arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator",
+  "principalArn": "arn:aws:iam::000000000101:role/adp-cli-uplift-eval-orchestrator",
   "kubernetesGroups": ["adp:cli-uplift-gateway-observer"],
   "type": "STANDARD"
 }

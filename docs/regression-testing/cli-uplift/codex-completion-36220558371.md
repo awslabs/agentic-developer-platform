@@ -12,4 +12,4 @@ D05 passed six canonical-principal lifecycle checks and four Cognito checks: sam
 
 E21's native-tenant CSV and NDJSON exports were empty (one page, zero records), so this run establishes empty serialization only. Separate isolated read probes in the authenticated aws-e membership observed two unique Task-linked records across two pages in each format, preserving owner/tenant and a pending continuation. [#6335](https://github.com/aws-e/adp/pull/6335) adds that explicit workspace fixture to the existing nightly scenario; populated EC2 qualification remains separate.
 
-Cleanup completed and EC2 `i-05a984deb812dded6` was independently confirmed terminated. Artifact ID `10899445446`, SHA-256 `5d075b083f3ea322f41ea03b135b4c85db6e8501d6e4e58af0b318ba62714172`; report SHA-256 `cf0b2a1a76aff8dced033835d47fe40f8fd68323df6bbd9992e42c69a7e8a060`.
+Cleanup completed and EC2 `i-00000000000000014` was independently confirmed terminated. Artifact ID `10899445446`, SHA-256 `5d075b083f3ea322f41ea03b135b4c85db6e8501d6e4e58af0b318ba62714172`; report SHA-256 `cf0b2a1a76aff8dced033835d47fe40f8fd68323df6bbd9992e42c69a7e8a060`.

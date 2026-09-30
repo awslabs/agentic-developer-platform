@@ -2,7 +2,7 @@
   "scope": "exact worker overlay only; source and binaries rehashed in candidate",
   "config_digest": "sha256:0182c4f12026a6b2dc4e4e3429540106210c83bf04d08be834f59fbfbfb857d9",
   "raw_receipt": {
-    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
     "docker_root_descriptor": "sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
     "config_digest": "sha256:0182c4f12026a6b2dc4e4e3429540106210c83bf04d08be834f59fbfbfb857d9",
     "time": "2026-09-27T22:03:49.776130+00:00",

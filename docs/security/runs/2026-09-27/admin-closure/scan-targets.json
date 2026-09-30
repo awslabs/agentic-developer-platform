@@ -9,7 +9,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "digest": "sha256:6ec63a920371820b2697053864f85565e6bc57f8545fabf80e85f20d9818be16",
     "observations": [
       1,
@@ -49,7 +49,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:66a2283f1524ec89083c468f56f46f88bf5f5d743a9e8a18ec60300ea05ecd68",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:66a2283f1524ec89083c468f56f46f88bf5f5d743a9e8a18ec60300ea05ecd68",
     "digest": "sha256:66a2283f1524ec89083c468f56f46f88bf5f5d743a9e8a18ec60300ea05ecd68",
     "observations": [
       32
@@ -58,7 +58,7 @@
     "historical_pod_observations": 1
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
     "digest": "sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
     "observations": [
       34,
@@ -97,7 +97,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "digest": "sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
     "observations": [
       65
@@ -106,7 +106,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
     "digest": "sha256:73ea0ac34762f254aa2756ecc467a1cad2582b7bc3db5970c62225dcf636ec94",
     "observations": [
       70,
@@ -117,7 +117,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
     "digest": "sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
     "observations": [
       71,
@@ -138,7 +138,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
     "digest": "sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
     "observations": [
       72,
@@ -158,7 +158,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
     "digest": "sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
     "observations": [
       73,
@@ -179,7 +179,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
     "digest": "sha256:79ae7bb0f982f29417989951c2803aa7c3b11c9db925dfc60e01248882fd3b90",
     "observations": [
       82,
@@ -194,7 +194,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f",
     "digest": "sha256:06a6a05485ace95309183a4609f68f4dedb9db74536df5d8b4cb2c378910880f",
     "observations": [
       110
@@ -203,7 +203,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "digest": "sha256:ca17d314fae4f6ec71bd94482c6217d1acf9ce3ea264912bc0072e965f81d144",
     "observations": [
       111
@@ -212,7 +212,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd",
     "digest": "sha256:687778d4dc798b1b96dff325c3db692fc453cfeabb35f49c888c1585c08adcfd",
     "observations": [
       115
@@ -221,7 +221,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
     "digest": "sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
     "observations": [
       118
@@ -240,7 +240,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent-operator@sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb",
     "digest": "sha256:9021478d1858b0e235291992ea928cd1864faad453321337c834170cb3889fdb",
     "observations": [
       124
@@ -249,7 +249,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/cloudwatch-agent@sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687",
     "digest": "sha256:edb2af917acde41563313cb7cf66d963bb5e5ee1b16b31d40b832b653822d687",
     "observations": [
       125,
@@ -288,7 +288,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit@sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc",
     "digest": "sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc",
     "observations": [
       156,
@@ -327,7 +327,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
     "digest": "sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
     "observations": [
       187,
@@ -346,7 +346,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
     "digest": "sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
     "observations": [
       198,
@@ -385,7 +385,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/coredns@sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f",
     "digest": "sha256:19c6bbbf2d4514c07c3f45cab531d47a8d675a9ec155de8da1c0c7ec3e64396f",
     "observations": [
       205,
@@ -395,7 +395,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server@sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74",
     "digest": "sha256:f00716dcbda66e16edb58db2b56045bfd609e1adaf60bfb2339eb5f7b2ea3d74",
     "observations": [
       207,
@@ -405,7 +405,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
     "digest": "sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
     "observations": [
       209,
@@ -446,7 +446,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
     "digest": "sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
     "observations": [
       211,
@@ -485,7 +485,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+    "reference": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
     "digest": "sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
     "observations": [
       212,
@@ -524,7 +524,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "digest": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
     "observations": [
       304
@@ -533,7 +533,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "digest": "sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
     "observations": [
       305
@@ -542,7 +542,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
     "digest": "sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
     "observations": [
       306
@@ -551,7 +551,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
     "digest": "sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
     "observations": [
       307
@@ -560,7 +560,7 @@
     "historical_pod_observations": 0
   },
   {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
     "digest": "sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
     "observations": [
       308

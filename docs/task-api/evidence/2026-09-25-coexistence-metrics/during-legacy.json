@@ -36,7 +36,7 @@
         "status": "no_op",
         "reason": "event_type_unhandled"
       },
-      "http_ms": 876.603768003406,
+      "http_ms": 876.000000000218,
       "owned_consistent_table_read_ms": 4.071977018611506
     },
     {

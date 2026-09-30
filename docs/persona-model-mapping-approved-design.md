@@ -395,7 +395,7 @@ Deployment follows `AGENTS.md` →
 `docs/adp-platform-deployment/deploy-with-agent.md` →
 `docs/adp-platform-deployment/deploy-quickstart.md`.
 
-The confirmed dev target is AWS account `879318057152` via profile `embark1`.
+The confirmed dev target is AWS account `000000000101` via profile `example-profile`.
 An existing environment uses `deploy-all.sh --update`, not the fresh-deploy
 path. Each phase must be validated against real AWS and Kubernetes state; a
 committed `.adp-deploy-state.json` is not evidence.

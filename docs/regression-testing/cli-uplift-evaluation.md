@@ -17,63 +17,57 @@ A successful checkpoint exits zero with `status: passed`, `partial: true`, and
 C01 records basic login separately from E02's full challenge/negative matrix.
 The login checkpoint does not run admin setup, Bedrock, GitHub, or model calls.
 
-## Approved targets
+## Private target configuration
 
-| Setting | Value |
-| --- | --- |
-| Environment | `dev` |
-| Platform / EC2 account | `879318057152` |
-| Bedrock destination for later routing tests | `605440105851` |
-| Region | `us-east-1` |
-| Gateway | `https://d1g6cal2ts4iis.cloudfront.net/api` |
-| VPC | `vpc-0d6115bead9301d25` |
-| Private subnet | `subnet-0860c744097c41a03` |
-| Cognito pool | `us-east-1_JEhv9xSGG` |
+Public examples contain fictional identifiers. They do not identify an approved
+or deployed environment. Keep real account IDs, gateway URLs, network resources,
+Cognito pool IDs, and fixture references in private configuration.
 
-These are test targets, not proof that a particular IAM profile or credential
-fixture exists. Verify the existing resources before configuring their references.
-The local operator AWS session was expired during preparation; no live AWS setup
-or validation is claimed by this change.
+Configure two secrets in each protected GitHub environment:
 
-## Customer-demo login regression
+- `CLI_UPLIFT_EVAL_BINDINGS_JSON`: a JSON object with the reviewed target settings.
+  Use the structure in `tests/e2e/cli_uplift/config.example.json` and the binding
+  examples; include the real platform/destination accounts, gateway URL,
+  `gateway_deployment` name, network, Cognito pool, and recovery resources.
+- `CLI_UPLIFT_EVAL_GATEWAY_CATALOG`: a JSON object keyed by that
+  `gateway_deployment` name. Follow the structure of the sanitized
+  `cli-uplift/gateway-deployment-receipts.json` example, with the reviewed cluster,
+  repository, selectors, and immutable build evidence for your target.
 
-The `customer-demo` GitHub environment targets account `925091290508` and
-`https://dz3lajwn5vfy2.cloudfront.net/api`. Its platform Terraform environment
-remains `dev`. The reviewed `bindings.customer-demo.json` selects a dedicated
-CLI regression administrator fixture; it does not use the demo administrator's
-credentials. The fixture password and TOTP seed remain in Secrets Manager.
+Both live evaluation and recovery require these secrets. Private bindings layer
+above the checked-in examples and below individual environment overrides.
+Catalog identity checks remain mandatory: a wrong account, URL, region, cluster,
+repository, or source revision fails validation. Secret values are read from the
+job environment and are never interpolated into shell commands.
 
-The environment permits dispatch from `main` and supplies
-`AWS_CLI_UPLIFT_EVAL_ROLE_ARN`. Its role can observe the named gateway Deployment
-and Service, read release identity, and manage tagged evaluation EC2 instances
-and their private recovery state. The instance profile reads only its bundle
-and dedicated fixture, alongside SSM agent permissions.
+Protect the GitHub environment with a main-branch deployment policy and scoped
+OIDC role. Use a dedicated CLI regression identity; store its password and TOTP
+seed in Secrets Manager. A login checkpoint validates the deployed CLI without
+upgrading the platform, and broader suites still require their own fixtures.
+
+Set `EVAL_ENVIRONMENT` and `EVAL_REVISION` from your private deployment record:
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment=customer-demo -f expected_revision='<verified-40-character-sha>' \
+  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
   -f mode=start -f suites=login
 ```
 
-This validates the deployed CLI without upgrading the platform. Broader suites
-still require their own fixtures; a passing login checkpoint is partial acceptance.
-The combined nightly continues to target dev.
-
 ## Configure the first run
 
-Configure the following in the repository's **dev environment**. Reuse approved
+Configure the following in the repository's **selected protected environment**. Reuse approved
 test resources. Do not invent ARNs or point at a real user's credentials.
 
 | Setting | Type | Purpose |
 | --- | --- | --- |
-| `AWS_CLI_UPLIFT_EVAL_ROLE_ARN` (fallback `AWS_E2E_ROLE_ARN`) | GitHub secret | Actions OIDC role in platform account 879318057152 |
+| `AWS_CLI_UPLIFT_EVAL_ROLE_ARN` (fallback `AWS_E2E_ROLE_ARN`) | GitHub secret | Actions OIDC role in the selected platform account |
 | `CLI_UPLIFT_EVAL_INSTANCE_PROFILE` | GitHub variable | Existing EC2 instance-profile name; otherwise the example defaults to `adp-cli-uplift-eval-instance` |
 | `CLI_UPLIFT_EVAL_STATE_BUCKET` | GitHub variable | Private platform-account S3 bucket for scripts and durable recovery state |
 | `CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID` | GitHub variable, when needed | KMS key used by that bucket/state |
 | `CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME` | GitHub variable | Secrets Manager **name**, not credential contents |
 
 The credential secret contains JSON with `admin_username` and `admin_password`
-for a dedicated native Cognito platform-admin test identity in the pool above.
+for a dedicated native Cognito platform-admin test identity in the configured pool.
 For this repeatable login checkpoint, use an identity whose initial password
 challenge has already been completed; it must still authenticate through the real
 CLI password endpoint on every run. No imported tokens. The full admin suite
@@ -94,7 +88,7 @@ For later destination scenarios, additionally configure:
 - `CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN`: destination-account access/evidence role.
 - `CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN`: destination-account provisioning role,
   assumable from the test EC2 profile and authorized for the CLI's CloudFormation
-  role setup. Both ARNs must name account **605440105851**.
+  role setup. Both ARNs must name your reviewed destination account.
 
 Neither destination role nor any GitHub fixture is required for login.
 
@@ -383,8 +377,8 @@ E30 (#5635) runs GitLab discovery/refusal through the installed CLI. It needs on
 Tenant story #5622 adds E23 to the default nightly story reads: visible memberships, explicit current selection and unknown selector refusal. E27 (`tenant-isolation`) requires `tenant_isolation.tenant_ids` with two distinct existing memberships for the installed human fixture; it checks concurrent reads through local default changes and Cognito refresh. No membership is granted and no global workspace selection or model inference occurs. E27 is blocked when that fixture is absent; inference, revoked-membership and uncertain-mutation live acceptance remains open.
 Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
 
-The dev fixture explicitly selects `sg-0f497fc6d4ec88610`, the existing private
-Devbox security group with no inbound rules and outbound HTTP/HTTPS. The VPC's
+Select a private evaluation security group with no inbound rules and outbound
+HTTP/HTTPS using private target configuration. The VPC's
 hardened default group has no egress: evaluation `36202597045` launched with
 that implicit default, could not register with SSM, and terminated its instance
 with verified cleanup. The harness now validates the selected group's VPC,
@@ -519,28 +513,15 @@ there is no fallback to broad usage. Omit the field to retain ordinary own-usage
 coverage. The fixture dispatches no Task or inference. Empty or incomplete
 pages still cannot establish complete run accounting.
 
-### Pre-production target
+### Additional deployment targets
 
-The disposable-EC2 workflow selects `bindings.<environment>.json` for both
-execution and recovery. Dispatch with `environment=pre-production` to use AWS
-account `615296308642`; the platform's Terraform environment within that account
-is still `dev`. Account guards resolve the selected bindings rather than the
-example development account. An environment without a binding file fails before
-EC2 launch or cleanup.
-
-`bindings.pre-production.json` names the existing gateway, Cognito test-admin
-fixture and private subnet, plus the dedicated regression bucket, instance
-profile and security group. The protected GitHub environment admits `main` only
-and supplies `AWS_CLI_UPLIFT_EVAL_ROLE_ARN`. Its OIDC trust is restricted to
-`repo:aws-e/adp:environment:pre-production`. The instance has SSM, bundle reads
-and access to that one fixture; the orchestrator can launch and terminate only
-tagged evaluation instances. No additional optional product modules are enabled.
-
-After deployment and revision verification, use the existing workflow with
-`environment=pre-production`, `expected_revision=<full deployed SHA>` and
-`suites=nightly`. Missing optional fixtures remain visible as blocked cases;
-`login` is available as the existing narrower diagnostic. Infrastructure setup
-and offline guard success do not establish a live regression pass.
+Configure separate protected environment secrets for every target using the
+[private target configuration](#private-target-configuration) procedure. The
+GitHub environment name and the platform's Terraform environment can differ.
+Select the supported environment in workflow dispatch and supply the verified
+deployed revision. Missing optional fixtures remain visible as blocked cases;
+`login` provides a narrower diagnostic. Infrastructure setup and offline checks
+do not establish a live regression pass.
 
 ### Native login fixtures with required MFA
 

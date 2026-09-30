@@ -300,8 +300,8 @@ rather than after. A migration reviewed against one account and applied to anoth
 is not a reviewed migration.
 
 ```bash
-export AWS_PROFILE=embark1          # the mapped profile for the target account
-export ADP_ACCOUNT=879318057152     # the intended target
+export AWS_PROFILE=example-profile          # the mapped profile for the target account
+export ADP_ACCOUNT=000000000101     # the intended target
 export ADP_ENV=dev
 export TASK_DIR="$HOME/.adp/migrate-5831"
 export REPO_ROOT="$(git rev-parse --show-toplevel)"

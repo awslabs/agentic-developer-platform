@@ -7,7 +7,7 @@
 > **Status**: Design-only. No code, no teardown executed.  
 > **Issue**: #2651  
 > **Parent EPIC**: #2571  
-> **Target inventory**: Account `261421447505` (deploy #2562)  
+> **Target inventory**: Account `000000000215` (deploy #2562)
 > **Author**: @agent-architect  
 > **Date**: 2026-07-02
 
@@ -160,13 +160,13 @@ operator runs a single module manually, the per-module guard still protects.
 ```bash
 ./platform/scripts/undeploy.sh
 # Output:
-#   AWS Account: 261421447505
-#   ARN: arn:aws:iam::261421447505:role/adp-dev-deploy-role
+#   AWS Account: 000000000215
+#   ARN: arn:aws:iam::000000000215:role/adp-dev-deploy-role
 #   Region: us-east-1
 #   Environment: dev
 #
 #   This will destroy ALL ADP infrastructure in this account.
-#   Type the account ID (261421447505) to confirm:
+#   Type the account ID (000000000215) to confirm:
 #   > _
 ```
 
@@ -220,7 +220,7 @@ temp location for workflow mode):
 
 ```json
 {
-  "account_id": "261421447505",
+  "account_id": "000000000215",
   "environment": "dev",
   "started_at": "2026-07-02T09:30:00Z",
   "phases": {
@@ -311,7 +311,7 @@ For each phase, instead of destroying:
 
 ```
 === ADP Undeploy — DRY RUN ===
-Account: 261421447505 | Environment: dev | Region: us-east-1
+Account: 000000000215 | Environment: dev | Region: us-east-1
 
 Phase 1: Agent Context
   K8s: namespace 'agent-context' exists (3 pods running)
@@ -347,7 +347,7 @@ Phase 5: Platform
   Estimated time: ~10 min
 
 PROTECTED (will not be touched):
-  - State backend: s3://adp-terraform-state-261421447505 ✓
+  - State backend: s3://adp-terraform-state-000000000215 ✓
   - GitHub App secrets: adp/dev/github-app/* (2 secrets) ✓
   - GitHub App secrets: adp/adp-test-ml/gh-app-* (6 secrets) ✓
   - RDS-managed secrets: rds!* (1 secret) ✓
@@ -557,7 +557,7 @@ E (independent)──→ F
 
 ## Appendix A: Resource Coverage Matrix
 
-Validating against #2562's deployed inventory (account `261421447505`):
+Validating against #2562's deployed inventory (account `000000000215`):
 
 | Resource Class | Phase That Destroys It | Covered? |
 |----------------|----------------------|----------|

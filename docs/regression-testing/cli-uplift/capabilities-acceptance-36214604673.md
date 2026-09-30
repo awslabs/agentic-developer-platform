@@ -27,11 +27,11 @@ between independent administrator and ordinary sessions in one temporary HOME,
 with explicit private configuration stores, to test identity-cache isolation.
 It never changes deployment flags or administrator permissions.
 
-The report identifies account `879318057152`, region `us-east-1`, tenant
+The report identifies account `000000000101`, region `us-east-1`, tenant
 `adp-platform`, the gateway URL, harness commit, served revision, evaluation and
 instance. E19 verifies temporary-home cleanup; the report records overall
 cleanup complete. A fresh independent EC2 read confirmed
-`i-05483b598ae8fd528` **terminated**. Worker revision is not applicable to this
+`i-00000000000000012` **terminated**. Worker revision is not applicable to this
 no-inference diagnostic. The report artifact is
 `cli-uplift-eval-36214604673-1`; its SHA-256 and retained case data are in the
 companion JSON.
