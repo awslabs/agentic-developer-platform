@@ -1116,7 +1116,8 @@ module "budget_lambda" {
 # produces a real Terraform diff. See the image_uri comment in the module call.
 data "aws_ecr_image" "orchestration_tick" {
   repository_name = "adp-gateway"
-  image_tag       = var.orchestration_tick_image_tag
+  image_tag       = var.orchestration_tick_image_digest == null ? var.orchestration_tick_image_tag : null
+  image_digest    = var.orchestration_tick_image_digest
 }
 
 # Issue #4316: the SG fronting the shared VPC interface endpoints, so the tick can

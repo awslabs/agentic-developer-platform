@@ -842,6 +842,14 @@ else
   # longer build them here — that path now works for stage-by-stage applies and
   # CI too, not just this script. See modules/gateway/infra/main.tf.
 
+  # The release image is built in the next phase. Keep the installed engine
+  # pinned during this first plan; customer ECR repositories need no latest tag.
+  if [ "$UPDATE_MODE" = true ]; then
+    GATEWAY_INITIAL_ENGINE_DIGEST=$(python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+      --current-image-digest --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
+      || fail "Cannot verify the installed orchestration image before the gateway plan"
+  fi
+
   # Freeze the old pricing writer before Terraform changes either Lambda.
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" quiesce \
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
@@ -857,7 +865,8 @@ else
     ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/wire-gateway-alb.sh" \
       || fail "Cannot discover existing gateway load balancers"
     gateway_alb_vars
-    terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
+    terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -auto-approve
@@ -1363,6 +1372,7 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
     cd "$ROOT_DIR/modules/gateway/infra"
     if [ "$UPDATE_MODE" = true ]; then
       terraform_update_apply "gateway-alb-wire" "$GATEWAY_UPDATE_VAR_FILE" \
+        -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" \
         -var "orchestration_tick_image_tag=$IMAGE_TAG" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
@@ -1372,6 +1382,7 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
     else
       terraform apply \
         -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" \
         -var "orchestration_tick_image_tag=$IMAGE_TAG" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
@@ -1758,8 +1769,10 @@ if [ "$UPDATE_MODE" = true ]; then
     # Keep the engine on the selected release through the last Terraform pass.
     # The environment default can otherwise resolve to an older gateway image.
     terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" \
       -var "orchestration_tick_image_tag=$IMAGE_TAG"
     UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" \
       -var "orchestration_tick_image_tag=$IMAGE_TAG"
     python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
       --verify-only --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" \

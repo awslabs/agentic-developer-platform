@@ -23,6 +23,29 @@ def admission_settings(environment):
     return settings
 
 
+def current_image_digest(*, account, region, environment):
+    """Read the installed engine's immutable image before building its successor.
+
+    Never resolve a mutable tag or fall back after an inaccessible/missing engine.
+    Terraform verifies that this digest still exists in the target ECR repository.
+    """
+    identity = json.loads(command(['aws', 'sts', 'get-caller-identity', '--region', region, '--output', 'json']))
+    if identity['Account'] != account:
+        raise ValueError('AWS account differs from requested release account')
+    function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
+    deployed = json.loads(command(['aws', 'lambda', 'get-function', '--function-name', function,
+                                  '--region', region, '--output', 'json']))
+    config = deployed['Configuration']
+    if config['State'] != 'Active' or config['LastUpdateStatus'] != 'Successful':
+        raise ValueError('Existing engine is not ready for an infrastructure upgrade')
+    registry = f'{account}.dkr.ecr.{region}.amazonaws.com/adp-gateway'
+    reference = deployed['Code'].get('ResolvedImageUri', '')
+    match = re.fullmatch(re.escape(registry) + r'@(sha256:[0-9a-f]{64})', reference)
+    if not match:
+        raise ValueError('Existing engine must use an immutable image in the target gateway repository')
+    return match.group(1)
+
+
 def synchronize(*, image, account, region, environment, namespace, verify_only=False):
     def aws(*args):
         result = command(['aws', *args, '--region', region, '--output', 'json'])
@@ -116,11 +139,20 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('image', 'account', 'region', 'environment'):
+    for name in ('account', 'region', 'environment'):
         parser.add_argument('--' + name, required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--image')
+    selection.add_argument('--current-image-digest', action='store_true')
     parser.add_argument('--namespace', default='adp-gateway')
     parser.add_argument('--verify-only', action='store_true')
-    print(json.dumps(synchronize(**vars(parser.parse_args())), sort_keys=True))
+    args = vars(parser.parse_args())
+    if args.pop('current_image_digest'):
+        if args['verify_only']:
+            parser.error('--verify-only requires --image')
+        print(current_image_digest(**{key: args[key] for key in ('account', 'region', 'environment')}))
+    else:
+        print(json.dumps(synchronize(**args), sort_keys=True))
 
 
 if __name__ == '__main__':

@@ -538,6 +538,16 @@ variable "orchestration_tick_image_tag" {
   default     = "latest"
 }
 
+variable "orchestration_tick_image_digest" {
+  type        = string
+  default     = null
+  description = "Optional immutable gateway image digest. Overrides the tag during staged upgrades."
+  validation {
+    condition     = var.orchestration_tick_image_digest == null ? true : can(regex("^sha256:[0-9a-f]{64}$", var.orchestration_tick_image_digest))
+    error_message = "The orchestration image digest must be sha256 followed by 64 lowercase hexadecimal characters."
+  }
+}
+
 variable "orchestration_alert_email_addresses" {
   type        = list(string)
   description = <<-EOT

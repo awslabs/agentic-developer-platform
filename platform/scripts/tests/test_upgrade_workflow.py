@@ -15,6 +15,45 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_initial_gateway_plan_preserves_engine_and_refuses_failed_discovery(self):
+        source = (ROOT / 'platform/scripts/deploy-all.sh').read_text()
+        start = source.index('if deploy_phase_begin gateway-infra; then')
+        block = source[start:source.index('\nrefresh_credentials', start)]
+        prefix = '''set -euo pipefail
+deploy_phase_begin() { return 0; }
+deploy_phase_complete() { :; }
+step() { :; }
+fail() { echo "$*" >&2; exit 1; }
+python3() {
+  if [[ " $* " = *" --current-image-digest "* ]]; then
+    [ "$DISCOVERY_FAIL" = false ] || return 1
+    echo "$OLD_DIGEST"
+  else
+    echo quiesce >> "$CALLS"
+  fi
+}
+terraform() { echo init >> "$CALLS"; }
+bash() { :; }
+gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }
+terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
+'''
+        for failure in (False, True):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                calls = Path(tmp) / 'calls'
+                digest = 'sha256:' + 'b' * 64
+                env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / 'platform/scripts'),
+                           UPDATE_MODE='true', DEPLOY_GATEWAY='true', ACCOUNT_ID='123456789012',
+                           ENVIRONMENT='dev', AWS_REGION='us-east-1', GATEWAY_UPDATE_VAR_FILE='gateway.json',
+                           CALLS=str(calls), OLD_DIGEST=digest, DISCOVERY_FAIL=str(failure).lower())
+                result = subprocess.run(['bash', '-c', prefix + block], env=env, capture_output=True, text=True)
+                if failure:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(calls.exists(), 'Discovery must fail before pricing or Terraform changes')
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(calls.read_text().splitlines(), [
+                        'quiesce', 'init', f'gateway gateway.json -var preserved-albs -var orchestration_tick_image_digest={digest}'])
+
     def test_gateway_retry_does_not_restart_unchanged_pods(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index('  if [ "$UPDATE_MODE" = true ]; then', source.index('DEPLOYMENT_APPLY_RESULT='))
@@ -135,6 +174,7 @@ terraform_update_apply() {
   echo "terraform $1 check=${UPGRADE_CHECK_ONLY:-false}" >> "$CALLS"
   if [ "$1" = gateway-final ]; then
     [[ " $* " = *" -var orchestration_tick_image_tag=$IMAGE_TAG "* ]] || return 9
+    [[ " $* " = *" -var orchestration_tick_image_digest=${GATEWAY_IMAGE##*@} "* ]] || return 9
   fi
 }
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }

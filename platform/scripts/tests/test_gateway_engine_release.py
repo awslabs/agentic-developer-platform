@@ -81,6 +81,38 @@ class SyncTests(unittest.TestCase):
     def updates(self):
         return [c for c in self.calls if 'update-function-code' in c]
 
+    def current_digest(self):
+        with patch.object(script, 'command', self.command):
+            return script.current_image_digest(account=ACCOUNT, region='us-east-1', environment='dev')
+
+    def test_initial_plan_uses_resolved_digest_without_tag_lookup_or_mutation(self):
+        self.assertEqual(self.current_digest(), OLD.split('@')[1])
+        self.assertEqual([c[:3] for c in self.calls], [
+            ['aws', 'sts', 'get-caller-identity'], ['aws', 'lambda', 'get-function']])
+
+    def test_initial_plan_rejects_mutable_foreign_or_malformed_images(self):
+        for image in [REGISTRY + ':latest', OLD.replace(ACCOUNT, '999999999999'),
+                      OLD.replace('/adp-gateway', '/other'), OLD[:-1], OLD.replace('us-east-1', 'us-west-2')]:
+            with self.subTest(image=image):
+                self.engine = image
+                with self.assertRaises(ValueError):
+                    self.current_digest()
+        self.assertFalse(self.updates())
+
+    def test_initial_plan_refuses_wrong_account_or_unready_engine(self):
+        self.account = '999999999999'
+        with self.assertRaisesRegex(ValueError, 'AWS account'):
+            self.current_digest()
+        self.account = ACCOUNT
+        self.status = 'InProgress'
+        with self.assertRaisesRegex(ValueError, 'not ready'):
+            self.current_digest()
+
+    def test_initial_plan_does_not_fall_back_when_engine_cannot_be_read(self):
+        self.fail_get = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.current_digest()
+
     def test_update_is_pinned_and_revision_fenced(self):
         self.assertEqual(self.sync()['image'], NEW)
         update = self.updates()[0]
