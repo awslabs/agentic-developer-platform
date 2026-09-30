@@ -195,7 +195,7 @@ def validate(config):
 
     if result.get("gateway_deployment") is not None:
         require(
-            result["gateway_deployment"] in ("dev", "pre-production"),
+            result["gateway_deployment"] in ("dev", "pre-production", "customer-demo"),
             "Unknown gateway_deployment binding",
         )
     url = str(result["gateway_url"]).rstrip("/")

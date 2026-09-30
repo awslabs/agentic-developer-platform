@@ -1,0 +1,13 @@
+{
+  "_comment": "Customer-demo CLI regression. Platform Terraform environment remains dev; credentials are dedicated test fixtures.",
+  "platform_account": "925091290508",
+  "gateway_url": "https://dz3lajwn5vfy2.cloudfront.net/api",
+  "gateway_deployment": "customer-demo",
+  "vpc_id": "vpc-09678a3ec3f2bb305",
+  "private_subnet_id": "subnet-0c87697ff934a6018",
+  "cognito_user_pool_id": "us-east-1_tHpiT8Uco",
+  "state_bucket": "adp-cli-uplift-eval-state-925091290508",
+  "instance_profile": "adp-cli-uplift-eval-instance",
+  "instance_security_group_id": "sg-07b2f697ed8e644c5",
+  "credential_secret_name": "adp/dev/cli-regression/admin-credentials"
+}

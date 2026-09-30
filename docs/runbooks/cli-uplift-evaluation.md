@@ -35,6 +35,30 @@ fixture exists. Verify the existing resources before configuring their reference
 The local operator AWS session was expired during preparation; no live AWS setup
 or validation is claimed by this change.
 
+## Customer-demo login regression
+
+The `customer-demo` GitHub environment targets account `925091290508` and
+`https://dz3lajwn5vfy2.cloudfront.net/api`. Its platform Terraform environment
+remains `dev`. The reviewed `bindings.customer-demo.json` selects a dedicated
+CLI regression administrator fixture; it does not use the demo administrator's
+credentials. The fixture password and TOTP seed remain in Secrets Manager.
+
+The environment permits dispatch from `main` and supplies
+`AWS_CLI_UPLIFT_EVAL_ROLE_ARN`. Its role can observe the named gateway Deployment
+and Service, read release identity, and manage tagged evaluation EC2 instances
+and their private recovery state. The instance profile reads only its bundle
+and dedicated fixture, alongside SSM agent permissions.
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment=customer-demo -f expected_revision=<verified-40-character-sha> \
+  -f mode=start -f suites=login
+```
+
+This validates the deployed CLI without upgrading the platform. Broader suites
+still require their own fixtures; a passing login checkpoint is partial acceptance.
+The combined nightly continues to target dev.
+
 ## Configure the first run
 
 Configure the following in the repository's **dev environment**. Reuse approved

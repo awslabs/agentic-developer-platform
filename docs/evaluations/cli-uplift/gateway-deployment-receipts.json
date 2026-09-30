@@ -274,5 +274,21 @@
         "image_tag": "9d7046494f49a62f66d111f29979d763a3622c3e"
       }
     }
+  },
+  "customer-demo": {
+    "gateway_url": "https://dz3lajwn5vfy2.cloudfront.net/api",
+    "account": "925091290508",
+    "region": "us-east-1",
+    "cluster": "adp-dev-eks-cluster",
+    "cluster_arn": "arn:aws:eks:us-east-1:925091290508:cluster/adp-dev-eks-cluster",
+    "namespace": "adp-gateway",
+    "deployment": "bedrockgateway",
+    "service": "bedrockgateway",
+    "container": "bedrockgateway",
+    "selector": {
+      "app": "bedrockgateway"
+    },
+    "image_repository": "925091290508.dkr.ecr.us-east-1.amazonaws.com/adp-gateway",
+    "images": {}
   }
 }

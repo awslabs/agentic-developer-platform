@@ -14286,3 +14286,26 @@ def test_gateway_immutable_source_rejects_unproven_mapping(
     (repo if target == "repo" else image)[key] = value
     with pytest.raises(PortError):
         dp.resolve(aws, cfg, {})
+
+
+def test_customer_demo_binding_uses_dedicated_fixture_and_rejects_other_targets():
+    cfg = config.from_environment(
+        {
+            "CLI_UPLIFT_EVAL_BINDINGS": "tests/e2e/cli_uplift/bindings.customer-demo.json",
+            "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "a" * 40,
+        }
+    )
+    config.require_bindings(cfg, ("login",))
+    selected = dp.binding(cfg)
+    assert cfg["platform_account"] == selected["account"] == "925091290508"
+    assert cfg["credential_secret_name"] == "adp/dev/cli-regression/admin-credentials"
+    assert cfg["state_bucket"].endswith(cfg["platform_account"])
+    assert selected["cluster_arn"].split(":")[4] == cfg["platform_account"]
+    assert selected["image_repository"].startswith(cfg["platform_account"] + ".")
+    assert selected["images"] == {}  # Resolve the live immutable ECR source tag.
+    for field, value in (
+        ("platform_account", "615296308642"),
+        ("gateway_url", "https://dw4gomrsecmzn.cloudfront.net/api"),
+    ):
+        with pytest.raises(PortError, match="does not match evaluation target"):
+            dp.binding({**cfg, field: value})
