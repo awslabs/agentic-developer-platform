@@ -395,7 +395,9 @@ def test_deployment_entrypoints_verify_before_reporting_success():
     assert direct.index('enable-bedrock-models.sh" --verify') < direct.index(
         'step "Deployment complete"'
     )
-    assert "export ADP_BEDROCK_VERIFY_DEFERRED=true" in root
+    # The checkpointed orchestrator now owns the complete deployment and must
+    # verify Bedrock before recording success; the wrapper must not defer it.
+    assert "export ADP_BEDROCK_VERIFY_DEFERRED=true" not in root
     assert "ADP_BEDROCK_VERIFY_DEFERRED:-false" in direct
     assert "Bedrock model access (skipped — update mode)" not in direct
 
@@ -441,14 +443,18 @@ def test_access_preparation_runs_on_deploy_and_update_only(
     assert result.stdout.splitlines() == (["prepare"] if expected else [])
 
 
-def test_main_wrapper_stops_when_default_model_cannot_invoke(tmp_path):
+@pytest.mark.parametrize("failure_stage", ["orchestrator", "wrapper"])
+def test_main_wrapper_stops_when_default_model_cannot_invoke(tmp_path, failure_stage):
     shutil.copyfile(ROOT / "deploy.sh", tmp_path / "deploy.sh")
     scripts = tmp_path / "platform/scripts"
     scripts.mkdir(parents=True)
     log = tmp_path / "calls"
     (scripts / "deploy-all.sh").write_text(
-        '#!/bin/bash\n[ "$ADP_BEDROCK_VERIFY_DEFERRED" = true ] || exit 9\n'
+        '#!/bin/bash\n[ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ] || exit 9\n'
         'echo deploy >> "$TEST_CALLS"\n'
+        'if [ "$TEST_FAILURE_STAGE" = orchestrator ]; then\n'
+        '  bash "$(dirname "$0")/enable-bedrock-models.sh" --verify\n'
+        'fi\n'
     )
     (scripts / "enable-bedrock-models.sh").write_text(
         '#!/bin/bash\n[ "$1" = "--verify" ] || exit 9\n'
@@ -470,6 +476,7 @@ def test_main_wrapper_stops_when_default_model_cannot_invoke(tmp_path):
         env={
             **os.environ,
             "TEST_CALLS": str(log),
+            "TEST_FAILURE_STAGE": failure_stage,
             "PATH": str(binary) + os.pathsep + os.environ["PATH"],
         },
         capture_output=True,

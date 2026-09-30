@@ -227,7 +227,7 @@ def harness(tmp_path):
     )
 
     for rel, marker in _SUB_SCRIPTS.items():
-        failure = 'exit "${TEST_FAIL_WEBHOOK:-0}"' if 'deploy-webhook-ingress.sh' in rel else 'exit 0'
+        failure = 'exit "${TEST_FAIL_WEBHOOK:-0}"' if "deploy-webhook-ingress.sh" in rel else "exit 0"
         _write_exec(root / rel, f'#!/usr/bin/env bash\necho "{marker}"\n{failure}\n')
 
     _write_exec(
