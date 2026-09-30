@@ -103,6 +103,7 @@ UNIT_MODULES = [
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
+    "src.admin.identity.github_enrollment_routes",
     "src.admin.identity.recovery_routes",  # Native Cognito recovery: no legacy /api prefix.
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
     # Issue #4842: platform-admin attach/detach of an ORG's GitHub connection.

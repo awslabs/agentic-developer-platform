@@ -1333,3 +1333,8 @@ export async function getMemberGithubUserId(userId: string): Promise<string | nu
   const providerUserId = github?.provider_user_id?.trim();
   return providerUserId ? providerUserId : null;
 }
+
+/** Assign a GitHub broker identity without changing a native Cognito login. */
+export async function addGitHubOrgMember(orgId: string, data: { github_username: string; team_id: string; role: 'member' | 'org_admin' }): Promise<{ id: string; github_username: string; message: string }> {
+  return apiClient.post(`/admin/identity/organizations/${encodeURIComponent(orgId)}/github-members`, data);
+}

@@ -189,6 +189,13 @@
     "classification": "durable-operation"
   },
   {
+    "method": "POST",
+    "path": "/admin/identity/organizations/{org_id}/github-members",
+    "module": "src.admin.identity.github_enrollment_routes",
+    "endpoint": "add_github_member",
+    "classification": "durable-operation"
+  },
+  {
     "method": "PUT",
     "path": "/admin/identity/organizations/{org_id}/users/{user_id}/cognito",
     "module": "src.admin.identity.recovery_routes",

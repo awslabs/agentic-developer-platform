@@ -414,8 +414,26 @@ class TestAppLayerPrimaryWriters:
         if "UserIdentity" not in source and "user_identities" not in source:
             return []
 
+        tree = ast.parse(source, filename=str(path))
+        # The guarded team helper writes TeamMembership, not UserIdentity.
+        # Mixed modules may call it while also reading/linking UserIdentity.
+        team_helpers = {
+            alias.asname or alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "src.admin.team_memberships"
+            for alias in node.names
+            if alias.name == "add_membership"
+        }
+        team_keywords = {
+            id(keyword)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in team_helpers
+            for keyword in node.keywords
+        }
         offenders: list[str] = []
-        for node in ast.walk(ast.parse(source, filename=str(path))):
+        for node in ast.walk(tree):
+            if id(node) in team_keywords:
+                continue
             if isinstance(node, ast.keyword) and node.arg == "is_primary":
                 offenders.append(f"{path}:{node.value.lineno}")
             elif isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign):
@@ -454,6 +472,17 @@ class TestAppLayerPrimaryWriters:
         )
 
         assert len(self._is_primary_writes(offending)) == 2
+
+    def test_guarded_team_call_does_not_hide_identity_writes(self, tmp_path):
+        mixed = tmp_path / "mixed.py"
+        source = (
+            "from src.shared.models.vault import UserIdentity\n"
+            "from src.admin.team_memberships import add_membership as add_team\n"
+            "async def enroll(db):\n"
+            "    await add_team(db, is_primary=True)\n"
+        )
+        assert self._is_primary_writes(mixed, source) == []
+        assert len(self._is_primary_writes(mixed, source + "    db.add(UserIdentity(is_primary=True))\n")) == 1
 
     def test_the_detector_scopes_to_user_identity_modules(self, tmp_path):
         """team_memberships' own (guarded) is_primary writes must not trip the pin."""

@@ -57,6 +57,7 @@ vi.mock('@/services/admin', () => ({
   // PLATFORM-wide while the team-add route is org-scoped, so a person from another
   // org has to be brought into this one first or the team add can only ever 404.
   addOrgMember: vi.fn(),
+  addGitHubOrgMember: vi.fn(),
 }));
 
 const mockPermissions = vi.fn();
@@ -87,6 +88,7 @@ import {
   removeOrgUser,
   listPlatformUsers,
   addOrgMember,
+  addGitHubOrgMember,
 } from '@/services/admin';
 
 const mockGetOrgs = getOrganizations as ReturnType<typeof vi.fn>;
@@ -1082,6 +1084,37 @@ describe('Organizations admin panel', () => {
       await user.type(screen.getByLabelText('Search members'), 'sam field');
       expect(screen.getByText('Sam Field')).toBeInTheDocument();
       expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument();
+    });
+
+    it('assigns a GitHub username to the selected organization and team', async () => {
+      vi.mocked(addGitHubOrgMember).mockResolvedValue({ id: 'github-user', github_username: 'octocat', message: 'Assigned.' });
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await user.click(screen.getByRole('button', { name: '+ Add member' }));
+      await user.click(screen.getByRole('radio', { name: 'GitHub username' }));
+      await user.type(screen.getByLabelText('GitHub username', { selector: 'input[type="text"]' }), 'octocat');
+      await user.selectOptions(screen.getByLabelText('Team'), 'sophos-team-web');
+      await user.click(screen.getByRole('button', { name: 'Assign GitHub user' }));
+      await waitFor(() => expect(addGitHubOrgMember).toHaveBeenCalledWith('sophos', {
+        github_username: 'octocat', team_id: 'sophos-team-web', role: 'member',
+      }));
+      expect(mockAddOrgMember).not.toHaveBeenCalled();
+      expect(mockAddTeamMember).not.toHaveBeenCalled();
+    });
+
+    it('keeps the GitHub assignment modal open with conflict details', async () => {
+      vi.mocked(addGitHubOrgMember).mockRejectedValue(new Error('This GitHub account is linked to a different login.'));
+      const user = userEvent.setup();
+      renderPanel();
+      await openMembers(user);
+      await user.click(screen.getByRole('button', { name: '+ Add member' }));
+      await user.click(screen.getByRole('radio', { name: 'GitHub username' }));
+      await user.type(screen.getByLabelText('GitHub username', { selector: 'input[type="text"]' }), 'octocat');
+      await user.selectOptions(screen.getByLabelText('Team'), 'sophos-team-web');
+      await user.click(screen.getByRole('button', { name: 'Assign GitHub user' }));
+      expect(await screen.findByTestId('add-member-error')).toHaveTextContent('different login');
+      expect(screen.getByRole('button', { name: 'Assign GitHub user' })).toBeEnabled();
     });
 
     it('adds a member through the T1 membership call from the assign-member modal', async () => {

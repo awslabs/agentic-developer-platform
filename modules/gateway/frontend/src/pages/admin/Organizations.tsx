@@ -93,6 +93,7 @@ import { TeamManagement } from '@/components/department/TeamManagement';
 import { PersonPicker } from '@/components/bedrock/BedrockAccountRouting';
 import {
   addOrgMember,
+  addGitHubOrgMember,
   addTeamMember,
   assignUserRole,
   createDepartment,
@@ -241,6 +242,8 @@ export default function Organizations() {
   // "+ Add member" modal state (#4936 review, M2d — the mockup's assign-member modal).
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [addPersonId, setAddPersonId] = useState('');
+  const [addMethod, setAddMethod] = useState<'person' | 'github'>('person');
+  const [addGitHubUsername, setAddGitHubUsername] = useState('');
   const [addTeamId, setAddTeamId] = useState('');
   const [addRole, setAddRole] = useState<'member' | 'org_admin'>('member');
   const [isAddingMember, setIsAddingMember] = useState(false);
@@ -542,6 +545,8 @@ export default function Organizations() {
   const resetAddMember = () => {
     setIsAddMemberOpen(false);
     setAddPersonId('');
+    setAddMethod('person');
+    setAddGitHubUsername('');
     setAddPerson(null);
     setAddTeamId('');
     setAddRole('member');
@@ -581,11 +586,20 @@ export default function Organizations() {
    * actually enforcing it.
    */
   const handleAddMember = async () => {
-    if (!selectedOrgId || !addPersonId || !addTeamId) return;
+    if (!selectedOrgId || !addTeamId || (addMethod === 'github' ? !addGitHubUsername.trim() : !addPersonId)) return;
     setIsAddingMember(true);
     setError(null);
     setAddMemberError(null);
     try {
+      if (addMethod === 'github') {
+        const result = await addGitHubOrgMember(selectedOrgId, {
+          github_username: addGitHubUsername.trim(), team_id: addTeamId, role: addRole,
+        });
+        setNotice(`${result.github_username}: ${result.message}`);
+        resetAddMember();
+        await loadMembers(selectedOrgId, canReadMemberBudgets);
+        return;
+      }
       let memberId = addPersonId;
       if (addNeedsOrgJoin) {
         const joined = await addOrgMember(selectedOrgId, { userId: addPersonId, role: addRole });
@@ -1185,6 +1199,22 @@ export default function Organizations() {
         title={`Add member to ${selectedOrg?.name ?? 'organization'}`}
       >
         <div className="space-y-4">
+          <fieldset>
+            <legend className="text-sm font-medium">Add by</legend>
+            <div className="mt-2 flex gap-4">
+              <label><input type="radio" name="add-member-method" checked={addMethod === 'person'} onChange={() => { setAddMethod('person'); setAddMemberError(null); }} /> Existing ADP person</label>
+              <label><input type="radio" name="add-member-method" checked={addMethod === 'github'} onChange={() => { setAddMethod('github'); setAddNeedsOrgJoin(false); setAddMemberError(null); }} /> GitHub username</label>
+            </div>
+          </fieldset>
+          {addMethod === 'github' ? (
+            <div className="space-y-2">
+              <Input type="text" name="github-member-username" label="GitHub username" value={addGitHubUsername}
+                onChange={(e) => setAddGitHubUsername(e.target.value)} placeholder="e.g. octocat" />
+              <p className="text-sm text-gray-500">Assign this personal GitHub account to {selectedOrg?.name} and the selected primary team.
+                They can sign in with GitHub without submitting an access request. No invitation email is sent.</p>
+              <p className="text-sm text-gray-500">Existing login selections are preserved. A conflicting native login or primary team requires administrator review.</p>
+            </div>
+          ) : (
           <PersonPicker
             label="Person"
             namePrefix="add-member-person"
@@ -1207,6 +1237,8 @@ export default function Organizations() {
             }}
             helperText="GitHub ID shown first when linked."
           />
+
+          )}
 
           <div>
             <Select
@@ -1284,9 +1316,9 @@ export default function Organizations() {
             <Button
               onClick={handleAddMember}
               isLoading={isAddingMember}
-              disabled={!addPersonId || !addTeamId}
+              disabled={!addTeamId || (addMethod === 'github' ? !addGitHubUsername.trim() : !addPersonId)}
             >
-              {addNeedsOrgJoin ? 'Add to organization and team' : 'Add member'}
+              {addMethod === 'github' ? 'Assign GitHub user' : addNeedsOrgJoin ? 'Add to organization and team' : 'Add member'}
             </Button>
           </ModalFooter>
         </div>
