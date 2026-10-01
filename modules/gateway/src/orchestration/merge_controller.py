@@ -55,7 +55,11 @@ PHASES = (ExecutionPhase.MERGE_READY,)
 
 
 async def code_only_delivery(session, context, node):
-    """Only the explicitly accepted delivery contract may end at merged code."""
+    """End code delivery at merge when the accepted policy contains only code work.
+
+    Deployment permissions or gates retain the full delivery pipeline. Evaluation
+    nodes retain their own acceptance requirements in either mode.
+    """
     plan = await session.scalar(
         select(OrchestrationAcceptedPlan).where(
             OrchestrationAcceptedPlan.org_id == node.org_id,
@@ -64,6 +68,19 @@ async def code_only_delivery(session, context, node):
         )
     )
     marker = (plan.plan_document or {}).get("execution_continuation") if plan else None
+    if marker is None:
+        from .policy_admission import load_in_force_policy
+
+        admission = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+        policy = admission.policy
+        if admission.refusal is not None or admission.plan_version != context.identity.accepted_plan_version:
+            raise CycleBlockedError("code_delivery_contract_changed")
+        return bool(
+            policy is not None
+            and Action.MERGE in policy.allowed_actions
+            and not policy.environment_connection_ids
+            and set(policy.allowed_actions).union(policy.human_gates) <= {Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE}
+        )
     if not isinstance(marker, dict) or marker.get("delivery_mode") is None:
         return False
     from .shared_cycle import shared_marker

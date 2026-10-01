@@ -114,6 +114,31 @@ class WorkflowObservation(HandlerObservation):
     target: object | None = None
 
 
+async def code_delivery_completion(session, context, *, settling=False):
+    """Recover a verified code-only merge left in the old deployment phase."""
+    from .merge_controller import code_only_delivery
+
+    node = await session.get(OrchestrationNode, context.identity.node_id, populate_existing=True)
+    if node is None or node.org_id != context.identity.org_id:
+        return None
+    if not await code_only_delivery(session, context, node):
+        return None
+    _, _, receipt = await load_delivery_merge(session, identity=context.identity, node=node, allow_concluded=settling)
+    # Never abandon an already-recorded deployment effect or its reconciliation.
+    action = await session.scalar(
+        select(OrchestrationAction.id)
+        .where(
+            OrchestrationAction.org_id == context.identity.org_id,
+            OrchestrationAction.execution_id == context.execution.id,
+            OrchestrationAction.kind.in_([WORKFLOW_KIND, HANDOFF_KIND]),
+        )
+        .limit(1)
+    )
+    if action is not None:
+        raise CycleBlockedError("code_delivery_has_deployment_effects")
+    return {"code_only": True, "merge_operation_key": receipt.operation_key, "merge_sha": receipt.merge_sha}
+
+
 class WorkflowServices:
     def __init__(self, factory, *, authority=None, provider=None, targets=None, manifest_loader=load_packaged_manifest):
         self.factory = factory
@@ -121,6 +146,10 @@ class WorkflowServices:
         self.provider = provider or WorkflowProvider()
         self.targets = targets or DeploymentTargetResolver()
         self.manifest_loader = manifest_loader
+
+    async def code_delivery_completion(self, context):
+        async with self.factory() as session:
+            return await code_delivery_completion(session, context)
 
     async def state(self, session, context):
         node = await session.scalar(
@@ -420,6 +449,10 @@ class DeploymentWorkflows:
         snapshot = None
         latest = None
         try:
+            completion = getattr(self.services, "code_delivery_completion", None)
+            completed = await completion(context) if completion else None
+            if completed:
+                return WorkflowObservation(ObservationKind.SUCCEEDED, snapshot=completed)
             snapshot, binding, workflow, definition, target, latest = await self.services.snapshot(context, reconcile=True)
             if snapshot.get("handoff_reason"):
                 return WorkflowObservation(ObservationKind.SUCCEEDED, snapshot=snapshot)
@@ -475,6 +508,17 @@ class DeploymentWorkflows:
     def decide(self, context, observation):
         if observation.kind is ObservationKind.BLOCKED:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
+        if observation.snapshot and observation.snapshot.get("code_only"):
+
+            async def settle(session, current):
+                if await code_delivery_completion(session, current, settling=True) != observation.snapshot:
+                    raise CycleBlockedError("code_delivery_completion_changed")
+
+            return HandlerDecision(
+                DecisionKind.CONCLUDE,
+                settlement=settle,
+                progress_note="Verified code delivery complete. Dependent evaluations retain their separate acceptance requirements.",
+            )
         if observation.snapshot and observation.snapshot.get("handoff_reason"):
 
             async def handoff(session, current):
