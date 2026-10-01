@@ -453,7 +453,13 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         recovered_skip_reason="idempotency_merged_pr",
                     )
                 if status in {"failed", "budget_stopped", "aborted", "cancelled"}:
-                    target, detail = NodeState.FAILED, f"Worker reported {status}; inspect the run before retrying."
+                    target = NodeState.FAILED
+                    detail = (
+                        "Worker did not start before the startup deadline; dispatch cancelled. "
+                        "Resume after resolving startup to retry within the accepted limits."
+                        if row.get("failure_reason") == "worker_startup_deadline_exceeded"
+                        else f"Worker reported {status}; inspect the run before retrying."
+                    )
                 elif status == "complete":
                     if node.kind == NodeKind.EVAL.value:
                         # A green worker exit is not a test verdict. Require a real
@@ -725,9 +731,19 @@ async def protected_failure_for_assignment(*, node, dispatch, store=None):
 
         store = get_engine_authority_writer().store
     raw = await asyncio.to_thread(store._read, f"TENANT#{node.org_id}", f"EXEC#{dispatch['run_id']}")
-    if not raw or raw.get("status") != {"S": "completed"}:
+    if not raw:
         return None
-    outcome = raw.get("terminal_outcome", {}).get("S")
+    # The existing startup watchdog atomically fences pending executions before
+    # releasing their claims. No worker exists to write a terminal callback, so
+    # this trusted cancellation is itself the failure evidence for settlement.
+    startup_cancelled = (
+        raw.get("status") == {"S": "cancelled"}
+        and raw.get("work_claim_cancellation") == {"S": "startup_deadline_exceeded"}
+        and not raw.get("workload_binding")
+    )
+    if not startup_cancelled and raw.get("status") != {"S": "completed"}:
+        return None
+    outcome = "cancelled" if startup_cancelled else raw.get("terminal_outcome", {}).get("S")
     if outcome not in {"failed", "aborted", "cancelled", "budget_stopped"}:
         return None
     expected = {
@@ -746,5 +762,6 @@ async def protected_failure_for_assignment(*, node, dispatch, store=None):
         "status": "failed",
         "status_source": "protected_execution",
         "terminal_outcome": outcome,
+        "failure_reason": "worker_startup_deadline_exceeded" if startup_cancelled else None,
         "persona": raw.get("persona", {}).get("S"),
     }

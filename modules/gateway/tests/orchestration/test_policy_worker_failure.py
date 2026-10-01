@@ -21,6 +21,7 @@ from tests.orchestration.test_review_cycle import ORG, REPO, cycle, pg_server, p
         "failed",
         "protected_failed",
         "protected_released_failed",
+        "protected_released_startup_cancelled",
         "protected_released_other_run",
         "protected_released_new_generation",
         "protected_released_completed",
@@ -113,6 +114,9 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
             "orchestration_node_id": {"S": cycle.node.id},
             "orchestration_node_attempt": {"N": "1"},
         }
+        if evidence == "protected_released_startup_cancelled":
+            protected._read.return_value.update(status={"S": "cancelled"}, work_claim_cancellation={"S": "startup_deadline_exceeded"})
+            protected._read.return_value.pop("terminal_outcome")
         monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: SimpleNamespace(store=protected))
     advisory = Mock()
     advisory.get.return_value = {
@@ -149,8 +153,10 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
         node = await db.get(OrchestrationNode, cycle.node.id)
         assert node.attempts == 1
         assert result.errors == int(evidence in {"wrong_attempt", "release_refused"})
-        assert result.advanced == int(evidence in {"failed", "protected_failed", "protected_released_failed"})
-        assert node.state == ("failed" if evidence in {"failed", "protected_failed", "protected_released_failed"} else "running")
+        assert result.advanced == int(evidence in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"})
+        assert node.state == (
+            "failed" if evidence in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"} else "running"
+        )
         merged.assert_not_called()
         if not evidence.startswith("advisory"):
             advisory.get.assert_not_called()
@@ -158,12 +164,14 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
             execution = await db.get(OrchestrationExecution, cycle.execution.id)
             claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
             assert execution.status != "concluded" and claim.state == "held"
-        if evidence not in {"failed", "protected_failed", "protected_released_failed"}:
+        if evidence not in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"}:
             return
         decisions = list((await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "result_observed"))).all())
         assert len(decisions) == 1
         assert decisions[0].from_state == "running" and decisions[0].to_state == "failed"
         assert json.loads(decisions[0].reason)["run_id"] == cycle.root
+        if evidence == "protected_released_startup_cancelled":
+            assert "Worker did not start" in decisions[0].reason
         access = SimpleNamespace(check_permission=AsyncMock(), get_user_role=AsyncMock(return_value=(AdminRole.ORG_ADMIN, None)))
         resumed = await resume_node(
             node.id,
@@ -260,3 +268,40 @@ async def test_released_failure_authority_only_allows_conclusion(cycle):  # noqa
                     phase=ExecutionPhase.ADMITTED, status=ExecutionStatus.AWAITING_EXTERNAL, expected_revision=cycle.execution.revision
                 ),
             )
+
+
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ({}, True),
+        ({"workload_binding": {"S": "pod"}}, False),
+        ({"work_claim_cancellation": {"S": "other"}}, False),
+        ({"status": {"S": "pending"}}, False),
+        ({"orchestration_node_attempt": {"N": "2"}}, "refused"),
+    ],
+)
+async def test_startup_cancellation_requires_watchdog_fence_and_exact_assignment(mutation, expected):
+    from src.orchestration.results import protected_failure_for_assignment
+
+    node = SimpleNamespace(org_id="tenant", flow_id="flow", id="node", attempts=1)
+    authority_store = Mock()
+    authority_store._read.return_value = {
+        "status": {"S": "cancelled"},
+        "work_claim_cancellation": {"S": "startup_deadline_exceeded"},
+        "tenant_id": {"S": "tenant"},
+        "invocation_id": {"S": "run"},
+        "flow_id": {"S": "flow"},
+        "orchestration_node_id": {"S": "node"},
+        "orchestration_node_attempt": {"N": "1"},
+        **mutation,
+    }
+    call = protected_failure_for_assignment(node=node, dispatch={"run_id": "run"}, store=authority_store)
+    if expected == "refused":
+        with pytest.raises(ValueError, match="protected failure"):
+            await call
+    else:
+        result = await call
+        assert (result is not None) == expected
+        if result:
+            assert result["failure_reason"] == "worker_startup_deadline_exceeded"
+            assert result["terminal_outcome"] == "cancelled"
