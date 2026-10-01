@@ -15,6 +15,12 @@ Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sig
 - **Choose a Claude or Codex agent stack.** ADP supports two cloud agent stacks: one built on the Claude Agent SDK and one on the native Codex SDK. Mention `@agent-developer` or `@agent-codex-developer` to choose a stack for implementation.
 - **Watch and control live runs.** Stream agent progress in the ADP UI or CLI. For runs that support live controls, pause, resume, steer with new instructions, or abort them while they run.
 
+## Deploy and debug applications across AWS accounts
+
+- **Work where your application runs.** Connect development AWS accounts to ADP so agents can deploy applications and investigate runtime issues in the target account.
+- **Use the right account for each developer.** Different developers can connect different AWS accounts and select the account an agent should use for a run.
+- **Govern access with scoped IAM roles.** Define the services and resources an agent may access in each account. ADP assumes the authorized role for the run and gives the agent short-lived credentials. See [customer AWS setup](docs/adp-platform-deployment/customer-aws-setup.md).
+
 ## Invoke agents on ADP from within your workflows and other systems
 
 - **Connect CI/CD pipelines and applications.** Submit authorized agent tasks through the Task API using a registered service identity.
