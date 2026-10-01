@@ -15,6 +15,12 @@ Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sig
 - **Choose a Claude or Codex agent stack.** ADP supports two cloud agent stacks: one built on the Claude Agent SDK and one on the native Codex SDK. Mention `@agent-developer` or `@agent-codex-developer` to choose a stack for implementation.
 - **Watch and control live runs.** Stream agent progress in the ADP UI or CLI. For runs that support live controls, pause, resume, steer with new instructions, or abort them while they run.
 
+## Invoke agents on ADP from within your workflows and other systems
+
+- **Connect CI/CD pipelines and applications.** Submit authorized agent tasks through the Task API using a registered service identity.
+- **Follow progress in real time.** Read task status and stream progress events, with cursors that let clients reconnect to retained updates.
+- **Use the results in your workflow.** Retrieve task results and artifacts to drive the next pipeline or application step.
+
 ## Built as a SaaS platform from the ground up
 
 - **Serve many organizations from one installation.** Manage organizations, departments, teams, users, and memberships in one ADP deployment.
