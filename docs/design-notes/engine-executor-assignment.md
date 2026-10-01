@@ -62,6 +62,56 @@ policy checks.
 
 ## Qualification
 
+For example, this is the graph shape for a bounded story-plus-evaluation run
+(illustrative topology, not an accepted or executable plan):
+
+```json
+{
+  "nodes": [
+    {
+      "address": "example-flow/epic-example/qualification/docs",
+      "kind": "story",
+      "title": "Document executor qualification",
+      "issue_ref": "6859",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "example-flow/epic-example/qualification/evaluate",
+      "kind": "eval",
+      "title": "Verify completed Codex delivery"
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "example-flow/epic-example/qualification/docs",
+      "to_address": "example-flow/epic-example/qualification/evaluate"
+    }
+  ]
+}
+```
+
+Before running, bind the evaluation to an accepted machine-evaluation
+specification and policy with trusted evidence checks; an `eval` node without
+that binding defaults to human evaluation. The selected
+`agent-codex-developer` must produce a PR. `agent-codex-reviewer` then reviews
+the actual PR head, fixes findings, runs required checks and completes the
+authorized merge. This run requires both personas to resolve to
+`openai.gpt-6-sol`, but configuration is not proof of the models actually used. The
+owner-approved bounds are a shared $100 agent budget, one hour, one attempt per
+stage and concurrency one; they do not grant new authority.
+
+Qualify only from the accepted plan hash, observed developer run persona and
+model, PR and head revision, reviewer run and finding disposition, required-check
+results, merge SHA, and the settled engine story and evaluation node states with
+their evidence. A proposal preview shows intended assignment, not actual
+dispatch, review, merge or a passed evaluation. Do not claim live qualification
+from preview alone.
+
 Focused tests cover plan-hash changes, compatibility of omitted assignments,
 invalid gate/persona/role/kind combinations, isolation between nodes, accepted
 versus draft dispatch, develop/repair authority and visible Codex development.
