@@ -14,11 +14,32 @@ Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sig
 - **Use the right agent persona.** Product and PM agents shape and coordinate work; architect, developer, reviewer, and operations agents handle design, implementation, review, and deployment.
 - **Choose a Claude or Codex agent stack.** ADP supports two cloud agent stacks: one built on the Claude Agent SDK and one on the native Codex SDK. Mention `@agent-developer` or `@agent-codex-developer` to choose a stack for implementation.
 
+## Built as a SaaS platform from the ground up
+
+- **Serve many organizations from one installation.** Manage organizations, departments, teams, users, and memberships in one ADP deployment.
+- **Keep tenants separate.** Tenant-aware identity, roles, and access checks scope each organization's users and activity.
+- **Administer the platform centrally.** Onboard users, manage organization connections, and view agent activity in the admin interface.
+- **Isolate Bedrock costs by AWS account.** Teams can bring their own AWS accounts. Map a team to a verified account so its model requests are billed there and use that account's Bedrock quotas.
+
 ## Getting started
 
-### Connect Codex to an existing ADP deployment
+### Deploy ADP in your AWS account
 
-You need Codex installed, an approved ADP account, and a deployment with GitHub sign-in enabled. Replace `https://YOUR_ADP_DOMAIN/api` with your deployment's URL.
+From a clean checkout, choose an AWS profile and a published ADP release. Confirm the target account, then run the single deployment entry point:
+
+```bash
+aws sts get-caller-identity --profile YOUR_PROFILE \
+  --query '{Account:Account,Arn:Arn}' --output table
+./deploy.sh --aws-profile YOUR_PROFILE --release ADP_RELEASE
+```
+
+Replace the placeholders with your profile and an existing ADP release tag. `deploy.sh` installs the platform, gateway, and cloud agent stack. Follow the [deployment quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for prerequisites, installation, upgrades, and verification. An AI coding agent can follow the [agent deployment guide](docs/adp-platform-deployment/deploy-with-agent.md).
+
+After deployment, complete the GitHub App setup and approve developer accounts. To route a team's Bedrock usage to its own AWS account, follow the [Bedrock account routing guide](docs/runbook-bedrock-routing.md).
+
+### Run coding agents locally through ADP
+
+If your organization already runs ADP, you can start here. Your coding tool runs on your machine and uses the ADP gateway for model access. The example below uses Codex: you need it installed, an approved ADP account, and a deployment with GitHub sign-in enabled. Replace `https://YOUR_ADP_DOMAIN/api` with your deployment's gateway URL.
 
 1. **Install the ADP CLI** from your deployment:
 
@@ -51,17 +72,15 @@ You need Codex installed, an approved ADP account, and a deployment with GitHub 
 
 The same ADP login works across your coding tools. For Claude Code, run `adp claude setup` and `adp claude` after signing in. Kimi Code uses the same login but needs the separately configured ADP Kimi adapter. See **CLI Setup** in your deployment for tool-specific instructions. If your sign-in session expires, run `adp login` again.
 
-### Deploy ADP in your AWS account
+### Run coding agents in the cloud
 
-From a clean checkout, choose an AWS profile and a published release. Confirm the target account **before** installing:
+After an administrator sets up the ADP GitHub App for your organization and grants you access, comment on an issue in a connected repository to start a cloud agent:
 
-```bash
-aws sts get-caller-identity --profile YOUR_PROFILE \
-  --query '{Account:Account,Arn:Arn}' --output table
-./deploy.sh --aws-profile YOUR_PROFILE --release YOUR_RELEASE
+```text
+@agent-developer please implement this issue.
 ```
 
-Replace the placeholders with your profile and an existing release tag. Follow the [deployment quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for prerequisites, installation, upgrades, and verification. An AI coding agent can follow the [agent deployment guide](docs/adp-platform-deployment/deploy-with-agent.md). After deployment, enable GitHub sign-in and approve developer accounts before using the Codex steps above.
+If your deployment enables the native Codex SDK agent, use `@agent-codex-developer` instead. Follow the agent's progress in GitHub.
 
 For a deeper view of the platform, see [ARCHITECTURE.md](ARCHITECTURE.md) and the [hosted agent catalogue](docs/agent-catalogue.md).
 
