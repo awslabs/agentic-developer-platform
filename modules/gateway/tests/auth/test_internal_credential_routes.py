@@ -50,8 +50,9 @@ import socket
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -67,7 +68,7 @@ from src.internal.credential_injector import (
     UnsupportedCredentialTypeError,
     inject_credential,
 )
-from src.internal.credential_routes import get_secrets_manager, router
+from src.internal.credential_routes import _validate_proxy_url, get_secrets_manager, router
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
@@ -402,6 +403,7 @@ class TestProxyRequest:
                     "label": "pat",
                     "method": "GET",
                     "url": "https://api.github.com/user",
+                    "headers": {"hOsT": "attacker.example"},
                 },
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
@@ -411,6 +413,12 @@ class TestProxyRequest:
         assert body["status"] == 200
         assert "provenance_id" in body
         assert body["body"] == '{"id": 42}'
+        mock_client_cls.assert_called_once_with(timeout=30.0, trust_env=False, follow_redirects=False)
+        forwarded = mock_client.request.call_args.kwargs
+        assert str(forwarded["url"]) == "https://93.184.216.34/user"
+        assert forwarded["headers"]["Host"] == "api.github.com"
+        assert "hOsT" not in forwarded["headers"]
+        assert forwarded["extensions"] == {"sni_hostname": "api.github.com"}
 
     @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
@@ -424,7 +432,7 @@ class TestProxyRequest:
 
         captured_headers: dict = {}
 
-        async def _fake_request(*, method, url, headers=None, content=None):
+        async def _fake_request(*, method, url, headers=None, content=None, extensions=None):
             captured_headers.update(headers or {})
             mock_response = MagicMock()
             mock_response.status_code = 200
@@ -479,7 +487,7 @@ class TestProxyRequest:
 
         captured_headers: dict = {}
 
-        async def _fake_request(*, method, url, headers=None, content=None):
+        async def _fake_request(*, method, url, headers=None, content=None, extensions=None):
             captured_headers.update(headers or {})
             r = MagicMock()
             r.status_code = 200
@@ -1720,3 +1728,48 @@ class TestCredentialRawRead:
             assert cred.last_used_at is not None
 
         asyncio.get_event_loop().run_until_complete(_check())
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "169.254.169.254", "10.0.0.1", "100.64.0.1", "::1", "::ffff:127.0.0.1", "ff02::1"])
+def test_proxy_rejects_non_public_dns_answers(address):
+    answers = _fake_getaddrinfo_public("api.github.com", None) + [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, 0))]
+    with patch("src.internal.credential_routes.socket.getaddrinfo", return_value=answers):
+        with pytest.raises(HTTPException) as denied:
+            _validate_proxy_url("https://api.github.com/user", _settings_mock())
+    assert denied.value.status_code == 400
+
+
+@pytest.mark.parametrize("answers", [[], socket.gaierror("no DNS")])
+def test_proxy_dns_failure_is_closed(answers):
+    with patch("src.internal.credential_routes.socket.getaddrinfo") as dns:
+        if isinstance(answers, Exception):
+            dns.side_effect = answers
+        else:
+            dns.return_value = answers
+        with pytest.raises(HTTPException) as denied:
+            _validate_proxy_url("https://api.github.com/user", _settings_mock())
+    assert denied.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", ["93.184.216.34", "2606:4700:4700::1111"])
+async def test_pinned_transport_preserves_tls_identity_without_resolving_again(address):
+    # Exercise real HTTPX/HTTPCore request handling, replacing only the socket.
+    stream = MagicMock()
+    stream.read = AsyncMock(return_value=b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    stream.write = AsyncMock()
+    stream.aclose = AsyncMock()
+    stream.start_tls = AsyncMock(return_value=stream)
+    stream.get_extra_info.return_value = None
+    answers = [(socket.AF_INET6 if ":" in address else socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+    with patch("src.internal.credential_routes.socket.getaddrinfo", side_effect=[answers, socket.gaierror("rebound")]) as dns:
+        target = _validate_proxy_url("https://api.github.com:8443/user?q=1", _settings_mock())
+        with patch("httpcore._backends.anyio.AnyIOBackend.connect_tcp", new_callable=AsyncMock, return_value=stream) as connect:
+            async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+                response = await client.get(target, headers={"Host": "api.github.com:8443"}, extensions={"sni_hostname": "api.github.com"})
+        assert response.text == "OK"
+        assert connect.call_args.args[0] == address
+        assert connect.call_args.args[1] == 8443
+        assert stream.start_tls.call_args.kwargs["server_hostname"] == "api.github.com"
+        assert b"Host: api.github.com:8443" in stream.write.call_args_list[0].args[0]
+        dns.assert_called_once()
