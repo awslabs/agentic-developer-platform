@@ -15,10 +15,11 @@ Coverage:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from src.internal.admin_routes import router
@@ -38,6 +39,26 @@ app.include_router(router)
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def iam_transport(monkeypatch):
+    from src.internal import auth_deps
+
+    monkeypatch.setattr(auth_deps, "verified_caller_identity", lambda req, **kw: req.headers.get("x-caller-identity"))
+
+    def lookup(req):
+        if req.headers.get("x-caller-identity") != _VALID_KEY:
+            raise HTTPException(403, "unregistered")
+        return SimpleNamespace(
+            user_id="iam-agent:auditor",
+            auth_source="iam",
+            scope="internal",
+            org_id="tenant-a",
+            credential_scopes=["internal:audit:read", "internal:tenant-config:read", "internal:cross-tenant"],
+        )
+
+    monkeypatch.setattr(auth_deps, "extract_iam_identity_from_headers", lookup)
 
 
 @pytest.fixture
@@ -89,7 +110,7 @@ class TestTenantConfig:
     def test_returns_config_for_known_tenant(self, client):
         resp = client.get(
             "/internal/v1/admin/tenant-config/adp-security-test",
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_KEY},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -100,7 +121,7 @@ class TestTenantConfig:
     def test_returns_false_when_features_disabled(self, client_creds_disabled):
         resp = client_creds_disabled.get(
             "/internal/v1/admin/tenant-config/adp-security-test",
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_KEY},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -114,7 +135,7 @@ class TestTenantConfig:
     def test_rejects_wrong_key(self, client):
         resp = client.get(
             "/internal/v1/admin/tenant-config/adp-security-test",
-            headers={"X-Internal-Api-Key": "wrong-key"},
+            headers={"X-Caller-Identity": "wrong-key"},
         )
         assert resp.status_code == 403
 
@@ -163,7 +184,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "run-abc", "org_id": "test-org"},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -191,7 +212,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "no-such-run", "org_id": "test-org"},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -223,7 +244,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "run-xyz", "org_id": "org-sandbox"},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -254,7 +275,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "run-xyz"},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 422
             # The query must never have run.
@@ -276,7 +297,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "run-xyz", "org_id": ""},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 422
             mock_session.execute.assert_not_called()
@@ -300,7 +321,7 @@ class TestAuditEntries:
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
                 params={"provenance_id": "run-xyz", "org_id": "org-a"},
-                headers={"X-Internal-Api-Key": _VALID_KEY},
+                headers={"X-Caller-Identity": _VALID_KEY},
             )
             assert resp.status_code == 200
 
@@ -317,6 +338,15 @@ class TestAuditEntries:
         client = TestClient(app)
         resp = client.get(
             "/internal/v1/admin/audit-entries",
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_KEY},
         )
         assert resp.status_code == 422
+
+
+def test_admin_read_cannot_select_another_tenant(client):
+    principal = SimpleNamespace(
+        user_id="iam-agent:tenant-auditor", auth_source="iam", scope="internal", org_id="tenant-a", credential_scopes=["internal:tenant-config:read"]
+    )
+    with patch("src.internal.auth_deps.extract_iam_identity_from_headers", return_value=principal):
+        assert client.get("/internal/v1/admin/tenant-config/tenant-a", headers={"X-Caller-Identity": _VALID_KEY}).status_code == 200
+        assert client.get("/internal/v1/admin/tenant-config/tenant-b", headers={"X-Caller-Identity": _VALID_KEY}).status_code == 403

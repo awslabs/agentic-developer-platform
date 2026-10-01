@@ -36,10 +36,11 @@ test at all.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -60,7 +61,7 @@ from src.shared.models.base import Base
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import ChannelTenantMap, UserIdentity
 
-_VALID_KEY = "test-internal-api-key"
+_VALID_CALLER = "test-service-principal"
 _SECRET = "test-magic-link-secret-key-32chars!!"
 
 
@@ -115,9 +116,16 @@ def client(db):
     async def _get_db():
         yield db
 
-    async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
-        if x_internal_api_key != _VALID_KEY:
+    async def _verify(request: Request, x_caller_identity: str | None = Header(default=None)) -> None:
+        if x_caller_identity != _VALID_CALLER:
             raise HTTPException(status_code=403, detail={"error": "forbidden"})
+        request.state.token_context = SimpleNamespace(
+            user_id="iam-agent:ingress",
+            auth_source="iam",
+            scope="internal",
+            org_id="__platform__",
+            credential_scopes=["internal:identity:resolve", "internal:identity:link", "internal:cross-tenant"],
+        )
 
     app.dependency_overrides[get_db] = _get_db
     app.dependency_overrides[verify_internal_or_irsa] = _verify
@@ -125,7 +133,7 @@ def client(db):
 
 
 def _resolve(client: TestClient, **body) -> object:
-    return client.post("/internal/v1/resolve-user", json=body, headers={"X-Internal-Api-Key": _VALID_KEY})
+    return client.post("/internal/v1/resolve-user", json=body, headers={"X-Caller-Identity": _VALID_CALLER})
 
 
 def _seed(db: AsyncSession, *rows) -> None:
@@ -225,7 +233,7 @@ class TestAutoProvisionIsNotProof:
     @staticmethod
     def _settings(mock_settings):
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
@@ -306,7 +314,7 @@ class TestLookupFilter:
     @staticmethod
     def _settings(mock_settings):
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings

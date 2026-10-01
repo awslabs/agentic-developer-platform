@@ -59,7 +59,7 @@ class TestVerifySandboxConfigJsonSafety:
     """HTML/non-JSON responses trigger SSM fallback, not JSONDecodeError."""
 
     @patch("adversarial_test_assert._verify_sandbox_config_ssm")
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_html_response_falls_back_to_ssm(self, mock_get, mock_ssm):
         """200 + text/html (CloudFront SPA) -> SSM fallback, not crash."""
         mock_get.return_value = _mock_response(
@@ -80,7 +80,7 @@ class TestVerifySandboxConfigJsonSafety:
         mock_ssm.assert_called_once_with("adp-security-test", aws_region="us-east-1")
 
     @patch("adversarial_test_assert._verify_sandbox_config_ssm")
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_404_falls_back_to_ssm(self, mock_get, mock_ssm):
         """404 response -> SSM fallback (existing behavior preserved)."""
         mock_get.return_value = _mock_response(
@@ -100,7 +100,7 @@ class TestVerifySandboxConfigJsonSafety:
         assert ok is True
         mock_ssm.assert_called_once()
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_valid_json_response_works(self, mock_get):
         """200 + application/json with correct data -> PASS."""
         mock_get.return_value = _mock_response(
@@ -119,7 +119,7 @@ class TestVerifySandboxConfigJsonSafety:
         assert ok is True
         assert "correctly configured" in detail
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_json_with_features_disabled_fails(self, mock_get):
         """200 + JSON but features disabled -> anti-gaming FAIL."""
         mock_get.return_value = _mock_response(
@@ -147,7 +147,7 @@ class TestVerifySandboxConfigJsonSafety:
 class TestCollectAuditEntriesJsonSafety:
     """HTML/non-JSON responses return empty list, not JSONDecodeError."""
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_html_response_returns_empty_list(self, mock_get):
         """200 + text/html (CloudFront SPA) -> empty list, not crash."""
         mock_get.return_value = _mock_response(
@@ -165,7 +165,7 @@ class TestCollectAuditEntriesJsonSafety:
 
         assert entries == []
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_valid_json_response_returns_entries(self, mock_get):
         """200 + application/json with entries -> returns them."""
         mock_get.return_value = _mock_response(
@@ -184,7 +184,7 @@ class TestCollectAuditEntriesJsonSafety:
         assert len(entries) == 1
         assert entries[0]["event_type"] == "credential_authorization_denied"
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_non_200_returns_empty_list(self, mock_get):
         """Non-200 status -> empty list."""
         mock_get.return_value = _mock_response(
@@ -206,7 +206,7 @@ class TestCollectAuditEntriesJsonSafety:
 class TestCollectAuditEntriesOrgScoping:
     """Issue #3985: org_id is a required query param on the audit-entries endpoint."""
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_org_id_is_forwarded_as_query_param(self, mock_get):
         """The harness must send org_id or the endpoint 422s.
 
@@ -288,7 +288,7 @@ class TestAcceptanceEvidence:
         assert self.run_case(monkeypatch, expect_red, "completed", leaked).verdict == ("PASS" if expect_red else "FAIL")
         assert self.run_case(monkeypatch, expect_red, "I declined the attack", [{"event_type": "agent_completed"}]).verdict == "FAIL"
 
-    @patch("adversarial_test_assert.requests.get")
+    @patch("adversarial_test_assert._signed_get")
     def test_bare_json_list_does_not_crash(self, mock_get):
         mock_get.return_value = _mock_response(
             status_code=200, content_type="application/json", body='[{"event_type":"credential_authorization_denied"}]'
@@ -336,3 +336,17 @@ def test_ssm_cannot_attest_removed_enforcement_switch():
     assert not ok
     assert "SSM cannot attest" in detail
     assert client.return_value.get_parameter.call_count == 1
+
+
+def test_internal_inspection_uses_signed_query_and_refuses_redirects(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    with patch.object(_module.requests, "get") as get:
+        _module._signed_get(
+            "https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/admin/audit-entries",
+            params={"org_id": "tenant-a", "provenance_id": "run-1"},
+        )
+    assert "org_id=tenant-a" in get.call_args.args[0]
+    assert get.call_args.kwargs["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256")
+    assert get.call_args.kwargs["allow_redirects"] is False
+    assert "X-Internal-Api-Key" not in get.call_args.kwargs["headers"]

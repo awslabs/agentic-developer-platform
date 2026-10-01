@@ -441,10 +441,10 @@ async def enrich_span_with_identity(request: Request, call_next):
 # Depends()-based guard would leave the principal hole wide open.
 @app.middleware("http")
 async def authenticate_request(request: Request, call_next):
-    """Reject requests that do not present the Door's shared secret."""
+    """Require verified request-bound identity for REST and mounted MCP."""
     from .auth import check_request_auth
 
-    denial = check_request_auth(request)
+    denial = await check_request_auth(request)
     if denial is not None:
         return denial
     return await call_next(request)

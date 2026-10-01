@@ -4,23 +4,9 @@ Enforces who-can-see-which-repo at query time by checking each search hit's
 repo against the caller's allowed repos (derived from GitHub permissions stored
 in Postgres). Fails closed: unresolved or empty principal -> empty results.
 
-Trust boundary: X-GitHub-Login and X-GitHub-Teams headers are set by the
-trusted dispatch layer (webhook Lambda -> SQS -> agent worker). Callers are
-authenticated by the shared secret enforced in ``door/auth.py``, and
-``manifests/networkpolicy.yaml`` restricts which namespaces can reach the
-service at all.
-
-Note what those two controls do and do not buy (issue #4073, finding #8). They
-establish that the caller is a legitimate in-cluster workload; they do NOT make
-the identity headers unforgeable. Anything holding the shared secret can still
-claim any login or team, because the secret is shared across all Door callers.
-Cross-tenant isolation therefore rests on this module's filtering, not on the
-headers being trustworthy — which is why ``filter_results`` fails closed.
-
-Earlier versions of this docstring claimed an in-cluster NetworkPolicy
-prevented external header injection. No NetworkPolicy existed anywhere in this
-module when that was written, and nothing authenticated the caller, so the
-boundary described here was asserted and never enforced.
+Trust boundary: ``door/auth.py`` verifies a short-lived gateway assertion bound
+to the request and replaces identity headers with its authenticated claims.
+Tenant and repository ACL filtering below further restricts that run identity.
 
 See: docs/design-1356-repo-acl-door-filter.md for full design.
 """
@@ -112,7 +98,8 @@ class CallerPrincipal:
 
     Combines GitHub identity (login/teams) with tenant isolation headers
     (tenant_id/owner_sub). The principal is "resolved" if it has at least
-    a login or team membership — tenant headers alone are not sufficient.
+    a login, team membership, or a verified run owner — tenant headers alone
+    are not sufficient.
     """
 
     github_login: str = ""
@@ -123,8 +110,8 @@ class CallerPrincipal:
 
     @property
     def is_resolved(self) -> bool:
-        """A principal is resolved if it has at least a login or team membership."""
-        return bool(self.github_login) or bool(self.github_teams)
+        """Require GitHub identity or an owner authenticated by the run boundary."""
+        return bool(self.github_login) or bool(self.github_teams) or (self.run_bound and bool(self.owner_sub))
 
 
 @dataclass
@@ -181,9 +168,9 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
     - X-Tenant-Id: organization/tenant identifier
     - X-Owner-Sub: individual user identifier (Cognito sub or similar)
 
-    Returns None if neither GitHub header is present (fail-closed at filter time).
-    Tenant/owner headers are optional enrichment — they narrow scope but cannot
-    establish identity alone.
+    Requires GitHub identity or an owner authenticated by the run boundary.
+    The run marker and owner header must be sanitized by ``door/auth.py``.
+    Tenant headers alone never establish identity.
     """
     normalized = {k.lower(): v for k, v in headers.items()}
 
@@ -195,7 +182,8 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
     if teams_raw:
         teams = [t.strip().lower() for t in teams_raw.split(",") if t.strip()]
 
-    if not login and not teams:
+    run_bound = normalized.get("x-adp-run-service") == "true"
+    if not login and not teams and not (run_bound and normalized.get(HEADER_OWNER_SUB, "").strip()):
         return None
 
     # Tenant isolation headers (optional enrichment)
@@ -207,7 +195,7 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
         github_teams=teams,
         tenant_id=tenant_id,
         owner_sub=owner_sub,
-        run_bound=normalized.get("x-adp-run-service") == "true",
+        run_bound=run_bound,
     )
 
 

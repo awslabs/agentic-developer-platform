@@ -21,7 +21,10 @@ def resolver(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "ENABLE_USER_IDENTITIES", True)
-    monkeypatch.setattr(module, "RESOLVER_API_KEY", "synthetic-internal-key")
+    # These tests isolate real redirect behavior from AWS signing. A separate
+    # test below exercises the signer and strict endpoint validation.
+    monkeypatch.setattr(module, "_sign_resolution_request", lambda req: req)
+
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     return module
 
@@ -68,7 +71,7 @@ def test_redirect_never_forwards_internal_key(resolver, status):
             resolver.RESOLVER_BASE_URL = origin
             assert resolver.resolve_user("slack", "synthetic-user") is None
             assert len(sent) == 1
-            assert sent[0]["key"] == "synthetic-internal-key"
+            assert sent[0]["key"] is None
         assert received == []
 
 
@@ -126,3 +129,20 @@ def test_transport_timeout_and_error_log_redaction(resolver, monkeypatch, caplog
     assert opener.open.call_args.kwargs["timeout"] == 5
     assert "private-key-and-request-content" not in caplog.text
     assert "resolve-user call failed" in caplog.text
+
+
+def test_real_signer_requires_iam_endpoint_and_never_sends_shared_key(monkeypatch):
+    import urllib.request
+    spec = importlib.util.spec_from_file_location("real_resolver_signer", SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    req = urllib.request.Request("https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user", data=b"{}")
+    signed = module._sign_resolution_request(req)
+    assert signed.get_header("Authorization").startswith("AWS4-HMAC-SHA256")
+    assert signed.get_header("X-internal-api-key") is None
+    for url in ("http://gateway.internal", "https://attacker.example"):
+        with pytest.raises(ValueError):
+            module._sign_resolution_request(urllib.request.Request(url, data=b"{}"))

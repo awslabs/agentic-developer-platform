@@ -131,6 +131,7 @@ def isolated_deploy(tmp_path):
     scripts = module / "scripts"
     scripts.mkdir()
     shutil.copy2(MODULE_ROOT / "scripts/ensure-zoekt-auth.py", scripts)
+    shutil.copy2(MODULE_ROOT / "scripts/ensure-door-identity.py", scripts)
     (scripts / "_common.sh").write_text(
         "template_file() { printf 'test-manifest\\n'; }\n"
         "resolve_acl_config() { :; }\n"
@@ -150,6 +151,9 @@ def isolated_deploy(tmp_path):
             # Return a synthetic existing key while exercising the real helper.
             'if [[ "' + tool + '" == kubectl && "$*" == "get secret zoekt-backend-auth "* ]]; then\n'
             '  printf \'%s\\n\' \'{"data":{"api-key":"dGVzdC16b2VrdC1rZXktZm9yLWRlcGxveW1lbnQtdGVzdHM="}}\'\n'
+            'fi\n'
+            'if [[ "' + tool + '" == kubectl && "$*" == "get configmap adp-control-verification-keys "* ]]; then\n'
+            '  printf \'%s\\n\' \'{"data":{"keys.json":"{\\"fixture\\":\\"public-key\\"}"}}\'\n'
             'fi\n'
             # Consume piped manifests so a producer cannot get SIGPIPE.
             'if [[ "$*" == *"-f -"* ]]; then cat >/dev/null; fi\n'

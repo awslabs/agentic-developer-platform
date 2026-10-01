@@ -2,6 +2,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.credentials import Credentials
 
 from common import gateway_client
@@ -50,7 +51,8 @@ def test_direct_internal_endpoint_does_not_receive_aws_credentials():
         "http://internal-alb/internal/v1/resolve-user", data=b"{}"
     )
     with patch("boto3.Session") as session:
-        assert gateway_client._sign_internal_lookup(req) is req
+        with pytest.raises(RuntimeError, match="require the IAM execute-api endpoint"):
+            gateway_client._sign_internal_lookup(req)
     session.assert_not_called()
     assert req.get_header("Authorization") is None
 

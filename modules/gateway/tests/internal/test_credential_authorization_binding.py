@@ -998,7 +998,7 @@ async def test_shared_key_fixture_without_registry_grant_still_denied(db):
             headers={"X-Internal-Api-Key": _VALID_KEY, "X-Agent-Scopes": "credential:raw-read"},
         )
     assert response.status_code == 403
-    assert response.json()["detail"] == "run-bound operations require IAM transport"
+    assert response.json()["detail"] == "verified IAM caller identity required"
     sm.get_secret.assert_not_called()
 
 

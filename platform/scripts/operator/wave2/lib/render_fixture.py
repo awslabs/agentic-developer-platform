@@ -6,11 +6,10 @@ Issue #3968 / epic #3959.
 WHAT THIS FIXES
 ---------------
 The published ``10-create-fixture.sh`` hand-wrote the fixture gateway's pod spec:
-two ``configMapRef`` entries and two env vars. That lost all NINE secret-backed
+two ``configMapRef`` entries and two env vars. That lost the required secret-backed
 env references the real gateway carries --
 
     ADP_MARKER_SIGNING_KEY              agent-run-services/marker-signing-key
-    ADP_DOOR_SERVICE_KEY                bedrockgateway-secrets/internal-api-key
     AGENT_RUN_CREDENTIAL_KEY            agent-authority-signing/run-credential-key
     AGENT_CONTROL_ENVELOPE_SIGNING_KEY  agent-authority-signing/envelope-signing-key
     BG_TOKEN_SECRET_KEY                 bedrockgateway-secrets/token-secret-key
@@ -29,10 +28,10 @@ THE FIX, AND WHY IT IS SHAPED THIS WAY
 Do not re-list the composition; COPY it. This module reads the live
 ``deployment/bedrockgateway`` container spec as JSON and mutates a small, explicit
 set of fields. Anything not named in ``OVERRIDES`` is carried over byte-for-byte,
-so a tenth secret added to the real gateway tomorrow appears in the fixture
+so a new secret added to the real gateway tomorrow appears in the fixture
 automatically instead of being silently absent.
 
-Hand-listing is how the nine were lost. A copy cannot lose them.
+Hand-listing is how the references were lost. A copy cannot lose them.
 
 WHAT IS DELIBERATELY OVERRIDDEN (and nothing else)
 --------------------------------------------------
@@ -90,14 +89,13 @@ from collections.abc import Sequence
 from typing import Any
 from pathlib import Path
 
-# The nine secret-backed env references the real gateway carries. This list is
+# The required secret-backed env references the real gateway carries. This list is
 # NOT used to build the fixture -- the live spec is copied instead. It is used to
 # ASSERT that the copy actually contains them, so a fixture that silently lost a
 # secret ref fails here rather than at the first identity check after root has
 # already created live resources.
 EXPECTED_SECRET_ENV: dict[str, tuple[str, str]] = {
     "ADP_MARKER_SIGNING_KEY": ("agent-run-services", "marker-signing-key"),
-    "ADP_DOOR_SERVICE_KEY": ("bedrockgateway-secrets", "internal-api-key"),
     "AGENT_RUN_CREDENTIAL_KEY": ("agent-authority-signing", "run-credential-key"),
     "AGENT_CONTROL_ENVELOPE_SIGNING_KEY": ("agent-authority-signing", "envelope-signing-key"),
     "BG_TOKEN_SECRET_KEY": ("bedrockgateway-secrets", "token-secret-key"),

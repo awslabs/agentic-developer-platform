@@ -44,9 +44,6 @@ ENABLE_USER_IDENTITIES = os.environ.get("ENABLE_USER_IDENTITIES", "").lower() in
 # Gateway internal endpoint base URL (e.g. http://bedrockgateway.adp-gateway:8080)
 RESOLVER_BASE_URL = os.environ.get("RESOLVER_BASE_URL", "")
 
-# Shared secret for internal API authentication
-RESOLVER_API_KEY = os.environ.get("BG_INTERNAL_API_KEY", "")
-
 # Cache TTL in seconds
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -103,6 +100,27 @@ def cache_clear() -> None:
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
+
+
+def _sign_resolution_request(req):
+    """Only the IAM API endpoint may receive an execution identity."""
+    endpoint = urllib.parse.urlsplit(req.full_url)
+    url, data, headers = req.full_url, req.data, dict(req.header_items())
+    host = endpoint.hostname or ""
+    if endpoint.scheme != "https" or ".execute-api." not in host or not host.endswith(".amazonaws.com"):
+        raise ValueError("Resolver requires an IAM execute-api endpoint")
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    credentials = boto3.Session().get_credentials()
+    if credentials is None:
+        raise ValueError("Resolver IAM credentials unavailable")
+    signed = AWSRequest(method="POST", url=url, data=data, headers=headers)
+    region = host.split(".execute-api.", 1)[1].split(".", 1)[0]
+    SigV4Auth(credentials.get_frozen_credentials(), "execute-api", region).add_auth(signed)
+    for name, value in signed.headers.items():
+        req.add_header(name, value)
+    return req
 
 
 def resolve_user(
@@ -162,13 +180,12 @@ def resolve_user(
     headers = {
         "Content-Type": "application/json",
     }
-    if RESOLVER_API_KEY:
-        headers["X-Internal-Api-Key"] = RESOLVER_API_KEY
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     try:
+        req = _sign_resolution_request(req)
         with _open_resolver(req, timeout=5) as resp:
             body = json.loads(resp.read())
             result = ResolvedUser(

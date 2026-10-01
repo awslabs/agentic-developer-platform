@@ -39,14 +39,15 @@ resource "aws_dynamodb_table_item" "webhook_identity_lookup" {
   table_name = data.aws_ssm_parameter.legacy_lookup_registry[0].value
   hash_key   = "agent_id"
   item = jsonencode({
-    agent_id    = { S = "webhook-identity-lookup" }
-    role_arn    = { S = aws_iam_role.lambda_execution.arn }
-    agent_name  = { S = "webhook-identity-lookup" }
-    org_id      = { S = "__platform__" }
-    team_id     = { S = "__agents__" }
-    owner       = { S = "platform" }
-    scope       = { S = "internal" }
-    status      = { S = "active" }
-    description = { S = "Webhook ingress canonical installation and user identity lookups; no model or credential grants." }
+    agent_id          = { S = "webhook-identity-lookup" }
+    role_arn          = { S = aws_iam_role.lambda_execution.arn }
+    agent_name        = { S = "webhook-identity-lookup" }
+    org_id            = { S = "__platform__" }
+    team_id           = { S = "__agents__" }
+    owner             = { S = "platform" }
+    scope             = { S = "internal" }
+    credential_scopes = { SS = ["internal:identity:resolve", "internal:installation:resolve", "internal:cross-tenant"] }
+    status            = { S = "active" }
+    description       = { S = "Webhook ingress canonical installation and user identity lookups; no model or credential grants." }
   })
 }

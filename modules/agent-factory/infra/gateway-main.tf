@@ -39,6 +39,8 @@ module "gateway_lambda" {
   model_policy_enabled                = var.chat_model_policy_enabled
   persona_model_mapping_enabled       = var.persona_model_mapping_enabled && var.gateway_deployed
   model_control_endpoint              = local.persona_model_control_endpoint
+  identity_resolver_url               = var.gateway_deployed ? data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value : ""
+  identity_registry_table             = var.gateway_deployed ? data.aws_ssm_parameter.agent_registry_table.value : ""
   model_root_admission_arn            = local.persona_model_root_admission_arn
 
   webhook_events_table_name  = local.chat_webhook_events_table

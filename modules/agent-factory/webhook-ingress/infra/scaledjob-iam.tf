@@ -385,6 +385,20 @@ locals {
         }
       },
       {
+        Sid    = "DenyInternalAuthoritySecrets"
+        Effect = "Deny"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/*/gateway/*",
+        ]
+      },
+      {
+        Sid      = "DenyInternalAuthorityParameters"
+        Effect   = "Deny"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Resource = ["arn:aws:ssm:*:${local.account_id}:parameter/adp/*/gateway/*"]
+      },
+      {
         # Cross-tenant vault lockout (issue #4130, #4073 finding #4).
         #
         # SecretsManagerOps above grants GetSecretValue + DescribeSecret on

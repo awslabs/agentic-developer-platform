@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import boto3
 import pytest
 from botocore.exceptions import ClientError
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from moto import mock_aws
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -150,8 +150,16 @@ async def _disconnect(db, provider=None, *, admin=False):
 
 
 async def _canonical(db):
+    request = Request({"type": "http", "headers": []})
+    request.state.token_context = SimpleNamespace(
+        user_id="iam-agent:ingress",
+        auth_source="iam",
+        scope="internal",
+        org_id=ORG,
+        credential_scopes=["internal:installation:resolve", "internal:cross-tenant"],
+    )
     try:
-        answer = await resolve_installation(ResolveInstallationRequest(installation_id=str(INSTALL)), db=db, _=None)
+        answer = await resolve_installation(ResolveInstallationRequest(installation_id=str(INSTALL)), request=request, db=db, _=None)
         return {"state": "resolved", "tenant_id": answer.tenant_id, "created_via": answer.created_via, "revocation_checked": True}
     except HTTPException as exc:
         assert exc.status_code in (404, 410)

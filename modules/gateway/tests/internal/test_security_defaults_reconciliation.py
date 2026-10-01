@@ -56,7 +56,7 @@ def test_absent_overrides_select_safe_defaults(configs):
     assert superplane.Settings().cors_origins == []
     assert superplane.Settings().jwt_secret_key == ""
     assert door.ServerConfig().tenant_scope_enabled is True
-    assert door.ServerConfig().door_auth_enabled is True
+    assert door.ServerConfig().door_verification_keys == "{}"
     assert door.ServerConfig().security_profile == "production"
     rate = RateLimitConfig(_env_file=None)
     assert rate.backend_type == "redis"
@@ -74,7 +74,7 @@ def test_superplane_legacy_mode_refused_outside_explicit_development(configs, pr
     assert superplane.Settings(domain_auth_enforced=False, superplane_security_profile="development").domain_auth_enforced is False
 
 
-@pytest.mark.parametrize("setting", ["DOOR_AUTH_ENABLED", "TENANT_SCOPE_ENABLED"])
+@pytest.mark.parametrize("setting", ["TENANT_SCOPE_ENABLED"])
 @pytest.mark.parametrize("value", ["false", "0", " no "])
 def test_door_opt_out_requires_development(configs, monkeypatch, setting, value):
     _, door = configs
@@ -82,7 +82,7 @@ def test_door_opt_out_requires_development(configs, monkeypatch, setting, value)
     with pytest.raises(ValueError, match="requires DOOR_SECURITY_PROFILE=development"):
         door.ServerConfig()
     monkeypatch.setenv("DOOR_SECURITY_PROFILE", "development")
-    assert getattr(door.ServerConfig(), "door_auth_enabled" if setting == "DOOR_AUTH_ENABLED" else "tenant_scope_enabled") is False
+    assert door.ServerConfig().tenant_scope_enabled is False
 
 
 @pytest.mark.parametrize("value", ["", "ture", "enabled", "True "])

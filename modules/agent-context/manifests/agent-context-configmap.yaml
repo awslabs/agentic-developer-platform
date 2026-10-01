@@ -77,8 +77,7 @@ data:
   # In-cluster gateway URL the ingestion worker POSTs status updates to
   # (worker "indexing/complete/failed" → gateway knowledge_assets row). Without
   # this the registry status is stuck at "queued" in the UI after indexing.
-  # The matching X-Internal-Api-Key comes from the agent-context-gateway-callback
-  # K8s secret (created by agent-context-deploy from Secrets Manager).
+  # Callbacks authenticate with the asset-specific grant carried by dispatch.
   GATEWAY_CALLBACK_URL: "${GATEWAY_CALLBACK_URL}"
 
   # --- Feature flags ---

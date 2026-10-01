@@ -112,9 +112,9 @@ def test_shared_scope_requires_explicit_signed_null(client, db):
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Internal-Api-Key": "wrong"}])
-def test_transport_authentication_required(client, db, headers):
-    assert post(client, payload(), headers=headers).status_code == 403
-    assert db.last_query is None
+def test_asset_grant_authenticates_without_shared_transport_key(client, db, headers):
+    assert post(client, payload(), headers=headers).status_code == 200
+    assert db.last_query is not None
 
 
 @pytest.mark.parametrize(

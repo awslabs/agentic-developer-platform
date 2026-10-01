@@ -1,158 +1,153 @@
-"""Shared-secret authentication for the Door (issue #4073, finding #8).
-
-Why this exists
----------------
-The Door derives every ACL decision from caller-supplied request headers
-(``x-github-login``, ``x-github-teams``, ``x-tenant-id``, ``x-owner-sub`` —
-see ``acl.extract_caller_principal``). Before this module, nothing
-authenticated the caller. Any workload that could reach the ClusterIP could
-assert an arbitrary identity and read any tenant's indexed source code, wikis
-and agent memory. ``acl.py``, ``personal_context/identity.py`` and
-``README.md`` all asserted that an in-cluster NetworkPolicy made the headers
-trustworthy; no NetworkPolicy existed in this module (it ships alongside this
-change as ``manifests/networkpolicy.yaml``). The header trust boundary was
-therefore asserted but never enforced — in either layer.
-
-Why ASGI middleware and not ``Depends()``
------------------------------------------
-``server.py`` does ``app.mount("/mcp", get_mcp_app())``. A mount is a separate
-Starlette ASGI app resolved by URL prefix, so FastAPI route dependencies
-declared on the parent app do **not** run for it. A ``Depends()``-based guard
-would leave ``/mcp`` — the *native MCP surface actually used by agent workers,
-and the one with DNS-rebinding protection relaxed — completely open. HTTP
-middleware runs for every request the parent app routes, mounts included, so
-it is the only placement that covers both the legacy REST verbs and ``/mcp``.
-
-Defence in depth, not a replacement
------------------------------------
-This is one of two controls. The NetworkPolicy restricts *who can connect*;
-this key authenticates *who is asking*. Neither subsumes the other: the policy
-admits the whole ``adp-agents`` namespace (it cannot distinguish one agent pod
-from another), and the key alone would still be reachable from anywhere in the
-cluster.
-"""
+"""Verify request-bound gateway assertions; ignore caller-supplied ACL identity."""
 
 from __future__ import annotations
 
-import hmac
+import base64
+import hashlib
 import json
 import logging
+import re
+import time
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse
 
 from .config import config
 
 log = logging.getLogger(__name__)
+IDENTITY_HEADERS = frozenset(
+    {
+        "x-github-login",
+        "x-github-teams",
+        "x-tenant-id",
+        "x-owner-sub",
+        "x-adp-run-service",
+        "x-internal-api-key",
+        "x-adp-door-identity",
+    }
+)
+MAX_BODY = 1024 * 1024
 
-# Header carrying the shared secret. Matches the gateway's internal plane
-# (``gateway/src/internal/auth_deps.py``) and the client half this module
-# already ships (``images/ingestion/status_callback.py`` sends the same header),
-# so no caller needs a new credential type.
-HEADER_API_KEY = "x-internal-api-key"
 
-# Paths served without authentication.
-#
-# The probe paths only: the kubelet issues the readiness/liveness probes in
-# ``manifests/context-mcp.yaml`` and cannot present a secret. Gating them would
-# fail every probe and take the Deployment down.
-#
-# ``/health`` (liveness) returns a static ``{"status": "ok"}``.
-#
-# ``/ready`` (readiness, #5658) reports whether the ACL store is usable. Its
-# body is deliberately limited to that one fact plus an exception summary — it
-# names no repository, tenant or principal, and reveals nothing about what is
-# indexed. An unauthenticated caller learns only that this Door is or is not
-# currently able to authorise reads, which is the same thing it learns from the
-# refusal it would get anyway.
-#
-# ``/tools`` is deliberately NOT here: the tool catalogue is a disclosure
-# surface (it enumerates the verbs and their parameters), and it is not on any
-# probe path.
-_PUBLIC_PATHS = frozenset({"/health", "/ready"})
+def _decode(value: str) -> bytes:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("invalid encoding")
+    return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+
+
+def verify_identity(
+    token: str, keys: dict, *, method: str, path: str, body: bytes, now=None
+) -> dict:
+    """Verify fixed protocol, pinned key, short expiry and exact request binding."""
+    if not token or len(token) > 8192:
+        raise ValueError("invalid assertion")
+    version, encoded, signature = token.split(".")
+    if version != "adpd1":
+        raise ValueError("invalid version")
+    payload = json.loads(_decode(encoded))
+    strings = (
+        "iss",
+        "aud",
+        "kid",
+        "sub",
+        "tenant_id",
+        "github_login",
+        "owner_sub",
+        "method",
+        "path",
+        "body_sha256",
+    )
+    if not isinstance(payload, dict) or any(not isinstance(payload.get(k), str) for k in strings):
+        raise ValueError("invalid claims")
+    if payload["iss"] != "adp-gateway" or payload["aud"] != "adp-knowledge-door":
+        raise ValueError("wrong issuer or audience")
+    key = serialization.load_pem_public_key(keys[payload["kid"]].encode())
+    if not isinstance(key, Ed25519PublicKey):
+        raise ValueError("invalid key type")
+    key.verify(_decode(signature), (version + "." + encoded).encode())
+    now = time.time() if now is None else now
+    if (
+        type(payload.get("iat")) is not int
+        or type(payload.get("exp")) is not int
+        or not 0 < payload["exp"] - payload["iat"] <= 30
+        or payload["iat"] > now + 5
+        or payload["exp"] <= now
+    ):
+        raise ValueError("invalid validity window")
+    if (
+        not payload["sub"]
+        or not payload["tenant_id"]
+        or not (payload["github_login"] or payload["owner_sub"])
+        or payload["method"] != method
+        or payload["path"] != path
+        or payload["body_sha256"] != hashlib.sha256(body).hexdigest()
+    ):
+        raise ValueError("invalid binding")
+    if payload["github_login"] and not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]{0,38}", payload["github_login"]
+    ):
+        raise ValueError("invalid login")
+    if payload["owner_sub"] and not re.fullmatch(
+        r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", payload["owner_sub"]
+    ):
+        raise ValueError("invalid owner")
+    return payload
 
 
 def _is_public_path(path: str) -> bool:
-    """True for paths served without authentication.
-
-    Matched exactly (modulo a trailing slash) rather than by prefix: a prefix
-    test on ``/health`` would also exempt an attacker-chosen ``/healthz``, and a
-    substring test would exempt anything containing it.
-    """
-    normalized = path.rstrip("/") or "/"
-    return normalized in _PUBLIC_PATHS
+    return path.rstrip("/") in {"/health", "/ready"}
 
 
-def _json_error(status_code: int, error: str, message: str) -> Response:
-    return Response(
-        content=json.dumps({"error": error, "message": message}),
-        status_code=status_code,
-        media_type="application/json",
-    )
-
-
-def check_request_auth(request: Request) -> Response | None:
-    """Authenticate one request. Returns an error Response, or None to allow.
-
-    Returns
-    -------
-    ``None`` when the request may proceed; otherwise the ``Response`` to return
-    immediately (the caller must not invoke the downstream app).
-    """
-    if not config.door_auth_enabled:
-        # Explicitly disabled. Loud, because a deployed environment must never
-        # run this way — it restores the #4073 unauthenticated cross-tenant read.
-        log.warning(
-            "Door authentication is DISABLED (DOOR_AUTH_ENABLED=false); "
-            "caller identity headers are unauthenticated. Do not run a deployed "
-            "environment in this state — see issue #4073."
-        )
-        return None
-
+async def check_request_auth(request: Request):
     if _is_public_path(request.url.path):
         return None
-
-    expected = config.door_api_key
-    if not expected:
-        # Fail CLOSED on misconfiguration, and say so in the logs.
-        #
-        # The tempting alternative — allow the request when no key is
-        # configured — is how the two fail-open incidents this repo already
-        # carries runbooks for happened (ALLOWLIST_MODE=open without
-        # ALLOW_OPEN_SIGNUP, and the budget fail-open). A key that fails to
-        # land would silently reopen the vulnerability with no signal.
-        #
-        # The cost of this choice is a hard dependency on the secret being
-        # seeded: DOOR_API_KEY reaches the pod from the K8s secret
-        # ``agent-context-door-auth``, populated by agent-context-deploy.yml
-        # from Secrets Manager ``adp/<env>/gateway/internal-api-key``.
-        log.error(
-            "DOOR_API_KEY is not set; rejecting all authenticated Door requests. "
-            "Seed the agent-context-door-auth secret (agent-context-deploy.yml)."
+    try:
+        keys = json.loads(config.door_verification_keys)
+        if not isinstance(keys, dict) or not keys:
+            raise ValueError("keys missing")
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "not_configured"}, status_code=503)
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    request._body = body  # Starlette replays the bounded body to the mounted MCP app.
+    try:
+        if request.url.query:
+            raise ValueError("unsigned query")
+        claims = verify_identity(
+            request.headers.get("x-adp-door-identity", ""),
+            keys,
+            method=request.method,
+            path=request.url.path,
+            body=body,
         )
-        return _json_error(503, "not_configured", "Door authentication is not configured.")
-
-    presented = request.headers.get(HEADER_API_KEY)
-    # compare_digest to avoid leaking the key through response timing. Guard the
-    # None/empty case first: compare_digest raises TypeError on None.
-    if not presented or not hmac.compare_digest(presented, expected):
-        log.warning(
-            "Rejecting unauthenticated Door request: path=%s claimed_login=%r claimed_tenant=%r",
-            request.url.path,
-            request.headers.get("x-github-login", ""),
-            request.headers.get("x-tenant-id", ""),
-        )
-        # 403 rather than 401: no WWW-Authenticate challenge, matching the
-        # gateway's internal plane so a scanner learns nothing about the scheme.
-        # 401, per the #4073 acceptance criteria ("unauth POST /call → 401",
-        # "forged x-github-login w/o key → 401", "unauth POST /mcp → 401").
-        #
-        # The gateway's equivalent gate returns 403 specifically to avoid
-        # emitting a ``WWW-Authenticate`` challenge that would tell a scanner
-        # which scheme to attack. That property is preserved here by omitting
-        # the challenge header rather than by changing the status code, so the
-        # semantically-correct code ("no valid credentials presented") and the
-        # non-disclosure property both hold.
-        return _json_error(401, "unauthorized", "Invalid or missing internal API key.")
-
+    except (ValueError, TypeError, KeyError, InvalidSignature):
+        log.warning("Door rejected unverified request identity")
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # REST and mounted MCP both read the same sanitized ASGI scope. Never merge
+    # arbitrary identity headers with verified claims, even when a signature is valid.
+    headers = [
+        (k, v) for k, v in request.scope["headers"] if k.decode().lower() not in IDENTITY_HEADERS
+    ]
+    headers.extend(
+        (k.encode(), v.encode())
+        for k, v in {
+            "x-github-login": claims["github_login"],
+            "x-tenant-id": claims["tenant_id"],
+            "x-owner-sub": claims["owner_sub"],
+            "x-adp-run-service": "true",
+        }.items()
+    )
+    request.scope["headers"] = headers
+    if hasattr(request, "_headers"):
+        del request._headers
+    request.state.door_principal = claims["sub"]
+    log.info("Door authenticated principal=%s tenant=%s", claims["sub"], claims["tenant_id"])
     return None

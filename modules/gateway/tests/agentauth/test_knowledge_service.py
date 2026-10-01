@@ -1,18 +1,40 @@
 """Exercise the real HTTP bridge: worker headers cannot select another identity."""
 
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI, HTTPException
 
 from src.agentauth import knowledge_service as service
 from src.agentauth.execution import ExecutionStateError
 from src.agentauth.routes import get_agent_runtime, require_agent_transport
 from tests.agentauth.test_run_services import GRANT, HEADERS, RECORD
+
+
+def verify_identity(*args, **kwargs):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agent-context"))
+    from door.auth import verify_identity as verify
+
+    return verify(*args, **kwargs)
+
+
+SIGNER = Ed25519PrivateKey.generate()
+SIGNING_ENV = {
+    "AGENT_CONTROL_ENVELOPE_KEY_ID": "test",
+    "AGENT_CONTROL_ENVELOPE_SIGNING_KEY": SIGNER.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode(),
+}
+PUBLIC_KEYS = {"test": SIGNER.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()}
+
 
 URL = "/internal/v1/agent/self/knowledge/call"
 KEY = "test-gateway-only-door-key"
@@ -22,7 +44,7 @@ KEY = "test-gateway-only-door-key"
 async def bridge(monkeypatch):
     context = (SimpleNamespace(uid="pod-one"), "caller", RECORD, GRANT)
     runtime = SimpleNamespace(
-        env={"ADP_DOOR_SERVICE_URL": "https://door.internal", "ADP_DOOR_SERVICE_KEY": KEY},
+        env={"ADP_DOOR_SERVICE_URL": "https://door.internal", **SIGNING_ENV},
         authenticate=Mock(return_value=context),
         validate_flow=AsyncMock(),
     )
@@ -31,7 +53,12 @@ async def bridge(monkeypatch):
     @asynccontextmanager
     async def identity(record, grant):
         identity_calls.append((record, grant))
-        yield {"x-github-login": "actual-user", "x-owner-sub": "actual-owner", "x-tenant-id": "tenant-one", "x-adp-run-service": "true"}
+        yield {
+            "x-github-login": "actual-user",
+            "x-owner-sub": "00000000-0000-0000-0000-000000000001",
+            "x-tenant-id": "tenant-one",
+            "x-adp-run-service": "true",
+        }
 
     monkeypatch.setattr(service, "locked_door_identity", identity)
     upstream_requests = []
@@ -67,11 +94,13 @@ async def test_caller_cannot_forward_auth_or_another_users_identity(bridge):
     assert response.status_code == 200
     (request,) = bridge.upstream
     assert str(request.url) == "https://door.internal/call"
-    assert request.headers["x-github-login"] == "actual-user"
-    assert request.headers["x-tenant-id"] == "tenant-one"
-    assert request.headers["x-owner-sub"] == "actual-owner"
-    assert request.headers["x-adp-run-service"] == "true"
-    assert request.headers["x-internal-api-key"] == KEY
+    claims = verify_identity(request.headers["x-adp-door-identity"], PUBLIC_KEYS, method=request.method, path=request.url.path, body=request.content)
+    assert claims["github_login"] == "actual-user"
+    assert claims["tenant_id"] == RECORD.tenant_id
+    assert claims["sub"] == GRANT.principal
+    assert claims["owner_sub"] == "00000000-0000-0000-0000-000000000001"
+    for name in ("x-github-login", "x-tenant-id", "x-owner-sub", "x-adp-run-service", "x-internal-api-key"):
+        assert name not in request.headers
     for name in ("x-github-teams", "x-adp-run-credential", "x-adp-workload-token", "cookie", "mcp-session-id", "authorization"):
         assert name not in request.headers
     assert bridge.identities == [(RECORD, GRANT)]

@@ -44,8 +44,7 @@ Usage
 -----
     # dry run (default) — show what would change
     python backfill-installation-tenants.py \
-        --gateway-url https://<gateway> \
-        --internal-api-key-arn adp/dev/internal-api-key
+        --gateway-url https://example123.execute-api.us-east-1.amazonaws.com/dev
 
     # apply
     python backfill-installation-tenants.py --gateway-url https://<gateway> --apply
@@ -72,16 +71,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("backfill-installation-tenants")
 
 
-def _resolve_internal_api_key(api_key: str | None, api_key_arn: str | None, region: str) -> str:
-    """Resolve the internal API key from a literal value or a Secrets Manager ARN."""
-    if api_key:
-        return api_key
-    if api_key_arn:
-        sm = boto3.client("secretsmanager", region_name=region)
-        return sm.get_secret_value(SecretId=api_key_arn)["SecretString"]
-    return ""
-
-
 def resolve_tenant_via_gateway(gateway_url: str, api_key: str, installation_id: str) -> str | None:
     """Return the Postgres-authoritative tenant for an installation, or None (404/error)."""
     url = f"{gateway_url.rstrip('/')}/internal/v1/resolve-installation"
@@ -89,11 +78,42 @@ def resolve_tenant_via_gateway(gateway_url: str, api_key: str, installation_id: 
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json", "X-Internal-Api-Key": api_key},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+        from urllib.parse import urlsplit
+
+        endpoint = urlsplit(url)
+        host = endpoint.hostname or ""
+        if (
+            endpoint.scheme != "https"
+            or ".execute-api." not in host
+            or not host.endswith(".amazonaws.com")
+        ):
+            raise ValueError("Backfill requires the IAM gateway endpoint")
+        credentials = boto3.Session().get_credentials()
+        if credentials is None:
+            raise ValueError("IAM credentials unavailable")
+        signed = AWSRequest(
+            method="POST", url=url, data=body, headers={"Content-Type": "application/json"}
+        )
+        SigV4Auth(
+            credentials.get_frozen_credentials(),
+            "execute-api",
+            host.split(".execute-api.")[1].split(".")[0],
+        ).add_auth(signed)
+        for name, value in signed.headers.items():
+            req.add_header(name, value)
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(req, timeout=10) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 return data.get("tenant_id") or None
@@ -186,9 +206,15 @@ def main() -> int:
         required=True,
         help="Gateway base URL (Postgres-authoritative resolve-installation)",
     )
-    parser.add_argument("--internal-api-key", default=None, help="Internal API key (literal)")
     parser.add_argument(
-        "--internal-api-key-arn", default=None, help="Secrets Manager ARN for the internal API key"
+        "--internal-api-key",
+        default=None,
+        help="Deprecated and ignored; use registered IAM credentials",
+    )
+    parser.add_argument(
+        "--internal-api-key-arn",
+        default=None,
+        help="Deprecated and ignored; use registered IAM credentials",
     )
     parser.add_argument("--identity-table", default="adp-dev-identity-index")
     parser.add_argument("--events-table", default="adp-dev-webhook-events")
@@ -200,13 +226,6 @@ def main() -> int:
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     logger.info("Backfill installation→tenant mappings [%s]", mode)
-
-    api_key = _resolve_internal_api_key(
-        args.internal_api_key, args.internal_api_key_arn, args.region
-    )
-    if not api_key:
-        logger.error("No internal API key provided (--internal-api-key or --internal-api-key-arn)")
-        return 2
 
     dynamodb = boto3.resource("dynamodb", region_name=args.region)
     identity_table = dynamodb.Table(args.identity_table)
@@ -222,7 +241,7 @@ def main() -> int:
     for row in candidates:
         installation_id = row["identity_value"]
         old_tenant = row.get("org_id", "")
-        correct_tenant = resolve_tenant_via_gateway(args.gateway_url, api_key, installation_id)
+        correct_tenant = resolve_tenant_via_gateway(args.gateway_url, "", installation_id)
 
         if not correct_tenant:
             logger.info(
