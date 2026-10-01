@@ -138,7 +138,7 @@ jobs:
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-frontend-deploy.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adp-release-gateway-frontend-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-release-gateway-frontend/release.json

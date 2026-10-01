@@ -28,8 +28,8 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install offline-test dependencies
@@ -48,14 +48,14 @@ jobs:
           trap 'rm -rf "$BG_CONFIG_DIR"' EXIT
           ruff check modules/tools/agentcore/agentcore_tools modules/tools/agentcore/tests
           python -m pytest -q modules/tools/agentcore/tests
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Verify shared Task SDK protocol
         run: node --test modules/tools/task-sdk/test/*.test.mjs
       - name: Compile shared Python packages without Docker or provider access
         run: python -m compileall -q modules/tools/agentcore/agentcore_tools
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.8'
       - name: Validate isolated infrastructure with mock providers

@@ -109,7 +109,7 @@ jobs:
           python3 modules/gateway/scripts/repository-scan-receipt.py
 
       - name: Upload authenticated context
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-security-scan.yml-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
@@ -1003,7 +1003,7 @@ jobs:
 
       - name: Upload cleanup evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-repository-scan-cleanup-${{ github.run_attempt }}
           path: cleanup.json
@@ -1146,7 +1146,7 @@ jobs:
           cp -R scanner-evidence/syft/provenance "$RECEIPT_EVIDENCE/syft/"
 
       - name: Upload typed scan receipt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-repository-scan-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-repository-scan/
@@ -1175,7 +1175,7 @@ jobs:
             --correlation "$ADP_CORRELATION"
 
       - name: Upload sanitized reconciliation
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: security-reconciliation-${{ github.run_attempt }}
           path: security-reconciliation.json

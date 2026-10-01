@@ -76,7 +76,7 @@ jobs:
         run: |
           python platform/scripts/release/workflow.py --directory "$RUNNER_TEMP/release"
           cp "$RUNNER_TEMP/release/manifest.json" "$RUNNER_TEMP/manifest.json"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: release-manifest
           path: ${{ runner.temp }}/manifest.json

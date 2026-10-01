@@ -223,7 +223,7 @@ jobs:
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
         run: python3 modules/gateway/scripts/deployment-workflow-context.py
       - name: Upload deployment workflow context
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
@@ -936,7 +936,7 @@ jobs:
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-backend
       - name: Upload gateway-backend build evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-release-gateway-backend-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-release-gateway-backend/release.json
@@ -1007,7 +1007,7 @@ jobs:
         run: python3 modules/gateway/scripts/deployment-workflow-context.py
       - name: Upload deployment workflow context
         if: needs.deploy-backend.result == 'skipped'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
@@ -1089,7 +1089,7 @@ jobs:
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
       - name: Upload gateway-frontend build evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-release-gateway-frontend-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-release-gateway-frontend/release.json
