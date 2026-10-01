@@ -542,6 +542,15 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         report.waiting += 1
                         report.reasons[node.id] = "The failed worker no longer owns the current delivery execution; reconcile its current owner."
                         continue
+                    from .handoff import handoff_receipt_ref
+
+                    if current.record.handoff_receipt_ref == handoff_receipt_ref(identity, current.record.id):
+                        # A durable handoff transferred responsibility before the
+                        # developer's cleanup failed. The review controller owns
+                        # that continuation even before it queues a successor.
+                        report.waiting += 1
+                        report.reasons[node.id] = "The worker committed its handoff; reconcile the accepted continuation."
+                        continue
                     from .review_recovery import pending_recovery_for_report
                     from .run_reports import OrchestrationRunReport
 
