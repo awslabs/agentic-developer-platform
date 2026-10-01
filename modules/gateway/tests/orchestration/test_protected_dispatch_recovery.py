@@ -64,7 +64,7 @@ async def test_next_tick_replays_exact_protected_assignment(session, protected_e
     assert len(decisions) == 1
 
 
-@pytest.mark.parametrize("change", ["active", "completed", "cancelled", "revoked", "paused", "policy", "digest"])
+@pytest.mark.parametrize("change", ["active", "completed", "cancelled", "revoked", "paused", "policy", "digest", "completed_digest"])
 async def test_protected_replay_does_not_restart_or_bypass_fences(session, protected_engine, monkeypatch, change):
     from src.orchestration.execution_policy import Decision, DenyReason
 
@@ -75,14 +75,18 @@ async def test_protected_replay_does_not_restart_or_bypass_fences(session, prote
     pending = first.pending[0]
     writer.provision(pending)
     key = {"pk": {"S": f"TENANT#{pending.org_id}"}, "sk": {"S": f"EXEC#{pending.envelope['message_id']}"}}
-    if change in {"active", "completed", "cancelled", "revoked"}:
+    if change in {"active", "completed", "cancelled", "revoked", "completed_digest"}:
         store.client.update_item(
             TableName=store.table,
             Key=key,
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": {"S": change}},
+            ExpressionAttributeValues={":s": {"S": "completed" if change == "completed_digest" else change}},
         )
+        if change == "completed_digest":
+            store.client.update_item(
+                TableName=store.table, Key=key, UpdateExpression="SET envelope_digest = :s", ExpressionAttributeValues={":s": {"S": "historical"}}
+            )
     elif change == "digest":
         store.client.update_item(
             TableName=store.table, Key=key, UpdateExpression="SET envelope_digest = :s", ExpressionAttributeValues={":s": {"S": "wrong"}}
@@ -97,6 +101,10 @@ async def test_protected_replay_does_not_restart_or_bypass_fences(session, prote
         )
     second = await run_dispatch_pass(session, _config())
     assert second.pending == []
+    if change == "completed_digest":
+        assert second.publish_failed == 0  # A terminal worker has no dispatch to replay.
+    elif change == "digest":
+        assert second.publish_failed == 1  # Pending dispatches still enforce the digest.
 
 
 @pytest.mark.parametrize(

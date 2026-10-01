@@ -1083,6 +1083,19 @@ async def _dispatch_one_unclaimed(
             envelope["execution_continuation"] = dict(envelope["handoff_expect"])
             envelope["action"] = Action.REPAIR.value if observed_attempts else Action.DEVELOP.value
 
+    if prior_binding is not None:
+        from .pr_bindings import binding_summary
+
+        # Carry-forward needs the dispatch decision below to resolve authority.
+        # Freeze the provider-verified PR pointer first, then verify that the
+        # binding transaction produced exactly this assignment before commit.
+        envelope["bound_pull_request"] = {
+            **binding_summary(prior_binding),
+            "head_sha": repair_pr.head_sha,
+            "provider_repository_id": repair_pr.provider_repository_id,
+            "provider_pr_node_id": repair_pr.provider_pr_node_id,
+        }
+
     session.add(
         OrchestrationDecision(
             org_id=org_id,
@@ -1128,11 +1141,13 @@ async def _dispatch_one_unclaimed(
             pr=repair_pr,
             expected_revision=prior_revision,
         )
-        envelope["bound_pull_request"] = {
+        carried_pointer = {
             **binding_summary(current_binding),
             "provider_repository_id": current_binding.provider_repository_id,
             "provider_pr_node_id": current_binding.provider_pr_node_id,
         }
+        if carried_pointer != envelope["bound_pull_request"]:
+            raise ValueError("carried PR differs from the committed dispatch assignment")
 
     # Activate only after gateway, worker, migration and signing material have
     # been verified. The assignment commits atomically with this exact dispatch.

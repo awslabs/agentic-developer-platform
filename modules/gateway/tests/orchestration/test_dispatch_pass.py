@@ -2060,7 +2060,7 @@ class TestSavedPersonaMapping:
             assert sqs.envelope()["model_resolved"] == "saved-model"
 
 
-async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch):
+async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch, protected_engine):
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
@@ -2104,6 +2104,16 @@ async def test_retry_dispatch_carries_provider_verified_pr_before_publish(sessio
     assert original.attempt == 2 and original.head_sha == "b" * 40 and original.revision == 2
     assert report.pending[0].envelope["bound_pull_request"]["pr_number"] == 777
     assert report.pending[0].envelope["bound_pull_request"]["provider_pr_node_id"] == "PR_existing"
+    await session.commit()
+    # Lost queue acknowledgement after provisioning must replay the complete
+    # carried-forward assignment, including the PR pointer and its new revision.
+    store, writer = protected_engine
+    writer.provision(report.pending[0])
+    replay = await run_dispatch_pass(session, _config())
+    assert replay.publish_failed == 0
+    assert len(replay.pending) == 1
+    assert replay.pending[0].envelope == report.pending[0].envelope
+    assert node.attempts == 2
 
 
 async def test_unverifiable_retry_pr_does_not_consume_attempt_or_publish(session, monkeypatch):
