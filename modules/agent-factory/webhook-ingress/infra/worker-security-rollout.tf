@@ -17,7 +17,7 @@ locals {
 variable "agent_worker_admission_paused" {
   description = "Pause new KEDA worker Jobs during a staged Terraform rollout; existing Jobs are preserved."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "agent_legacy_worker_admin_retired" {
@@ -59,10 +59,10 @@ resource "terraform_data" "worker_security_rollout" {
 
   lifecycle {
     precondition {
-      condition = !var.agent_authority_enabled || var.agent_worker_admission_paused || (
-        var.agent_legacy_worker_admin_retired && var.agent_task_source_isolation_confirmed
+      condition = var.agent_worker_admission_paused || (
+        var.agent_authority_enabled && var.agent_legacy_worker_admin_retired && var.agent_task_source_isolation_confirmed
       )
-      error_message = "Keep new worker admissions paused until the legacy role is retired and its Kubernetes isolation is verified."
+      error_message = "Worker admission requires protected identity, retired legacy admin access and verified Kubernetes isolation. Pause admission while preparing the migration."
     }
     precondition {
       condition     = !var.agent_authority_enabled || var.agent_authority_runtime_ready

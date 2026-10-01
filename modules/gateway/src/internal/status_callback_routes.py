@@ -2,7 +2,7 @@
 
 Issue #2049: Minimal status-callback bridge (C1/Decision 5).
 
-Endpoint (IAM-signed / shared-secret; internal only):
+Endpoint (signed asset/attempt grant; internal only):
     POST /internal/v1/knowledge-assets/status-callback
         — ingestion worker writes status back to the gateway knowledge_assets row
 
@@ -10,8 +10,8 @@ The worker calls this endpoint on each state transition (indexing, complete, fai
 so the gateway row reflects live ingestion progress without any cross-DB join.
 
 Authentication:
-    Reuses verify_internal_or_irsa from auth_deps.py (dual-auth: IRSA +
-    shared-secret). Returns 403 on auth failure.
+    The dispatch-minted grant authenticates one asset, tenant and attempt. Its
+    digest must match the active persisted attempt. No broad transport key is used.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding_metrics import observe_identity_binding
 from src.knowledge.ingestion_callback_grant import GrantError, verify_ingestion_grant
 from src.shared.database_agent_context import get_agent_context_db
@@ -105,7 +104,6 @@ class StatusCallbackResponse(BaseModel):
 async def status_callback(
     body: StatusCallbackRequest,
     db: AsyncSession = Depends(get_agent_context_db),
-    _: None = Depends(verify_internal_or_irsa),
 ) -> StatusCallbackResponse:
     # Validate status value
     if body.status not in _VALID_CALLBACK_STATUSES:

@@ -406,6 +406,16 @@ class TestFailClosed:
         result = filter_results(hits, caller, scoped_store)
         assert result == []
 
+    def test_verified_run_owner_resolves_without_github_login(self) -> None:
+        from door.acl import extract_caller_principal
+
+        headers = {"x-owner-sub": "sub-alice-001", "x-tenant-id": "acme"}
+        assert extract_caller_principal(headers) is None
+        caller = extract_caller_principal({**headers, "x-adp-run-service": "true"})
+        assert caller is not None
+        assert caller.is_resolved
+        assert caller.run_bound
+
     def test_store_failure_returns_empty(self) -> None:
         """ACL store exception → empty results (never leak)."""
         caller = CallerPrincipal(

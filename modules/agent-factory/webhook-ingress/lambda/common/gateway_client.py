@@ -129,7 +129,7 @@ def _sign_internal_lookup(request):
     """Authenticate canonical read-only lookups at the existing IAM API edge."""
     hostname = urllib.parse.urlsplit(request.full_url).hostname or ""
     if ".execute-api." not in hostname or not hostname.endswith(".amazonaws.com"):
-        return request  # Existing direct internal-plane callers retain their key auth.
+        raise RuntimeError("Gateway lookups require the IAM execute-api endpoint")
     import boto3
     from botocore.auth import SigV4Auth
     from botocore.awsrequest import AWSRequest
@@ -150,6 +150,17 @@ def _sign_internal_lookup(request):
     for name, value in signed.headers.items():
         request.add_header(name, value)
     return request
+
+
+class _NoLookupRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_internal_lookup(request, *, timeout):
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoLookupRedirect()
+    ).open(request, timeout=timeout)
 
 
 def resolve_user_state(
@@ -190,17 +201,7 @@ def resolve_user_state(
     if org_id:
         body["org_id"] = org_id
 
-    api_key = _resolve_internal_api_key()
-    if not api_key:
-        logger.warning(
-            "Internal API key not available — cannot resolve user via gateway"
-        )
-        return {"state": USER_ERROR, "reason": "internal_api_key_unavailable"}
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Internal-Api-Key": api_key,
-    }
+    headers = {"Content-Type": "application/json"}
 
     try:
         req = urllib.request.Request(
@@ -209,7 +210,7 @@ def resolve_user_state(
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(_sign_internal_lookup(req), timeout=10) as resp:
+        with _open_internal_lookup(_sign_internal_lookup(req), timeout=10) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 return {
@@ -372,14 +373,7 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     url = f"{GATEWAY_API_URL}/internal/v1/resolve-installation"
     body = {"installation_id": str(installation_id)}
 
-    api_key = _resolve_internal_api_key()
-    if not api_key:
-        return _installation_error(installation_id, "internal_api_key_unavailable")
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Internal-Api-Key": api_key,
-    }
+    headers = {"Content-Type": "application/json"}
 
     try:
         req = urllib.request.Request(
@@ -388,7 +382,7 @@ def resolve_installation_by_id(installation_id: str) -> dict:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(_sign_internal_lookup(req), timeout=10) as resp:
+        with _open_internal_lookup(_sign_internal_lookup(req), timeout=10) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 tenant_id = data.get("tenant_id", "")

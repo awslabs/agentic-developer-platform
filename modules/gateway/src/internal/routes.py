@@ -17,9 +17,9 @@ Endpoints (IAM-signed; internal only, not exposed to end users):
                                             leaves the gateway
 
 Authentication:
-    A shared secret (BG_INTERNAL_API_KEY) is expected in the
-    ``X-Internal-Api-Key`` header.  In production, rotate via Secrets Manager.
-    Full SigV4 verification is a follow-up (tracked separately).
+    Registered IAM callers authenticate through the verified API edge. Identity
+    routing additionally requires operation and tenant capabilities; worker token
+    brokers require live run authority. Shared transport keys are never accepted.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from src.auth.magic_link import (
 )
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding_metrics import observe_identity_binding
+from src.internal.service_authorization import require_service_operation, service_tenant
 from src.knowledge.github_app_service import (
     AGENT_RUN_PERMISSIONS,
     DEFAULT_IDENTITY,
@@ -253,9 +254,14 @@ async def _write_audit(
 )
 async def issue_magic_link(
     body: IssueMagicLinkRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> IssueMagicLinkResponse:
+    principal = require_service_operation(request, "internal:identity:link")
+    # Unscoped pre-login linking is reserved for trusted ingress.
+    if "internal:cross-tenant" not in principal.credential_scopes:
+        raise HTTPException(403, "pre-login linking requires ingress authority")
     # Closed provider allowlist, checked before any state is written (#5664, A10).
     #
     # This is the OTHER writer into the shared `magic_link_nonces` table, and it
@@ -313,7 +319,7 @@ async def issue_magic_link(
         db,
         event_type="magic_link_issued",
         org_id="__internal__",  # no org_id for Lambda-initiated issuance before user is resolved
-        actor_id=None,
+        actor_id=request.state.token_context.user_id,
         details={
             "provider": body.provider,
             "provider_user_id": body.provider_user_id,
@@ -355,9 +361,11 @@ async def issue_magic_link(
 )
 async def resolve_user(
     body: ResolveUserRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ):
+    body.org_id = service_tenant(request, body.org_id, "internal:identity:resolve")
     # 1. Check user_identities — trust-aware, and tenant-scoped when the caller
     #    supplies a tenant (#5664, A10).
     #
@@ -492,7 +500,7 @@ async def resolve_user(
             db,
             event_type="shadow_user_created",
             org_id=tenant_map.org_id,
-            actor_id=None,
+            actor_id=request.state.token_context.user_id,
             details={
                 "provider": body.provider,
                 "provider_user_id": body.provider_user_id,
@@ -559,7 +567,7 @@ async def resolve_user(
         db,
         event_type="magic_link_issued",
         org_id="__internal__",
-        actor_id=None,
+        actor_id=request.state.token_context.user_id,
         details={
             "provider": body.provider,
             "provider_user_id": body.provider_user_id,
@@ -609,9 +617,11 @@ async def resolve_user(
 )
 async def resolve_installation(
     body: ResolveInstallationRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> ResolveInstallationResponse:
+    require_service_operation(request, "internal:installation:resolve")
     from src.admin.installations.resolver import OwnerState, resolve_installation_owner
 
     installation_id = (body.installation_id or "").strip()
@@ -629,6 +639,7 @@ async def resolve_installation(
             raise HTTPException(status_code=404, detail={"error": "not_found", "message": "No proven installation owner"})
         org = await db.get(Organization, owner.tenant_id)
         if org is not None:
+            service_tenant(request, org.id, "internal:installation:resolve")
             return ResolveInstallationResponse(tenant_id=org.id, created_via=org.created_via or "operator")
 
     # Retain nonnumeric legacy identifiers for compatibility; real provider IDs
@@ -643,6 +654,7 @@ async def resolve_installation(
     for org in result.scalars().all():
         ids = [str(i) for i in (org.github_installation_ids or [])]
         if installation_id in ids:
+            service_tenant(request, org.id, "internal:installation:resolve")
             # Issue #2724: return provenance so the webhook gate can distinguish
             # a deliberately-onboarded tenant from a self-created shell. We keep
             # returning 200 for install_autocreate rows rather than 404 — the

@@ -252,8 +252,8 @@ run "prepare_without_activating_workers" {
     agent_authority_worker_image_digests = []
   }
   assert {
-    condition     = local.agent_worker_pause_annotation == "" && !contains(keys(kubernetes_config_map.worker_gateway[0].data), "AGENT_DISPATCH_QUEUE_URL")
-    error_message = "Preparation must neither pause KEDA nor enable a previously unwired dispatch queue."
+    condition     = local.agent_worker_pause_annotation != "" && !contains(keys(kubernetes_config_map.worker_gateway[0].data), "AGENT_DISPATCH_QUEUE_URL")
+    error_message = "Preparation must keep worker admission paused and leave dispatch unwired until protected cutover."
   }
   assert {
     condition     = length(aws_iam_role.agent_authority_worker) == 1 && length(kubernetes_secret.agent_authority) == 1
@@ -675,5 +675,22 @@ run "codex_alarms_use_bounded_outcome_dimensions" {
   assert {
     condition     = length(aws_cloudwatch_dashboard.codex_harness) == 1 && length(aws_cloudwatch_metric_alarm.codex_execution) == 2 && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].dimensions == tomap({ outcome = "unknown" }) && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].threshold == 1
     error_message = "Unknown outcomes need an alert using a fixed outcome dimension, not Task/user IDs."
+  }
+}
+
+run "unprotected_admission_is_rejected" {
+  command = plan
+  variables {
+    agent_authority_enabled       = false
+    agent_worker_admission_paused = false
+  }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
+run "workers_cannot_read_internal_authority" {
+  command = plan
+  assert {
+    condition     = length([for s in local.agent_worker_scoped_policy.Statement : s if try(s.Sid, "") == "DenyInternalAuthoritySecrets" && s.Effect == "Deny"]) == 1
+    error_message = "Even legacy worker policies must explicitly deny internal authority secret access."
   }
 }

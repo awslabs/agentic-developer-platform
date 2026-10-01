@@ -677,7 +677,7 @@ async def test_produced_validation_is_attested_without_echoing_a_report(pair):
     response = await asyncio.to_thread(
         pair.api.post,
         "/internal/v1/credential-evidence",
-        headers={"X-Internal-Api-Key": "evidence-key"},
+        headers={"X-Caller-Identity": IAM, "X-Adp-Edge-Provenance": "synthetic-api-gateway-provenance"},
         json={
             "org_id": "org",
             "workspace_id": "workspace",

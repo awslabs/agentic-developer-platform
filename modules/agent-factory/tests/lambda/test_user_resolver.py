@@ -61,7 +61,7 @@ def mock_env(monkeypatch):
 def mock_env_with_resolver(monkeypatch, mock_env):
     """Environment with user identity resolution enabled."""
     monkeypatch.setenv("ENABLE_USER_IDENTITIES", "true")
-    monkeypatch.setenv("RESOLVER_BASE_URL", "http://gateway.internal:8080")
+    monkeypatch.setenv("RESOLVER_BASE_URL", "https://example123.execute-api.us-east-1.amazonaws.com/dev")
     monkeypatch.setenv("BG_INTERNAL_API_KEY", "test-secret-key")
 
 
@@ -167,7 +167,7 @@ class TestResolverModule:
         import urllib.error
         error_body = json.dumps({"magic_link_url": "https://gw.example.com/auth/link/magic?token=abc"}).encode()
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-user",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user",
             code=404,
             msg="Not Found",
             hdrs={},
@@ -386,7 +386,7 @@ class TestHandlerResolverIntegration:
             # Force module-level flag on after fresh import
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
             # Simulate a Slack event (non-WebSocket)
@@ -439,7 +439,7 @@ class TestHandlerResolverIntegration:
 
         error_body = json.dumps({"magic_link_url": "https://gw.example.com/auth/link/magic?token=xyz"}).encode()
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-user",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user",
             code=404,
             msg="Not Found",
             hdrs={},
@@ -450,7 +450,7 @@ class TestHandlerResolverIntegration:
         with patch("user_resolver._open_resolver", side_effect=http_error):
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
             event = {
@@ -503,7 +503,7 @@ class TestHandlerResolverIntegration:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
             claims = {

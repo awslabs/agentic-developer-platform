@@ -4880,3 +4880,16 @@ def test_shared_codex_report_finalization_never_commits_or_opens_pr(tmp_path, mo
     assert entrypoint._handle_success("owner/repo", 12, "main", "agent-codex-architect", "run-a", "now") == (0 if mode == "complete" else 1)
     assert status.call_args.args[2] == ("complete" if mode == "complete" else "failed")
     command.assert_not_called()
+
+
+@pytest.mark.parametrize("protected", ["true", "false"])
+def test_all_workers_drop_broad_internal_credentials(monkeypatch, protected):
+    import entrypoint
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", protected)
+    names = ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY",
+             "GATEWAY_INTERNAL_API_KEY", "ADP_DOOR_API_KEY_SECRET")
+    for name in names:
+        monkeypatch.setenv(name, "synthetic-secret")
+    with patch.object(entrypoint.boto3, "client", side_effect=AssertionError("worker attempted to fetch shared authority")):
+        entrypoint._load_door_api_key("us-east-1")
+    assert not any(name in os.environ for name in names)

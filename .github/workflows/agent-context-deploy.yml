@@ -196,23 +196,6 @@ jobs:
           GATEWAY_CALLBACK_URL="http://bedrockgateway.adp-gateway.svc.cluster.local"
           echo "GATEWAY_CALLBACK_URL=${GATEWAY_CALLBACK_URL}"
 
-          # Mirror the gateway's internal API key into an agent-context-namespace
-          # K8s secret so the ScaledJob worker can authenticate the callback. The
-          # worker's IRSA cannot read adp/<env>/gateway/* directly, so the deploy
-          # job (broader CI creds) bridges it. Same SM secret the gateway reads.
-          INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
-            --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" \
-            --query SecretString --output text 2>/dev/null || echo "")
-          if [ -n "$INTERNAL_API_KEY" ]; then
-            kubectl create secret generic agent-context-gateway-callback \
-              -n "${NAMESPACE}" \
-              --from-literal=internal-api-key="$INTERNAL_API_KEY" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            echo "Secret agent-context-gateway-callback created (status callback auth)"
-          else
-            echo "WARNING: gateway internal-api-key not found — status callbacks will fail-open (status stuck at 'queued')"
-          fi
-
           # Export all variables needed for template substitution
           export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
           export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT NEPTUNE_BULK_LOAD_ROLE_ARN OPENSEARCH_ENDPOINT
@@ -469,6 +452,8 @@ jobs:
             echo "Run the images-build workflow to build the context-mcp image first."
           fi
 
+          DOOR_VERIFICATION_KEYS_SHA256=$(python3 scripts/ensure-door-identity.py --namespace "${NAMESPACE}")
+          export DOOR_VERIFICATION_KEYS_SHA256
           export NAMESPACE SERVICE_ACCOUNT CONTEXT_MCP_IMAGE
           template_file manifests/context-mcp.yaml | kubectl apply -f -
           # The image is pinned to the mutable ":latest" tag, so `kubectl apply`

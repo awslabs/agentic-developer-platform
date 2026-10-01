@@ -160,13 +160,18 @@ async def test_actual_gateway_transport_requires_explicit_current_revocation_pro
     import urllib.error
 
     await fx._seed(db_session, projection)
-    monkeypatch.setattr(webhook.gateway, "GATEWAY_API_URL", "https://inert-gateway.test")
-    monkeypatch.setattr(webhook.gateway, "_resolve_internal_api_key", lambda: "inert-review-key")
+    monkeypatch.setattr(webhook.gateway, "GATEWAY_API_URL", "https://fixture.execute-api.us-east-1.amazonaws.com/dev")
+    from botocore.credentials import Credentials
+
+    signing_session = MagicMock()
+    signing_session.get_credentials.return_value = Credentials("fixture-access", "fixture-secret", "fixture-session")
+    monkeypatch.setattr("boto3.Session", lambda: signing_session)
     body = {"tenant_id": fx.ORG, "created_via": "operator"}
     if protocol != "missing":
         body["revocation_checked"] = protocol
 
     def request(req, *, timeout):
+        assert "AWS4-HMAC-SHA256" in req.get_header("Authorization")
         assert json.loads(req.data) == {"installation_id": str(fx.INSTALL)}
         if protocol in ("gone", "unavailable"):
             raise urllib.error.HTTPError(req.full_url, 410 if protocol == "gone" else 503, "inert failure", {}, None)
@@ -175,7 +180,7 @@ async def test_actual_gateway_transport_requires_explicit_current_revocation_pro
         response.__enter__.return_value = response
         return response
 
-    monkeypatch.setattr(webhook.gateway.urllib.request, "urlopen", request)
+    monkeypatch.setattr(webhook.gateway, "_open_internal_lookup", request)
     event = fx._event(webhook)
     reverse = webhook.reverse.resolve_installation_for_tenant(fx.ORG)
     auto = webhook.handler._auto_register_installation(fx.INSTALL, fx.ORG, bypass_negative_cache=True)

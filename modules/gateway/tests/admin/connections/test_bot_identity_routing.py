@@ -2,11 +2,13 @@
 
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import boto3
 import pytest
+from fastapi import Request
 from moto import mock_aws
 from sqlalchemy import select
 
@@ -95,7 +97,15 @@ async def test_second_install_preserves_first_tenant_bot_resolution(db_session, 
         # Canonical Postgres resolution must agree with both DDB read paths.
         from src.internal.routes import ResolveUserRequest, resolve_user
 
-        canonical = await resolve_user(ResolveUserRequest(provider="github", provider_user_id="424242"), db=db_session, _=None)
+        request = Request({"type": "http"})
+        request.state.token_context = SimpleNamespace(
+            auth_source="iam",
+            user_id="iam-agent:ingress",
+            scope="internal",
+            org_id="org-a",
+            credential_scopes=["internal:identity:resolve"],
+        )
+        canonical = await resolve_user(ResolveUserRequest(provider="github", provider_user_id="424242"), request=request, db=db_session, _=None)
         assert canonical.user_id == initial_user_id
         assert canonical.org_id == "org-a"
 

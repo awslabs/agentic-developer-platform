@@ -96,8 +96,6 @@ def emit_status_callback(
         headers: dict[str, str] = {
             "Content-Type": "application/json",
         }
-        if _GATEWAY_INTERNAL_API_KEY:
-            headers["X-Internal-Api-Key"] = _GATEWAY_INTERNAL_API_KEY
 
         resp = requests.post(
             url,

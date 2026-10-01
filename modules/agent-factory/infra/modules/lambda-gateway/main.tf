@@ -23,6 +23,7 @@ resource "aws_lambda_function" "ingest" {
 
   environment {
     variables = {
+      RESOLVER_BASE_URL             = var.identity_resolver_url
       ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
       PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint

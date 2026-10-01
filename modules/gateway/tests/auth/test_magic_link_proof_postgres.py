@@ -96,7 +96,19 @@ async def rig(local_postgres, monkeypatch):
         app.dependency_overrides[get_db] = database
         app.dependency_overrides[get_current_user_context] = caller
         app.dependency_overrides[vault_routes.get_secrets_manager] = lambda: MagicMock()
-        app.dependency_overrides[internal_routes.verify_internal_or_irsa] = lambda: None
+
+        async def internal_caller(request: Request):
+            from types import SimpleNamespace
+
+            request.state.token_context = SimpleNamespace(
+                user_id="iam-agent:ingress",
+                auth_source="iam",
+                scope="internal",
+                org_id="__platform__",
+                credential_scopes=["internal:identity:resolve", "internal:identity:link", "internal:cross-tenant"],
+            )
+
+        app.dependency_overrides[internal_routes.verify_internal_or_irsa] = internal_caller
         return AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://local.invalid")
 
     async def synthetic_private_nonce(user="alice"):

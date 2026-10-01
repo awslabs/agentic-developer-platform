@@ -77,7 +77,7 @@ class TestEmitStatusCallback:
         assert "status_detail" not in body
 
         headers = call_kwargs[1]["headers"]
-        assert headers["X-Internal-Api-Key"] == "secret-key"
+        assert "X-Internal-Api-Key" not in headers
 
     @patch("status_callback.requests.post")
     def test_sends_complete_with_status_detail(self, mock_post, monkeypatch):

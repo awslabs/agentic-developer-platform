@@ -108,8 +108,8 @@ async def request(scenario, endpoint, headers):
 @pytest.mark.parametrize(
     "headers,error",
     [
-        ({}, "forbidden"),
-        ({"Authorization": "Bearer human-session"}, "forbidden"),
+        ({}, "verified IAM caller identity required"),
+        ({"Authorization": "Bearer human-session"}, "verified IAM caller identity required"),
         ({"X-Caller-Identity": PRIVILEGED_ARN}, "invalid_caller_identity"),
         ({**HEADERS, "X-Adp-Edge-Provenance": "forged"}, "invalid_caller_identity"),
         ({"X-Caller-Identity": PRIVILEGED_ARN, "X-Internal-Api-Key": _INTERNAL_KEY}, "invalid_caller_identity"),
@@ -118,7 +118,8 @@ async def request(scenario, endpoint, headers):
 async def test_anonymous_human_and_forged_callers_rejected(scenario, endpoint, headers, error):
     response = await request(scenario, endpoint, headers)
     assert response.status_code == 403, response.text
-    assert response.json()["detail"]["error"] == error
+    detail = response.json()["detail"]
+    assert (detail["error"] if isinstance(detail, dict) else detail) == error
     scenario.lookup.assert_not_called()
     assert all(context is None for context in scenario.contexts)
 
@@ -135,18 +136,16 @@ async def test_registered_other_tenant_cannot_claim_internal_scope(scenario, end
 
 
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
-@pytest.mark.parametrize("mode", ["internal", "platform", "shared-secret"])
+@pytest.mark.parametrize("mode", ["internal", "platform"])
 async def test_valid_caller_reaches_real_handler_with_verified_context(scenario, endpoint, mode):
     scenario.entry["scope"] = mode
-    headers = (
-        {"X-Internal-Api-Key": _INTERNAL_KEY}
-        if mode == "shared-secret"
-        else {
-            **HEADERS,
-            "X-Agent-OrgId": "attacker-attribution",
-            "X-Agent-UserId": "attacker-user",
-        }
-    )
+    scenario.entry["credential_scopes"] = [
+        "internal:identity:resolve",
+        "internal:identity:link",
+        "internal:installation:resolve",
+        "internal:cross-tenant",
+    ]
+    headers = {**HEADERS, "X-Agent-OrgId": "attacker-attribution", "X-Agent-UserId": "attacker-user"}
     response = await request(scenario, endpoint, headers)
     if endpoint == "resolve-user":
         assert response.status_code == 200, response.text
@@ -161,17 +160,28 @@ async def test_valid_caller_reaches_real_handler_with_verified_context(scenario,
         assert nonce.provider == "slack" and nonce.provider_user_id == "workspace:new-user"
     assert len(scenario.contexts) == 1
     context = scenario.contexts[0]
-    if mode == "shared-secret":
-        scenario.lookup.assert_not_called()
-        assert context is None
-    else:
-        scenario.lookup.assert_called_once_with(ROLE_ARN)
-        assert context.user_id == "iam-agent:scaledjob-worker"
-        assert context.org_id == "__platform__" and context.team_id == "__agents__"
-        assert context.auth_source == "iam" and context.scope == mode
-        assert context.agent_registry_id == "scaledjob-worker"
-        assert context.credential_scopes == ["fixture:read"]
-        assert not context.is_admin
+    scenario.lookup.assert_called_once_with(ROLE_ARN)
+    assert context.user_id == "iam-agent:scaledjob-worker"
+    assert context.org_id == "__platform__" and context.team_id == "__agents__"
+    assert context.auth_source == "iam" and context.scope == mode
+    assert context.agent_registry_id == "scaledjob-worker"
+    assert context.credential_scopes == scenario.entry["credential_scopes"]
+    assert not context.is_admin
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_shared_secret_cannot_enter_machine_plane(scenario, endpoint):
+    response = await request(scenario, endpoint, {"X-Internal-Api-Key": _INTERNAL_KEY})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "verified IAM caller identity required"
+    scenario.lookup.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_registered_caller_without_operation_grant_denied(scenario, endpoint):
+    response = await request(scenario, endpoint, HEADERS)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "internal service capability required"
 
 
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
@@ -209,7 +219,7 @@ async def test_verified_human_session_cannot_enter_machine_plane(scenario, endpo
     assert human.account_type == "human" and human.user_id == "human-a"
     assert human.org_id == "tenant-a"
     response = await request(scenario, endpoint, {"Authorization": f"Bearer {token}"})
-    assert response.status_code == 403 and response.json()["detail"]["error"] == "forbidden"
+    assert response.status_code == 403 and response.json()["detail"] == "verified IAM caller identity required"
     scenario.lookup.assert_not_called()
     validator.validate_token.assert_called_once_with(token)
 

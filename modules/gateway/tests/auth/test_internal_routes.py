@@ -14,10 +14,11 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -34,7 +35,7 @@ from src.shared.models.vault import ChannelTenantMap, UserIdentity
 # ---------------------------------------------------------------------------
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
-_VALID_KEY = "test-internal-api-key"
+_VALID_CALLER = "test-service-principal"
 _SECRET = "test-magic-link-secret-key-32chars!!"
 
 
@@ -96,18 +97,22 @@ def _make_app(db_session: AsyncSession) -> TestClient:
 
     app.dependency_overrides[get_db] = _get_db
 
-    # Auth: the real verify_internal_or_irsa reads settings.internal_api_key
-    # inside src.internal.auth_deps (not src.internal.routes), so the per-test
-    # `patch("src.internal.routes.get_settings")` never reached it and every
-    # call 503'd. Override the dependency with a faithful key check (still
-    # exercises the 403 path).
+    # Endpoint tests supply a synthetic registered service principal. The real
+    # IAM/edge verification path is covered independently in test_auth_deps.
     from fastapi import Header, HTTPException
 
     from src.internal.auth_deps import verify_internal_or_irsa
 
-    async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
-        if x_internal_api_key != _VALID_KEY:
+    async def _verify(request: Request, x_caller_identity: str | None = Header(default=None)) -> None:
+        if x_caller_identity != _VALID_CALLER:
             raise HTTPException(status_code=403, detail={"error": "forbidden"})
+        request.state.token_context = SimpleNamespace(
+            user_id="iam-agent:ingress",
+            auth_source="iam",
+            scope="internal",
+            org_id="__platform__",
+            credential_scopes=["internal:identity:resolve", "internal:identity:link", "internal:installation:resolve", "internal:cross-tenant"],
+        )
 
     app.dependency_overrides[verify_internal_or_irsa] = _verify
     return TestClient(app, raise_server_exceptions=False)
@@ -135,14 +140,14 @@ class TestInternalIssuanceProviderAllowlist:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
         resp = client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": provider, "provider_user_id": "U-attacker"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
 
         assert resp.status_code == 400, resp.text
@@ -158,14 +163,14 @@ class TestInternalIssuanceProviderAllowlist:
         from src.shared.models.vault import MagicLinkNonce
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
         client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": "github_app_register", "provider_user_id": "U-attacker"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
 
         async def _nonces():
@@ -179,14 +184,14 @@ class TestInternalIssuanceProviderAllowlist:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
         resp = client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": "../github", "provider_user_id": "U1"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
 
         assert resp.status_code == 400
@@ -200,7 +205,7 @@ class TestIssueMagicLink:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
@@ -209,7 +214,7 @@ class TestIssueMagicLink:
         resp = client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": "slack", "provider_user_id": "U123", "channel_context": "T01/C01"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 201
         body = resp.json()
@@ -221,7 +226,7 @@ class TestIssueMagicLink:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
@@ -236,14 +241,14 @@ class TestIssueMagicLink:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
         resp = client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": "slack", "provider_user_id": "U123"},
-            headers={"X-Internal-Api-Key": "wrong-key"},
+            headers={"X-Caller-Identity": "wrong-key"},
         )
         assert resp.status_code == 403
 
@@ -252,7 +257,7 @@ class TestIssueMagicLink:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = ""
         settings.token_secret_key = ""
         mock_settings.return_value = settings
@@ -261,7 +266,7 @@ class TestIssueMagicLink:
         resp = client.post(
             "/internal/v1/issue-magic-link",
             json={"provider": "slack", "provider_user_id": "U123"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 503
 
@@ -277,7 +282,7 @@ class TestResolveUser:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
@@ -310,7 +315,7 @@ class TestResolveUser:
         resp = client.post(
             "/internal/v1/resolve-user",
             json={"provider": "slack", "provider_user_id": "U-known"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -325,7 +330,7 @@ class TestResolveUser:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
@@ -350,7 +355,7 @@ class TestResolveUser:
                 "provider_user_id": "U-shadow",
                 "channel_context": "T-workspace-01",
             },
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 201
         body = resp.json()
@@ -364,7 +369,7 @@ class TestResolveUser:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         settings.magic_link_secret = _SECRET
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
@@ -373,7 +378,7 @@ class TestResolveUser:
         resp = client.post(
             "/internal/v1/resolve-user",
             json={"provider": "slack", "provider_user_id": "U-unknown", "channel_context": "T-no-map"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 404
         detail = resp.json()["detail"]
@@ -396,7 +401,7 @@ class TestResolveInstallation:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         # org-acme owns installation 144082554
@@ -412,7 +417,7 @@ class TestResolveInstallation:
         resp = client.post(
             "/internal/v1/resolve-installation",
             json={"installation_id": "144082554"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
@@ -435,7 +440,7 @@ class TestResolveInstallation:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         async def _seed():
@@ -451,7 +456,7 @@ class TestResolveInstallation:
         resp = client.post(
             "/internal/v1/resolve-installation",
             json={"installation_id": "144082555"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
@@ -463,14 +468,14 @@ class TestResolveInstallation:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)
         resp = client.post(
             "/internal/v1/resolve-installation",
             json={"installation_id": "999999999"},
-            headers={"X-Internal-Api-Key": _VALID_KEY},
+            headers={"X-Caller-Identity": _VALID_CALLER},
         )
         assert resp.status_code == 404
         assert resp.json()["detail"]["error"] == "not_found"
@@ -480,7 +485,7 @@ class TestResolveInstallation:
         from unittest.mock import MagicMock
 
         settings = MagicMock()
-        settings.internal_api_key = _VALID_KEY
+        settings.internal_api_key = _VALID_CALLER
         mock_settings.return_value = settings
 
         client = _make_app(db)

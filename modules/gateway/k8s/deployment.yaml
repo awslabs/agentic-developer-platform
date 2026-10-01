@@ -178,12 +178,6 @@ spec:
                   name: agent-run-services
                   key: marker-signing-key
                   optional: true
-            - name: ADP_DOOR_SERVICE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: bedrockgateway-secrets
-                  key: internal-api-key
-                  optional: true
             # Cap glibc's per-thread malloc arenas. Default is 8 x ncores, and
             # each arena grows in 64Mi steps that are never returned to the OS.
             # proxy/service.py dispatches one asyncio.to_thread per streaming

@@ -190,14 +190,14 @@ class TestBothDeliveryPathsApplyIt:
 class TestDoorKeyIsSeeded:
     """The primary control needs its secret, or the Door 503s every verb."""
 
-    def test_deployment_mounts_door_api_key(self):
+    def test_deployment_mounts_public_verification_keys(self):
         text = (MODULE_ROOT / "manifests" / "context-mcp.yaml").read_text()
         docs = [d for d in yaml.safe_load_all(text.replace("${NAMESPACE}", "agent-context")) if d]
         deployment = next(d for d in docs if d.get("kind") == "Deployment")
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         names = {e["name"] for e in container.get("env", [])}
-        assert "DOOR_API_KEY" in names, (
-            "The context-mcp container has no DOOR_API_KEY env var, so "
+        assert "DOOR_VERIFICATION_KEYS" in names, (
+            "The context-mcp container has no DOOR_VERIFICATION_KEYS env var, so "
             "door/auth.py finds no configured key and fails closed with 503 on "
             "every authenticated path (issue #4073 finding #8)."
         )

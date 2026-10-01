@@ -188,7 +188,6 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
                 "AGENT_RUN_CREDENTIAL_KEY",
                 "AGENT_CONTROL_ENVELOPE_SIGNING_KEY",
                 "ADP_MARKER_SIGNING_KEY",
-                "ADP_DOOR_SERVICE_KEY",
             )
         ],
     ],
@@ -212,7 +211,7 @@ if 'get' in sys.argv:
     if 'secret' in sys.argv:
         if os.environ['UNAVAILABLE'] == 'missing-secret': sys.exit(1)
         if os.environ['UNAVAILABLE'] not in ('missing-key', 'empty-key'):
-            print('run-credential-key\\nenvelope-signing-key\\nmarker-signing-key\\ninternal-api-key')
+            print('run-credential-key\\nenvelope-signing-key\\nmarker-signing-key')
     else:
         print(os.environ['SECRET_REFS'] if 'secretKeyRef' in sys.argv[-1] else os.environ['CONFIG_REFS'])
 """

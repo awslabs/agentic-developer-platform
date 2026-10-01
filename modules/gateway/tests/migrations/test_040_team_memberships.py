@@ -448,9 +448,10 @@ class TestBackfillSkipsShadowUsersFromRealWriter:
 
     @pytest.mark.asyncio
     async def test_shadow_user_gets_no_membership_row(self, session, org_fixture):
+        from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
 
-        from fastapi import FastAPI, Header, HTTPException
+        from fastapi import FastAPI, Request
         from fastapi.testclient import TestClient
 
         from src.internal.auth_deps import verify_internal_or_irsa
@@ -468,9 +469,14 @@ class TestBackfillSkipsShadowUsersFromRealWriter:
         async def _get_db():
             yield session
 
-        async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
-            if x_internal_api_key != "k":
-                raise HTTPException(status_code=403, detail={"error": "forbidden"})
+        async def _verify(request: Request) -> None:
+            request.state.token_context = SimpleNamespace(
+                auth_source="iam",
+                user_id="iam-agent:ingress",
+                scope="internal",
+                org_id="org-1",
+                credential_scopes=["internal:identity:resolve"],
+            )
 
         app.dependency_overrides[get_db] = _get_db
         app.dependency_overrides[verify_internal_or_irsa] = _verify
@@ -485,7 +491,6 @@ class TestBackfillSkipsShadowUsersFromRealWriter:
             resp = client.post(
                 "/internal/v1/resolve-user",
                 json={"provider": "slack", "provider_user_id": "W-acme:U-new", "channel_context": "W-acme"},
-                headers={"X-Internal-Api-Key": "k"},
             )
 
         assert resp.status_code in (200, 201), resp.text

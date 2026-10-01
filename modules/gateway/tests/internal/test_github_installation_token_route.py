@@ -45,7 +45,7 @@ from src.shared.models.organization import Organization
 from src.shared.models.vault import ChannelTenantMap
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
-_VALID_KEY = "test-internal-api-key"
+_VALID_CALLER = "test-service-principal"
 
 _OWNER_TENANT = "org-acme"
 _OTHER_TENANT = "org-globex"
@@ -162,13 +162,14 @@ def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = No
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db
-    from src.internal.auth_deps import _verify_internal_key, verify_internal_or_irsa
+    from src.internal.auth_deps import verify_internal_or_irsa
     from src.internal.credential_binding import resolve_installation_binding
 
     async def authenticated_fixture(request: Request):
         # Route-unit fixture: the authenticated run is fixed independently of
         # request selectors. Real broker/auth wiring is exercised separately.
-        _verify_internal_key(request.headers.get("X-Internal-Api-Key"))
+        if request.headers.get("X-Caller-Identity") != _VALID_CALLER:
+            raise HTTPException(403, "fixture caller mismatch")
         body = await request.json()
         if body.get("invocation_id") != _INVOCATION_ID:
             raise HTTPException(403, "fixture run mismatch")
@@ -185,7 +186,7 @@ def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = No
 
 def _settings_mock(*, enforce_credential_binding: bool = False) -> MagicMock:
     s = MagicMock()
-    s.internal_api_key = _VALID_KEY
+    s.internal_api_key = _VALID_CALLER
     s.aws_region = "us-east-1"
     s.webhook_events_table = "adp-test-webhook-events"
     # The installation binding must be independent of this flag. Tests set it
@@ -280,7 +281,7 @@ def _post(
         resp = client.post(
             "/internal/v1/github-installation-token",
             json=body if body is not None else _body(),
-            headers=headers if headers is not None else {"X-Internal-Api-Key": _VALID_KEY},
+            headers=headers if headers is not None else {"X-Caller-Identity": _VALID_CALLER},
         )
     return resp, mint
 
@@ -651,7 +652,7 @@ class TestAuthn:
 
     @pytest.mark.asyncio
     async def test_wrong_internal_key_is_rejected(self, db):
-        resp, mint = _post(db, headers={"X-Internal-Api-Key": "nope"})
+        resp, mint = _post(db, headers={"X-Caller-Identity": "nope"})
 
         assert resp.status_code == 403, resp.text
         mint.assert_not_awaited()

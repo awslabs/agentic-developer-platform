@@ -432,7 +432,7 @@ variable "gitlab_webhook_enabled" {
 # -----------------------------------------------------------------------------
 
 variable "enable_adversarial_e2e" {
-  description = "Enable adversarial E2E test infrastructure (SSM mirror of gateway internal API key, evidence S3 bucket). Requires the secret adp/<env>/gateway/internal-api-key to exist in Secrets Manager. Set to false on fresh deploys where CI has not yet seeded the secret."
+  description = "Enable adversarial E2E evidence storage. Inspection calls require a registered IAM principal with explicit tenant and operation capabilities."
   type        = bool
   default     = false
 }
