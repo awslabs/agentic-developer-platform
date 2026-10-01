@@ -1,0 +1,56 @@
+{
+  "status": "proposed_not_authorized",
+  "repository": "aws-e/adp",
+  "org_id": null,
+  "environment_connection_id": null,
+  "target_account_id": null,
+  "target_region": null,
+  "cloud_role_arn": null,
+  "model_ids": [],
+  "allowed_actions": [
+    "develop",
+    "review",
+    "repair",
+    "merge",
+    "deploy",
+    "evaluate"
+  ],
+  "human_action_gates": [],
+  "evaluation_acceptance": {
+    "claude-desktop-6850/epic-6850/proof/bedrock-go": "machine",
+    "claude-desktop-6850/epic-6850/delivery/cloud-acceptance": "machine"
+  },
+  "retained_human_node": "claude-desktop-6850/epic-6850/acceptance/desktop-smoke",
+  "proposed_limits": {
+    "max_spend_usd": 100,
+    "max_wall_clock_seconds": 86400,
+    "max_attempts_per_node": 4,
+    "max_concurrent_actions": 1,
+    "expires_at": null
+  },
+  "expiry_rule": "Resolve to an explicit UTC expiry when the owner accepts the final executable plan; do not start its clock during authoring. Never auto-renew.",
+  "probe_limits": {
+    "max_models": 2,
+    "max_output_tokens_per_invocation": 256,
+    "max_bedrock_inference_requests": 24,
+    "max_count_tokens_requests": 8,
+    "max_duration_seconds": 1800,
+    "concurrency": 1,
+    "retries_count_against_limits": true
+  },
+  "cloud_acceptance_limits": {
+    "max_bedrock_inference_requests": 24,
+    "max_count_tokens_requests": 8,
+    "max_output_tokens_per_invocation": 256,
+    "max_duration_seconds": 3600,
+    "concurrency": 1,
+    "retries_count_against_limits": true
+  },
+  "cost_boundary": "The $100 proposal is a shared agent-execution budget, not proof that direct Bedrock, workflow or infrastructure charges are metered by the engine. Probe/runtime request and duration limits must be enforced before calls. Confirm target pricing/cost ceiling in preflight.",
+  "roles": {
+    "architect": "Finalize criteria, capability matrix, fixtures and evidence contracts. Does not approve gates.",
+    "developer": "Implement only dependency-ready accepted scope.",
+    "codex-reviewer": "Review exact PR head, repair findings, rerun required checks and complete authorized merge through the engine.",
+    "engine": "Own dependencies, dispatch, deployment verification, evidence settlement and visible blockers."
+  }
+}

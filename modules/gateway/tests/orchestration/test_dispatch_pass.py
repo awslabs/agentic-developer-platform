@@ -2139,3 +2139,41 @@ async def test_paused_flows_do_not_consume_dispatch_capacity_or_attempts(session
     assert result.pending[0].node_id == ready.id
     await session.refresh(waiting)
     assert (waiting.state, waiting.attempts) == ("ready", 0)
+
+
+@pytest.mark.parametrize(
+    "selected,accepted", [("agent-codex-developer", True), ("developer", True), ("agent-codex-developer", False), ("developer", False)]
+)
+async def test_dispatch_uses_accepted_story_persona(session, selected, accepted):
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    flow, node, approval = await _ready_story(session)
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="a" * 64,
+            accepted_by_decision_id=approval.id if accepted else None,
+            plan_document={
+                "nodes": [
+                    {
+                        "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                        "kind": "story",
+                        "executor": {"kind": "agent", "role": "develop", "persona": selected},
+                    }
+                ]
+            },
+        )
+    )
+    await session.flush()
+    report = await run_dispatch_pass(session, _config())
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    if accepted:
+        assert len(sqs.calls) == 1
+        assert sqs.envelope()["persona"] == selected
+        assert sqs.envelope()["intent"]["persona"] == selected
+    else:
+        assert not sqs.calls
+        assert await _state_of(session, node.id) == NodeState.READY.value

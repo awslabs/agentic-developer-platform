@@ -23,7 +23,7 @@ from src.orchestration.state import ActorKind, NodeState, transition
 from tests.orchestration.test_review_cycle import ORG, REPO, cycle, pg_server, pg_url, store  # noqa: F401
 
 
-async def settled(cycle, monkeypatch, failure=None, backoff=False):  # noqa: F811
+async def settled(cycle, monkeypatch, failure=None, backoff=False, persona="developer"):  # noqa: F811
     observed = datetime.now(UTC) + timedelta(seconds=0 if backoff else 120)
     monkeypatch.setattr("src.orchestration.developer_recovery.utcnow", lambda: observed)
     monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
@@ -47,7 +47,7 @@ async def settled(cycle, monkeypatch, failure=None, backoff=False):  # noqa: F81
             {
                 "message_id": cycle.root,
                 "tenant_id": ORG,
-                "persona": "developer",
+                "persona": persona,
                 "source_ref": {"repo": REPO, "installation_id": 42, "provider_repository_id": 123},
                 "orchestration": {"node_id": cycle.node.id, "flow_id": cycle.flow.id, "attempt": 1},
                 "pr_binding_required": True,
@@ -212,3 +212,19 @@ async def test_protected_recovery_requires_developer_failure(cycle, monkeypatch,
         }
         monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: SimpleNamespace(store=protected))
         assert await recover_failed_developers(db) == int(outcome == "failed" and persona == "developer")
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_codex_developer_recovery_keeps_existing_expiry_fence(cycle, monkeypatch, expired):  # noqa: F811
+    await settled(cycle, monkeypatch, persona="agent-codex-developer")
+    async with cycle.factory() as db:
+        if expired:
+            plan = await db.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == cycle.flow.id))
+            document = dict(plan.plan_document)
+            policy = dict(document["execution_policy"])
+            policy["expires_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+            document["execution_policy"] = policy
+            plan.plan_document = document
+            await db.flush()
+        assert await recover_failed_developers(db) == (0 if expired else 1)
+        assert (await db.get(OrchestrationNode, cycle.node.id)).state == ("failed" if expired else "ready")

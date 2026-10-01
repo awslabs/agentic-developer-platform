@@ -1,0 +1,129 @@
+{
+  "status": "design_specification_not_engine_wire_contract",
+  "evaluations": [
+    {
+      "address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "acceptance_mode": "machine",
+      "criteria": [
+        {
+          "id": "B01",
+          "required": true,
+          "description": "Cloud account/role/region/model match the accepted target; record exact probe source and run identity."
+        },
+        {
+          "id": "B02",
+          "required": true,
+          "description": "Direct two-turn InvokeModel completes tool_use then tool_result; final answer incorporates deterministic result."
+        },
+        {
+          "id": "B03",
+          "required": true,
+          "description": "InvokeModelWithResponseStream yields complete tool input, valid event ordering, stop reason and usage."
+        },
+        {
+          "id": "B04",
+          "required": true,
+          "description": "CountTokens has a measured result or a precise unsupported-model/API/permission disposition; no false exact estimate."
+        },
+        {
+          "id": "B05",
+          "required": true,
+          "description": "Optional forced-tool, beta/cache/thinking/image/document features each have a tested GO or explicit unsupported disposition; product scope follows the matrix."
+        },
+        {
+          "id": "B06",
+          "required": true,
+          "description": "Pre-call request/output/time limits enforced; actual use recorded, redacted evidence and temporary-resource cleanup verified."
+        }
+      ],
+      "required_bindings": [
+        "verified repository and workflow identity",
+        "immutable workflow and harness revisions",
+        "target account/role/region/model and environment connection",
+        "exact business inputs and fixture references",
+        "trusted result artifact schema/hash and criterion predicates",
+        "supported dispatcher and collector",
+        "required job/check identities",
+        "durable cleanup evidence"
+      ],
+      "pass_rule": "All required criteria satisfied for the accepted target and source. Optional capabilities may be unsupported only as explicitly permitted above; required core tool-loop/streaming cannot be waived. Missing evidence/cleanup never passes.",
+      "failure_rule": "Keep dependents blocked. Repair only within accepted scope and remaining limits; changed scope uses an amendment. No fabricated receipt or human fallback.",
+      "producer_owner": "6851: probe harness and sanitized evidence. Engine binding/dispatcher must be prepared before admission; probe report merge is not GO."
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance",
+      "acceptance_mode": "machine",
+      "criteria": [
+        {
+          "id": "C01",
+          "required": true,
+          "description": "All required child PRs merged with exact-head review and required CI; #790 resolved by linked evidence without duplicate implementation."
+        },
+        {
+          "id": "C02",
+          "required": true,
+          "description": "Running gateway and served CLI provenance match accepted release containing all child changes; source/main SHA alone is insufficient."
+        },
+        {
+          "id": "C03",
+          "required": true,
+          "description": "Clean cloud client uses dedicated scoped login with no ambient control credentials; org and deployment match."
+        },
+        {
+          "id": "C04",
+          "required": true,
+          "description": "Desktop model list is permitted and Claude-specific without changing generic client discovery; cross-org/disallowed requests denied."
+        },
+        {
+          "id": "C05",
+          "required": true,
+          "description": "Non-streamed tool loop preserves nested schema, tool choice, tool IDs/results and supported optional fields; result incorporated."
+        },
+        {
+          "id": "C06",
+          "required": true,
+          "description": "Streamed tool input reconstructs exactly; terminal events, stop reasons and errors are correct; cancellation never replays tool actions."
+        },
+        {
+          "id": "C07",
+          "required": true,
+          "description": "CountTokens matches proven direct behavior or explicit accepted unsupported mode; permission failure is distinguishable."
+        },
+        {
+          "id": "C08",
+          "required": true,
+          "description": "Setup is idempotent and deployment-pinned; refresh succeeds, helper stdout is token-only and unrelated settings survive."
+        },
+        {
+          "id": "C09",
+          "required": true,
+          "description": "Usage/request IDs identify the smoke user and org; provider token counts and supported cache usage remain intact."
+        },
+        {
+          "id": "C10",
+          "required": true,
+          "description": "Existing Claude Code, Codex routing, gateway live tests and CLI onboarding regressions pass for accepted revisions."
+        },
+        {
+          "id": "C11",
+          "required": true,
+          "description": "Every mandatory case has an outcome and authenticated evidence; limits enforced, failures redacted, cleanup complete."
+        }
+      ],
+      "required_bindings": [
+        "verified repository and workflow identity",
+        "immutable workflow and harness revisions",
+        "target account/role/region/model and environment connection",
+        "exact business inputs and fixture references",
+        "trusted result artifact schema/hash and criterion predicates",
+        "supported dispatcher and collector",
+        "required job/check identities",
+        "durable cleanup evidence"
+      ],
+      "pass_rule": "All required criteria satisfied for the accepted target and source. Optional capabilities may be unsupported only as explicitly permitted above; required core tool-loop/streaming cannot be waived. Missing evidence/cleanup never passes.",
+      "failure_rule": "Keep dependents blocked. Repair only within accepted scope and remaining limits; changed scope uses an amendment. No fabricated receipt or human fallback.",
+      "producer_owner": "6856: eval-claude-desktop-gateway.yml and collector integration. Proposed scope addition to the child: replace manual-only operational handoff with authenticated engine dispatch and evidence collection.",
+      "release_requirement": "Use supported deployment bindings after gateway/CLI merges; observe actual release before cloud invocation. Avoid creating an extra human release gate. If required machine binding is unavailable, expose the blocker."
+    }
+  ]
+}

@@ -727,6 +727,22 @@ async def _dispatch_one_unclaimed(
     org_id = node.org_id
     observed_attempts = node.attempts
 
+    from dataclasses import replace
+
+    from .executor_assignment import accepted_executor_persona
+
+    try:
+        config = replace(config, persona=await accepted_executor_persona(session, node, default=config.persona))
+    except ValueError as exc:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="flow-owner",
+                required_input="restore or amend the accepted node executor assignment",
+                detail=str(exc),
+            )
+        ) from None
+
     # --- Everything needed for a valid envelope, checked before any write. ---
     if not config.configured:
         logger.warning(

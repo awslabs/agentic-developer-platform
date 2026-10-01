@@ -124,3 +124,9 @@ async def test_unavailable_activity_does_not_break_the_graph(monkeypatch):
     service.get_chain.side_effect = EndpointConnectionError(endpoint_url="https://dynamodb.example")
     monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: service)
     assert await load_story_activity(org_id="org-a", run_ids=["attempt-1"]) == {"attempt-1": None}
+
+
+def test_codex_developer_is_visible_before_review():
+    activity = current_activity(chain(run("implementation", "agent-codex-developer", "2026-10-01T12:00:00Z")))
+    assert activity.persona == "agent-codex-developer"
+    assert activity.invocation_id == "implementation"

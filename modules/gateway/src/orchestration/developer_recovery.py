@@ -15,6 +15,7 @@ from sqlalchemy import or_, select
 
 from src.shared.models.base import utcnow
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch_pass import attempt_run_id
 from .execution_policy import Action
 from .flow_execution import flow_is_paused
@@ -138,7 +139,7 @@ async def recover_developer(session, node, *, now):
     assignment = await session.get(OrchestrationRunReport, run_id)
     details = {}
     if assignment is not None:
-        if assignment.persona != "developer":
+        if assignment.persona not in DEVELOPER_PERSONAS:
             return "not_a_failed_developer"
         details = (assignment.terminal_receipt or {}).get("failure") or {}
         if (
@@ -152,7 +153,7 @@ async def recover_developer(session, node, *, now):
         terminal = await protected_failure_for_assignment(node=node, dispatch={"run_id": run_id})
     if not terminal or terminal.get("status") != "failed" or terminal.get("terminal_outcome", "failed") != "failed":
         return "worker_exit_unverified"
-    if assignment is None and terminal.get("persona") != "developer":
+    if assignment is None and terminal.get("persona") not in DEVELOPER_PERSONAS:
         return "not_a_failed_developer"
     if now < retry_at:
         return "retry_backoff"

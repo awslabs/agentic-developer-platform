@@ -64,7 +64,7 @@ export interface AggregateCostFigure extends CostFigure {
 /** A persisted worker observation; successful exit is not review approval. */
 export interface StoryActivity {
   invocation_id: string;
-  persona: 'developer' | 'reviewer' | 'agent-codex-reviewer';
+  persona: 'developer' | 'agent-codex-developer' | 'reviewer' | 'agent-codex-reviewer';
   status: string;
   liveness: 'live' | 'unverifiable' | 'exited';
 }

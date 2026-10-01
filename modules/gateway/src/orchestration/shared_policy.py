@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import JSON, and_, func, not_, or_, select
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, ResourceRef, authorize_action
 from .execution_state import BlockCode
@@ -396,6 +397,7 @@ async def authorize_shared_model(session, assignment):
         _refuse("current_execution_missing")
     action = {
         "developer": Action.DEVELOP,
+        "agent-codex-developer": Action.DEVELOP,
         "reviewer": Action.REVIEW,
         "codex": Action.REVIEW,
         "codex-reviewer": Action.REVIEW,
@@ -446,7 +448,8 @@ async def authorize_shared_model(session, assignment):
             0,
             (
                 node.attempts
-                if action is Action.DEVELOP or (assignment.persona == "developer" and not assignment.dispatch_metadata.get("review_cycle_input"))
+                if action is Action.DEVELOP
+                or (assignment.persona in DEVELOPER_PERSONAS and not assignment.dispatch_metadata.get("review_cycle_input"))
                 else await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
             )
             - 1,

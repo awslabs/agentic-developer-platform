@@ -94,6 +94,7 @@ from src.orchestration.amend import FlowNotFoundError
 from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError, ProposalRejectedError, TenantMismatchError, plan_hash
 from src.orchestration.draft_binding import DraftBindingError, resolve_draft_tenant
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
+from src.orchestration.executor_assignment import ExecutorAssignment
 from src.orchestration.pending_amendments import (
     AmendmentRequestNotFoundError,
     register_amendment_draft,
@@ -214,6 +215,7 @@ class PreviewNode(BaseModel):
     # from the document the operator wrote, so a preview that did not distinguish
     # them would leave them looking like the author's own work.
     inserted_by_server: bool
+    executor: ExecutorAssignment | None = None
     # The issue this node's work is bound to, as the author declared it. Empty when
     # the node declares none — which for a story is a real gap a reviewer should see
     # before approving, because a story with no issue binding has nowhere to report.
@@ -829,6 +831,7 @@ async def preview_draft(
             title=node.title,
             inserted_by_server=node.address not in authored_addresses,
             issue_ref=node.issue_ref or "",
+            executor=node.executor,
             epic_ref=derived.epic_ref if (derived := derived_nodes.get(node.address)) is not None else "",
             wave_ref=derived.wave_ref if derived is not None else "",
             concluded_by=(derived.concluded_by.value if derived is not None else ConclusionAuthority.UNDETERMINED.value),

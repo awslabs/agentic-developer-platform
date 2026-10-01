@@ -746,3 +746,16 @@ async def test_repair_enabled_reviewer_can_mint_both_identities(session, assignm
     assert response.json()["identity"] == "review"
     broker_client.reviewer.assert_awaited_once_with(ORG_A)
     assert broker_client.mint.await_args.kwargs["permissions"] == {"contents": "read", "pull_requests": "write", "metadata": "read"}
+
+
+@pytest.mark.parametrize("attempt,expected", [(1, Action.DEVELOP), (2, Action.REPAIR)])
+def test_codex_developer_uses_development_and_repair_authority(attempt, expected):
+    from types import SimpleNamespace
+
+    from src.orchestration.runtime_policy import runtime_action
+
+    execution = {"persona": {"S": "agent-codex-developer"}}
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=attempt)) is expected
+    assert runtime_action(execution, SimpleNamespace(kind="eval", attempts=attempt)) is None
+    execution.update(orchestration_continuation_receipt={"S": "receipt"}, orchestration_continuation_action={"S": "review"})
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=attempt)) is None

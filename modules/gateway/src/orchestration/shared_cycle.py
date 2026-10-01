@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from sqlalchemy import select
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .dispatch_pass import DispatchPassConfig, _build_envelope, _get_sqs_client, attempt_run_id
 from .execution_policy import Action
@@ -171,7 +172,7 @@ async def registration_target_for_report(session, row):
     receipt = await session.get(OrchestrationDecision, receipt_id(operation)) if operation else None
     saved = json.loads(receipt.reason) if receipt else {}
     if (
-        row.persona not in {"developer", "agent-codex-reviewer"}
+        row.persona not in (DEVELOPER_PERSONAS | {"agent-codex-reviewer"})
         or receipt is None
         or receipt.org_id != row.org_id
         or receipt.flow_id != row.flow_id

@@ -708,3 +708,28 @@ class TestVocabularyReuse:
     def test_initial_node_state_is_the_vocabulary_pending(self):
         """R-N2a: imported from `state.py`, never re-spelled as a literal."""
         assert INITIAL_NODE_STATE is NodeState.PENDING
+
+
+class TestExecutorAssignment:
+    def test_legacy_node_serialization_and_hash_remain_unchanged(self):
+        from src.orchestration.compile import plan_hash
+
+        legacy = make_proposal()
+        assert "executor" not in legacy.model_dump()["nodes"][0]
+        explicit = make_proposal()
+        from src.orchestration.executor_assignment import ExecutorAssignment
+
+        explicit.nodes[0].executor = ExecutorAssignment(kind="agent", role="develop", persona="agent-codex-developer")
+        assert plan_hash(explicit) != plan_hash(legacy)
+        assert validate_proposal(explicit) == []
+
+    @pytest.mark.parametrize("kind", ["eval", "gate"])
+    def test_non_story_rejects_developer_assignment(self, kind):
+        with pytest.raises(ValidationError, match="unsupported_node_executor"):
+            ProposedNode(
+                address=address("a"), kind=kind, title="A", executor={"kind": "agent", "role": "develop", "persona": "agent-codex-developer"}
+            )
+
+    def test_cannot_assign_an_unrelated_persona(self):
+        with pytest.raises(ValidationError):
+            ProposedNode(address=address("a"), kind="story", title="A", executor={"kind": "agent", "role": "develop", "persona": "operations"})

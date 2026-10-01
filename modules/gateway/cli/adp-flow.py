@@ -1004,7 +1004,12 @@ def conclusion_lines(nodes):
     tally = {}
     for node in nodes:
         tally.setdefault(node.get("concluded_by") or "undetermined", []).append(node)
-    lines = ["  who may mark work complete:"]
+    lines = []
+    for node in nodes:
+        executor = node.get("executor")
+        if executor:
+            lines.append(f"  executor for {node.get('address')}: {executor.get('persona')} ({executor.get('role')})")
+    lines.append("  who may mark work complete:")
     for authority in sorted(tally):
         lines.append(f"    {authority}: {len(tally[authority])} node(s)")
     unattended = tally.get("machine_evaluation") or []

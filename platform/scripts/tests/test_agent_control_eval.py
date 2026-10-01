@@ -3874,14 +3874,14 @@ class TestTheDocumentedFixtureConfig:
         loaded = _mod.load_config(write_config(tmp_path, self.example()))
 
         assert loaded["fixture_isolated"] is True
-        assert loaded["account_id"] == ACCOUNT
+        assert loaded["account_id"] == "000000000101"
 
-    def test_the_example_names_the_live_wave_1_target(self):
-        """#3967's prerequisites: 879318057152 / dev / embark1."""
+    def test_the_example_uses_an_explicit_placeholder_target(self):
+        """The public example requires operator binding before live execution."""
         example = self.example()
 
-        assert example["account_id"] == ACCOUNT
-        assert "embark1" in example["environment"]
+        assert example["account_id"] == "000000000101"
+        assert example["environment"] == "dev-control-fixture-example-profile"
 
     def test_the_example_carries_no_credential(self):
         """Illustrative or not, a doc is where a real token gets pasted from."""

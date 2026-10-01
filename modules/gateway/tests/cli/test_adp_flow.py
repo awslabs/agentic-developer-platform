@@ -2722,3 +2722,18 @@ def test_recovery_preserves_definite_server_refusal(server, monkeypatch, tmp_pat
     )
     assert code != 0 and result["status"] == "failed"
     assert len(list((tmp_path / "flow-recovery").glob("*.json"))) == 1
+
+
+def test_preview_names_the_accepted_executor_separately_from_completion():
+    lines = cli.conclusion_lines(
+        [
+            {
+                "address": "flow/epic/wave/story",
+                "executor": {"kind": "agent", "role": "develop", "persona": "agent-codex-developer"},
+                "concluded_by": "merged_pr",
+            }
+        ]
+    )
+    rendered = "\n".join(lines)
+    assert "agent-codex-developer (develop)" in rendered
+    assert "merged_pr: 1 node(s)" in rendered

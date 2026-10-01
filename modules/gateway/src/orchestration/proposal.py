@@ -49,7 +49,7 @@ from datetime import datetime
 from heapq import heapify, heappop, heappush
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 # Imported, never redefined — see module docstring (R-N2a). The address grammar
 # moved to `address.py` (#5128) so `execution_policy.py` can constrain its
@@ -57,6 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # each other; it is re-exported below so existing importers are unaffected.
 from .address import ADDRESS_PATTERN, split_address
 from .execution_policy import ExecutionPolicy
+from .executor_assignment import ExecutorAssignment, validate_executor
 from .models import NodeKind
 from .state import NodeState
 
@@ -134,6 +135,22 @@ class ProposedNode(BaseModel):
     issue_ref: str | None = None
     # Stored in the accepted plan document; absence retains human mode.
     evaluation: dict | None = None
+
+    # Executor identity is covered by the plan hash, separately from authority.
+    executor: ExecutorAssignment | None = None
+
+    @model_validator(mode="after")
+    def _supported_executor(self):
+        if self.executor is not None:
+            validate_executor(self.kind, self.executor)
+        return self
+
+    @model_serializer(mode="wrap")
+    def _preserve_existing_node_documents(self, handler):
+        document = handler(self)
+        if self.executor is None:
+            document.pop("executor", None)
+        return document
 
 
 class ProposedEdge(BaseModel):

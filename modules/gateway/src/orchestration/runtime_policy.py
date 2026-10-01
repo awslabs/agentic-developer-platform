@@ -17,6 +17,7 @@ from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, Decision, DenyReason, ExecutionPolicy, ResourceRef, authorize_action
 from .models import DecisionKind, NodeKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
@@ -113,7 +114,7 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
     persona = execution.get("persona", {}).get("S")
     if execution.get("orchestration_continuation_receipt"):
         action = execution.get("orchestration_continuation_action", {}).get("S")
-        if action == Action.REPAIR.value and persona in {"developer", "agent-codex-reviewer"}:
+        if action == Action.REPAIR.value and persona in (DEVELOPER_PERSONAS | {"agent-codex-reviewer"}):
             return Action.REPAIR
         if action == Action.REVIEW.value and persona in {"reviewer", "agent-codex-reviewer"}:
             return Action.REVIEW
@@ -125,13 +126,13 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
         # returning `None` refuses it rather than guessing which field to trust.
         return Action.COORDINATE if persona in {"operations", "aidlc"} else None
     if execution.get("orchestration_correction_receipt"):
-        return Action.REPAIR if node.kind == NodeKind.STORY.value and persona == "developer" else None
+        return Action.REPAIR if node.kind == NodeKind.STORY.value and persona in DEVELOPER_PERSONAS else None
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:
         if persona == "reviewer":
             return Action.REVIEW
-        if persona == "developer":
+        if persona in DEVELOPER_PERSONAS:
             return Action.REPAIR if node.attempts > 1 else Action.DEVELOP
     return None
 
