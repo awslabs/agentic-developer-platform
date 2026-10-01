@@ -1,30 +1,8 @@
-"""Cognito MFA / threat-protection EFFECTIVE configuration — #5666 (A11).
+"""Offline checks for composed Cognito MFA and threat-protection configuration.
 
-The defect these tests exist for is not a missing setting. It is a setting that was
-present, correct, and *ineffective*:
-
-``infra/modules/cognito/variables.tf`` has defaulted ``mfa_configuration`` to "ON"
-since #133, with the comment "MFA is required for a SaaS platform managing Bedrock
-access". But ``infra/main.tf`` passes ``var.cognito_mfa_configuration`` into it, and
-THAT variable defaulted to "OPTIONAL". Terraform resolves the caller's value, so
-the inner default was shadowed in source. These offline checks establish source
-configuration only, not the effective configuration of a deployed pool. Explicit
-OPTIONAL staging exceptions are allowed with a reviewed rollout record.
-
-Threat protection (``user_pool_add_ons``) was a different finding: not
-misconfigured, absent. It appeared nowhere in the repository, and there was no path
-to enable it from the root module at all.
-
-HCL is parsed here by brace matching rather than a real parser, following
-``test_gateway_log_retention.py`` — no new test dependency, and these blocks are
-regular enough for it to be reliable and reviewable.
-
-Path note for anyone reconciling the reviewed records against this tree: #5657
-cites these files as ``infra/modules/cognito/*``. There is no such path at the
-repository root, and ``git log --all -- infra/modules/cognito`` is empty, so no
-such tree was ever removed or redirected — the citation is simply relative to
-``modules/gateway/``. The only Cognito module in the repository is
-``modules/gateway/infra/modules/cognito/``, which is what these tests read.
+Both MFA defaults must remain OFF for GitHub broker compatibility. Explicit ON
+and OPTIONAL settings remain supported. These checks establish source behavior,
+not the configuration of a deployed pool.
 """
 
 from __future__ import annotations
@@ -82,75 +60,28 @@ def cognito_main() -> str:
     return _COGNITO_MAIN.read_text()
 
 
-class TestMfaIsEffectivelyRequired:
-    """The composed value, not either layer's stated intent."""
-
-    def test_the_wrapper_default_does_not_weaken_mfa(self, root_variables):
-        """Both source defaults must be ON unless explicitly staged by an operator."""
-        assert _default_of(_variable("cognito_mfa_configuration", root_variables)) == "ON", (
-            "the root module's MFA default is what pools actually get; anything but ON silently "
-            "overrides the module's own hardened default (the #133 dead-code defect)"
-        )
-
-    def test_both_layers_agree_so_neither_can_shadow_the_other(self, root_variables, cognito_variables):
-        """The anti-shadowing invariant — the real fix.
-
-        Hardening only the inner default achieves nothing (proven by #133).
-        Hardening only the wrapper leaves any other caller of the module
-        permissive. Equal defaults mean the pass-through cannot introduce a
-        weakening, whichever file a future reader happens to open.
-        """
-        outer = _default_of(_variable("cognito_mfa_configuration", root_variables))
-        inner = _default_of(_variable("mfa_configuration", cognito_variables))
-        assert outer == inner, (
-            f"root default ({outer!r}) and cognito module default ({inner!r}) disagree; the outer value wins "
-            "silently, which is how the module's 'ON' became dead code for two years"
-        )
-
+class TestMfaDefaultsOff:
     @pytest.mark.parametrize(
         ("path_name", "var_name"),
         [("root", "cognito_mfa_configuration"), ("cognito module", "mfa_configuration")],
     )
-    def test_off_is_rejected_at_both_layers(self, path_name, var_name, root_variables, cognito_variables):
-        """OFF must fail the plan, not merely be un-defaulted.
-
-        Validating only the wrapper would leave the module permissive for any other
-        caller — and the wrapper is precisely the layer that silently overrode the
-        module before.
-        """
+    def test_default_and_explicit_modes(self, path_name, var_name, root_variables, cognito_variables):
         text = root_variables if path_name == "root" else cognito_variables
         block = _variable(var_name, text)
-        assert "validation" in block, f"{path_name} {var_name} has no validation block"
+        assert _default_of(block) == "OFF"
         condition = re.search(r"condition\s*=\s*(.+)", block)
         assert condition, f"{path_name} {var_name} validation has no condition"
         allowed = set(re.findall(r'"([A-Z_]+)"', condition.group(1)))
-        assert "OFF" not in allowed, f"{path_name} still accepts mfa OFF: {sorted(allowed)}"
-        assert "ON" in allowed, f"{path_name} must still permit ON: {sorted(allowed)}"
+        assert allowed == {"OFF", "ON", "OPTIONAL"}
 
-    def test_optional_stays_available_for_staged_rollout(self, root_variables):
-        """Over-restriction guard.
+    def test_root_passes_the_selected_mode_to_cognito(self):
+        module = _block(r'module\s+"cognito"\s*\{', _ROOT_MAIN.read_text(), what="cognito module")
+        assert re.search(r"mfa_configuration\s*=\s*var\.cognito_mfa_configuration\b", module)
 
-        Forcing ON with no alternative would make this unusable for an existing
-        pool with un-enrolled users, and the predictable result is an operator
-        reverting the whole change. OPTIONAL must remain *selectable* — just not
-        what you get by saying nothing.
-        """
-        condition = re.search(r"condition\s*=\s*(.+)", _variable("cognito_mfa_configuration", root_variables))
-        assert "OPTIONAL" in condition.group(1), "OPTIONAL must remain a valid explicit choice for staged enrollment"
-
-    def test_no_environment_silently_weakens_mfa(self):
-        """A tfvars file is the third place this could regress, unreviewed."""
-        offenders = []
+    def test_environment_overrides_are_valid_modes(self):
         for path in _ENVIRONMENTS.rglob("*.tfvars"):
-            source = path.read_text()
-            for m in re.finditer(r'^\s*cognito_mfa_configuration\s*=\s*"([^"]+)"', source, re.M):
-                value = m.group(1)
-                preceding = source[: m.start()].rstrip().splitlines()
-                exception = preceding[-1].strip() if preceding else ""
-                documented = re.fullmatch(r"# cognito-mfa-staging: https://\S+; owner=\S.+; exit=\S.+", exception)
-                if value != "ON" and not (value == "OPTIONAL" and documented):
-                    offenders.append(f"{path.name}: {value} lacks a valid staging exception")
-        assert not offenders, f"environments weaken MFA below ON: {offenders}"
+            for mode in re.findall(r'^\s*cognito_mfa_configuration\s*=\s*"([^"]+)"', path.read_text(), re.M):
+                assert mode in {"OFF", "ON", "OPTIONAL"}, f"{path}: invalid MFA mode {mode}"
 
 
 class TestThreatProtectionIsWiredAndOptIn:

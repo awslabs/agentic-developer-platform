@@ -4,29 +4,24 @@
 
 **Issue:** #5666 (A11), parent #5677
 
-## What changed in source, and why a rollout is needed
+## Source defaults and deployment
 
-Two source changes land together, and only one of them is safe to apply without
-sequencing.
+Both `cognito_mfa_configuration` in the gateway root and `mfa_configuration`
+in the Cognito module default to `OFF`. Validation accepts `OFF`, `OPTIONAL`,
+and `ON`. The GitHub broker cannot complete Cognito MFA challenges, so MFA
+must be an explicit operator choice after validating the affected sign-in flows.
 
-1. **`mfa_configuration` is now effectively `ON`.** The cognito module has
-   defaulted to `ON` since #133, but the root module passed
-   `var.cognito_mfa_configuration`, which defaulted to `OPTIONAL`. Terraform
-   resolves the caller's value, so the module's hardened default was dead code
-   and the composed source default was `OPTIONAL`. This does not establish any
-   deployed pool configuration. Both layers now default to
-   `ON` and `OFF` is rejected by validation at both.
-2. **Threat protection (`user_pool_add_ons`) now exists** and is reachable as
-   `cognito_threat_protection_mode`. It defaults to `OFF` and is inert until an
-   operator opts in.
+A Terraform apply with no MFA override will change an existing pool to `OFF`.
+An explicit `ON` or `OPTIONAL` override remains in effect. Review the saved plan
+before applying; merging this source change alone does not update a live pool.
+Disabling pool MFA stops requiring a second factor for Cognito sign-ins.
 
-Change 2 is cost-gated but behaviour-neutral at its default. **Change 1 is the one
-that needs ordering**: applying `mfa_configuration = "ON"` to a pool whose users
-have never enrolled a second factor changes what happens at their next sign-in.
-Read the next section before applying to an environment with real users.
+Threat protection is independently configured through
+`cognito_threat_protection_mode` and still defaults to `OFF`.
 
-Applying Terraform, changing a pool, and enrolling users are live operations.
-This runbook is not evidence that any of them were performed.
+The sequence below is for operators choosing to enable MFA. Source changes,
+Terraform applies, and user enrollment are separate operations; this runbook
+is not evidence that a live rollout was performed.
 
 ## The failure mode this ordering exists to prevent
 
@@ -70,14 +65,14 @@ password-flow exemption exists.
 | 0 | Build and deploy a gateway image containing the reviewed source fixes | Verify the image digest; a ConfigMap update or recycling the old image does not install the fix |
 | 1 | Confirm the live pool configuration and explicitly stage `cognito_mfa_configuration = "OPTIONAL"` where the current pool is OPTIONAL | Record a reviewed staging exception beside the tfvars assignment as described below; do not downgrade an ON pool by assumption |
 | 2 | Implement supported broker challenge handling or a supported alternative auth flow, migrate automation, and prepare independent operator recovery | Validate new and existing GitHub and hosted-UI users and recovery before enforcement; enrollment alone does not repair the broker |
-| 3 | Only after step 2 succeeds, remove the `OPTIONAL` pin and apply `ON` | Verify supported sign-in flows complete MFA and token issuance; otherwise keep the documented staging exception |
+| 3 | Only after step 2 succeeds, explicitly set `cognito_mfa_configuration = "ON"` and apply | Verify supported sign-in flows complete MFA and token issuance; otherwise keep the documented staging exception |
 | 4 | Optionally set `cognito_threat_protection_mode = "AUDIT"` | Risk is scored and logged; **no** sign-in outcome changes |
 | 5 | Optionally promote to `ENFORCED` after reviewing audit findings | Risky sign-ins are challenged or blocked |
 
 An OPTIONAL exception must have a preceding comment in the same tfvars file:
 `# cognito-mfa-staging: <tracking issue URL>; owner=<owner>; exit=<broker compatibility and recovery evidence>`.
-Review that exception with the environment change. The source defaults remain ON;
-OFF is invalid. Do not enforce ON on the current broker before step 2 is complete.
+Review that exception with the environment change. The source defaults remain OFF;
+ON and OPTIONAL require explicit configuration. Do not enforce ON on the current broker before step 2 is complete.
 
 Steps 4 and 5 are **not free**. Threat protection requires the Cognito **Plus**
 feature plan, billed **per monthly active user**. Confirm the cost for your
@@ -109,8 +104,9 @@ deployed pool.
   then have them re-enroll at next sign-in. This is per-user and does not weaken
   the pool.
 - **Automation is broken by enforcement.** Re-pin `cognito_mfa_configuration =
-  "OPTIONAL"` in that environment's tfvars and apply. Prefer this bounded,
-  recorded revert over `OFF`, which validation now rejects outright.
+  "OFF"` in that environment's tfvars and apply the reviewed plan. `OPTIONAL`
+  can still challenge users who have enrolled MFA and therefore may not restore
+  broker sign-in for all users.
 - **Total inability to sign in.** GitHub is not an independent recovery path
   while the broker uses the same Cognito password flow. Before enforcement,
   establish and verify an operator AWS IAM session independent of gateway/Cognito
@@ -127,7 +123,7 @@ deployed pool.
   not use it (hosted-UI authorization-code + PKCE only), but the eval harnesses
   above authenticate from pods with no AWS credentials and therefore cannot use the
   SigV4-signed admin flow. Retiring it requires giving the clean-room evals a
-  credential path and deciding the fate of `BG_COGNITO_PUBLIC_AUTH`; MFA `ON`
-  already blunts the flow, since a password alone no longer completes a sign-in.
+  credential path and deciding the fate of `BG_COGNITO_PUBLIC_AUTH`; explicit MFA `ON`
+  would also require those consumers to complete a second factor.
 - Existing users are **not** retroactively enrolled by any step here. Enforcement
   prompts them at next interactive sign-in; there is no backfill.

@@ -169,24 +169,14 @@ variable "pool_account_arns" {
 
 variable "cognito_mfa_configuration" {
   type        = string
-  description = "MFA configuration for Cognito User Pool: ON (required) or OPTIONAL (user-elected). OFF is rejected — see the validation below. #5666 (A11): defaults to ON."
-
-  # #5666 (A11): default was "OPTIONAL", which SHADOWED the cognito module's own
-  # "ON" default (infra/modules/cognito/variables.tf, hardened by #133 with the
-  # comment "MFA is required for a SaaS platform managing Bedrock access").
-  # main.tf passes this variable straight through, so the inner default was dead
-  # code and every deployed pool got OPTIONAL — the module looked hardened while
-  # the platform was not. No environment overrides this, so the wrapper default
-  # IS the deployed value.
-  #
-  # OPTIONAL is still selectable for a staged rollout (see
-  # docs/runbooks/cognito-mfa-rollout.md), but it must now be an explicit,
-  # reviewable choice in tfvars rather than what you get by saying nothing.
-  default = "ON"
+  description = "Cognito MFA configuration: OFF (default), ON (required), or OPTIONAL (user-elected)."
+  # The GitHub auth broker cannot complete Cognito MFA challenges.
+  # Keep both module defaults OFF; enable MFA explicitly after validating sign-in flows.
+  default = "OFF"
 
   validation {
-    condition     = contains(["ON", "OPTIONAL"], var.cognito_mfa_configuration)
-    error_message = "MFA configuration must be ON or OPTIONAL. #5666 (A11): OFF is no longer accepted — it disables MFA for every user of a pool that gates paid model access, and there is no rollout in which it is the right answer. Use OPTIONAL for a staged enrollment instead."
+    condition     = contains(["OFF", "ON", "OPTIONAL"], var.cognito_mfa_configuration)
+    error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
   }
 }
 
