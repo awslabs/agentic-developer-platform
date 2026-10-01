@@ -18,7 +18,7 @@ jobs:
         run: python3 platform/scripts/superplane-readonly-discovery.py --output "$RUNNER_TEMP/superplane-readonly/metadata.json"
       - name: Preserve sanitized metadata and authorization refusals
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: superplane-readonly-metadata
           path: ${{ runner.temp }}/superplane-readonly/metadata.json

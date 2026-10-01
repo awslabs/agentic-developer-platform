@@ -385,7 +385,7 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: checked-out-revision-agent-control-tests
           path: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
@@ -713,7 +713,7 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: checked-out-revision-worker-control-tests
           path: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
@@ -1184,7 +1184,7 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: checked-out-revision-control-evaluation-harness-tests
           path: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json

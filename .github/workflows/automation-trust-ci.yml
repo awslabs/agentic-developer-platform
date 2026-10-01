@@ -33,10 +33,10 @@ jobs:
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.14.2
       - name: Verify workflow trust without cloud access

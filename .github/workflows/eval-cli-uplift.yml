@@ -481,7 +481,7 @@ jobs:
 
       - name: Publish engine qualification context
         if: inputs.adp_correlation != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-eval-cli-uplift.yml-${{ github.run_attempt }}
           path: /tmp/adp-cli-context/deployment-context.json
@@ -581,7 +581,7 @@ jobs:
         # ExternalIds until cleanup completes, and they live 0600 in a 0700
         # directory precisely so they cannot end up in an artifact.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-uplift-eval-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -592,7 +592,7 @@ jobs:
 
       - name: Publish engine qualification result
         if: always() && inputs.adp_correlation != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e32-qualification-result
           path: /tmp/cli-uplift-eval/out/report.json
