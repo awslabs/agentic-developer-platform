@@ -25,6 +25,11 @@
 model = "openai.gpt-5.6-sol"
 model_provider = "adp-gateway"
 
+# The local signing proxy supplies max_output_tokens=16384 when Codex omits
+# the optional Responses field. SIGV4_PROXY_RESPONSES_MAX_OUTPUT_TOKENS can
+# configure that default. Explicit request limits are retained, and the gateway
+# quotes the resulting bounded request against the accepted flow budget.
+
 # Non-interactive pod: never prompt for approval and never block on a TTY.
 # `on-failure`/`on-request` would hang a KEDA-scaled pod with no terminal.
 approval_policy = "never"
