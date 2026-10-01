@@ -541,11 +541,11 @@ async def test_a_request_without_explicit_input_is_refused(oracle, value):
     assert reason == QuoteReason.MALFORMED_REQUEST
 
 
-async def test_a_non_message_input_item_is_refused(oracle):
-    """Referenced prior output/tool state is not this capability's cost profile."""
+async def test_an_inline_function_call_is_admitted(oracle):
+    """Complete function arguments are inline input, not a history lookup."""
     oracle()
     raw = body(input=[{"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"}])
-    assert await refusal(raw) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)
+    assert (await quote(raw)).max_tool_tokens == 0
 
 
 @pytest.mark.parametrize("kind", ["function_call", "function_call_output", "item_reference", "reasoning", "file_search_call", "computer_call"])
@@ -1010,7 +1010,7 @@ async def test_inline_encrypted_reasoning_uses_same_full_context_bound(oracle):
 @pytest.mark.parametrize(
     "extra",
     [
-        {"id": "foreign"},
+        {"id": {"reference": "foreign"}},
         {"content": "private plaintext"},
         {"encrypted_content": ""},
         {"encrypted_content": "x" * 65537},
@@ -1022,3 +1022,90 @@ async def test_reasoning_never_admits_server_references_or_partial_state(oracle,
     oracle()
     raw = body(input=[{"type": "reasoning", "encrypted_content": "fixture-opaque-bytes", "summary": [], **extra}])
     assert await refusal(raw) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)
+
+
+async def test_codex_namespace_and_multiturn_client_tools_are_bounded(oracle):
+    oracle()
+    tools = [{"type": "namespace", "name": "multi_agent_v1", "tools": [{"type": "function", "name": "spawn_agent", "parameters": {}}]}]
+    transcript = [
+        {"role": "user", "content": "Inspect the checkout"},
+        {"type": "function_call", "name": "exec_command", "call_id": "c1", "arguments": '{"cmd":"pwd"}'},
+        {"type": "function_call_output", "call_id": "c1", "output": "/workspace"},
+        {"type": "custom_tool_call", "name": "apply_patch", "call_id": "c2", "input": "patch text"},
+        {"type": "custom_tool_call_output", "call_id": "c2", "output": "Done"},
+    ]
+    result = await quote(body(tools=tools, input=transcript))
+    assert result.total_usd == Decimal("3.795000")
+    assert result.max_tool_tokens == 0
+
+
+@pytest.mark.parametrize("child", [{"type": "web_search"}, {"type": "mcp"}, {"type": "namespace", "tools": []}, {"type": []}])
+async def test_namespace_cannot_hide_hosted_or_unknown_tools(oracle, child):
+    oracle()
+    assert await refusal(body(tools=[{"type": "namespace", "name": "hidden", "tools": [child]}])) == (
+        QuoteReason.SERVER_TOOL_COST,
+        Capability.SERVER_TOOLS,
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"output": {"file_id": "remote"}},
+        {"output": [{"type": "input_image", "image_url": "https://remote"}]},
+        {"call_id": None},
+        {"status": "in_progress"},
+        {"content": "extra"},
+    ],
+)
+async def test_client_tool_results_require_complete_inline_text(oracle, change):
+    oracle()
+    item = {"type": "function_call_output", "call_id": "c1", "output": "done", **change}
+    assert await refusal(body(input=[item])) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)
+
+
+async def test_captured_codex_tool_roundtrip_quotes_and_binds_every_byte(oracle):
+    """Codex 0.157.0 / worker 5812f3f, captured against a local SSE fixture.
+
+    The fixture emitted only exec_command("printf probe") and opaque reasoning;
+    no provider invocation or production credential was used. Keep the native
+    tool declarations and second-turn item shapes, without system/user prompts.
+    Namespace wire reference: https://developers.openai.com/api/reference/resources/responses/methods/create
+    """
+    oracle()
+    fixture = Path(__file__).parent / "fixtures" / "codex-client-tool-roundtrip.json"
+    document = json.loads(fixture.read_text())
+    raw = body(**document)
+    quoted = await quote(raw)
+    assert quoted.total_usd == (await quote()).total_usd
+    await revalidate_quote(quoted, raw, RESPONSES_PATH, now=NOW)
+    document["input"][-1]["output"] = "changed tool result"
+    with pytest.raises(QuoteRefusedError):
+        await revalidate_quote(quoted, body(**document), RESPONSES_PATH, now=NOW)
+
+
+async def test_structured_inline_tool_text_is_bounded(oracle):
+    oracle()
+    result = await quote(body(input=[{"type": "function_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "done"}]}]))
+    assert result.max_tool_tokens == 0
+
+
+@pytest.mark.parametrize("metadata", [None, {"file_id": "remote"}, {"turn_id": {}}, {"create_time": True}, {"create_time": "now"}])
+async def test_inline_tool_metadata_is_not_an_escape_hatch(oracle, metadata):
+    oracle()
+    item = {"type": "function_call_output", "call_id": "c1", "output": "done", "internal_chat_message_metadata_passthrough": metadata}
+    assert await refusal(body(input=[item])) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"type": "reasoning", "id": "remote", "summary": []},
+        {"type": "function_call", "id": "remote", "call_id": "c1", "name": "f"},
+        {"type": "function_call_output", "id": "remote", "call_id": "c1"},
+        {"type": "item_reference", "id": "remote"},
+    ],
+)
+async def test_item_labels_without_complete_inline_payload_remain_refused(oracle, item):
+    oracle()
+    assert await refusal(body(input=[item])) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)

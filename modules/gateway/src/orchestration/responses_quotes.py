@@ -45,6 +45,7 @@ Provenance for every limit and rate this relies on is recorded in
 from __future__ import annotations
 
 import json
+import math
 from datetime import timedelta
 from decimal import ROUND_UP, Decimal
 from typing import Any
@@ -90,7 +91,7 @@ _STATEFUL_FIELDS = ("previous_response_id", "conversation", "prompt")
 
 #: Tool types billed by the provider as ordinary input. A ``function`` tool is
 #: executed by the CLIENT, so its declaration is just tokens in the request.
-#: Every other type runs server-side and bills separately (#5227).
+#: Namespaces only group these client tools; hosted tools bill separately (#5227).
 _CLIENT_TOOL_TYPES = frozenset({"function", "custom"})
 
 
@@ -336,8 +337,17 @@ class OpenAIResponsesQuoteAdapter:
         for tool in tools:
             if not isinstance(tool, dict):
                 raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "tool must be an object")
-            if tool.get("type") not in _CLIENT_TOOL_TYPES:
-                raise refuse(QuoteReason.SERVER_TOOL_COST, Capability.SERVER_TOOLS, "server-side tool costs require a scoped quote")
+            if tool.get("type") == "namespace":
+                # A namespace is a declaration wrapper, not hosted execution.
+                # The API permits only function/custom children, not arbitrary
+                # nested tools whose separately billed work could escape a bound.
+                children = tool.get("tools")
+                if not isinstance(children, list) or not children or not isinstance(tool.get("name"), str) or not tool["name"]:
+                    raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "namespace requires a name and client tools")
+                for child in children:
+                    cls._client_tool(child)
+            else:
+                cls._client_tool(tool)
 
         cls._text_only(document.get("instructions", ""))
 
@@ -345,6 +355,74 @@ class OpenAIResponsesQuoteAdapter:
             raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "explicit input required")
         cls._input_text_only(document["input"], exercised)
         return exercised
+
+    @staticmethod
+    def _client_tool(tool: Any) -> None:
+        if not isinstance(tool, dict):
+            raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "tool must be an object")
+        kind = tool.get("type")
+        if not isinstance(kind, str) or kind not in _CLIENT_TOOL_TYPES:
+            raise refuse(QuoteReason.SERVER_TOOL_COST, Capability.SERVER_TOOLS, "server-side tool costs require a scoped quote")
+
+    @staticmethod
+    def _inline_item_metadata(item: dict[str, Any]) -> bool:
+        """Codex correlation metadata is not a provider history reference."""
+        if "id" in item and not isinstance(item["id"], str):
+            return False
+        metadata = item.get("internal_chat_message_metadata_passthrough", {})
+        if not isinstance(metadata, dict) or set(metadata) - {"turn_id", "create_time"}:
+            return False
+        if "turn_id" in metadata and not isinstance(metadata["turn_id"], str):
+            return False
+        timestamp = metadata.get("create_time", 0)
+        return (
+            not isinstance(timestamp, bool) and isinstance(timestamp, int | float) and (not isinstance(timestamp, float) or math.isfinite(timestamp))
+        )
+
+    @classmethod
+    def _inline_client_tool_item(cls, item: dict[str, Any]) -> bool:
+        """Complete client-carried calls/results need no server history lookup.
+
+        call_id correlates an inline result with its call; it does not retrieve
+        stored input. All payload bytes remain inside the full-context bound.
+        Keep a closed schema so references/media cannot masquerade as text.
+        """
+        kind = item.get("type")
+        fields = (
+            {
+                "function_call": {"name", "arguments"},
+                "custom_tool_call": {"name", "input"},
+                "function_call_output": {"output"},
+                "custom_tool_call_output": {"output"},
+            }.get(kind)
+            if isinstance(kind, str)
+            else None
+        )
+        if fields is None or set(item) - (fields | {"type", "call_id", "status", "namespace", "id", "internal_chat_message_metadata_passthrough"}):
+            return False
+        if not cls._inline_item_metadata(item):
+            return False
+        if not isinstance(item.get("call_id"), str) or not item["call_id"]:
+            return False
+        if item.get("status", "completed") != "completed":
+            return False
+        if any(key in item and not isinstance(item[key], str) for key in ("id", "namespace")):
+            return False
+        for field in fields:
+            value = item.get(field)
+            if isinstance(value, str):
+                continue
+            if (
+                field == "output"
+                and isinstance(value, list)
+                and all(
+                    isinstance(part, dict) and set(part) == {"type", "text"} and part["type"] == "input_text" and isinstance(part["text"], str)
+                    for part in value
+                )
+            ):
+                continue
+            return False
+        return True
 
     @classmethod
     def _input_text_only(cls, value: Any, exercised: set[str]) -> None:
@@ -359,26 +437,32 @@ class OpenAIResponsesQuoteAdapter:
             if not isinstance(item, dict):
                 raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "input item must be an object")
             # Dispatch on type, never merely on a client-supplied content key.
-            # Only messages and the closed, identifier-free encrypted reasoning
-            # form below are supported. Tool/server state stays refused.
+            # Messages, complete client tool transcripts and the closed inline
+            # reasoning form are bounded. Server references stay refused.
             kind = item.get("type", "message")
             if kind == "reasoning" and cls._inline_reasoning(item):
                 # Complete client-carried ciphertext is request-digest bound.
                 # No provider-side response/item lookup is admitted here.
                 continue
+            if cls._inline_client_tool_item(item):
+                continue
             if kind != "message":
                 raise refuse(QuoteReason.STATEFUL_INPUT, Capability.HISTORY, f"input item type {kind!r} cannot be counted locally")
             cls._text_only(item.get("content", ""), exercised)
 
-    @staticmethod
-    def _inline_reasoning(item: dict[str, Any]) -> bool:
-        """Stateless encrypted reasoning, with no server identifier/reference.
+    @classmethod
+    def _inline_reasoning(cls, item: dict[str, Any]) -> bool:
+        """Stateless encrypted reasoning with complete inline ciphertext.
 
         The published full-context ceiling still bounds all rendered input.
         Ciphertext is part of this request; it names no remotely stored object.
         This is protocol support, not model/destination invocability evidence.
         """
-        if set(item) - {"type", "encrypted_content", "summary", "status"}:
+        if set(item) - {"type", "encrypted_content", "summary", "status", "id", "content", "internal_chat_message_metadata_passthrough"}:
+            return False
+        # Codex carries an item label plus null/empty plaintext content. Neither
+        # retrieves remote state when the complete encrypted payload is present.
+        if not cls._inline_item_metadata(item) or item.get("content") not in (None, []):
             return False
         encrypted = item.get("encrypted_content")
         summary = item.get("summary")
