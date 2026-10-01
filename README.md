@@ -21,6 +21,12 @@ Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sig
 - **Follow progress in real time.** Read task status and stream progress events, with cursors that let clients reconnect to retained updates.
 - **Use the results in your workflow.** Retrieve task results and artifacts to drive the next pipeline or application step.
 
+## Build and run agents for your own domain on ADP
+
+- **Define agents for your work.** Create personas, skills, and domain tools or workers for workflows beyond coding.
+- **Reuse ADP's foundations.** Run domain agents with the shared agent runtime, model gateway, identity, and integrations.
+- **Explore the Cyber app.** The optional [Cyber app](modules/domain-apps/cyber/) shows this approach in practice with malware analysis and URL and domain investigations. It brings its own persona, skills, workers, and sandbox infrastructure.
+
 ## Built as a SaaS platform from the ground up
 
 - **Serve many organizations from one installation.** Manage organizations, departments, teams, users, and memberships in one ADP deployment.
