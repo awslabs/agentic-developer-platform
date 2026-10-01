@@ -292,3 +292,72 @@ async def test_story_dispatch_uses_twenty_total_attempts(retry, attempts, allowe
     if not allowed:
         assert result.reason.value == "attempt_limit_exceeded"
     assert retry.s.node.attempts == attempts
+
+
+@pytest.mark.parametrize("attempts,state", [(6, "running"), (20, "running"), (20, "awaiting_gate")])
+async def test_stall_pass_honors_retry_supplement_and_current_attempt(retry, attempts, state):
+    from src.orchestration.stall import detect_stalls
+
+    b = retry
+    await accept(b)
+    b.s.node.state, b.s.node.attempts = state, attempts
+    b.s.node.updated_at = datetime.now(UTC)
+    await b.s.session.flush()
+    report = await detect_stalls(b.s.session, datetime.now(UTC))
+    await b.s.session.refresh(b.s.node)
+    assert report.halts_detected == report.stalls_detected == 0
+    assert b.s.node.state == state and b.s.node.attempts == attempts
+    # Finishing attempt 20 is permitted; dispatching attempt 21 is not.
+    if attempts == 20 and state == "running":
+        b.s.node.state = "ready"
+        from src.orchestration.execution_policy import DenyReason
+
+        assert (await dispatch(b.s)).reason == DenyReason.ATTEMPT_LIMIT_EXCEEDED
+
+
+async def test_stall_pass_still_halts_above_the_accepted_retry_limit(retry):
+    from src.orchestration.stall import detect_stalls
+
+    b = retry
+    await accept(b)
+    b.s.node.attempts = 21
+    await b.s.session.flush()
+    report = await detect_stalls(b.s.session, datetime.now(UTC))
+    await b.s.session.refresh(b.s.node)
+    assert report.halts_detected == 1 and b.s.node.state == "halted"
+
+
+async def test_retry_increase_does_not_disable_worker_stall_timeout(retry):
+    from src.orchestration.stall import AGENT_POD_DEADLINE_SECONDS, detect_stalls
+
+    b = retry
+    await accept(b)
+    b.s.node.attempts = 6
+    b.s.node.updated_at = datetime.now(UTC) - timedelta(seconds=AGENT_POD_DEADLINE_SECONDS)
+    await b.s.session.flush()
+    report = await detect_stalls(b.s.session, datetime.now(UTC))
+    await b.s.session.refresh(b.s.node)
+    assert report.stalls_detected == 1 and b.s.node.state == "failed"
+
+
+async def test_stall_pass_honors_original_policy_final_attempt(retry):
+    from src.orchestration.stall import detect_stalls
+
+    b = retry
+    b.s.node.attempts = b.s.policy.limits.max_attempts_per_node
+    b.s.node.updated_at = datetime.now(UTC)
+    await b.s.session.flush()
+    report = await detect_stalls(b.s.session, datetime.now(UTC))
+    assert report.halts_detected == 0
+
+
+async def test_malformed_policy_does_not_remove_legacy_halt(retry):
+    from src.orchestration.stall import detect_stalls
+
+    b = retry
+    b.s.plan.plan_document = {**b.s.plan.plan_document, "execution_policy": {"invalid": True}}
+    b.s.node.attempts = 6
+    await b.s.session.flush()
+    report = await detect_stalls(b.s.session, datetime.now(UTC))
+    await b.s.session.refresh(b.s.node)
+    assert report.halts_detected == 1 and b.s.node.state == "halted"

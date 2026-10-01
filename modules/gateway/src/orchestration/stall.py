@@ -60,7 +60,12 @@ an opaque dispatch-guard refusal. If the cycle bound were the looser of the two,
 configurable, defaults to 5, and a config with `bound >= MAX_CHAIN_DEPTH` is
 rejected at construction rather than tolerated.
 
-The bound is also tunable per environment via `ORCH_DEFECT_CYCLE_BOUND` (issue
+For policy-governed flows the accepted retry limit (including audited supplements)
+replaces this legacy bound. Dispatch owns new-attempt admission; the current
+attempt is allowed to finish at its accepted limit. Stall-time detection still
+applies independently, and an already halted node still needs human recovery.
+
+The legacy bound is also tunable per environment via `ORCH_DEFECT_CYCLE_BOUND` (issue
 #4403), read by `StallConfig.from_env`. That reader routes through this same
 constructor rather than validating separately, so an env value outside `1 <= n < 8`
 is rejected by the invariant above and falls back to the default — the knob cannot
@@ -613,7 +618,23 @@ async def _examine(
 
     elapsed = int((now - since).total_seconds())
 
-    if state in HALTABLE_STATES and candidate.attempts >= config.defect_cycle_bound:
+    # A policy-governed flow already owns retry admission, including audited
+    # increases. The environment's legacy cycle bound must not cancel a worker
+    # admitted under that policy. attempts includes the CURRENT attempt, so the
+    # final admitted attempt may finish; dispatch refuses the next one.
+    bound = config.defect_cycle_bound
+    exhausted = candidate.attempts >= bound
+    bound_source = "legacy_defect_cycle_bound"
+    if state in HALTABLE_STATES:
+        from .policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=candidate.org_id, flow_id=candidate.flow_id)
+        if inputs.refusal is None and inputs.policy is not None:
+            bound = inputs.policy.limits.max_attempts_per_node
+            exhausted = candidate.attempts > bound
+            bound_source = "accepted_execution_policy"
+
+    if state in HALTABLE_STATES and exhausted:
         await _propose(
             session,
             candidate,
@@ -622,11 +643,12 @@ async def _examine(
             kind=DecisionKind.NODE_HALTED,
             reason=(
                 f"defect-cycle bound exhausted: {candidate.attempts} attempt(s) at a bound of "
-                f"{config.defect_cycle_bound}; halting rather than cycling again"
+                f"{bound} ({bound_source}); halting rather than cycling again"
             ),
             detail={
                 "attempts": candidate.attempts,
-                "defect_cycle_bound": config.defect_cycle_bound,
+                "defect_cycle_bound": bound,
+                "bound_source": bound_source,
                 "observed_state": candidate.observed_state,
             },
             detected_counter="halts_detected",
