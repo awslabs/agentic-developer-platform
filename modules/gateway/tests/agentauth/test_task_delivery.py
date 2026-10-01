@@ -299,3 +299,86 @@ def test_shared_queue_never_downgrades_a_typed_message(tasks, kind):
     )
     with pytest.raises(TaskDeliveryError):
         delivery.acquire("typed-pod")
+
+
+@pytest.mark.parametrize(
+    "mutation,drained",
+    [
+        ({"status": {"S": "completed"}, "workload_binding": {"S": "old-pod"}}, True),
+        ({"status": {"S": "cancelled"}}, True),
+        ({"status": {"S": "cancelled"}, "workload_binding": {"S": "old-pod"}}, False),
+        ({"status": {"S": "active"}}, False),
+        ({"status": {"S": "pending"}}, False),
+        ({"status": {"S": "completed"}, "envelope_digest": {"S": "different"}}, False),
+        ({"status": {"S": "completed"}, "tenant_id": {"S": "other"}}, False),
+        ({"status": {"S": "completed"}, "invocation_id": {"S": "other"}}, False),
+    ],
+)
+def test_terminal_protected_redelivery_drains_only_exact_fenced_assignment(tasks, mutation, drained):
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            **mutation,
+        },
+    )
+    body = tasks.delivery.acquire("redelivery-pod")
+    if drained:
+        assert body is None
+        receipt = tasks.delivery.read("redelivery-pod")
+        assert receipt["state"] == "acknowledged"
+        assert receipt["invocation_id"] == "run-1"
+        assert receipt["sqs_http_status"] == 200
+        assert "body" not in receipt and "receipt" not in receipt
+        with pytest.raises(TaskDeliveryError, match="finished"):
+            tasks.delivery.acquire("redelivery-pod")
+        assert json.loads(tasks.delivery.acquire("next-pod")) == tasks.envelopes[1]
+    else:
+        assert json.loads(body) == envelope
+        assert tasks.delivery.read("redelivery-pod")["state"] == "assigned"
+
+
+def test_terminal_protected_delivery_rechecks_saved_assignment(tasks):
+    tasks.delivery.acquire("pod-one")
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            "status": {"S": "completed"},
+        },
+    )
+    assert tasks.delivery.acquire("pod-one") is None
+    assert tasks.delivery.read("pod-one")["state"] == "acknowledged"
+
+
+def test_terminal_protected_delivery_unblocks_same_fifo_group(tasks):
+    queue = tasks.sqs.create_queue(QueueName="recovery.fifo", Attributes={"FifoQueue": "true"})["QueueUrl"]
+    for envelope in tasks.envelopes:
+        tasks.sqs.send_message(
+            QueueUrl=queue, MessageBody=json.dumps(envelope), MessageGroupId="same-node", MessageDeduplicationId=envelope["message_id"]
+        )
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            "status": {"S": "completed"},
+        },
+    )
+    delivery = TaskDelivery(store=tasks.delivery.store, sqs=tasks.sqs, queue_url=queue, clock=lambda: tasks.now[0])
+    assert delivery.acquire("terminal-pod") is None
+    assert json.loads(delivery.acquire("successor-pod")) == tasks.envelopes[1]

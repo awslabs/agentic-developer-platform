@@ -80,9 +80,30 @@ class TaskDelivery:
             raise TaskDeliveryError("lease_expired")
 
     def _cancelled_before_start(self, body):
+        envelope = json.loads(body)
+        if isinstance(envelope, dict) and "kind" not in envelope and self.allow_legacy:
+            # Protected engine retries retain the exact envelope. A terminal
+            # execution cannot bootstrap again, so drain its redelivery through
+            # the same durable acknowledgement journal as stopped API tasks.
+            # Never infer completion from activity, age, or a missing record.
+            invocation, tenant = envelope.get("message_id"), envelope.get("tenant_id")
+            if not isinstance(invocation, str) or not invocation or not isinstance(tenant, str) or not tenant:
+                return False
+            digest = {"S": envelope_digest(envelope)}
+            pointer = self.store._read(f"INVOCATION#{invocation}", "DISPATCH")
+            if not pointer or pointer.get("tenant_id") != {"S": tenant} or pointer.get("envelope_digest") != digest:
+                return False
+            raw = self.store._read(f"TENANT#{tenant}", f"EXEC#{invocation}")
+            if (
+                not raw
+                or raw.get("tenant_id") != {"S": tenant}
+                or raw.get("invocation_id") != {"S": invocation}
+                or raw.get("envelope_digest") != digest
+            ):
+                return False
+            return raw.get("status") == {"S": "completed"} or (raw.get("status") == {"S": "cancelled"} and not raw.get("workload_binding"))
         if not self.allow_task_api:
             return False
-        envelope = json.loads(body)
         if not isinstance(envelope, dict) or envelope.get("kind") != "adp.task":
             return False
         from src.tasks.records import dispatch_sort_key, task_work_partition
