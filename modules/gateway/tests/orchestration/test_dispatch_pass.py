@@ -2177,3 +2177,43 @@ async def test_dispatch_uses_accepted_story_persona(session, selected, accepted)
     else:
         assert not sqs.calls
         assert await _state_of(session, node.id) == NodeState.READY.value
+
+
+@pytest.mark.parametrize("persona,reviewer", [("developer", "reviewer"), ("agent-codex-developer", "agent-codex-reviewer")])
+@pytest.mark.parametrize("handoff", [False, True])
+async def test_protected_developer_authority_preserves_handoff_and_reviewer_scope(session, protected_engine, persona, reviewer, handoff):
+    from datetime import UTC, datetime
+
+    from src.agentauth.grants import AgentAction
+
+    store, writer = protected_engine
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    pending = report.pending[0]
+    pending.envelope["persona"] = persona
+    pending.envelope["handoff_required"] = handoff
+    envelope = writer.provision(pending)
+    grant = store.live_grant(invocation_id=envelope["message_id"], tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
+    assert (AgentAction.DISPATCH in grant.allowed_actions) is (not handoff)
+    row = store._read(f"TENANT#{ORG_A}", f"GRANT#{grant.principal}")
+    if handoff:
+        assert "dispatch_personas" not in row
+    else:
+        assert row["dispatch_personas"] == {"SS": [reviewer]}
+
+
+@pytest.mark.parametrize("persona", ["agent-codex-architect", "operations", "unknown-persona"])
+async def test_protected_story_authority_refuses_unsupported_personas(session, protected_engine, persona):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+
+    store, writer = protected_engine
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    pending = report.pending[0]
+    pending.envelope["persona"] = persona
+    with pytest.raises(BootstrapRefusedError, match="unsupported engine persona"):
+        writer.provision(pending)
+    assert store.client.scan(TableName="authority", Select="COUNT")["Count"] == 0
+    assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0

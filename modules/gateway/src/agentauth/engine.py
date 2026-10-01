@@ -21,6 +21,7 @@ from src.agentauth.grants import (
     DelegatedGrant,
     TargetRelationship,
 )
+from src.orchestration.developer_personas import DEVELOPER_PERSONAS
 from src.orchestration.dispatch import GraphAttribution, graph_address
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
 from src.orchestration.models import (
@@ -151,7 +152,7 @@ class EngineAuthorityWriter:
         ):
             raise BootstrapRefusedError("engine dispatch identity mismatch")
         persona = envelope["persona"]
-        allowed = {"operations"} if pending.node_kind == NodeKind.EVAL.value else {"developer", "reviewer"}
+        allowed = {"operations"} if pending.node_kind == NodeKind.EVAL.value else DEVELOPER_PERSONAS | {"reviewer"}
         if pending.node_kind not in {NodeKind.STORY.value, NodeKind.EVAL.value} or persona not in allowed:
             raise BootstrapRefusedError("unsupported engine persona")
         now = datetime.now(UTC)
@@ -159,7 +160,7 @@ class EngineAuthorityWriter:
         source = envelope["source_ref"]
         # Policy handoff assigns continuation to K2. The developer must not
         # create a competing reviewer while the durable controller does the same.
-        worker_dispatch = persona == "developer" and envelope.get("handoff_required") is not True
+        worker_dispatch = persona in DEVELOPER_PERSONAS and envelope.get("handoff_required") is not True
         actions = {AgentAction.MONITOR, AgentAction.DISPATCH} if worker_dispatch else {AgentAction.MONITOR}
         grant = DelegatedGrant(
             grant_id=f"grant:{invocation}:1",
@@ -189,7 +190,7 @@ class EngineAuthorityWriter:
                 chain_depth = int(raw_parent.get("chain_depth", {}).get("N", "0")) + 1
                 if (
                     pending.node_kind != "story"
-                    or persona != "developer"
+                    or persona not in DEVELOPER_PERSONAS
                     or envelope.get("handoff_required") is not True
                     or parent.authority.reference_id != genesis.decision_id
                     or parent.flow_id != genesis.flow_id
@@ -211,7 +212,7 @@ class EngineAuthorityWriter:
                 raise BootstrapRefusedError("evaluation correction lineage unavailable") from None
         metadata = {"work_item_issue": {"N": str(source["issue"])}, "max_total_dispatches": {"N": "1"}}
         if worker_dispatch:
-            metadata["dispatch_personas"] = {"SS": ["reviewer"]}
+            metadata["dispatch_personas"] = {"SS": ["agent-codex-reviewer" if persona == "agent-codex-developer" else "reviewer"]}
         event = EngineRunStore.build_item(envelope)
         event.update(actor_kind="service", actor_user_id="system:orchestration-dispatch")
         serializer = TypeSerializer()
