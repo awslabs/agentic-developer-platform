@@ -49,6 +49,14 @@ class CycleBlockedError(Exception):
 
 def block(reason: str, code: BlockCode = BlockCode.DEPENDENCY_UNSATISFIED) -> BlockRecord:
     required_input = {
+        "worker_dispatch_unpublished": (
+            "Worker dispatch has no protected execution record. The engine will replay a saved dispatch; "
+            "historical assignments without one require recovery."
+        ),
+        "worker_start_pending": (
+            "The assignment is prepared but no worker has acknowledged startup. "
+            "The engine will replay the same assignment within its accepted bounds."
+        ),
         "shared_worker_continuation_disabled": (
             "The accepted flow uses shared workers, but that transport is disabled. "
             "Have the platform operator restore the approved transport or migrate the flow before resuming."
@@ -56,7 +64,12 @@ def block(reason: str, code: BlockCode = BlockCode.DEPENDENCY_UNSATISFIED) -> Bl
         "protected_authority_required": "Have the platform operator restore protected execution support before resuming this flow.",
         "continuation_mode_unrecognized": "Reconcile the accepted continuation contract; no alternate authority mode will be selected.",
     }.get(reason, f"Resolve review cycle condition: {reason}")
-    return BlockRecord(code=code, owner="orchestration-owner", required_input=required_input, detail=reason)
+    return BlockRecord(
+        code=code,
+        owner="engine" if reason in {"worker_dispatch_unpublished", "worker_start_pending"} else "orchestration-owner",
+        required_input=required_input,
+        detail=required_input if reason in {"worker_dispatch_unpublished", "worker_start_pending"} else reason,
+    )
 
 
 @dataclass(frozen=True)

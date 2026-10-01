@@ -36,8 +36,9 @@ transaction. The ordering is chosen deliberately (hazard 3 of the ruling, and th
 publish.**
 
 - Commit, then publish, and the publish fails: the node is `running` with no run.
-  Recovered by the stall/halt detector from #4211, which is merged — a node stuck
-  in `running` is exactly what `stall.py` exists to find. The failure is also
+  Protected dispatch now retains its exact envelope in the committed decision;
+  the next dispatch pass replays it until protected worker startup is observed.
+  Historical dispatches without an envelope still require recovery. The failure is also
   counted (`publish_failed`) and forces a non-success report, so it is never
   silent.
 - Publish, then commit, and the commit fails: a run exists with no `running` node,
@@ -1105,6 +1106,11 @@ async def _dispatch_one_unclaimed(
                     "handoff_required": receipt_required,
                     "provider_repository_id": repository_id,
                     "installation_id": installation_id,
+                    **(
+                        {"dispatch_envelope": envelope}
+                        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and not shared_continuation
+                        else {}
+                    ),
                 }
             ),
         )
@@ -1634,7 +1640,14 @@ async def run_dispatch_pass(
             logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
             report.record(org_id, "errors")
 
+    from .protected_dispatch_recovery import recover_pending_protected
     from .report_dispatch import recover_pending_reports
+
+    try:
+        await recover_pending_protected(session, config=cfg, report=report)
+    except Exception:
+        logger.exception("orchestration dispatch: protected outbox could not be recovered")
+        report.errors += 1
 
     try:
         await recover_pending_reports(session, config=cfg, report=report)

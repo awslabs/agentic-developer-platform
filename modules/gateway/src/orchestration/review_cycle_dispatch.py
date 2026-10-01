@@ -297,12 +297,16 @@ class ReviewCycleServices:
     async def development_complete(self, context, node):
         raw = await self.protected(node.org_id, attempt_run_id(node.id, node.attempts))
         if not raw:
-            return False
+            raise CycleBlockedError("worker_dispatch_unpublished", BlockCode.PROVIDER_UNAVAILABLE)
         if raw.get("tenant_id") != {"S": node.org_id} or raw.get("orchestration_node_id") != {"S": node.id}:
             raise CycleBlockedError("protected_development_mismatch", BlockCode.AUTHORITY_UNVERIFIABLE)
         status = raw.get("status", {}).get("S")
+        if status == "pending" and not raw.get("workload_binding"):
+            raise CycleBlockedError("worker_start_pending", BlockCode.PROVIDER_UNAVAILABLE)
         if status in {"cancelled", "revoked"} or (status == "completed" and raw.get("terminal_outcome") != {"S": "complete"}):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
+        if status not in {"active", "completed"} or (status == "active" and not raw.get("workload_binding")):
+            raise CycleBlockedError("worker_start_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE)
         return status == "completed"
 
     async def facts(self, session, context, node, binding, dispatches):

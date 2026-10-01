@@ -336,12 +336,10 @@ async def test_an_unavailable_snapshot_does_not_stop_the_tick_dispatching(sessio
         assert (await session.scalar(select(OrchestrationNode.state).where(OrchestrationNode.id == node_id))) == NodeState.RUNNING.value
 
 
-async def test_a_second_tick_over_the_same_dispatch_neither_reprepares_nor_republishes(session_factory, protected_store, sqs, journal):
+async def test_a_second_tick_does_not_republish_a_started_worker(session_factory, protected_store, sqs, journal):
     """Idempotence through the real tick, which is where a retry actually happens.
 
-    The node is `running` after the first tick, so the second finds nothing ready.
-    What this rules out is a preparation that leaked state onto the report and
-    re-provisioned or re-sent on the next wake.
+    Protected worker startup, not merely a queued message, ends replay.
     """
     store, _ = protected_store
     await _seed_ready_story(session_factory)
@@ -350,6 +348,13 @@ async def test_a_second_tick_over_the_same_dispatch_neither_reprepares_nor_repub
     assert len(sqs.calls) == 1
     invocation_id = next(iter(getattr(first, "dispatch_report").model_policy_receipts))
     stored = store._read(f"TENANT#{ORG}", f"EXEC#{invocation_id}")["model_policy_snapshot"]["S"]
+    store.client.update_item(
+        TableName=store.table,
+        Key={"pk": {"S": f"TENANT#{ORG}"}, "sk": {"S": f"EXEC#{invocation_id}"}},
+        UpdateExpression="SET #status = :active, workload_binding = :pod",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":active": {"S": "active"}, ":pod": {"S": "verified-pod"}},
+    )
     journal.clear()
 
     second = await tick_handler_module._run()
