@@ -1,6 +1,8 @@
 # ADP — Agentic Developer Platform
 
-## Use any agentic coding tool of your choice. Scale to hundreds of developers.
+## What you can do with ADP
+
+### Use any coding tool. Scale to hundreds of developers.
 
 Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sign in with GitHub using short-lived, automatically refreshed credentials. As teams grow, organizations can enforce budgets and rate limits at every level.
 
@@ -8,32 +10,32 @@ Connect Claude Code, Codex, or Kimi Code through one ADP gateway. Developers sig
 - **Sign in with GitHub, without long-lived API keys.** Use GitHub sign-in instead of managing a separate model API key. ADP gives your machine short-lived credentials and refreshes them automatically, without requiring individual AWS credentials for everyday tool use.
 - **Enforce spending controls across your organization.** Set and enforce budgets and rate limits for hundreds of developers at the organization, department, team, and user levels, with usage and cost visibility at each level.
 
-## Run coding agents in the cloud for complex long horizon tasks
+### Run coding agents in the cloud
 
-- **Delegate from GitHub to the cloud.** Mention a [cloud-hosted agent](modules/agent-factory/) in an issue or pull request. ADP runs the task without requiring you to keep a local coding session open.
+- **Delegate complex, long-running work from GitHub.** Mention a [cloud-hosted agent](modules/agent-factory/) in an issue or pull request. ADP runs the task without requiring you to keep a local coding session open.
 - **Use the right agent persona.** Product and PM agents shape and coordinate work; architect, developer, reviewer, and operations agents handle design, implementation, review, and deployment.
 - **Choose a Claude or Codex agent stack.** ADP supports two cloud agent stacks: one built on the Claude Agent SDK and one on the native Codex SDK. Mention `@agent-developer` or `@agent-codex-developer` to choose a stack for implementation.
 - **Watch and control live runs.** Stream agent progress in the ADP UI or CLI. For runs that support live controls, pause, resume, steer with new instructions, or abort them while they run.
 
-## Deploy and debug applications across AWS accounts
+### Deploy and debug across AWS accounts
 
 - **Work where your application runs.** Connect development AWS accounts to ADP so agents can deploy applications and investigate runtime issues in the target account.
 - **Use the right account for each developer.** Different developers can connect different AWS accounts and select the account an agent should use for a run.
 - **Govern access with scoped IAM roles.** Define the services and resources an agent may access in each account. ADP assumes the authorized role for the run and gives the agent short-lived credentials. See [customer AWS setup](docs/adp-platform-deployment/customer-aws-setup.md).
 
-## Invoke agents on ADP from within your workflows and other systems
+### Invoke agents from your workflows
 
 - **Connect CI/CD pipelines and applications.** Submit authorized agent tasks through the Task API using a registered service identity.
 - **Follow progress in real time.** Read task status and stream progress events, with cursors that let clients reconnect to retained updates.
 - **Use the results in your workflow.** Retrieve task results and artifacts to drive the next pipeline or application step.
 
-## Build and run agents for your own domain on ADP
+### Build agents for your own domain
 
 - **Define agents for your work.** Create personas, skills, and domain tools or workers for workflows beyond coding.
 - **Reuse ADP's foundations.** Run domain agents with the shared agent runtime, model gateway, identity, and integrations.
 - **Explore the Cyber app.** The optional [Cyber app](modules/domain-apps/cyber/) shows this approach in practice with malware analysis and URL and domain investigations. It brings its own persona, skills, workers, and sandbox infrastructure.
 
-## Built as a SaaS platform from the ground up
+### Built as a SaaS platform
 
 - **Serve many organizations from one installation.** Manage organizations, departments, teams, users, and memberships in one ADP deployment.
 - **Keep tenants separate.** Tenant-aware identity, roles, and access checks scope each organization's users and activity.
