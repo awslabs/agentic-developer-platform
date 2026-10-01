@@ -33,7 +33,6 @@ import logging
 import socket
 import uuid
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -238,13 +237,17 @@ async def _write_audit(
 # the registry-granted credential_scopes from verified token_context.
 
 
-def _validate_proxy_url(url: str, settings: Settings) -> None:
-    """Validate the target URL for proxy-request against the host allowlist.
+def _validate_proxy_url(url: str, settings: Settings) -> httpx.URL:
+    """Validate the target URL and return a destination pinned to a public IP.
 
     Raises HTTPException(400) or HTTPException(403) on rejection.
     Issue #1158: SSRF + credential exfiltration mitigation.
     """
-    parsed = urlparse(url)
+    # Authorize with the same URL parser used by the sending client.
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL as exc:
+        raise HTTPException(400, detail={"error": "invalid_url", "message": "Malformed URL"}) from exc
 
     # 1. Scheme check — HTTPS only when vault_proxy_require_https=True
     if settings.vault_proxy_require_https and parsed.scheme != "https":
@@ -258,7 +261,7 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
             detail={"error": "invalid_url", "message": "Invalid URL scheme"},
         )
 
-    hostname = parsed.hostname
+    hostname = parsed.host
     if not hostname:
         raise HTTPException(
             status_code=400,
@@ -272,23 +275,7 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
             detail={"error": "invalid_url", "message": "URLs with embedded credentials are not allowed"},
         )
 
-    # 3. Resolve hostname; reject private/loopback/link-local/reserved IPs (anti-SSRF)
-    try:
-        for info in socket.getaddrinfo(hostname, None):
-            addr = ipaddress.ip_address(info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": "invalid_url",
-                        "message": "URLs targeting private/internal addresses are not allowed",
-                    },
-                )
-    except socket.gaierror:
-        # DNS resolution failure — let httpx surface it as a request error downstream
-        pass
-
-    # 4. FAIL-CLOSED allowlist check
+    # 3. FAIL-CLOSED allowlist check
     allowlist_raw = settings.vault_proxy_host_allowlist
     if not allowlist_raw:
         raise HTTPException(
@@ -303,7 +290,14 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
     # the credential->host binding check (#4076) cannot drift apart.
     allowed_hosts = {h.strip().lower() for h in allowlist_raw.split(",") if h.strip()}
     if host_matches(hostname, allowed_hosts):
-        return
+        # Resolve once and connect to this exact address to prevent DNS rebinding.
+        try:
+            addresses = [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(hostname, None)]
+        except (socket.gaierror, ValueError) as exc:
+            raise HTTPException(400, detail={"error": "invalid_url", "message": "Cannot resolve proxy host"}) from exc
+        if not addresses or any(not addr.is_global or addr.is_multicast for addr in addresses):
+            raise HTTPException(400, detail={"error": "invalid_url", "message": "URLs targeting private/internal addresses are not allowed"})
+        return parsed.copy_with(host=str(addresses[0]))
 
     # No match — reject
     raise HTTPException(
@@ -332,7 +326,7 @@ def _validate_credential_host_binding(cred_service: str, url: str, settings: Set
     False (shadow mode, the default) the violation is logged and allowed, so
     rollback is a config flip rather than a redeploy.
     """
-    hostname = urlparse(url).hostname or ""
+    hostname = httpx.URL(url).host
 
     if not is_binding_enforced(cred_service):
         logger.warning(
@@ -516,7 +510,7 @@ async def proxy_request(
 
     # Issue #1158: Validate target URL before resolving credentials or making requests.
     try:
-        _validate_proxy_url(body.url, settings)
+        target_url = await asyncio.to_thread(_validate_proxy_url, body.url, settings)
     except HTTPException as exc:
         await _audit_denial(exc)
         raise
@@ -552,13 +546,20 @@ async def proxy_request(
         body.headers or {},
     )
 
-    # Forward the HTTP request.
+    # Preserve the authorized virtual host and TLS identity when connecting to
+    # the validated IP. Caller-supplied Host must not select another service.
+    original_url = httpx.URL(body.url)
+    request_headers = {key: value for key, value in request_headers.items() if key.lower() != "host"}
+    request_headers["Host"] = original_url.netloc.decode("ascii")
+
+    # Environment proxies would bypass IP pinning; redirects must not escape it.
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False, follow_redirects=False) as client:
             response = await client.request(
                 method=body.method.upper(),
-                url=body.url,
+                url=target_url,
                 headers=request_headers,
+                extensions={"sni_hostname": original_url.host},
                 content=body.body.encode("utf-8") if body.body else None,
             )
     except httpx.RequestError as exc:
