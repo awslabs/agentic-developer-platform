@@ -103,15 +103,15 @@ def test_replacement_worker_cannot_restart_an_interrupted_model_run(admitted):
         frozen_context(store, record, grant, env, now=NOW)
 
 
-def test_durable_operation_limit_survives_successful_settlements(admitted):
+@pytest.mark.parametrize("kind", ["model", "tool"])
+def test_operations_continue_beyond_legacy_ceilings(admitted, kind):
     store, record, grant, env, _ = admitted
     frozen_context(store, record, grant, env, now=NOW)
-    for _ in range(20):
-        request = claim()
+    for _ in range(40):
+        request = claim(kind)
         operation(store, record, request)
         operation(store, record, request.model_copy(update={"action": "settle", "result": "done"}))
-    with pytest.raises(ClientError):
-        operation(store, record, claim())
+    assert operation(store, record, claim(kind)) == {"status": "admitted"}
 
 
 def test_live_runtime_uses_process_environment_when_no_override(admitted, monkeypatch):

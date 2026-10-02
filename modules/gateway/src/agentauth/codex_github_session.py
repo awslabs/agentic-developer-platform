@@ -110,6 +110,8 @@ def frozen_context(store, record, grant, env, *, now=None):
             "snapshot": snapshot.model_dump(),
             "capabilities": capabilities,
             "deadlineMs": int(deadline.timestamp() * 1000),
+            # Legacy wire fields for older workers; current direct GitHub runs
+            # use these as neither model/tool admission caps nor capability grants.
             "maxTurns": min(definition.limits.maxTurns, 20),
             "maxTools": 32 if len(capabilities) > 1 else 0,
             "maxOutputTokens": 4096,
@@ -183,10 +185,12 @@ def operation(store, record, body):
             raise ValueError("claim cannot supply result")
         session = store._read(pk, session_key["sk"]["S"])
         frozen = json.loads(session["context"]["S"])
-        if body.kind == "tool" and frozen["maxTools"] == 0:
+        if body.kind == "tool" and "repository.read" not in frozen["capabilities"]:
             raise ValueError("tool capability unavailable")
         counter = {"model": "model_count", "tool": "tool_count", "report": "report_count", "planning": "planning_count"}[body.kind]
-        limit = {"model": frozen["maxTurns"], "tool": frozen["maxTools"], "report": 1, "planning": 960}[body.kind]
+        # Model and tool counters are accounting, not hidden run ceilings.
+        # Preserve publication fencing and separately bounded planning effects.
+        limit = {"report": 1, "planning": 960}.get(body.kind)
         store.client.transact_write_items(
             TransactItems=[
                 {
@@ -204,8 +208,12 @@ def operation(store, record, body):
                         + (", finalizing = :operation" if body.kind == "report" else "")
                         + f" ADD operation_count :one, {counter} :one",
                         "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(inflight) AND attribute_not_exists(finalizing) "
-                        + f"AND (attribute_not_exists({counter}) OR {counter} < :limit)",
-                        "ExpressionAttributeValues": {":operation": {"S": identifier}, ":one": {"N": "1"}, ":limit": {"N": str(limit)}},
+                        + (f"AND (attribute_not_exists({counter}) OR {counter} < :limit)" if limit is not None else ""),
+                        "ExpressionAttributeValues": {
+                            ":operation": {"S": identifier},
+                            ":one": {"N": "1"},
+                            **({":limit": {"N": str(limit)}} if limit is not None else {}),
+                        },
                     }
                 },
             ]

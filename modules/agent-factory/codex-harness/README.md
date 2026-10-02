@@ -70,8 +70,7 @@ after WebSocket refusal. This is protocol evidence, not Task API integration,
 authority-safe resume, or a live quality/latency/cost result.
 
 A credential-free text Responses bridge now provides loopback token authentication,
-strict SDK request normalization, model/effort checks, output/operation/deadline
-limits, validated SSE completion and refusal of further requests after uncertain
+strict SDK request normalization, model/effort checks, output/deadline limits and optional host-granted operation limits, validated SSE completion and refusal of further requests after uncertain
 host outcomes. It discards SDK cache IDs and metadata and removes the two residual
 native tool declarations from the host request. The host callback must supply a
 confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
@@ -185,3 +184,12 @@ readable for compatibility with frozen runs, but is not enforced. Direct GitHub/
 ceiling or history-item count cap. Model/provider context limits still apply.
 Task API retains its existing IPC frame limit; this is a distinct transport. Execution, spending,
 output and capability controls are independent of context handling.
+
+
+Direct GitHub persona runs do not enforce the legacy 20-model-call or
+32-tool-call ceilings. Model and tool operations are still authorized and
+journaled individually; interrupted effects cannot be replayed and publication
+still fences further work. Legacy `maxTurns`/`maxTools` session fields remain
+readable for mixed-version rollout compatibility. Task API retains explicit
+operation budgets from its task grant; removing the GitHub defaults does not
+expand a Task API grant.

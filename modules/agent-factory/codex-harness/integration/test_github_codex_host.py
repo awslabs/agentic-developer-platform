@@ -15,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -40,7 +40,7 @@ def test_packaged_github_sdk(tmp_path, persona, mode):
                "maxOutputTokens": 4096, "harnessRevision": "codex-sdk-0.155.1/adp-v1"}
     if mode == "budget-http":
         context["maxTurns"] = 1
-    if mode == "repository-read":
+    if mode in {"repository-read", "many-tools"}:
         context["capabilities"].append("repository.read")
         context["maxTools"] = 32
     if mode == "tampered":
@@ -124,8 +124,8 @@ export async function createCodexPersonaReporter() {
                 {"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
                  "content": [{"type": "output_text", "text": json.dumps(planning_output(persona, "issue")), "annotations": []}]}],
                         "usage": {"input_tokens": 100, "output_tokens": 10}}
-            if mode == 'repository-read' and len(requests) == 1:
-                response["output"] = [{"id": "fc_fixture", "type": "function_call", "call_id": "call_fixture", "name": "repository_file",
+            if (mode == 'repository-read' and len(requests) == 1) or (mode == 'many-tools' and len(requests) <= 35):
+                response["output"] = [{"id": f"fc_fixture_{len(requests)}", "type": "function_call", "call_id": f"call_fixture_{len(requests)}", "name": "repository_file",
                                        "namespace": "mcp__adp", "arguments": json.dumps({"path": "README.md"}), "status": "completed"}]
             body = json.dumps(response).encode()
             self.send_response(200)
@@ -147,10 +147,10 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion'}
+    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
-    assert len(requests) == (3 if mode == 'persistent-http' else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
+    assert len(requests) == (36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
         assert 'Working through' in (artifacts / 'progress.txt').read_text()
         assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
@@ -185,3 +185,8 @@ export async function createCodexPersonaReporter() {
         assert ('Preserve this amendment. ' * (12000 if mode == 'large-discussion' else 650)).strip() in prompt
         if mode == 'large-discussion':
             assert len(prompt.encode()) > 256 * 1024
+
+    if mode == 'many-tools':
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        assert sum(op['kind'] == 'tool' and op['action'] == 'settle' for op in operations) == 35
+        assert sum(op['kind'] == 'model' and op['action'] == 'settle' for op in operations) == 36

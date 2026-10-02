@@ -66,7 +66,7 @@ export interface TextResponsesPolicy {
   /** Only set for hosts with a bounded IPC transport. Direct HTTP has no local size gate. */
   maxRequestBytes?: number;
   maxResponseBytes: number;
-  maxOperations: number;
+  maxOperations?: number;
   timeoutMs: number;
   tools?: ResponsesTools;
 }
@@ -254,7 +254,7 @@ export class ResponsesBridgeError extends Error {
  */
 export async function startTextResponsesProxy(host: TextResponsesHost, policy: TextResponsesPolicy) {
   if (!policy.model.trim() || !["minimal", "low", "medium", "high", "xhigh"].includes(policy.effort)) throw new Error("Invalid Responses policy");
-  for (const value of [policy.maxOutputTokens, ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), policy.maxResponseBytes, policy.maxOperations, policy.timeoutMs]) {
+  for (const value of [policy.maxOutputTokens, ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), policy.maxResponseBytes, ...(policy.maxOperations === undefined ? [] : [policy.maxOperations]), policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Responses limit");
   }
   // A fresh immutable host snapshot prevents caller mutation during a request.
@@ -277,7 +277,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       res.writeHead(426, { "content-type": "application/json", "content-length": "2" }).end("{}"); return;
     }
     if (req.method !== "POST" || req.url !== "/v1/responses") { res.writeHead(404).end(); return; }
-    if (failed || busy || operations >= policy.maxOperations) { res.writeHead(409).end(); return; }
+    if (failed || busy || (policy.maxOperations !== undefined && operations >= policy.maxOperations)) { res.writeHead(409).end(); return; }
     busy = true;
     let dispatched = false;
     const controller = new AbortController();

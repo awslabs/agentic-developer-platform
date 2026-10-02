@@ -299,3 +299,17 @@ test("direct HTTP preserves long message parts and opaque reasoning history", ()
   const normalized = normalizeTextRequest({ ...request(), input }, { ...policy, maxRequestBytes: undefined });
   assert.deepEqual(normalized.input, input);
 });
+
+
+test("direct model transport continues beyond legacy operation ceilings", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, { ...policy, maxOperations: undefined });
+  try {
+    for (let i = 0; i < 40; i++) {
+      const response = await post(proxy);
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+    assert.equal(calls, 40);
+  } finally { await proxy.close(); }
+});

@@ -23,12 +23,12 @@ export interface ToolHost {
 }
 export interface ToolServerPolicy {
   capabilities: readonly Capability[];
-  maxCalls: number;
+  maxCalls?: number;
   maxRequestBytes: number;
   maxResultBytes: number;
   timeoutMs: number;
   signal: AbortSignal;
-  maxClientContinuations?: number;
+  maxClientContinuations?: number | null;
 }
 const envelope = z.strictObject({
   jsonrpc: z.literal("2.0"), id: z.union([z.string().min(1).max(128), z.number().int().safe()]).optional(),
@@ -42,11 +42,11 @@ const receiptSchema = z.strictObject({ status: z.literal("confirmed"), content: 
  * This restricts the advertised catalogue and bounds SDK traffic. Privileged
  * execution and durable reconciliation remain the host/gateway's responsibility. */
 export async function startToolServer(tools: readonly HostTool[], host: ToolHost, policy: ToolServerPolicy) {
-  const maxClientContinuations = policy.maxClientContinuations ?? 2;
-  if (!Number.isSafeInteger(maxClientContinuations) || maxClientContinuations < 0 || maxClientContinuations > 100) {
+  const maxClientContinuations = policy.maxClientContinuations === null ? undefined : policy.maxClientContinuations ?? 2;
+  if (maxClientContinuations !== undefined && (!Number.isSafeInteger(maxClientContinuations) || maxClientContinuations < 0 || maxClientContinuations > 100)) {
     throw new Error("Invalid client continuation bound");
   }
-  for (const value of [policy.maxCalls, policy.maxRequestBytes, policy.maxResultBytes, policy.timeoutMs]) {
+  for (const value of [...(policy.maxCalls === undefined ? [] : [policy.maxCalls]), policy.maxRequestBytes, policy.maxResultBytes, policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid tool server bound");
   }
   if (tools.length > 64) throw new Error("Tool catalogue exceeds bound");
@@ -107,7 +107,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
       // Correlation is not idempotency. Refuse repeated transport IDs instead of
       // replaying a mutation or returning sensitive historical results.
       const key = JSON.stringify(id);
-      if (seen.has(key) || seen.size >= policy.maxCalls + 128) throw new Error("Duplicate or excessive MCP request");
+      if (seen.has(key) || (policy.maxCalls !== undefined && seen.size >= policy.maxCalls + 128)) throw new Error("Duplicate or excessive MCP request");
       seen.add(key);
       await Promise.race([host.assertCurrent(signal), aborted]);
       signal.throwIfAborted();
@@ -122,7 +122,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
       else if (body.method === "tools/call") {
         const call = callSchema.parse(body.params);
         const tool = catalogue.get(call.name);
-        if (!tool || calls >= policy.maxCalls) throw new Error("Tool not admitted or exhausted");
+        if (!tool || (policy.maxCalls !== undefined && calls >= policy.maxCalls)) throw new Error("Tool not admitted or exhausted");
         const args = tool.input.parse(call.arguments);
         calls++;
         handedOff = true;
@@ -157,7 +157,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
     // starts a new MCP client whose JSON-RPC IDs restart at zero. Clear only
     // transport correlation; effect counts, receipt history and poison persist.
     advanceClient() {
-      if (busy || failed || lifetime.signal.aborted || policy.signal.aborted || clientGeneration >= maxClientContinuations) {
+      if (busy || failed || lifetime.signal.aborted || policy.signal.aborted || (maxClientContinuations !== undefined && clientGeneration >= maxClientContinuations)) {
         throw new Error("Tool client cannot advance");
       }
       clientGeneration++;

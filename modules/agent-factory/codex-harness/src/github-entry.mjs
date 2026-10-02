@@ -60,7 +60,6 @@ async function main() {
       const revision = (await hostCommand('git', ['rev-parse', 'HEAD'], signal)).trim();
       if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Repository revision unavailable');
       const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, context.capabilities]));
-      let operations = 0;
       const journal = async (kind, request, execute, active, effectKey) => {
         const binding = { operation_id: randomUUID(), request_digest: createHash('sha256').update(JSON.stringify(request)).digest('hex'), kind, ...(effectKey ? { effect_key: effectKey } : {}) };
         const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active);
@@ -123,7 +122,7 @@ async function main() {
         assertCurrent: current,
         planningCapabilities: context.capabilities.filter(capability => capability === "story.create" || capability === "agents.delegate"),
         ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions,
-          repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: async (name, args, active) => {
+          repositoryCapabilities: ['repository.read'], execute: async (name, args, active) => {
             const result = await tools.execute(name, args, active);
             if (!result.isError) {
               const ref = `repository.${createHash('sha256').update(JSON.stringify({revision, name, args})).digest('hex')}`;
@@ -143,7 +142,6 @@ async function main() {
         },
         async model(request, active) {
           return controls.operation(() => retryModelHttp(async () => {
-            if (++operations > context.maxTurns) throw new Error('GitHub model budget exhausted');
             const fresh = await current(active, false);
             const port = Number(process.env.SIGV4_PROXY_PORT ?? '9090');
             if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid model proxy');

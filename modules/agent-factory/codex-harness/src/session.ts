@@ -31,7 +31,7 @@ export interface SessionHost {
   toolBroker?: {
     definitions: readonly HostTool[];
     execute: ToolHost["execute"];
-    maxCalls: number;
+    maxCalls?: number;
     repositoryCapabilities: readonly Capability[];
   };
 }
@@ -128,7 +128,10 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
         execute: (...args) => broker.execute(...args) }, name, args, active),
     }, { capabilities: plan.capabilities, maxCalls: broker.maxCalls, maxRequestBytes: 63 * 1024,
       maxResultBytes: maxResponseBytes, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
-      maxClientContinuations: host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
+      maxClientContinuations: host.takeSteering && source.kind !== "task-api" ? null : host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
+    // Task API retains explicit task-grant budgets. Direct persona runs do not
+    // inherit the legacy hard-coded model/tool call ceilings.
+    const maxOperations = source.kind === "task-api" ? plan.limits.maxTurns : undefined;
     let modelOperations = 0;
     proxy = await startTextResponsesProxy(async (request, requestSignal) => {
       const active = AbortSignal.any([signal, requestSignal]);
@@ -144,7 +147,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       maxOutputTokens: maxOutputTokens,
       // Reserve wrapper space within the existing 64 KiB Task IPC contract.
       maxRequestBytes, maxResponseBytes: maxResponseBytes,
-      maxOperations: plan.limits.maxTurns, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000),
+      maxOperations, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000),
     });
     // Shared ADP personas already contain the maintained workflow and tool
     // policy. A bounded base avoids duplicating the CLI's coding-agent prompt
@@ -189,7 +192,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     for (let continuation = 0; ; continuation++) {
       await host.assertCurrent(signal);
       signal.throwIfAborted();
-      if (modelOperations >= plan.limits.maxTurns) throw new Error("Persona completion exhausted model budget");
+      if (maxOperations !== undefined && modelOperations >= maxOperations) throw new Error("Persona completion exhausted model budget");
       if (continuation > 0) tools?.advanceClient();
       const evidence = await runSdkTurn(thread, nextPrompt, { ...turnContext, previousUsage }, event => host.progress(event));
       previousUsage = evidence.usage;
