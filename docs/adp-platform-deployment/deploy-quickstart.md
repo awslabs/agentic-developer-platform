@@ -44,6 +44,13 @@ The examples use Terraform environment `dev` in `us-east-1`. The AWS profile
 selects the account; `--env` selects resource names within that account. For
 example, a demo account can still use `--env dev`.
 
+Review the selected environment overlays before provisioning a new account.
+Published-release deployment automatically selects portable configuration.
+Bare source deployment can inherit checked-in `dev` bindings and worker
+activation attestations; changing account IDs does not make these valid for a
+customer deployment. Follow the
+[environment overlay checks](deploy-with-agent.md#check-environment-overlays-before-provisioning).
+
 ## 2. Install or upgrade
 
 ```bash
@@ -84,22 +91,35 @@ Bedrock access preparation and verification run during deployment. If first-use
 registration or an organization Marketplace policy blocks access, follow
 [Bedrock readiness](bedrock-first-run.md).
 
-For a reviewed source checkout without a published release, the lower-level
-entry point remains available:
+Prefer the published-release path for customers: it prepares portable
+configuration in an isolated checkout automatically. For a fresh installation
+from a reviewed unpublished commit, create a new isolated checkout and prepare
+portable defaults **before** adding target overrides or retained-resource imports:
 
 ```bash
-# Fresh install from the current checkout:
-export AWS_PROFILE=customer AWS_REGION=us-east-1
-./platform/scripts/bootstrap.sh
-./platform/scripts/deploy-all.sh --env dev --region us-east-1
+# Only in a new isolated checkout, before target customization:
+python3 platform/scripts/prepare-release-config.py \
+  --root "$PWD" --env dev --region us-east-1
 
-# Upgrade from the current checkout:
-./deploy.sh --aws-profile customer --update
+# Review/customize target inputs before deploying:
+ADP_PORTABLE_RELEASE_CONFIG=true ./deploy.sh \
+  --aws-profile customer --env dev --region us-east-1
 ```
 
-Use a clean checkout for these commands. The direct scripts write deployment
-configuration into that checkout. See [advanced upgrades](platform_upgrades.md)
-for module scope, local agent-context configuration, plan gates and recovery.
+Preparation replaces platform, gateway and webhook environment `.tfvars`; it
+is not an operation to run over existing customer configuration. Read the
+[source preparation details](deploy-with-agent.md#select-the-source-and-install-mode)
+for backup location, JSON overlay restrictions and retained-resource handling.
+The source launcher uses the current checkout and includes bootstrap.
+
+For a direct source upgrade, retain its reviewed target-specific configuration:
+
+```bash
+./deploy.sh --aws-profile customer --env dev --region us-east-1 --update
+```
+
+See [advanced upgrades](platform_upgrades.md) for module scope, retained inputs,
+plan gates and recovery. Do not rerun manual phases after a successful full install.
 
 ## 3. Sign in and connect GitHub
 
@@ -143,6 +163,10 @@ The Terraform backend, GitHub credentials and their encryption key survive by de
 Teardown stops at the first failure; retain its private evidence and rerun after
 resolving the reported cause. See the
 [teardown reference](deployment-reference.md#teardown) before removing those.
+
+Before reinstalling after teardown, reconcile retained resources with Terraform
+state; retained resources detached from state may require reviewed imports. See
+[agent reinstall guidance](deploy-with-agent.md#reinstall-after-teardown).
 
 For maintainers publishing prebuilt artifacts through integration-test and
 pre-production, use [internal release promotion](release-promotion.md). That

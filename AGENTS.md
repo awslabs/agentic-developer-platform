@@ -28,9 +28,10 @@ The essentials, so you don't start down the wrong path:
   path (UI flow: Settings → Connections → "Set up GitHub App"; or CLI fallback
   `register-github-app.sh`). Any "Phase 0 / setup-org / 3 org-owned apps"
   instruction is the superseded legacy ARC track — do not run it.
-- **`deploy-all.sh` chains Phases 1–7** (steps 1–10/11: infra, gateway, ALB wire,
-  frontend, broker, first-admin bootstrap, agent-factory, webhook stack) — only
-  the GitHub App wiring (Phase 8/9) remains manual, per the bullet above.
+- **The full launcher chains core deployment stages**, including broker,
+  first-admin bootstrap, webhook, separate agent factory and final frontend
+  publication. Follow the canonical guide for ordering and scope. GitHub App
+  browser wiring comes after deployment.
 
 This file is intentionally a redirect so the deploy procedure has one source of
 truth and never drifts across the agent-entry files.
