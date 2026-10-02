@@ -181,6 +181,7 @@ policy; enabling a worker is not an admission grant.
 
 The shared harness does not reject persona instructions or user prompts against
 an ADP context-byte budget. The legacy `maxContextBytes` snapshot field remains
-readable for compatibility with frozen runs, but is not enforced. Model/provider
-context limits and transport payload bounds still apply. Execution, spending,
+readable for compatibility with frozen runs, but is not enforced. Direct GitHub/GitLab model HTTP requests also have no local prompt/history byte
+ceiling or history-item count cap. Model/provider context limits still apply.
+Task API retains its existing IPC frame limit; this is a distinct transport. Execution, spending,
 output and capability controls are independent of context handling.

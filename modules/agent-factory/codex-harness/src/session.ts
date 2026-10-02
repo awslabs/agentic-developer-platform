@@ -62,9 +62,11 @@ export interface AdmittedSession {
  */
 export async function runAdmittedSession(input: AdmittedSession, host: SessionHost) {
   const { runId, prompt, maxOutputTokens, maxResponseBytes, signal: callerSignal } = input;
-  const maxRequestBytes = input.maxRequestBytes ?? 63 * 1024;
-  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024 || maxRequestBytes > 256 * 1024
-    || (input.source.kind === "task-api" && maxRequestBytes > 63 * 1024)) throw new Error("Invalid host request bound");
+  // Only Task API uses the bounded IPC frame. Direct HTTP hosts need no
+  // additional prompt/history byte ceiling in front of the model provider.
+  const maxRequestBytes = input.maxRequestBytes ?? (input.source.kind === "task-api" ? 63 * 1024 : undefined);
+  if (maxRequestBytes !== undefined && (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024
+    || (input.source.kind === "task-api" && maxRequestBytes > 63 * 1024))) throw new Error("Invalid host request bound");
   const snapshot = verifySnapshot(input.snapshot);
   const policy = structuredClone(input.policy);
   const source = structuredClone(input.source);

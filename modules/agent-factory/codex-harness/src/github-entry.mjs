@@ -53,7 +53,7 @@ async function main() {
       controls = await startCodexPersonaControls(reporter.log, deadline);
       const signal = AbortSignal.any([deadline, controls.signal]);
       const issue = await execute('gh', ['issue', 'view', String(context.issue), '--repo', context.repository,
-        '--json', 'number,title,body,comments,url,state'], { signal, timeout: 15000, maxBuffer: 32768 });
+        '--json', 'number,title,body,comments,url,state'], { signal, timeout: 15000, maxBuffer: Infinity });
       const input = JSON.parse(issue.stdout);
       const repositoryIdentity = JSON.parse(await hostCommand('gh', ['api', `repos/${context.repository}`], signal));
       if (String(repositoryIdentity.id) !== context.repositoryId) throw new Error('Repository identity changed');
@@ -118,7 +118,7 @@ async function main() {
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
         source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: planningIssueContext(input, artifactComment, artifactBlock),
           source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
-        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, maxRequestBytes: 192 * 1024, signal,
+        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, signal,
       }, {
         assertCurrent: current,
         planningCapabilities: context.capabilities.filter(capability => capability === "story.create" || capability === "agents.delegate"),

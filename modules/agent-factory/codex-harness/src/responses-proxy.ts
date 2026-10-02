@@ -7,7 +7,7 @@ import type { HostTool } from "./tool-server.js";
 const textPart = z.strictObject({ type: z.enum(["input_text", "output_text"]), text: z.string(), annotations: z.array(z.never()).optional() });
 const message = z.strictObject({
   type: z.literal("message").optional(), role: z.enum(["system", "developer", "user", "assistant"]),
-  content: z.union([z.string(), z.array(textPart).max(64)]),
+  content: z.union([z.string(), z.array(textPart)]),
   phase: z.enum(["commentary", "final_answer"]).optional(),
   id: z.string().max(200).optional(), status: z.literal("completed").optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(),
@@ -18,7 +18,9 @@ const reasoningFields = {
   summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string().max(32000) })).max(16),
   status: z.literal("completed").optional(),
 };
-const reasoningInput = z.strictObject({ ...reasoningFields, id: z.string().max(200).optional(),
+const reasoningInput = z.strictObject({ ...reasoningFields,
+  encrypted_content: z.string().min(1),
+  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string() })), id: z.string().max(200).optional(),
   content: z.null().optional(), internal_chat_message_metadata_passthrough: z.unknown().optional(),
 }).transform(({ id: _discardedId, content: _emptyContent, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 const reasoningOutput = z.strictObject({ ...reasoningFields, id: z.string().min(1).max(200) });
@@ -27,13 +29,13 @@ const functionFields = {
   namespace: z.literal("mcp__adp"), name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
   arguments: z.string().min(2).max(32768), status: z.literal("completed").optional(),
 };
-const functionInput = z.strictObject({ ...functionFields, id: z.string().max(200).optional(),
+const functionInput = z.strictObject({ ...functionFields, arguments: z.string().min(2), id: z.string().max(200).optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional() })
   .transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 const functionOutput = z.strictObject({ ...functionFields, id: z.string().min(1).max(200) });
 const functionResult = z.strictObject({ id: z.string().max(200).optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(), type: z.literal("function_call_output"), call_id: z.string().min(1).max(200),
-  output: z.union([z.string().max(32768), z.array(z.strictObject({ type: z.literal("input_text"), text: z.string().max(32768) })).max(16)]),
+  output: z.union([z.string(), z.array(z.strictObject({ type: z.literal("input_text"), text: z.string() }))]),
 }).transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 export type ToolHistory = z.infer<typeof functionInput> | z.infer<typeof functionResult>;
 export interface ResponsesTools {
@@ -46,7 +48,7 @@ export interface ResponsesTools {
   acceptResponse?(response: TextResponsesResult): true;
 }
 const sdkRequest = z.strictObject({
-  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1).max(64)]),
+  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1)]),
   instructions: z.string().optional(), stream: z.literal(true), store: z.literal(false),
   reasoning: z.strictObject({ effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]), summary: z.enum(["auto", "concise", "detailed", "none"]).optional() }),
   // These are SDK-owned transport hints, never authority or cross-run cache IDs.
@@ -61,7 +63,8 @@ export interface TextResponsesPolicy {
   model: string;
   effort: "minimal" | "low" | "medium" | "high" | "xhigh";
   maxOutputTokens: number;
-  maxRequestBytes: number;
+  /** Only set for hosts with a bounded IPC transport. Direct HTTP has no local size gate. */
+  maxRequestBytes?: number;
   maxResponseBytes: number;
   maxOperations: number;
   timeoutMs: number;
@@ -159,11 +162,11 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
     ...(policy.tools ? { tools: [{ type: "namespace", name: "mcp__adp", description: "Authorized ADP tools.",
       tools: policy.tools.definitions.map(tool => ({ type: "function", name: tool.name, description: tool.description,
         parameters: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
-    input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
+    input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item && policy.maxRequestBytes !== undefined ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
     max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
   };
-  if (Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
+  if (policy.maxRequestBytes !== undefined && Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
   return normalized;
 }
 
@@ -251,7 +254,7 @@ export class ResponsesBridgeError extends Error {
  */
 export async function startTextResponsesProxy(host: TextResponsesHost, policy: TextResponsesPolicy) {
   if (!policy.model.trim() || !["minimal", "low", "medium", "high", "xhigh"].includes(policy.effort)) throw new Error("Invalid Responses policy");
-  for (const value of [policy.maxOutputTokens, policy.maxRequestBytes, policy.maxResponseBytes, policy.maxOperations, policy.timeoutMs]) {
+  for (const value of [policy.maxOutputTokens, ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), policy.maxResponseBytes, policy.maxOperations, policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Responses limit");
   }
   // A fresh immutable host snapshot prevents caller mutation during a request.
@@ -294,7 +297,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       for await (const chunk of req) {
         bytes += chunk.length;
         // SDK metadata is removed before the unchanged gateway/IPC request bound.
-        if (bytes > Math.min(256 * 1024, policy.maxRequestBytes * 4)) throw new Error("Responses HTTP body exceeds bound");
+        if (policy.maxRequestBytes !== undefined && bytes > Math.min(256 * 1024, policy.maxRequestBytes * 4)) throw new Error("Responses HTTP body exceeds bound");
         chunks.push(chunk);
       }
       controller.signal.throwIfAborted();

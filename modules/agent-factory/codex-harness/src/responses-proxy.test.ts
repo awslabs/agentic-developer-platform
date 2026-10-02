@@ -276,3 +276,26 @@ test("explicit HTTP failures preserve sanitized status without SDK replay", asyn
     assert.equal(calls, 1);
   } finally { await proxy.close(); }
 });
+
+
+test("direct HTTP forwards large accumulated history and SDK envelopes without a local size gate", async () => {
+  const input = Array.from({ length: 80 }, (_, i) => ({ role: "user", content: [{ type: "input_text", text: `${i}:` + "x".repeat(4096) }] }));
+  let received: unknown;
+  const proxy = await startTextResponsesProxy(async request => {
+    received = request.input;
+    return { operationStatus: "confirmed", response: result() };
+  }, { ...policy, maxRequestBytes: undefined });
+  try {
+    const response = await post(proxy, { ...request(), input, client_metadata: { discarded: "x".repeat(300000) } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(received, input);
+    assert.equal(proxy.failure, undefined);
+  } finally { await proxy.close(); }
+});
+
+test("direct HTTP preserves long message parts and opaque reasoning history", () => {
+  const input = [{ role: "user", content: [{ type: "input_text", text: "x".repeat(1200000) }] },
+    { type: "reasoning", encrypted_content: "opaque".repeat(10000), summary: [] }];
+  const normalized = normalizeTextRequest({ ...request(), input }, { ...policy, maxRequestBytes: undefined });
+  assert.deepEqual(normalized.input, input);
+});
