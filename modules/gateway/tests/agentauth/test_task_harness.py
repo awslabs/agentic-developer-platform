@@ -387,3 +387,16 @@ def test_skill_dependencies_cannot_create_authority_at_admission(frozen, depende
     file.write_text(json.dumps({"schemaVersion": 1, "snapshots": [value]}))
     with pytest.raises(harness.TaskHarnessError, match="prerequisite unavailable"):
         harness.freeze_harness(**arguments)
+
+
+@pytest.mark.parametrize("persona", ["architect", "product", "pm", "intent-refinement", "developer", "reviewer", "operations", "aidlc"])
+def test_legacy_context_allowance_does_not_reject_bound_instructions(persona):
+    value = snapshot(persona)
+    definition = json.loads(value["definition"])
+    definition["limits"]["maxContextBytes"] = 1024
+    definition["instructions"] = "Preserve complete persona instructions. " * 100
+    value["definition"] = rfc8785.dumps(definition).decode()
+    value["digest"] = hashlib.sha256(value["definition"].encode()).hexdigest()
+    value["instructions"] = definition["instructions"]
+    validated, _ = harness.validate_snapshot(value)
+    assert validated.instructions == value["instructions"]

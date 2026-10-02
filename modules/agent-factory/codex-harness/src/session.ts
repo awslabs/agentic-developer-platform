@@ -108,9 +108,6 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
   ].join('\n\n');
   const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes, 32768)) : undefined;
   callerSignal.throwIfAborted();
-  if (Buffer.byteLength(prompt) + Buffer.byteLength(instructions) > plan.limits.maxContextBytes) {
-    throw new Error("Task and persona exceed admitted context budget");
-  }
   const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(plan.limits.maxDurationMs)]);
   await host.assertCurrent(signal);
   signal.throwIfAborted();
@@ -181,7 +178,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     const turnContext = {
       runId: runId, personaKey: plan.persona.key, model: policy.canonicalModel,
       harnessRevision: policy.harnessRevision, surface: source.kind,
-      timeoutMs: plan.limits.maxDurationMs, maxInputBytes: plan.limits.maxContextBytes,
+      timeoutMs: plan.limits.maxDurationMs,
       maxOutputBytes: maxResponseBytes, signal,
     };
     let nextPrompt = prompt;

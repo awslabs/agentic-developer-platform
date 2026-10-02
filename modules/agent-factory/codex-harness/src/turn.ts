@@ -13,7 +13,8 @@ export interface TurnContext {
   harnessRevision: string;
   surface: "github" | "gitlab" | "task-api" | "delegation";
   timeoutMs: number;
-  maxInputBytes: number;
+  /** @deprecated Ignored; retained for existing host adapters. */
+  maxInputBytes?: number;
   maxOutputBytes: number;
   signal: AbortSignal;
   /** Pinned SDK reports cumulative thread usage after a resumed turn. */
@@ -32,11 +33,10 @@ export async function runSdkTurn(
   thread: Pick<Thread, "runStreamed" | "id">, prompt: string, context: TurnContext,
   progress: (event: Progress) => Promise<void>, outputSchema?: unknown,
 ): Promise<TurnEvidence> {
-  for (const limit of [context.timeoutMs, context.maxInputBytes, context.maxOutputBytes]) {
+  for (const limit of [context.timeoutMs, context.maxOutputBytes]) {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("Invalid turn limit");
   }
   context.signal.throwIfAborted();
-  if (Buffer.byteLength(prompt) > context.maxInputBytes) throw new Error("Turn context exceeds admitted budget");
   const local = new AbortController();
   // Detach cancellation after stream shutdown. Aborting the pinned SDK after
   // its iterator exits can emit an unhandled child-process error: the SDK has

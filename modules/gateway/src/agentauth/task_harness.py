@@ -53,6 +53,7 @@ class Closed(BaseModel):
 
 class Limits(Closed):
     maxTurns: Annotated[int, Field(ge=1, le=1000)]
+    # Legacy signed-snapshot field; no runtime context-size gate.
     maxContextBytes: Annotated[int, Field(ge=1024, le=262144)]
     maxDurationMs: Annotated[int, Field(ge=1000, le=21600000)]
 
@@ -211,7 +212,7 @@ def validate_snapshot(value):
         if len(skills[skill.id].encode()) > 65536 or _sha(skills[skill.id]) != skill.sha256:
             raise TaskHarnessError("skill digest mismatch")
     instructions = "\n\n".join([persona.instructions, *(skills[skill.id] for skill in persona.skills)])
-    if instructions != snapshot.instructions or len(instructions.encode()) > persona.limits.maxContextBytes:
+    if instructions != snapshot.instructions:
         raise TaskHarnessError("snapshot instruction binding mismatch")
     return snapshot, persona
 

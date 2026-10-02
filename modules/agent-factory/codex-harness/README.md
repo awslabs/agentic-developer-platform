@@ -176,3 +176,11 @@ to an empty set in every environment; `codex_otel_endpoint` uses the existing AD
 `enable_agent_otel` is true, and otherwise defaults to disabled export. No legacy mention or automatic routing is added. The gateway
 still requires a reviewed catalogue, current model evidence and explicit service
 policy; enabling a worker is not an admission grant.
+
+### Context handling
+
+The shared harness does not reject persona instructions or user prompts against
+an ADP context-byte budget. The legacy `maxContextBytes` snapshot field remains
+readable for compatibility with frozen runs, but is not enforced. Model/provider
+context limits and transport payload bounds still apply. Execution, spending,
+output and capability controls are independent of context handling.

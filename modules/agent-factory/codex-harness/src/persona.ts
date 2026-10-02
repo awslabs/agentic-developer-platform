@@ -33,6 +33,7 @@ export const personaSchema = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh"]),
   limits: z.object({
     maxTurns: z.number().int().min(1).max(100),
+    // Legacy signed-snapshot field; no runtime context-size gate.
     maxContextBytes: z.number().int().min(1024).max(262144),
     maxDurationMs: z.number().int().min(1000).max(21600000),
   }).strict(),
@@ -79,9 +80,6 @@ export function snapshotPersona(raw: string, skillContent: ReadonlyMap<string, s
   const shared = persona.sharedRules;
   if (shared && persona.key !== `gpt-${shared.persona}`) throw new Error("Shared rules belong to another persona");
   const instructions = [persona.instructions, ...skills].join("\n\n");
-  if (Buffer.byteLength(instructions) > persona.limits.maxContextBytes) {
-    throw new Error("Persona and skills exhaust the context budget");
-  }
   // Return serialized immutable data; callers cannot mutate the admitted snapshot.
   return Object.freeze({ definition: canonical(persona), digest: sha256(canonical(persona)), instructions,
     skillSources: JSON.stringify(persona.skills.map((skill, index) => [skill.id, skills[index]])),

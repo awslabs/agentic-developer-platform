@@ -15,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -87,6 +87,14 @@ export async function createCodexPersonaReporter() {
     gh = binaries / "gh"
     gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id": ' + ('999' if mode == 'repository-mismatch' else '123')
                   + '} if sys.argv[1] == "api" and "/issues/" not in sys.argv[2] else [] if sys.argv[1] == "api" else {"number":12,"title":"Fixture architecture request","body":"Inspect supplied evidence", "comments":[]}))\n')
+    if mode == 'long-discussion':
+        # Shared architect rules consume ~49 KiB before task/schema text.
+        # Preserve a substantial issue and amendments rather than dropping them.
+        issue_payload = {"number": 12, "title": "Fixture architecture request", "body": "Original requirement. " * 250,
+                         "comments": [{"id": "human-amendment", "author": {"login": "human"},
+                                       "body": "Preserve this amendment. " * 650}]}
+        gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id":123} if sys.argv[1] == "api" else '
+                      + repr(issue_payload) + '))\n')
     gh.chmod(0o700)
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -139,7 +147,7 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read', 'transient'}
+    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
     assert len(requests) == (3 if mode == 'persistent-http' else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
@@ -170,3 +178,8 @@ export async function createCodexPersonaReporter() {
         assert json.loads(model_ops[1]['result']) == {'httpStatus': 500}
         if mode == 'persistent-http':
             assert 'HTTP 500' in (artifacts / 'failed').read_text()
+
+    if mode == 'long-discussion':
+        prompt = json.dumps(requests[0])
+        assert 'Original requirement. ' * 250 in prompt
+        assert ('Preserve this amendment. ' * 650).strip() in prompt
