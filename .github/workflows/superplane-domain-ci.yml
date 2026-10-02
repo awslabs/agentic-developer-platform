@@ -54,6 +54,7 @@ on:
       - 'platform/scripts/deploy-all.sh'
       - 'platform/scripts/undeploy.sh'
       - 'platform/scripts/undeploy-phases.sh'
+      - 'platform/scripts/teardown.py'
       - '.github/workflows/undeploy.yml'
       - 'docs/adp-platform-deployment/deployment-manifest.md'
       # The feature gate's four surfaces. Read as text by the registration suite, so an

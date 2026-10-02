@@ -6,23 +6,16 @@ superplane/` cannot see them and therefore misses one. `modules/domain-apps/cybe
 worked example — it is absent from `deploy-all.sh` entirely, so its resources survive
 teardown and bill silently.
 
-Every assertion here reads a file as **text**, because none of these lists is importable
-Python: they are Bash arrays, a GitHub Actions workflow, a TypeScript module and a Markdown
-table. No runtime test can observe any of them, which is precisely why a PR that lands two
-of the five edits goes green everywhere else.
+Deployment registration spans shell, workflow and documentation entry points.
+Teardown uses one importable engine shared by the CLI and workflow; its domain
+phase must remain first, and the compatibility phase wrapper must remain callable.
 
-**The undeploy pairing is the sharp edge.** `undeploy.sh` does not define its phase
-functions. `_run_phase` builds the name dynamically (`local phase_fn="phase_${phase}"`) and
-calls it, with the bodies in the separately-sourced `undeploy-phases.sh`. So a name in
-`PHASE_ORDER` without a matching function is not a lint error — it is a teardown that fails
-on every run, retries twice and reports FAILED. The issue's own registration inventory lists
-four deploy/undeploy edit points and does not mention `undeploy-phases.sh`; this suite pins
-it as the fifth.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
 import shlex
@@ -126,69 +119,50 @@ class TestDeployRegistration:
         assert max(numerators) == 11, f"Expected a Step 11/11; highest numerator is {max(numerators)}"
 
 
+def _teardown_engine():
+    path = _REPO_ROOT / "platform/scripts/teardown.py"
+    spec = importlib.util.spec_from_file_location("teardown_registration", path)
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    return engine
+
+
 class TestUndeployRegistration:
-    """The phase is in PHASE_ORDER, has a function, and both arrays stay aligned."""
+    """Both entry points use the same executable phase registry."""
 
     def test_phase_order_contains_superplane_first(self):
-        """First in destroy order, because deploy order is the reverse."""
-        body = _UNDEPLOY.read_text()
-        match = re.search(r"^PHASE_ORDER=\(([^)]*)\)", body, re.MULTILINE)
-        assert match, "Could not find PHASE_ORDER in undeploy.sh"
-        phases = match.group(1).split()
-        assert PHASE in phases, f"{PHASE} missing from PHASE_ORDER: {phases}"
-        assert phases[0] == PHASE, (
-            f"{PHASE} must be the FIRST undeploy phase (got {phases}). A domain app sits on "
-            "top of the platform, gateway and agent runtime, so it must be destroyed before "
-            "them — destroying the platform first would orphan its resources."
-        )
+        phases = _teardown_engine().ORDER
+        assert phases[0] == PHASE
         assert phases.index(PHASE) < phases.index("agent_context")
 
     def test_phase_function_is_defined(self):
-        """The pairing the issue's inventory omits.
-
-        `_run_phase` calls `phase_${phase}` dynamically, so a PHASE_ORDER entry without a
-        function here fails on every teardown rather than at lint time.
-        """
         body = _UNDEPLOY_PHASES.read_text()
-        assert re.search(rf"^phase_{PHASE}\(\) \{{", body, re.MULTILINE), (
-            f"phase_{PHASE}() is not defined in undeploy-phases.sh, but {PHASE} is in "
-            "PHASE_ORDER. undeploy.sh resolves phase functions by name at run time, so this "
-            "combination fails on every teardown and reports FAILED after two retries."
-        )
+        assert re.search(rf"^phase_{PHASE}\(\) \{{", body, re.MULTILINE)
+        assert f"_undeploy_phase {PHASE}" in body
 
-    def test_estimated_time_array_stays_aligned(self):
-        """`PHASE_ESTIMATED_TIME` is indexed positionally against `PHASE_ORDER`.
+    def test_phase_registry_resolves_domain_state(self):
+        engine = _teardown_engine()
+        assert set(engine.ORDER) == set(engine.MODULES)
+        assert engine.MODULES[PHASE] == ("modules/domain-apps/superplane/infra/control-plane", "modules/superplane")
 
-        A missing entry does not error — it silently shifts every later phase's estimate by
-        one, so each phase reports its neighbour's duration.
-        """
-        body = _UNDEPLOY.read_text()
-        order = re.search(r"^PHASE_ORDER=\(([^)]*)\)", body, re.MULTILINE).group(1).split()
-        times = re.search(r"^PHASE_ESTIMATED_TIME=\((.*?)^\)", body, re.MULTILINE | re.DOTALL).group(1)
-        entries = re.findall(r'"[^"]+"', times)
-        assert len(entries) == len(order), (
-            f"PHASE_ESTIMATED_TIME has {len(entries)} entries but PHASE_ORDER has {len(order)}. "
-            "The two are read by the same index, so a mismatch misreports every later phase."
-        )
-
-    def test_dry_run_report_covers_the_phase(self):
-        """Without a case arm the dry-run prints an empty block for this phase."""
-        body = _UNDEPLOY.read_text()
-        assert re.search(rf"^\s+{PHASE}\)$", body, re.MULTILINE), (
-            f"No `{PHASE})` arm in undeploy.sh's dry-run case statement; a dry run would "
-            "print the phase header with no detail, reading as 'nothing will happen'."
-        )
+    def test_dry_run_report_covers_absent_domain(self, tmp_path, capsys):
+        engine = _teardown_engine()
+        run = engine.Run(tmp_path, "123456789012", "us-east-1", "dev")
+        run.states[PHASE] = {}
+        assert run.prepare(PHASE) is False
+        assert "superplane: no resources selected for deletion" in capsys.readouterr().out
 
     def test_workflow_registers_the_phase(self):
         body = _UNDEPLOY_WORKFLOW.read_text()
-        assert f"phase_{PHASE}" in body, f"undeploy.yml never calls phase_{PHASE}"
-        assert f'is_skipped "{PHASE}"' in body, f"undeploy.yml has no skip check for {PHASE}"
-        assert f"{PHASE},agent-context" in body, "The skip_phases input description must list superplane first, matching destroy order"
+        assert "bash platform/scripts/undeploy.sh" in body
+        assert "--skip" in body
+        assert f"{PHASE},agent-context" in body
+        assert "teardown.py" in _UNDEPLOY.read_text()
 
-    def test_workflow_phase_labels_are_consistent(self):
+    def test_workflow_summary_matches_shared_phase_order(self):
         body = _UNDEPLOY_WORKFLOW.read_text()
-        denominators = set(re.findall(r"Phase \d+/(\d+):", body))
-        assert denominators == {"6"}, f"Inconsistent phase denominators in undeploy.yml: {denominators}"
+        labels = re.findall(r'echo "[1-6]\. ([a-z-]+)"', body)
+        assert labels == [phase.replace("_", "-") for phase in _teardown_engine().ORDER]
 
 
 class TestManifestRegistration:

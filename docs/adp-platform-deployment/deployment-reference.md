@@ -983,7 +983,47 @@ Items marked *(fixed on `main`)* only bite on older checkouts.
 The `undeploy.yml` workflow is not a supported customer cross-account path.
 Supplying any legacy customer-account input fails in the shared config action
 before a destroy step. `undeploy.sh` destroys in reverse dependency order:
-agent-context → webhook-ingress → agent-factory → gateway → platform.
+superplane → agent-context → agent-factory → webhook-ingress → gateway → platform.
+
+The factory must be removed while webhook-owned KEDA is still available.
+After all plans pass, schedules and the gateway application are stopped before
+removing downstream consumers; gateway infrastructure remains available for
+Terraform lookups. KEDA jobs and authentication resources drain before its operator
+is uninstalled, without forced finalizer removal. Within
+modules, teardown removes Lambda functions and waits for their network interfaces
+before deleting execution roles; it removes Kubernetes resources before Helm,
+cluster access, or EKS. Running CodeBuild jobs and log delivery stop before their
+stores are emptied. Any error stops the run and preserves later dependencies.
+
+`--dry-run` initializes Terraform and validates saved delete-only plans for every
+selected module. It makes local private files but changes no AWS or Kubernetes
+resources. It uses recorded release inputs where available; older modules may
+require their original target-specific tfvars. Missing local Lambda code is
+recovered from the deployed artifact, with its checksum verified.
+
+Plans, state backups, retained identifiers, and the journal are stored under
+`.adp-teardown/<account>-<region>-<environment>/` (gitignored, private permissions).
+Set `ADP_TEARDOWN_DIR` to use another private directory. Keep this evidence for
+recovery; do not upload it to public issues. Re-run the same command after resolving
+a failure: live state is re-read and plans are rebuilt, rather than trusting a
+previous "complete" flag. A stale `running.lock` may be removed only after checking
+that the recorded process has exited.
+
+Use `--retain-vpc` when independent resources occupy the ADP VPC. The VPC and default
+security group remain in Terraform state; the script does not delete unfamiliar
+security groups. `--skip` and `--from` are refused if an omitted deployed consumer
+still requires a selected dependency. `--bootstrap` refuses to delete a backend
+that still tracks resources, including intentionally retained credentials.
+
+Teardown empties only buckets and repositories in its reviewed deletion plans.
+It also removes service-created log groups tied to recorded Lambda, CodeBuild,
+EKS and API Gateway resources, plus the three application signing secrets created
+by the gateway installer. Runtime cleanup records log creation times and secret
+ARNs so a replaced resource is refused on retry. User vault and GitHub/OAuth
+credentials are not swept.
+It does not sweep an account by name prefix. Successful module deletion is distinct
+from an account-wide cleanup audit; independent resources and AWS pending deletion
+periods must be reported separately.
 
 ### Legacy path (retained)
 
@@ -998,7 +1038,8 @@ agent-context → webhook-ingress → agent-factory → gateway → platform.
 ### Resources that survive by design
 
 - Terraform state backend (until `--bootstrap` / `include_bootstrap`)
-- GitHub App secrets (`adp/gh-app-*`, `adp/*/github-app/*` in Secrets Manager)
+- GitHub App secrets (legacy and environment-scoped), webhook HMAC secret, and their encryption key
+- Account-wide ECR registry scanning configuration
 - GitHub Apps themselves (delete manually in org settings)
 - AWS-managed RDS secrets (`rds!*`)
 

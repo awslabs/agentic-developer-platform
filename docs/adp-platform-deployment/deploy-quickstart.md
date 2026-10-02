@@ -132,14 +132,16 @@ Deploying older code is not an automatic database rollback.
 
 ## Remove a deployment
 
-Preview teardown using the existing teardown script:
+Preview teardown and validate the destroy plans:
 
 ```bash
 AWS_PROFILE=customer ./platform/scripts/undeploy.sh --dry-run
 ```
 
 After reviewing it, run without `--dry-run` and follow its account confirmation.
-The Terraform backend and GitHub integration survive by default. See the
+The Terraform backend, GitHub credentials and their encryption key survive by default.
+Teardown stops at the first failure; retain its private evidence and rerun after
+resolving the reported cause. See the
 [teardown reference](deployment-reference.md#teardown) before removing those.
 
 For maintainers publishing prebuilt artifacts through integration-test and

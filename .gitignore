@@ -86,3 +86,7 @@ modules/gateway/contracts/
 
 # Local deployment checkpoints and target locks (distinct from agent phase notes).
 .adp-deploy-checkpoints/
+
+# Private teardown plans, state backups and target binding
+.adp-teardown/
+**/adp_teardown_target_override.tf.json
