@@ -23,7 +23,6 @@ on:
       - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
-      - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
       - 'modules/gateway/src/agentauth/task_runtime_routes.py'
@@ -46,7 +45,6 @@ on:
       - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
-      - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
       # Documentation-only changes do not start this workflow.

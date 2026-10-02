@@ -191,6 +191,7 @@ def harness(tmp_path):
     # External tools remain stubbed; these helpers only run against the temp tree.
     for name in (
         "terraform-update.sh",
+        "deploy-prerequisites.sh",
         "tfvars-account-check.py",
         "deploy-checkpoints.sh",
         "deploy-checkpoints.py",

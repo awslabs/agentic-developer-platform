@@ -1,44 +1,8 @@
-"""R9 acc. 1 — Superplane personas and skills are present in the BUILT worker image.
+"""Offline module packaging checks for explicit Superplane asset staging.
 
-The criterion is explicit that source-tree presence does not satisfy it: the assets
-must be verified in a built image. That is because the source tree and the image are
-separated by `stage-personas.sh` and two Dockerfile `COPY` lines, and every failure
-mode that has actually cost us anything lives in that gap rather than in the source:
-
-  * `stage-personas.sh` globs `<domain>/agent/personas/*.md` — a persona in a
-    subdirectory is silently dropped (the #2891 bug class, for core personas);
-  * personas stage **flat**, and domain personas stage **last**, so a domain persona
-    whose filename matches a core one silently *replaces* it for every agent run;
-  * a `COPY --from=stager` line removed or repointed makes the whole staged tree
-    absent while every source-level test still passes.
-
-## Why this asserts the build inputs rather than pulling the image
-
-Building the real image needs a Docker daemon and pulling the built image needs ECR
-credentials. This lane (`superplane-domain-ci.yml`) deliberately has neither — it runs
-on a GitHub-hosted runner precisely so that "no AWS account" is enforceable rather
-than aspirational, and its final step fails if a credential is present.
-
-So this module verifies the two things that are verifiable offline and that together
-determine what ends up in the image:
-
-  1. the **real** `stage-personas.sh` is executed against the **real** source tree,
-     and the resulting staged tree is inspected — this is the same script and the
-     same inputs the `stager` Dockerfile stage runs, so what it produces IS the
-     content of `/app/personas` and `/app/skills`;
-  2. the Dockerfile's `COPY --from=stager` lines are pinned, so the staged tree
-     provably reaches the image paths that `entrypoint.py` and `persona-loader.ts`
-     read from.
-
-What remains unverified offline is only the image *build* itself succeeding, which
-`agent-worker-image.yml` covers on merge. That workflow's `paths:` filter already
-includes `modules/domain-apps/*/agent/**`, so a change to these assets rebuilds the
-image — asserted below, because if it did not, the assets would sit in the repo and
-never reach a running agent.
-
-A credentialed end-to-end check (`docker run <pushed-image> ls /app/personas`) is the
-strictly stronger test and belongs in a lane that has a registry credential; it is
-not this lane's job.
+The core agent image stages only core assets. These tests opt in to the
+Superplane source tree to verify its personas, skills, and collision safety
+without building an image or requiring cloud credentials.
 """
 
 from __future__ import annotations
@@ -67,7 +31,7 @@ _DOMAIN_APPS = _REPO_ROOT / "modules" / "domain-apps"
 
 # The assets this unit ships. Named explicitly rather than globbed from the source
 # directory: a glob would make this test tautological — it would assert that whatever
-# happens to be in the source tree is in the image, and would pass unchanged if a
+# happens to be in the source tree is in the explicit module stage, and would pass unchanged if a
 # persona were deleted.
 _EXPECTED_PERSONAS = ("superplane-operator", "superplane-researcher")
 _EXPECTED_SKILLS = ("superplane", "skypilot")
@@ -77,8 +41,8 @@ _EXPECTED_SKILLS = ("superplane", "skypilot")
 def staged_tree(tmp_path_factory) -> Path:
     """Run the real staging script over the real source tree.
 
-    Reproduces the `stager` Dockerfile stage exactly: same script, same three source
-    roots, same destination layout. Scoped to the module so the script runs once.
+    Explicitly stage this module alongside the core inputs. The core image does
+    not copy this module. Scoped so the staging script runs once.
     """
     if shutil.which("bash") is None:  # pragma: no cover - bash is present in CI
         pytest.skip("bash unavailable")
@@ -86,10 +50,9 @@ def staged_tree(tmp_path_factory) -> Path:
     source = tmp_path_factory.mktemp("source")
     stage = tmp_path_factory.mktemp("stage")
 
-    # Mirror the Dockerfile's COPY layout (lines 39-41).
     shutil.copytree(_CORE_PERSONAS, source / "agent-factory" / "personas")
     shutil.copytree(_CORE_SKILLS, source / "agent-factory" / "skills")
-    shutil.copytree(_DOMAIN_APPS, source / "domain-apps")
+    shutil.copytree(_SUPERPLANE_AGENT, source / "domain-apps" / "superplane" / "agent")
 
     result = subprocess.run(
         ["bash", str(_STAGE_SCRIPT), str(source), str(stage)],
@@ -120,15 +83,10 @@ def test_staging_produced_a_populated_tree(staged_tree: Path) -> None:
 
 
 @pytest.mark.parametrize("persona", _EXPECTED_PERSONAS)
-def test_superplane_persona_is_staged_into_the_image(
+def test_superplane_persona_is_staged_when_selected(
     staged_tree: Path, persona: str
 ) -> None:
-    """The persona file reaches the flat `/app/personas/` namespace.
-
-    `persona-loader.ts` derives its allowed-persona list by listing that directory
-    and stripping `.md`, and `entrypoint.py` resolves `<name>.md` there — so this
-    filename IS the persona name at run time.
-    """
+    """The selected module persona reaches the flat staging namespace."""
     staged = staged_tree / "personas" / f"{persona}.md"
     assert staged.is_file(), (
         f"{persona}.md did not reach the staged persona tree. `stage-personas.sh` "
@@ -143,10 +101,10 @@ def test_superplane_persona_is_staged_into_the_image(
 
 
 @pytest.mark.parametrize("skill", _EXPECTED_SKILLS)
-def test_superplane_skill_is_staged_into_the_image(
+def test_superplane_skill_is_staged_when_selected(
     staged_tree: Path, skill: str
 ) -> None:
-    """The skill directory reaches `/app/skills/<name>/` with its SKILL.md."""
+    """The selected module skill reaches staging with its SKILL.md."""
     staged = staged_tree / "skills" / skill
     assert staged.is_dir(), f"skill {skill!r} did not reach the staged skill tree"
     skill_md = staged / "SKILL.md"
@@ -264,18 +222,12 @@ def test_superplane_skill_does_not_collide_with_another_domain_pack() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The staged tree must actually reach the image, and the image must be rebuilt.
+# Core image boundaries and explicit module staging.
 # ---------------------------------------------------------------------------
 
 
 def test_dockerfile_copies_the_staged_tree_into_the_image() -> None:
-    """Pin the two COPY lines that carry staging into the image.
-
-    Without these, everything above verifies a tree that never ships. The paths are
-    asserted as the ones the runtime actually reads: `entrypoint.py` resolves
-    `PERSONAS_DIR = Path("/app/personas")` and `persona-loader.ts` documents personas
-    as "baked into the Docker image at /app/personas/<type>.md".
-    """
+    """Core staging still reaches the runtime image's persona and skill paths."""
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     for source, dest in (
         ("/stage/personas/", "/app/personas/"),
@@ -292,31 +244,28 @@ def test_dockerfile_copies_the_staged_tree_into_the_image() -> None:
         )
 
 
-def test_dockerfile_stager_consumes_the_domain_apps_tree() -> None:
-    """The stager stage must receive `modules/domain-apps/` as a source root.
-
-    If this COPY were narrowed (e.g. to a single domain), the Superplane pack would
-    be absent from the image with no other symptom.
-    """
+def test_core_image_stager_does_not_consume_domain_apps() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    assert re.search(
-        r"^COPY\s+modules/domain-apps/\s+/source/domain-apps/", dockerfile, re.MULTILINE
-    ), (
-        "Dockerfile stager no longer copies modules/domain-apps/ into /source/domain-apps/"
-    )
+    assert not re.search(r"^COPY\s+modules/domain-apps/", dockerfile, re.MULTILINE)
     assert re.search(
         r"^RUN\s+/stage/stage-personas\.sh\s+/source\s+/stage", dockerfile, re.MULTILINE
-    ), "Dockerfile stager no longer runs stage-personas.sh over /source"
-
-
-def test_editing_these_assets_rebuilds_the_worker_image() -> None:
-    """A change under `domain-apps/*/agent/**` must trigger the image build.
-
-    Otherwise the assets are correct in the repo, correct in staging, and stale in
-    every running agent — the failure mode is invisible because nothing errors.
-    """
-    workflow = _WORKER_IMAGE_WORKFLOW.read_text(encoding="utf-8")
-    assert "modules/domain-apps/*/agent/**" in workflow, (
-        "agent-worker-image.yml no longer watches modules/domain-apps/*/agent/** — a "
-        "persona or skill change would not rebuild the worker image."
     )
+
+
+def test_staging_without_the_optional_module_excludes_its_assets(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    shutil.copytree(_CORE_PERSONAS, source / "agent-factory" / "personas")
+    shutil.copytree(_CORE_SKILLS, source / "agent-factory" / "skills")
+    stage = tmp_path / "stage"
+    subprocess.run(["bash", str(_STAGE_SCRIPT), str(source), str(stage)], check=True)
+    for persona in _EXPECTED_PERSONAS:
+        assert not (stage / "personas" / f"{persona}.md").exists()
+    for skill in _EXPECTED_SKILLS:
+        assert not (stage / "skills" / skill).exists()
+
+
+def test_module_assets_do_not_trigger_core_image_build() -> None:
+    workflow = _WORKER_IMAGE_WORKFLOW.read_text(encoding="utf-8")
+    assert "modules/domain-apps/*/agent/**" not in workflow

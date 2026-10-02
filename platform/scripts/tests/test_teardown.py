@@ -29,6 +29,18 @@ class TeardownTests(unittest.TestCase):
         self.run = t.Run(self.temp.name, '123456789012', 'us-east-1', 'dev')
         self.run.states = {p: {} for p in t.ORDER}
 
+    def test_absent_optional_module_needs_no_module_tooling(self):
+        with patch.object(self.run, 'tf', side_effect=AssertionError('unexpected Terraform')):
+            self.assertFalse(self.run.prepare('superplane'))
+        self.run.check_selection(['agent_context', 'agent_factory', 'webhook_ingress', 'gateway', 'platform'])
+
+    def test_installed_optional_module_blocks_shared_dependency_removal(self):
+        self.run.states['superplane'] = state(('aws_s3_bucket', 'module', {'id': 'module'}))
+        for phase in ('agent_context', 'agent_factory', 'gateway', 'platform'):
+            with self.subTest(phase=phase), self.assertRaisesRegex(t.TeardownError, 'superplane'):
+                self.run.check_selection([phase])
+        self.run.check_selection(list(t.ORDER))
+
     def test_factory_must_precede_webhook_and_platform(self):
         self.run.states['agent_factory'] = state(('aws_sqs_queue', 'work', {'id': 'q'}))
         with self.assertRaisesRegex(t.TeardownError, 'agent_factory'):

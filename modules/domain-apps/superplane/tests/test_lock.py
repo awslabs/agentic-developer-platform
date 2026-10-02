@@ -224,10 +224,8 @@ class TestUnresolvedInputsAreRecordedNotInvented:
     def test_deployment_target_is_unresolved(self, lock: dict) -> None:
         assert lock["skypilot_config"]["deployment_target"]["status"] == "unresolved"
 
-    def test_release_registry_accounts_have_recorded_publication(
-        self, lock: dict
-    ) -> None:
-        """S21 verifies an actual release registry; deployment account remains independent."""
+    def test_release_digest_has_recorded_publication(self, lock: dict) -> None:
+        """Public publication evidence pins content, not private registry identity."""
         import json
 
         receipt = json.loads(
@@ -244,8 +242,13 @@ class TestUnresolvedInputsAreRecordedNotInvented:
             or receipt.get("matches_scanned_local_root")
         ) is True
         assert lock["images"]["skypilot-api"] == receipt["digest"]
-        for source in lock["image_sources"].values():
-            assert source["registry"] == receipt["registry"]
+        # Public receipts redact deployment identities (docs/PUBLISHING.md).
+        # Keep repository/content agreement without coupling release configuration
+        # to the fictional account in a sanitized historical report.
+        source = lock["image_sources"]["skypilot-api"]
+        assert receipt["reference"].partition("/")[2] == (
+            f"{source['repository']}@{receipt['digest']}"
+        )
         assert "account_id" not in lock
 
 

@@ -173,13 +173,8 @@ class TestTheReusedLaneStillProvidesWhatAcceptance1Requires:
             "The reused lane no longer sets do-not-disrupt; a mid-run reasoning session could be reclaimed."
         )
 
-    def test_superplane_personas_reach_the_shared_agent_image(self):
-        """The image dimension of the reuse argument, checked at its source.
-
-        The two Superplane personas are registered in Agent Factory's catalogue and stage
-        into the same `adp-agent-runtime` image, which is why "no different image
-        requirement" is true rather than assumed.
-        """
+    def test_superplane_personas_do_not_require_the_core_agent_image(self):
+        """Catalogue registration must not silently add module assets to the core image."""
         personas = (
             _REPO_ROOT
             / "modules"
@@ -201,9 +196,7 @@ class TestTheReusedLaneStillProvidesWhatAcceptance1Requires:
             / "Dockerfile"
         ).read_text(encoding="utf-8")
 
-        assert "COPY modules/domain-apps/ /source/domain-apps/" in dockerfile, (
-            "The shared image no longer copies domain-app assets, so the 'same image' reuse argument fails."
-        )
+        assert "COPY modules/domain-apps/ /source/domain-apps/" not in dockerfile
 
 
 class TestAnyAddedLaneMustFollowThePrecedent:

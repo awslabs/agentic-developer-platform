@@ -189,11 +189,11 @@ class TestOfflineCiLane:
             "as a required check, so it must exist before they are dispatched."
         )
 
-    def test_lane_filters_the_module_path(self):
-        body = _CI_LANE.read_text()
-        assert "modules/domain-apps/superplane/**" in body, (
-            "The lane must filter on modules/domain-apps/superplane/** so it triggers on changes to the module it gates"
-        )
+    def test_lane_runs_on_all_pull_requests_for_required_check(self):
+        lane = yaml.safe_load(_CI_LANE.read_text())
+        trigger = lane.get("on", lane.get(True))
+        assert "paths" not in trigger["pull_request"]
+        assert trigger["pull_request"]["branches"] == ["main"]
 
     def test_lane_declares_no_aws_credentials(self):
         """An offline lane that acquires credentials is no longer offline.
