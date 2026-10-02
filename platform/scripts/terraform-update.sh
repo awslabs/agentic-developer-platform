@@ -40,6 +40,18 @@ PY
     esac
   done
 
+  # Every pre-final gateway pass must keep the engine paused. In particular,
+  # a newly created engine cannot run against the old database schema. Preserve
+  # the desired schedule setting independently so retries don't enable a schedule
+  # the operator had intentionally disabled before this upgrade.
+  if [ "$CONTEXT_MODULE" = gateway ]; then
+    if [ "$MODULE_NAME" = gateway-final ]; then
+      PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=false)
+    else
+      PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=true)
+    fi
+  fi
+
   # 1. Plan to a file (captures the plan for inspection)
   local PLAN_DIR
   PLAN_DIR=$(mktemp -d "${UPGRADE_RUN_DIR:-${TMPDIR:-/tmp}}/adp-plan-${MODULE_NAME}.XXXXXX")

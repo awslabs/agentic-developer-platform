@@ -1,17 +1,19 @@
 """Align the scheduled engine with a rolled-out gateway release; fail on drift.
 
 Use after gateway rollout, and --verify-only before declaring a release complete.
-No invocation, schedule, flow-state or configuration changes are made.
+Image synchronization makes no invocation, schedule or flow-state changes.
+The explicit --quiesce upgrade operation pauses scheduling and drains invocations.
 """
 
 import argparse
 import json
 import re
 import subprocess
+import time
 
 
 def command(args, timeout=360):
-    return subprocess.check_output(args, text=True, timeout=timeout).strip()
+    return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=timeout).strip()
 
 
 def admission_settings(environment):
@@ -23,18 +25,44 @@ def admission_settings(environment):
     return settings
 
 
-def current_image_digest(*, account, region, environment):
+def quiesce(*, account, region, environment):
+    """Stop an installed engine and drain its maximum invocation lifetime."""
+    current_image_digest(account=account, region=region, environment=environment)
+    name = f'adp-{environment}-orchestration-tick'
+    config = json.loads(command(['aws', 'lambda', 'get-function-configuration', '--function-name', name,
+                                 '--region', region, '--output', 'json']))
+    timeout = config['Timeout']
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 900:
+        raise ValueError('Invalid engine invocation timeout')
+    # A missing/denied rule is a failure; do not proceed with an unpaused engine.
+    command(['aws', 'events', 'disable-rule', '--name', name, '--region', region])
+    remaining = timeout + 5
+    while remaining:
+        print(f'Engine schedule paused; draining old invocations for {remaining}s', flush=True)
+        interval = min(remaining, 30)
+        time.sleep(interval)
+        remaining -= interval
+    return {'function': name, 'status': 'quiesced'}
+
+
+def current_image_digest(*, account, region, environment, allow_missing=False):
     """Read the installed engine's immutable image before building its successor.
 
-    Never resolve a mutable tag or fall back after an inaccessible/missing engine.
+    Never resolve a mutable tag or fall back after an inaccessible engine.
+    Explicit bootstrap discovery may return None only for ResourceNotFound.
     Terraform verifies that this digest still exists in the target ECR repository.
     """
     identity = json.loads(command(['aws', 'sts', 'get-caller-identity', '--region', region, '--output', 'json']))
     if identity['Account'] != account:
         raise ValueError('AWS account differs from requested release account')
     function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
-    deployed = json.loads(command(['aws', 'lambda', 'get-function', '--function-name', function,
-                                  '--region', region, '--output', 'json']))
+    try:
+        deployed = json.loads(command(['aws', 'lambda', 'get-function', '--function-name', function,
+                                      '--region', region, '--output', 'json']))
+    except subprocess.CalledProcessError as error:
+        if allow_missing and re.search(r'\(ResourceNotFoundException\)', error.stderr or ''):
+            return None
+        raise
     config = deployed['Configuration']
     if config['State'] != 'Active' or config['LastUpdateStatus'] != 'Successful':
         raise ValueError('Existing engine is not ready for an infrastructure upgrade')
@@ -144,14 +172,25 @@ def main():
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument('--image')
     selection.add_argument('--current-image-digest', action='store_true')
+    selection.add_argument('--quiesce', action='store_true')
+    parser.add_argument('--allow-missing', action='store_true', help='Bootstrap discovery only; never permits permission or readiness failures')
     parser.add_argument('--namespace', default='adp-gateway')
     parser.add_argument('--verify-only', action='store_true')
     args = vars(parser.parse_args())
-    if args.pop('current_image_digest'):
+    allow_missing = args.pop('allow_missing')
+    current_digest = args.pop('current_image_digest')
+    if args.pop('quiesce'):
+        if allow_missing or args['verify_only']:
+            parser.error('--quiesce cannot be combined with --allow-missing or --verify-only')
+        print(json.dumps(quiesce(**{key: args[key] for key in ('account', 'region', 'environment')})))
+    elif current_digest:
         if args['verify_only']:
             parser.error('--verify-only requires --image')
-        print(current_image_digest(**{key: args[key] for key in ('account', 'region', 'environment')}))
+        digest = current_image_digest(**{key: args[key] for key in ('account', 'region', 'environment')}, allow_missing=allow_missing)
+        print(digest if digest is not None else 'MISSING')
     else:
+        if allow_missing:
+            parser.error('--allow-missing requires --current-image-digest')
         print(json.dumps(synchronize(**args), sort_keys=True))
 
 

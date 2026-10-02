@@ -230,10 +230,10 @@ class LocalPublicationTests(unittest.TestCase):
 
     def test_real_deploy_all_gateway_phase_resolves_digest_after_all_selfchecks(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
-        start = source.index(
-            "  # Migrations run after rollout", source.index('step "Step 4/11:')
-        )
-        block = source[start : source.index("  # --- K8s deploy", start)]
+        start = source.index("prepare_gateway_image() {")
+        helper = source[start : source.index("\n}\n", start) + 3]
+        start = source.index("  prepare_gateway_image\n", source.index('step "Step 4/11:'))
+        block = helper + source[start : source.index("  # --- K8s deploy", start)]
         result = subprocess.run(
             [
                 "bash",

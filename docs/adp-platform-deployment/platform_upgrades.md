@@ -295,6 +295,125 @@ routine deployment replacements that proceed automatically.
 
 ## 2. What "update mode" is (and is not)
 
+### Installations that predate releases
+
+An original release tag is not required. The upgrade uses existing Terraform
+state, live configuration and the installed database schema. Do not wipe a
+deployment merely because it predates the release process. Before a substantial
+version jump, retain the previous image digest, obtain a database recovery point,
+record the Alembic revision and rehearse migrations on a restored database.
+Database compatibility still needs live acceptance; offline upgrade tests do not
+prove that every historical schema or customer data set can migrate successfully.
+
+Use Bash 4.4+ and `flock` (see the quickstart). The launcher checks these before
+loading deployment configuration or contacting AWS.
+
+Compatibility preflight runs before Marketplace agreement preparation, EKS CIDR
+updates and Terraform applies. It checks operator access ownership, ADP-owned
+account settings and the engine. An inaccessible or unhealthy existing engine is
+an error; only a positively identified missing function, absent from gateway
+state, is eligible for installation. A live engine outside Terraform state needs
+review and import, not replacement.
+
+When the engine is missing, the platform stage creates its build prerequisites,
+then the gateway image is built and resolved to an immutable digest **before**
+the first gateway plan. The engine is created with its schedule disabled. All
+pre-final gateway Terraform passes hold that schedule disabled while the gateway,
+database migrations and selected worker stages run. Final gateway reconciliation
+restores the desired schedule state. An intentionally disabled schedule stays
+disabled. Existing engines are paused and drained for their configured maximum
+invocation timeout before gateway infrastructure changes. A failure before
+finalization leaves the schedule disabled; retry the
+same checkout with `--resume` after correcting the failure. A new run after an
+incomplete apply conservatively retains a disabled schedule when the original
+desired setting cannot be recovered; review it explicitly after recovery.
+
+Cluster bootstrap-admin permissions are preserved as an immutable creation-time
+setting, including installations created with either `true` or `false`. The
+upgrade plan gate rejects deletion/replacement or removal from state of EKS
+clusters, OIDC providers, RDS databases/clusters and ECR repositories even with
+`--confirm-destructive`. Intentional infrastructure replacement is a separate
+reviewed migration, not a code upgrade.
+
+### Account-wide settings and ownership
+
+Portable release installs default `manage_ecr_registry_scanning` and
+`manage_bedrock_invocation_logging` to `false`. Repository-level ECR scanning
+remains configured; the account/region registry configuration is left to its
+existing owner. Direct Terraform configurations retain their existing defaults;
+set ownership explicitly for a new organization-managed account.
+
+Upgrades derive ownership from current platform state, so a new default does not
+delete existing ADP logging. Partial Bedrock installs retain their supporting
+bucket, key, role and log group without trying to create an unowned invocation
+logging configuration. The retained ownership values are saved for subsequent
+portable upgrades. Enabling ownership for the first time requires a separate
+reviewed configuration apply; upgrades do not silently adopt account singletons.
+
+Preflight refuses to downgrade an ADP-tracked registry that now uses ENHANCED
+scanning, or to overwrite Bedrock destinations that differ from tracked state.
+Read/permission errors also stop the run. Confirm ownership with the account
+administrator. Do not treat access denied as proof that configuration is absent.
+
+To hand an existing singleton to an external owner, first initialize the correct
+platform backend, verify the AWS account and region, and save a **fresh private
+`terraform state pull` backup**. Inspect `terraform state list` and the live
+configuration. After ownership review, remove only the singleton's tracking:
+
+```bash
+# In platform/infra, using the verified customer backend and AWS profile.
+# Use exactly the ECR address present in state: older releases lack [0].
+terraform state rm 'module.ecr.aws_ecr_registry_scanning_configuration.main'
+# Or, for the indexed address introduced by the ownership switch:
+# terraform state rm 'module.ecr.aws_ecr_registry_scanning_configuration.main[0]'
+
+# If relinquishing Bedrock invocation configuration, retain its destinations:
+terraform state rm 'module.bedrock_invocation_logging[0].aws_bedrock_model_invocation_logging_configuration.this[0]'
+```
+
+These are deliberate state migrations; run only the command for the setting
+being handed over. They do not call the AWS configuration deletion APIs. Set
+`manage_ecr_registry_scanning=false` in the target configuration. For an existing
+Bedrock support module, retain `manage_bedrock_invocation_logging=true` and set
+`bedrock_invocation_logging_enabled=false`. If no Bedrock module resources exist,
+set `manage_bedrock_invocation_logging=false`. The update preflight derives these
+same values from current state, including on a resumed run. Verify that the next
+plan contains no singleton create/delete and that the external configuration is
+unchanged. Retain unused destinations until their retention and cleanup needs
+have been reviewed separately.
+
+Simply setting a counted resource/module to false can schedule destruction.
+The upgrade gate blocks singleton deletion even with `--confirm-destructive`;
+direct Terraform applies do not use that gate. Do not remove a whole logging
+module from state merely to relinquish its account-wide configuration.
+
+### Operator access
+
+Preflight resolves an assumed SSO session to its full IAM role ARN, including
+the role path. If its EKS access entry or cluster-admin association already exists
+outside platform state, the upgrade stops before applying resources and identifies
+the import needed. Verify that this is the intended deployment administrator and
+that another state does not own the entry. Import both matching objects when
+appropriate, using the account-specific variable files and these provider IDs:
+
+| Terraform address | Import ID |
+|---|---|
+| `module.eks.aws_eks_access_entry.admins["<IAM-role-ARN>"]` | `<cluster-name>:<IAM-role-ARN>` |
+| `module.eks.aws_eks_access_policy_association.admins["<IAM-role-ARN>"]` | `<cluster-name>#<IAM-role-ARN>#<cluster-admin-policy-ARN>` |
+
+An absent API access entry is not automatically an error: older clusters can grant
+access through the creator or `aws-auth`. The subsequent Kubernetes check must
+succeed. If the operator lacks access, have an existing cluster administrator
+grant the intended deployment access, then reconcile its Terraform ownership
+before retrying. Do not adopt namespace-scoped entries as cluster administrators.
+
+For a partially upgraded environment, use the **current** states and retain the
+original integration snapshot. Preflight refreshes ownership snapshots on resume
+so resources created by a partial apply or imported during recovery are recognized.
+After code changes, start a new run; checkpoints still reject changed source.
+Completion requires the full selected workflow, health checks and integration
+preservation checks. GitHub registration remains separate when never configured.
+
 `deploy-all.sh` has four modes; `--update` is the only one for upgrading:
 
 | Mode | Command | Use when |

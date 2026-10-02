@@ -365,6 +365,7 @@ def test_main_wrapper_dry_run_preserves_backend_cache(tmp_path):
     shutil.copyfile(ROOT / "deploy.sh", tmp_path / "deploy.sh")
     helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
     helper.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / "platform/scripts/deploy-prerequisites.sh", helper.parent / "deploy-prerequisites.sh")
     helper.write_text('#!/bin/bash\n[ "$1" = "--dry-run" ] || exit 9\n')
     cache = tmp_path / ".terraform/terraform.tfstate"
     cache.parent.mkdir()
@@ -416,9 +417,10 @@ def test_access_preparation_runs_on_deploy_and_update_only(
 ):
     source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
     start = source.index("# Upgrades may introduce a new runtime default too.")
+    assert source.index('upgrade-preflight.py') < start
     block = source[
         start : source.index(
-            "\n# ---------------------------------------------------------------------------",
+            "\n# =============================================================================",
             start,
         )
     ]
@@ -448,6 +450,7 @@ def test_main_wrapper_stops_when_default_model_cannot_invoke(tmp_path, failure_s
     shutil.copyfile(ROOT / "deploy.sh", tmp_path / "deploy.sh")
     scripts = tmp_path / "platform/scripts"
     scripts.mkdir(parents=True)
+    shutil.copyfile(ROOT / "platform/scripts/deploy-prerequisites.sh", scripts / "deploy-prerequisites.sh")
     log = tmp_path / "calls"
     (scripts / "deploy-all.sh").write_text(
         '#!/bin/bash\n[ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ] || exit 9\n'

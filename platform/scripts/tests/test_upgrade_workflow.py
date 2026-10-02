@@ -52,7 +52,7 @@ terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(calls.read_text().splitlines(), [
-                        'quiesce', 'init', f'gateway gateway.json -var preserved-albs -var orchestration_tick_image_digest={digest}'])
+                        'quiesce', 'quiesce', 'init', f'gateway gateway.json -var preserved-albs -var orchestration_tick_image_digest={digest}'])
 
     def test_gateway_retry_does_not_restart_unchanged_pods(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()

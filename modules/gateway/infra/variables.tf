@@ -518,6 +518,18 @@ variable "orchestration_tick_schedule" {
   default     = "rate(5 minutes)"
 }
 
+variable "orchestration_tick_schedule_enabled" {
+  description = "Desired engine schedule state; upgrades preserve an intentionally disabled schedule."
+  type        = bool
+  default     = true
+}
+
+variable "orchestration_tick_upgrade_hold" {
+  description = "Temporary deployment hold until migrations, gateway and workers have been verified. Not a retained operator setting."
+  type        = bool
+  default     = false
+}
+
 variable "orchestration_tick_image_tag" {
   type        = string
   description = <<-EOT

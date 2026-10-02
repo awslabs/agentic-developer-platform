@@ -39,6 +39,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
 PLATFORM_SCRIPTS="$ROOT_DIR/platform/scripts"
+source "$PLATFORM_SCRIPTS/deploy-prerequisites.sh"
 
 DEPLOY_START=$(date +%s)
 echo "============================================================================="

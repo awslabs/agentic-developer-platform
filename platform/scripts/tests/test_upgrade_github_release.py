@@ -106,6 +106,7 @@ class ReleaseTests(unittest.TestCase):
             (root / 'deploy.sh').write_text((ROOT / 'deploy.sh').read_text())
             scripts = root / 'platform/scripts'
             scripts.mkdir(parents=True)
+            (scripts / 'deploy-prerequisites.sh').write_text((ROOT / 'platform/scripts/deploy-prerequisites.sh').read_text())
             (scripts / 'deploy-all.sh').write_text('printf "ARG:%s\\n" "$@"\nexit 19\n')
             (scripts / 'upgrade-github-release.py').write_text('import sys\nprint(repr(sys.argv[1:]))\nsys.exit(23)\n')
             def wrapper(*args):
@@ -132,6 +133,7 @@ class ReleaseTests(unittest.TestCase):
             (root / 'deploy.sh').write_text((ROOT / 'deploy.sh').read_text())
             scripts = root / 'platform/scripts'
             scripts.mkdir(parents=True)
+            (scripts / 'deploy-prerequisites.sh').write_text((ROOT / 'platform/scripts/deploy-prerequisites.sh').read_text())
             probe = 'import json, os\nfrom pathlib import Path\nPath(os.environ["PROBE_FILE"]).write_text(json.dumps(dict(os.environ)))\n'
             (scripts / 'upgrade-github-release.py').write_text(probe)
             (scripts / 'deploy-all.sh').write_text('python3 "$(dirname "$0")/upgrade-github-release.py"\n')

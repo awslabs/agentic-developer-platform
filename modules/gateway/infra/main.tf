@@ -1197,7 +1197,8 @@ module "orchestration_tick" {
   redis_username          = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : ""
   redis_cache_name        = var.enable_redis ? module.redis[0].replication_group_id : ""
 
-  tick_schedule = var.orchestration_tick_schedule
+  tick_schedule    = var.orchestration_tick_schedule
+  schedule_enabled = var.orchestration_tick_schedule_enabled && !var.orchestration_tick_upgrade_hold
 
   # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's
   # description for why an unsubscribed topic is visible rather than fatal.

@@ -408,6 +408,14 @@ def protected_change(resource):
     if not before or change["actions"] in (["no-op"], ["read"]):
         return False
     kind = resource.get("type", "")
+    # Ordinary code upgrades never destroy durable infrastructure or account
+    # logging/scanning singletons, even with --confirm-destructive. Ownership
+    # transfers must retain the live resource in a separate reviewed migration.
+    if kind in ("aws_eks_cluster", "aws_iam_openid_connect_provider",
+                "aws_db_instance", "aws_rds_cluster", "aws_ecr_repository",
+                "aws_ecr_registry_scanning_configuration",
+                "aws_bedrock_model_invocation_logging_configuration"):
+        return bool(set(change["actions"]) & {"delete", "forget"})
     if kind in ("aws_secretsmanager_secret", "aws_secretsmanager_secret_version"):
         keys = ("name", "secret_id", "secret_string", "secret_binary")
         return after is None or any(before.get(k) != after.get(k) for k in keys)
@@ -436,7 +444,7 @@ if __name__ == "__main__":
     try:
         result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
         if result["protected"]:
-            sys.exit("Upgrade would change existing credentials or installation mappings: " + ", ".join(result["protected"]))
+            sys.exit("Upgrade would change protected infrastructure, account settings, credentials or installation mappings: " + ", ".join(result["protected"]))
         for address in result["routine"]:
             print("Routine deployment replacement: " + address, file=sys.stderr)
         print("\n".join(result["blocked"]))

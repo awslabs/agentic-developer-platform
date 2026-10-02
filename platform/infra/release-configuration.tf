@@ -4,6 +4,9 @@ output "release_configuration" {
   description = "Account-local deployment settings for subsequent release upgrades."
   sensitive   = true
   value = {
+    manage_ecr_registry_scanning           = var.manage_ecr_registry_scanning
+    manage_bedrock_invocation_logging      = var.manage_bedrock_invocation_logging
+    bedrock_invocation_logging_enabled     = var.bedrock_invocation_logging_enabled
     agent_authority_legacy_workers_drained = var.agent_authority_legacy_workers_drained
     agent_legacy_worker_admin_retired      = var.agent_legacy_worker_admin_retired
     az_count                               = var.az_count

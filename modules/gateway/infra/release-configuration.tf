@@ -1,9 +1,15 @@
 # Operator inputs retained privately across portable release upgrades.
 # Image selection remains owned by the release deployment.
+output "orchestration_tick_upgrade_hold" {
+  description = "Recovery marker distinguishing an interrupted upgrade hold from an operator-disabled schedule."
+  value       = var.orchestration_tick_upgrade_hold
+}
+
 output "release_configuration" {
   description = "Account-local deployment settings for subsequent release upgrades."
   sensitive   = true
   value = {
+    orchestration_tick_schedule_enabled     = var.orchestration_tick_schedule_enabled
     agent_context_ingestion_queue_arn       = var.agent_context_ingestion_queue_arn
     cognito_custom_domain                   = var.cognito_custom_domain
     cost_center                             = var.cost_center

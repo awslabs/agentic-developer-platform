@@ -15,6 +15,11 @@ also needs the GitHub CLI (`gh`) authenticated with read access to `aws-e/adp`.
 Docker is required when using `--local` builds; the default uses AWS CodeBuild.
 The underlying preflight checks the remaining requirements for your scope.
 
+Deployment scripts require **Bash 4.4+ and `flock`**. On macOS, install them
+with `brew install bash flock`, then put `$(brew --prefix bash)/bin` first in
+`PATH` so both the launcher and its child scripts use Homebrew Bash. Stock
+macOS Bash 3.2 is rejected before deployment starts, including for `--dry-run`.
+
 ```bash
 gh auth status
 gh repo clone aws-e/adp

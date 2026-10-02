@@ -24,6 +24,7 @@ set -euo pipefail
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/deploy-prerequisites.sh"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "${SCRIPT_DIR}/gateway-rollout.sh"
 
@@ -213,19 +214,6 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Accept Bedrock marketplace agreements for the Claude models the platform
-# invokes. Fresh accounts have none; without them every model call fails with
-# AccessDeniedException and the agent-worker misreports it as "no changes
-# needed". Idempotent — skips models already enabled.
-# ---------------------------------------------------------------------------
-# Upgrades may introduce a new runtime default too. Readiness must not be
-# skipped merely because an earlier version was already deployed.
-if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
-  step "Bedrock model access and first-use registration"
-  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --prepare-and-verify || fail "Required Bedrock model access is not ready; runtime deployment has not started."
-fi
-
-# ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
 # ---------------------------------------------------------------------------
 # Anyone cloning this repo can run the script without editing tfvars. The
@@ -284,6 +272,11 @@ if [ "$UPDATE_MODE" = true ]; then
       [ "$CLUSTER_NAME" = "$EKS_CLUSTER" ] && [ "$AWS_REGION" = "$ADP_REGION" ] ) \
       || fail "Agent-context config does not match the upgrade target"
   fi
+  COMPATIBILITY_ARGS=()
+  [ "$DEPLOY_GATEWAY" = true ] || COMPATIBILITY_ARGS+=(--skip-gateway)
+  python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
+    --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+    "${COMPATIBILITY_ARGS[@]}" || fail "Resolve upgrade compatibility findings before changing this account"
   if [ "$UPGRADE_NEEDS_EKS_ACCESS" = true ]; then
     python3 "$SCRIPT_DIR/upgrade-state.py" open-access --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION"
   fi
@@ -297,7 +290,7 @@ if [ "$UPDATE_MODE" = true ]; then
   # 3. Gateway namespace must exist (indicates prior deploy).
   if [ "$DEPLOY_GATEWAY" = true ]; then
     kubectl get namespace adp-gateway --request-timeout=30s &>/dev/null \
-      || fail "Cannot reach the existing gateway namespace"
+      || fail "Cannot reach the existing gateway namespace. Verify network reachability and operator EKS access; see platform_upgrades.md (operator access)."
   fi
 
   NETWORK_WAS_ENABLED=$(python3 "$SCRIPT_DIR/upgrade-network.py" enabled)
@@ -329,6 +322,19 @@ if [ "$UPDATE_MODE" = true ] && [ "$DEPLOY_GATEWAY" = true ]; then
     "${ADP_GATEWAY_UPDATE_TFVARS:-}" "$ACCOUNT_ID") \
     || fail "Gateway update needs target-specific tfvars"
   ok "Gateway update tfvars: $GATEWAY_UPDATE_VAR_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Accept Bedrock marketplace agreements for the Claude models the platform
+# invokes. Fresh accounts have none; without them every model call fails with
+# AccessDeniedException and the agent-worker misreports it as "no changes
+# needed". Idempotent — skips models already enabled.
+# ---------------------------------------------------------------------------
+# Upgrades may introduce a new runtime default too. Readiness must not be
+# skipped merely because an earlier version was already deployed.
+if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
+  step "Bedrock model access and first-use registration"
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --prepare-and-verify || fail "Required Bedrock model access is not ready; runtime deployment has not started."
 fi
 
 # =============================================================================
@@ -777,6 +783,23 @@ fi
 # =============================================================================
 
 refresh_credentials
+# Build once per invocation; on checkpoint resumes CodeBuild uses its existing
+# immutable-source cache. Also used before the initial plan for legacy engines.
+prepare_gateway_image() {
+  [ "${GATEWAY_IMAGE_PREPARED:-false}" = false ] || return 0
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
+  else
+    # Docker build via CodeBuild (Terraform-managed project)
+    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml" adp-gateway
+  fi
+  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
+    || fail "Gateway release digest could not be verified"
+
+  GATEWAY_IMAGE_PREPARED=true
+}
+
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
@@ -850,8 +873,24 @@ else
   # pinned during this first plan; customer ECR repositories need no latest tag.
   if [ "$UPDATE_MODE" = true ]; then
     GATEWAY_INITIAL_ENGINE_DIGEST=$(python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
-      --current-image-digest --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
+      --current-image-digest --allow-missing --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
       || fail "Cannot verify the installed orchestration image before the gateway plan"
+    if [ "$GATEWAY_INITIAL_ENGINE_DIGEST" = MISSING ]; then
+      python3 - "$UPGRADE_RUN_DIR/engine-before.json" <<'PYENGINE' || fail "Previously installed engine disappeared; refusing to recreate it"
+import json, sys
+with open(sys.argv[1]) as evidence:
+    if json.load(evidence)['missing'] is not True:
+        sys.exit("Engine was present during preflight")
+PYENGINE
+      # Terraform's engine image data source requires an existing immutable image.
+      # Platform has now created the repository and build project, so build first.
+      prepare_gateway_image
+      GATEWAY_INITIAL_ENGINE_DIGEST="${GATEWAY_IMAGE##*@}"
+    else
+      python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+        --quiesce --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+        || fail "Cannot pause and drain the existing engine before gateway changes"
+    fi
   fi
 
   # Freeze the old pricing writer before Terraform changes either Lambda.
@@ -892,17 +931,7 @@ if [ "$DEPLOY_GATEWAY" = false ]; then
   echo "Skipping gateway deploy (scope exclusion)"
   ok "Skipped"
 else
-  # Migrations run after rollout on Ready replicas of this exact release.
-  # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
-  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
-      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
-  else
-    # Docker build via CodeBuild (Terraform-managed project)
-    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml" adp-gateway
-  fi
-  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
-    || fail "Gateway release digest could not be verified"
+  prepare_gateway_image
 
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/gateway/infra"

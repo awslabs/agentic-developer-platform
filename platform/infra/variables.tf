@@ -213,6 +213,12 @@ variable "manage_bedrock_invocation_logging" {
   default     = true
 }
 
+variable "manage_ecr_registry_scanning" {
+  description = "Own account/region ECR registry scanning. Existing ownership must be relinquished without deletion before disabling."
+  type        = bool
+  default     = true
+}
+
 variable "bedrock_invocation_logging_enabled" {
   description = "Enable provider invocation logging. False removes the logging configuration but retains its destinations and encryption key."
   type        = bool
