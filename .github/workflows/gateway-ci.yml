@@ -53,15 +53,8 @@ on:
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
-      # Superplane's onboarding UI lives in its own domain app but has no
-      # toolchain of its own — this lane is the only CI that builds, tests and
-      # typechecks it. superplane-domain-ci.yml also matches that path, but it
-      # runs Python and Go only, so a UI-only PR without this entry gets a green
-      # report from a lane that executed no frontend check at all. That
-      # false-green is worse than no coverage, because the check name reads as
-      # passing. Same lockstep class as #4145/#4848. The build configs below are
-      # what let this runner reach outside its package root; editing one without
-      # re-running the suite that pins them silently un-collects those tests.
+      # Superplane borrows this frontend toolchain. Its own CI runs focused
+      # UI and browser checks; Gateway CI also verifies the integrated build.
       - 'modules/domain-apps/superplane/ui/**'
       - 'modules/gateway/frontend/vite.config.ts'
       - 'modules/gateway/frontend/vitest.config.ts'
@@ -164,12 +157,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  superplane-browser:
-    name: Superplane browser
-    uses: ./.github/workflows/superplane-ui-browser-ci.yml
-    permissions:
-      contents: read
-
   lint:
     name: Lint
     runs-on: arc-runner-org

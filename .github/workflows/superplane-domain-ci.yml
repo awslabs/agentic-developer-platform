@@ -24,18 +24,18 @@ name: Superplane Domain CI
 # TRANSFERRED SOURCE (U22, #5326). This lane also runs the tests that came with the three
 # Superplane components ADP now maintains under `src/` — the API's pytest suite and the
 # controller's and platform monitor's Go suites. That is what makes the ownership transfer
-# real: the tests run here, on every PR, instead of in a repository ADP cannot read.
+# real: affected component tests run here, instead of in a repository ADP cannot read.
 #
-# They run in their own steps rather than under the module-wide glob because each component
+# They run in separate jobs rather than under the module-wide glob because each component
 # has its own toolchain and dependency set, preserved byte-for-byte from the origin. The
 # module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
 # excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
 # still cover it.
 #
 # The stable domain check runs for every PR, including core-only PRs. Its
-# summary names the selected scope; skipped module steps never imply coverage.
-# Module and shared runtime-dependency changes run complete domain/controller
-# suites. Shared lifecycle integration changes run focused offline contracts.
+# summary names the selected components; skipped module steps never imply coverage.
+# Component jobs run independently. Shared inputs select their actual consumers;
+# lifecycle and worker-image changes do not run unrelated API or Go suites.
 
 on:
   pull_request:
@@ -64,7 +64,8 @@ jobs:
     name: Select Superplane checks
     runs-on: arc-runner-org
     outputs:
-      scope: ${{ steps.scope.outputs.scope }}
+      components: ${{ steps.scope.outputs.components }}
+      controller_changed: ${{ steps.scope.outputs.controller_changed }}
       persona_changed: ${{ steps.scope.outputs.persona_changed }}
     steps:
       - uses: actions/checkout@v7
@@ -81,10 +82,18 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 .github/scripts/superplane_ci_scope.py
 
+  superplane-browser:
+    name: Superplane browser
+    needs: change-scope
+    if: ${{ !inputs.controller_only && contains(fromJSON(needs.change-scope.outputs.components), 'ui') }}
+    uses: ./.github/workflows/superplane-ui-browser-ci.yml
+    permissions:
+      contents: read
+
   persona-registration-tests:
     name: Superplane persona registration tests
     needs: change-scope
-    if: ${{ needs.change-scope.outputs.persona_changed == 'true' && needs.change-scope.outputs.scope != 'full' }}
+    if: ${{ needs.change-scope.outputs.persona_changed == 'true' }}
     runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
@@ -102,7 +111,12 @@ jobs:
   superplane-domain-tests:
     needs: change-scope
     if: ${{ !inputs.controller_only }}
-    name: Superplane selected tests
+    name: Superplane / ${{ matrix.component }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.change-scope.outputs.components) }}
+    timeout-minutes: 40
     runs-on: arc-runner-org
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
@@ -139,35 +153,33 @@ jobs:
           cache-dependency-path: modules/gateway/pyproject.toml
 
       - name: Install gateway dependencies
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' || matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # The registration suites import the gateway's feature module, so they need its
-        # dependency set. The domain module has none of its own yet.
+        # dependency set, also used by the domain integration suites.
         run: pip install -e ".[dev]" "setuptools>=75.0" wheel
 
       - name: Report selected coverage
         env:
-          SELECTED_SCOPE: ${{ needs.change-scope.outputs.scope }}
+          COMPONENT: ${{ matrix.component }}
+          SELECTED_COMPONENTS: ${{ needs.change-scope.outputs.components }}
         run: |
-          echo "Superplane scope: $SELECTED_SCOPE"
-          echo "### Superplane scope: $SELECTED_SCOPE" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$SELECTED_SCOPE" != full ]; then
-            echo "Full domain/controller/browser suites were not run for this PR." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "Superplane component: $COMPONENT"
+          echo "### Superplane component: $COMPONENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Selected jobs: $SELECTED_COMPONENTS. Unselected component suites were not run." >> "$GITHUB_STEP_SUMMARY"
       - name: Install classifier test dependency
-        if: ${{ needs.change-scope.outputs.scope != 'full' }}
-        run: python3 -m pip install pytest pyyaml boto3
+        run: python3 -m pip install pytest pyyaml boto3 ruff
       - name: Test CI scope selection
         run: python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
       - name: Verify shared lifecycle integration offline
-        if: ${{ needs.change-scope.outputs.scope == 'integration' || needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'lifecycle' }}
         run: |
           python3 -m pytest --noconftest --import-mode=importlib platform/scripts/tests/test_teardown.py \
             modules/gateway/tests/features/test_superplane_registration.py \
             modules/gateway/tests/features/test_superplane_deploy_scope.py -q
 
       - name: Verify CLI evaluation guards without network access
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' }}
         # The CLI dependency changes E18's acceptance and cleanup logic. Exercise
         # those offline guards in the manual source-only lane as well as PR CI;
         # the live evaluation workflow deliberately cannot run from a PR branch.
@@ -178,7 +190,7 @@ jobs:
           python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
 
       - name: Verify agent task compatibility with pinned SkyPilot
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'worker' }}
         env:
           SKYPILOT_DISABLE_USAGE_COLLECTION: '1'
         run: |
@@ -190,7 +202,7 @@ jobs:
             modules/domain-apps/superplane/tests/_skypilot_task_schema_check.py
 
       - name: Lint the domain module
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' }}
         run: |
           set -euo pipefail
           # Only lint if there is Python to lint — the module is a skeleton today, and
@@ -204,7 +216,7 @@ jobs:
           fi
 
       - name: Lint the gateway-side gate and its suites
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         run: |
           set -euo pipefail
@@ -224,7 +236,7 @@ jobs:
             tests/e2e/test_superplane_route_gated.py
 
       - name: Verify Superplane authorization policy
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # Domain-only policy edits must exercise these integration tests even
         # when Gateway CI's path filter does not match the new domain path.
@@ -242,7 +254,7 @@ jobs:
             --cov=../domain-apps/superplane/auth/superplane_auth --cov-fail-under=90
 
       - name: Run domain module tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' }}
         env:
           # Account-create fencing and recovery require the real PostgreSQL fixture.
           ACCOUNT_PROVISIONING_REQUIRE_POSTGRES: '1'
@@ -262,7 +274,7 @@ jobs:
           fi
 
       - name: Run migration, placement and handover tests with coverage
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' }}
         # Pinned BY PATH and NOT tolerant of an empty glob, for the same reason as the
         # MCP step below: #5061 (U19) names these three files, so "no tests found" here
         # means a PR deleted one and must fail rather than pass silently.
@@ -286,7 +298,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=90
 
       - name: Run MCP tool surface tests with coverage
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'domain' }}
         # Pinned BY PATH and NOT tolerant of an empty glob, unlike the step above: these
         # tests exist as of #5038, so "no tests found" here means a PR deleted them and
         # must fail rather than pass silently.
@@ -302,12 +314,11 @@ jobs:
             --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
 
       - name: Run transferred Superplane API tests
-        # Report independent API/database failures even if a domain suite failed.
-        # Earlier failures still fail the job; cancellation still stops all work.
-        if: ${{ !cancelled() && needs.change-scope.outputs.scope == 'full' }}
+        # API dependencies and tests run in their own job.
+        if: ${{ matrix.component == 'api' }}
         # The tests that came WITH the transferred source (U22, #5326). This is the step that
         # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
-        # every PR, rather than pointing at a repository it cannot read and calling that
+        # affected PRs, rather than pointing at a repository it cannot read and calling that
         # coverage.
         #
         # Run from the component directory with its own dependency set, because that is the
@@ -345,6 +356,9 @@ jobs:
           # src/superplane-api/pyproject.toml. Importing rather than vendoring keeps
           # one definition of the rules; the cost is that whoever installs the API has
           # to install this too, and this is that step.
+          # This isolated job cannot inherit the gateway's PostgreSQL fixture
+          # dependency. API PostgreSQL tests import pgserver directly.
+          pip install 'pgserver>=0.1.4' -c ../../releases/transfer-constraints.txt
           pip install -e ../../auth
           pip install -e ".[dev]" \
             -c ../../releases/transfer-constraints.txt
@@ -378,7 +392,7 @@ jobs:
           python3 -m pytest tests/ -v --tb=short
 
       - name: Enforce coverage on the observation receiver
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'api' }}
         # Issue #5056 (U15) requires >=85% on the receiver logic it changed. The step
         # above RUNS these tests but has no --cov-fail-under, so it cannot enforce that.
         #
@@ -418,7 +432,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Enforce coverage on the provider-connection routes and service
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'api' }}
         # Issue #5053 (U7b) requires >=85% on the API and service logic it changed. The
         # suite runs in an earlier step with no --cov-fail-under, so nothing enforced it.
         #
@@ -460,7 +474,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Enforce coverage on provider-handle persistence
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'api' }}
         # Issue #5054 (U11c) requires >=85% on the API/service logic it changed.
         # Scoped to the three modules this story wrote, for the same reason as the
         # step above: an app-wide percentage lets exactly this code rot behind an
@@ -497,7 +511,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Set up Go for the transferred components
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'controller' || matrix.component == 'monitor' }}
         # Match the maintained controller toolchain; patched x/net requires Go 1.25+.
         # Install it explicitly instead of downloading a second toolchain during tests.
         uses: actions/setup-go@v6
@@ -508,7 +522,7 @@ jobs:
             modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
 
       - name: Run transferred Superplane controller tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'controller' }}
         # `go vet` before `go test` because a build-level mistake in transferred code should
         # be reported as such rather than as a test failure. Both are scoped to this
         # component: the controller and the monitor are separate modules with separate
@@ -529,7 +543,7 @@ jobs:
           go test ./... -count=1 -v
 
       - name: Run transferred Superplane platform monitor tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'monitor' }}
         # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration`, so
         # the default build excludes it and this lane does not pass `-tags=integration`. That
         # exclusion is the file's own design, not a suppression added here — but it is stated
@@ -552,7 +566,7 @@ jobs:
           go test ./... -count=1 -v
 
       - name: Enforce coverage on the observation client
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'monitor' }}
         # The sender half of #5056's >=85% requirement. Scoped to `db/`, the package the
         # story rewrote from a pgx pool into an authenticated contract client; a
         # component-wide number would average it against monitors/ and config/.
@@ -574,8 +588,32 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Node for Superplane UI
+        if: ${{ matrix.component == 'ui' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+
+      - name: Test Superplane UI
+        if: ${{ matrix.component == 'ui' }}
+        working-directory: modules/gateway/frontend
+        run: |
+          npm ci
+          npx vitest run ../../domain-apps/superplane/ui --maxWorkers=2
+          npm run lint:superplane-ui
+          npx tsc --noEmit
+
+      - name: Verify Superplane worker packaging
+        if: ${{ matrix.component == 'worker' }}
+        run: |
+          python3 -m pytest \
+            modules/domain-apps/superplane/tests/acceptance/test_worker_image_assets.py \
+            modules/domain-apps/superplane/agent/tests -q
+
       - name: Run domain skill tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'worker' }}
         # Skills may ship their own tests (the cyber pack's url-analysis skill does).
         # Discovered rather than pinned, because a skill added later should be picked up
         # without editing this lane — but the log distinguishes "none found" from "passed".
@@ -587,28 +625,8 @@ jobs:
             echo "No skill tests under modules/domain-apps/superplane/agent/skills/ — nothing to run."
           fi
 
-      - name: Run persona registration tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
-        working-directory: modules/agent-factory/webhook-ingress
-        # Run from the module root, not from `lambda/`, so the `pythonpath = ["lambda"]`
-        # in this module's pyproject.toml is what makes `common` importable — matching
-        # webhook-ingress-ci.yml. Invoking from inside `lambda/` also happens to work,
-        # via pytest's rootdir insertion, but that is incidental to the package layout
-        # and would break if an `__init__.py` were added or removed above the tests.
-        #
-        # Pinned BY NAME for the same reason as the gateway suites: these are the only
-        # checks that every registered persona name has its prompt file (#4037's bug
-        # class) and that a domain persona filename does not silently shadow a core one.
-        # A directory glob would pass if they were deleted.
-        run: |
-          set -euo pipefail
-          python3 -m pytest \
-            lambda/common/tests/test_persona_prompt_files.py \
-            lambda/common/tests/test_persona_catalogue_parity.py \
-            -v --tb=short
-
       - name: Run gate and registration tests
-        if: ${{ needs.change-scope.outputs.scope == 'full' }}
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # Pinned BY NAME, not by directory glob. A PR that deleted one of these files
         # would pass a directory-wide invocation, because "no tests" and "all tests
@@ -659,7 +677,7 @@ jobs:
 
   controller-execution-tests:
     needs: change-scope
-    if: ${{ needs.change-scope.outputs.scope == 'full' }}
+    if: ${{ needs.change-scope.outputs.controller_changed == 'true' }}
     name: Superplane controller execution tests
     runs-on: arc-runner-org
     timeout-minutes: 15
@@ -744,27 +762,38 @@ jobs:
     # Preserve the required check and fail closed if classification or any
     # selected coverage fails, is cancelled, or unexpectedly skips.
     name: Superplane domain tests
-    needs: [change-scope, superplane-domain-tests, persona-registration-tests, controller-execution-tests]
+    needs: [change-scope, superplane-domain-tests, persona-registration-tests, controller-execution-tests, superplane-browser]
     if: ${{ always() && !inputs.controller_only }}
     runs-on: arc-runner-org
     steps:
       - name: Verify selected checks succeeded
         env:
-          SCOPE: ${{ needs.change-scope.outputs.scope }}
+          COMPONENTS: ${{ needs.change-scope.outputs.components }}
+          CONTROLLER_CHANGED: ${{ needs.change-scope.outputs.controller_changed }}
           SCOPE_RESULT: ${{ needs.change-scope.result }}
           DOMAIN_RESULT: ${{ needs.superplane-domain-tests.result }}
           PERSONA_CHANGED: ${{ needs.change-scope.outputs.persona_changed }}
           PERSONA_RESULT: ${{ needs.persona-registration-tests.result }}
+          BROWSER_RESULT: ${{ needs.superplane-browser.result }}
           CONTROLLER_RESULT: ${{ needs.controller-execution-tests.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$DOMAIN_RESULT" = success
-          case "$SCOPE" in
-            full) test "$CONTROLLER_RESULT" = success ;;
-            core|integration|persona)
-              if [ "$PERSONA_CHANGED" = true ]; then
-                test "$PERSONA_RESULT" = success
-              fi
-              ;;
-            *) echo "Unknown Superplane scope: $SCOPE"; exit 1 ;;
-          esac
+          python3 - <<'PYCOMPONENTS'
+          import json, os
+          components = json.loads(os.environ['COMPONENTS'])
+          allowed = {'core', 'domain', 'api', 'controller', 'monitor', 'gateway', 'worker', 'lifecycle', 'ui'}
+          assert isinstance(components, list) and components and all(c in allowed for c in components)
+          assert len(set(components)) == len(components)
+          assert 'core' not in components or components == ['core']
+          assert os.environ['CONTROLLER_CHANGED'] == str('controller' in components).lower()
+          assert os.environ['PERSONA_CHANGED'] in ('true', 'false')
+          if 'ui' in components:
+              assert os.environ['BROWSER_RESULT'] == 'success'
+          PYCOMPONENTS
+          if [ "$CONTROLLER_CHANGED" = true ]; then
+            test "$CONTROLLER_RESULT" = success
+          fi
+          if [ "$PERSONA_CHANGED" = true ]; then
+            test "$PERSONA_RESULT" = success
+          fi
