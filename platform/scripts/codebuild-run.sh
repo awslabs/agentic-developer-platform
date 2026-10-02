@@ -45,7 +45,9 @@ SOURCE_KEY="codebuild/src/${PROJECT_NAME}/${SOURCE_SHA}-${UNIQUE_ID}.zip"
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
 
 # --- Upload source to per-build S3 key ---------------------------------------
-ZIP_PATH="/tmp/adp-source-${UNIQUE_ID}.zip"
+SOURCE_TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adp-source-${UNIQUE_ID}.XXXXXX")
+ZIP_PATH="$SOURCE_TEMP_DIR/source.zip"
+trap 'rm -rf "$SOURCE_TEMP_DIR"' EXIT
 echo "Packaging source → s3://${STATE_BUCKET}/${SOURCE_KEY}"
 if [ "${ADP_RELEASE_BUILD:-false}" = true ]; then
   # Release inputs come only from the selected commit, never local secrets,

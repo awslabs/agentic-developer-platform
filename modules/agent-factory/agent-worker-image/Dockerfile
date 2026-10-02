@@ -158,22 +158,21 @@ RUN /stage/stage-personas.sh /source /stage
 # -----------------------------------------------------------------------------
 # Stage 5: Final runtime image
 # -----------------------------------------------------------------------------
-# python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
+# Reviewed Python 3.13.16 + pip on Debian Trixie; keep its security manifest in sync.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
 # Ubuntu's archive.ubuntu.com.
 # Current stable Debian runtime; preserve all worker tooling and staged agents.
-FROM public.ecr.aws/docker/library/python:3.13-slim-trixie AS stdlib-security
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS stdlib-security
 COPY modules/gateway/security/stdlib/ /opt/stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/stdlib-security/apply.py \
+RUN python /opt/stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/stdlib-security/check.py
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-trixie
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 COPY --from=stdlib-security /usr/local/lib/python3.13/stringprep.py /usr/local/lib/python3.13/stringprep.py
 COPY --from=stdlib-security /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
 COPY --from=stdlib-security /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
 COPY modules/gateway/security/stdlib/ /opt/stdlib-security/
-RUN python /opt/stdlib-security/apply.py --verify-only \
+RUN python /opt/stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/stdlib-security/check.py
 
 LABEL org.opencontainers.image.title="adp-agent"

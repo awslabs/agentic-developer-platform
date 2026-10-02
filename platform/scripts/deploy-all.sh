@@ -869,8 +869,8 @@ else
   # longer build them here — that path now works for stage-by-stage applies and
   # CI too, not just this script. See modules/gateway/infra/main.tf.
 
-  # The release image is built in the next phase. Keep the installed engine
-  # pinned during this first plan; customer ECR repositories need no latest tag.
+  # Keep an existing engine pinned during the first upgrade plan. Fresh installs
+  # need the real gateway image before Terraform can resolve the engine digest.
   if [ "$UPDATE_MODE" = true ]; then
     GATEWAY_INITIAL_ENGINE_DIGEST=$(python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
       --current-image-digest --allow-missing --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
@@ -891,6 +891,9 @@ PYENGINE
         --quiesce --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
         || fail "Cannot pause and drain the existing engine before gateway changes"
     fi
+  else
+    prepare_gateway_image
+    GATEWAY_INITIAL_ENGINE_DIGEST="${GATEWAY_IMAGE##*@}"
   fi
 
   # Freeze the old pricing writer before Terraform changes either Lambda.
@@ -911,7 +914,12 @@ PYENGINE
     terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
       -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
   else
+    # A restarted fresh install may already have its ALBs wired. Preserve them
+    # so this first pass does not delete routes and recreate the VPC origin.
+    gateway_alb_vars true
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      "${GATEWAY_ALB_ARGS[@]+"${GATEWAY_ALB_ARGS[@]}"}" \
+      -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST" \
       -auto-approve
     ok "Gateway infrastructure deployed"
   fi
@@ -1837,11 +1845,11 @@ if [ "$UPDATE_MODE" = true ]; then
   [ "$DEPLOY_FACTORY" != true ] || REQUIRED_MODULE_ARGS+=(--require-module agent-factory)
   python3 "$SCRIPT_DIR/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION" \
     ${REQUIRED_MODULE_ARGS[@]+"${REQUIRED_MODULE_ARGS[@]}"}
-  if [ "$DEPLOY_GATEWAY" = true ]; then
-    CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
-    curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
-      | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
-  fi
+fi
+if [ "$DEPLOY_GATEWAY" = true ]; then
+  CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
+  curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
+    | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
 fi
 
 if [ "$CI_MODE" = false ] && [ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ]; then
@@ -1863,7 +1871,8 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
-[ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$DEPLOY_WEBHOOK" = true ] && echo "Hosted agents: kubectl get scaledjobs -n adp-agents (check admission pause status)"
+[ "$DEPLOY_FACTORY" = true ] && echo "Factory workers: kubectl get scaledjobs -n adp-gateway-agents"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
@@ -1889,7 +1898,8 @@ if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEX
   echo "  2. Or CLI fallback:"
   echo "     modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env $ENVIRONMENT"
   echo "  3. Install the App on target repo(s)"
-  echo "  4. Comment '@agent-developer <task>' on an issue to trigger an agent"
+  echo "  4. Complete worker-security activation and admission checks: docs/security/terraform-worker-rollout.md"
+  echo "  5. With approval for a live GitHub test, comment '@agent-developer <task>' on an issue"
   echo ""
   echo "Admin credentials location: Secrets Manager → adp/$ENVIRONMENT/gateway/test-admin-credentials"
 fi

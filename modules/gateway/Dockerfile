@@ -1,17 +1,11 @@
-# Base image pulled from public.ecr.aws (AWS-hosted mirror of Docker Hub) to
-# dodge the unauthenticated Docker Hub pull rate limit that periodically
-# fails CodeBuild runs with HTTP 429.
-#
-# Security: as of 2026-09, python:3.13-slim resolves to Debian Trixie (13).
-# Bookworm (12) entered LTS on 2026-07-11; Trixie is the current stable with
-# the smallest OS-level CVE surface. The rolling tag pulls the latest 3.13.x
-# patch (currently 3.13.15). Pin to a digest for reproducible builds when
-# needed; the rolling tag is intentional here so that `apt-get -y upgrade`
-# in the runtime stage and image rebuilds pick up Debian security fixes.
-# Issue #6112: documented base image posture for security scan reconciliation.
+# Pin the reviewed Python 3.13.16 multi-platform image: its stdlib includes
+# the five security fixes previously backported onto 3.13.15. Digest changes
+# require source-hash review and the bundled security regressions below.
+# Debian package security updates are still applied in the runtime stage.
+# AWS-hosted mirror avoids unauthenticated Docker Hub pull rate limits.
 #
 # Build stage
-FROM public.ecr.aws/docker/library/python:3.13-slim AS builder
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS builder
 WORKDIR /app
 COPY pyproject.toml .
 # Install core dependencies
@@ -30,16 +24,14 @@ RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not av
 # infra/modules/orchestration-tick/main.tf instead, so the pod path is untouched.
 RUN pip install --no-cache-dir awslambdaric==3.1.1
 
-# Reviewed official CPython 3.13 security fixes, with exact before/after guards.
-# Patch tooling stays in the builder; a changed base requires explicit review.
+# Verify upstream fixes against reviewed source bytes and security regressions.
+# Do not reapply the 3.13.15 backports to the already fixed 3.13.16 sources.
 COPY security/stdlib /tmp/gateway-stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /tmp/gateway-stdlib-security/apply.py \
-    && python /tmp/gateway-stdlib-security/check.py \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN python /tmp/gateway-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
+    && python /tmp/gateway-stdlib-security/check.py
 
 # Runtime stage
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 
 ARG GATEWAY_RELEASE=""
 ENV GATEWAY_RELEASE=${GATEWAY_RELEASE}
@@ -83,7 +75,7 @@ COPY --from=builder /usr/local/lib/python3.13/stringprep.py /usr/local/lib/pytho
 COPY --from=builder /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
 COPY --from=builder /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
 COPY security/stdlib /opt/gateway-stdlib-security/
-RUN python /opt/gateway-stdlib-security/apply.py --verify-only \
+RUN python /opt/gateway-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/gateway-stdlib-security/check.py
 COPY src/ src/
 # Issue #4969: the shared Bedrock pricing policy and its immutable rate snapshots.

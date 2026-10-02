@@ -159,6 +159,7 @@ class AgentGatewayBuildTests(unittest.TestCase):
             (destination / "json.py").write_text("raise RuntimeError('stale shadow')")
             subprocess.run(["bash", str(script)], check=True, capture_output=True)
             self.assertFalse((destination / "json.py").exists())
+            self.assertTrue((destination / "manifest-3.13.16.json").is_file())
             for path in destination.iterdir():
                 self.assertEqual(path.read_bytes(), (source / path.name).read_bytes())
             shutil.rmtree(destination)

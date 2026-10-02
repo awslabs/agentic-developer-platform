@@ -74,6 +74,11 @@ class TestMfaDefaultsOff:
         allowed = set(re.findall(r'"([A-Z_]+)"', condition.group(1)))
         assert allowed == {"OFF", "ON", "OPTIONAL"}
 
+    def test_off_omits_software_mfa_method(self, cognito_main):
+        block = _block(r'dynamic\s+"software_token_mfa_configuration"\s*\{', cognito_main, what="conditional software MFA method")
+        assert re.search(r'for_each\s*=\s*var\.mfa_configuration\s*==\s*"OFF"\s*\?\s*\[\]\s*:\s*\[var\.enable_software_mfa\]', block)
+        assert re.search(r"enabled\s*=\s*software_token_mfa_configuration\.value", block)
+
     def test_root_passes_the_selected_mode_to_cognito(self):
         module = _block(r'module\s+"cognito"\s*\{', _ROOT_MAIN.read_text(), what="cognito module")
         assert re.search(r"mfa_configuration\s*=\s*var\.cognito_mfa_configuration\b", module)

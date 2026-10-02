@@ -287,6 +287,51 @@ class TeardownTests(unittest.TestCase):
             self.run.verify('gateway')
         self.assertEqual(call.call_args.args[-1], arn)
 
+    def test_secret_recovery_window_is_preserved_by_default(self):
+        arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:marker-ABCDEF'
+        t.write_json(self.run.directory / 'webhook_ingress-deletion-manifest.json', {
+            'aws_secretsmanager_secret.marker': {'type': 'aws_secretsmanager_secret', 'id': arn}})
+        with patch.object(t, 'aws', return_value={'ARN': arn, 'Name': 'marker', 'DeletedDate': 'later'}) as call:
+            self.run.verify('webhook_ingress')
+        self.assertEqual(call.call_count, 1)
+        receipt = json.loads((self.run.directory / 'webhook_ingress-verification.json').read_text())
+        self.assertEqual(len(receipt['pending_deletion']), 1)
+
+    def test_opt_in_secret_purge_waits_for_absence(self):
+        arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:marker-ABCDEF'
+        secret = {'ARN': arn, 'Name': 'adp/dev/webhook-ingress/marker-signing-key', 'DeletedDate': 'later'}
+        t.write_json(self.run.directory / 'webhook_ingress-deletion-manifest.json', {
+            'aws_secretsmanager_secret.marker': {'type': 'aws_secretsmanager_secret', 'id': arn, 'arn': arn}})
+        self.run.purge_deleted_secrets = True
+        with patch.object(t, 'aws', side_effect=[secret, {}, secret, None]) as call, patch.object(t.time, 'sleep'):
+            self.run.verify('webhook_ingress')
+        self.assertIn('--force-delete-without-recovery', call.call_args_list[1].args)
+        receipt = json.loads((self.run.directory / 'webhook_ingress-verification.json').read_text())
+        self.assertEqual(receipt['pending_deletion'], [])
+        self.assertEqual(receipt['verified_absent'], ['aws_secretsmanager_secret.marker'])
+
+    def test_secret_purge_refuses_replaced_retained_or_active_secret(self):
+        arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:marker-ABCDEF'
+        self.run.purge_deleted_secrets = True
+        t.write_json(self.run.directory / 'webhook_ingress-deletion-manifest.json', {
+            'aws_secretsmanager_secret.marker': {'type': 'aws_secretsmanager_secret', 'id': arn}})
+        for secret in (
+            {'ARN': arn + 'replaced', 'Name': 'marker', 'DeletedDate': 'later'},
+            {'ARN': arn, 'Name': 'adp/dev/github-app/key', 'DeletedDate': 'later'},
+            {'ARN': arn, 'Name': 'adp/dev/webhook-ingress/github-webhook-secret', 'DeletedDate': 'later'},
+            {'ARN': arn, 'Name': 'marker'},
+        ):
+            with self.subTest(secret=secret), patch.object(t, 'aws', return_value=secret) as call:
+                with self.assertRaises(t.TeardownError):
+                    self.run.verify('webhook_ingress')
+                self.assertEqual(call.call_count, 1)
+
+    def test_secret_purge_timeout_does_not_claim_absence(self):
+        arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:marker-ABCDEF'
+        with patch.object(t, 'aws', return_value={'ARN': arn}), patch.object(t.time, 'monotonic', side_effect=[0, 121]):
+            with self.assertRaisesRegex(t.TeardownError, 'still pending'):
+                self.run.purge_secret('marker', {'id': arn}, {'ARN': arn, 'Name': 'marker'})
+
     def test_keda_jobs_deleted_before_auth_and_without_forcing_finalizers(self):
         with patch.object(self.run, 'kube', return_value='exists') as kube:
             self.run.stop_keda('webhook_ingress')

@@ -10,7 +10,7 @@ if [[ -L "$FACTORY_DIR/security" || -L "$FACTORY_DIR/security/stdlib" ]]; then
 fi
 rm -rf "$FACTORY_DIR/security/stdlib"
 mkdir -p "$FACTORY_DIR/security/stdlib"
-for name in PSF-LICENSE.txt README.md apply.py check.py manifest.json cpython-3.13.15.patch; do
+for name in PSF-LICENSE.txt README.md apply.py check.py manifest-3.13.16.json manifest.json cpython-3.13.15.patch; do
   cp "$SOURCE_DIR/$name" "$FACTORY_DIR/security/stdlib/$name"
   cmp "$SOURCE_DIR/$name" "$FACTORY_DIR/security/stdlib/$name"
 done

@@ -65,6 +65,7 @@ case "$1 $2" in
   "eks update-kubeconfig") exit 0 ;;
   "secretsmanager get-secret-value")
     echo '{"SecretString":"offline-scope-test-signing-key"}' ;;
+  "ssm get-parameters") echo '{"Parameters":[],"InvalidParameters":[]}' ;;
   "ssm get-parameter")
     case "$*" in
       *model-root-bindings*|*arc-model-bindings*) echo '[]' ;;
@@ -102,7 +103,12 @@ fi
 exit 0
 """
 _GIT_STUB = '#!/usr/bin/env bash\n# Only `rev-parse HEAD` is consulted, to pin an image tag.\necho "0000000000000000000000000000000000000000"\n'
-_CURL_STUB = '#!/usr/bin/env bash\n# Public-IP probe for the EKS CIDR lock.\necho "203.0.113.10"\n'
+_CURL_STUB = """#!/usr/bin/env bash
+case "$*" in
+  */api/health*) echo '{"status":"healthy"}' ;;
+  *) echo "203.0.113.10" ;;
+esac
+"""
 
 # Sibling scripts and module sub-scripts deploy-all.sh invokes by path. Each is stubbed to
 # echo a recognisable marker so a test can prove the script was or was not called.

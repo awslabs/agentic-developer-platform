@@ -196,8 +196,9 @@ def test_all_published_cards_and_catalog_cover_every_reviewed_endpoint_variant()
             assert getattr(row, field) == getattr(baseline, field), (key, field)
 
 
-def test_astra_multi_tier_card_keeps_standard_rates_separate():
-    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes()
+@pytest.mark.parametrize("global_label", [b"Global CRIS (pricing reference)", b"Global CRIS"])
+def test_astra_multi_tier_card_keeps_standard_rates_separate(global_label):
+    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes().replace(b"Global CRIS (pricing reference)", global_label)
     templates = tuple(template("openai.gpt-6-astra", g, c) for g in ("in_region", "geo_cris", "global_cris") for c in ("short", "long"))
     rows = parse_model_card(content, "openai.gpt-6-astra", templates, source_url="https://aws.example", verified_at=VERIFIED)
     assert len(rows) == 6
@@ -209,6 +210,18 @@ def test_astra_multi_tier_card_keeps_standard_rates_separate():
             content.replace(b"$82.50 | $6.60", b"$82.51 | $6.60"),
             "openai.gpt-6-astra",
             templates,
+            source_url="https://aws.example",
+            verified_at=VERIFIED,
+        )
+
+
+def test_unknown_astra_ultrafast_geography_is_still_rejected():
+    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes().replace(b"Global CRIS (pricing reference)", b"Unreviewed region")
+    with pytest.raises(SourceValidationError, match="unrecognized inference option"):
+        parse_model_card(
+            content,
+            "openai.gpt-6-astra",
+            (template("openai.gpt-6-astra", "global_cris", "short"),),
             source_url="https://aws.example",
             verified_at=VERIFIED,
         )

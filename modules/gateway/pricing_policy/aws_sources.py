@@ -146,6 +146,7 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
                 "In-Region (us-east-1)": ("in_region",),
                 "Geo CRIS (US)": ("geo_cris",),
                 "Global CRIS (pricing reference)": ("global_cris",),
+                "Global CRIS": ("global_cris",),
             }
         geographies = geography_map.get(cells[0])
         if geographies is None:

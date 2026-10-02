@@ -10,6 +10,8 @@ on:
       - 'platform/infra/main.tf'
       - 'platform/infra/variables.tf'
       - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
       - 'modules/gateway/infra/variables.tf'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
@@ -78,6 +80,8 @@ on:
       - 'platform/infra/main.tf'
       - 'platform/infra/variables.tf'
       - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
       - 'modules/gateway/infra/variables.tf'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
@@ -221,6 +225,7 @@ jobs:
           terraform_version: '1.14.6'
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_rds_bootstrap.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_deployment_recovery.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v

@@ -189,9 +189,10 @@ def empty_repository(name, account, call=aws):
 
 
 class Run:
-    def __init__(self, root, account, region, environment, retain_vpc=False):
+    def __init__(self, root, account, region, environment, retain_vpc=False, purge_deleted_secrets=False):
         self.root, self.account, self.region, self.environment = Path(root), account, region, environment
         self.retain_vpc = retain_vpc
+        self.purge_deleted_secrets = purge_deleted_secrets
         self.bucket = f'adp-terraform-state-{account}'
         self.directory = Path(os.environ.get('ADP_TEARDOWN_DIR',
                               self.root / '.adp-teardown' / f'{account}-{region}-{environment}'))
@@ -486,9 +487,35 @@ class Run:
                 if secret is not None:
                     if not secret.get('DeletedDate'):
                         raise TeardownError('Secret remains active after deletion: ' + address)
+                    if self.purge_deleted_secrets:
+                        self.purge_secret(address, attrs, secret)
+                        verified.append(address)
+                        continue
+                    print(f'Secret name remains reserved until AWS deletion: {secret["Name"]}. '
+                          'For a clean reinstall, review --purge-deleted-secrets or restore/import it.', flush=True)
                     pending.append({'address': address, 'kind': 'secret', 'id': attrs['id'],
                                     'deletion_date': secret['DeletedDate']})
         write_json(self.directory / f'{phase}-verification.json', {'verified_absent': verified, 'pending_deletion': pending})
+
+    def purge_secret(self, address, attrs, secret):
+        # Only exact identities already selected by a reviewed Terraform destroy
+        # plan. Never sweep by prefix or delete a replacement with the same name.
+        arn = secret['ARN']
+        if (attrs.get('arn') or attrs['id']) != arn or not arn.startswith(
+                f'arn:aws:secretsmanager:{self.region}:{self.account}:secret:'):
+            raise TeardownError('Secret identity differs from deletion receipt: ' + address)
+        fixture = {'resources': [{'mode': 'managed', 'type': 'aws_secretsmanager_secret',
+                   'name': 'candidate', 'instances': [{'attributes': {'name': secret['Name']}}]}]}
+        if protected(fixture):
+            raise TeardownError('Refusing to purge retained credential: ' + address)
+        aws('secretsmanager', 'delete-secret', '--secret-id', arn, '--force-delete-without-recovery',
+            absent=('ResourceNotFoundException',))
+        deadline = time.monotonic() + 120
+        while aws('secretsmanager', 'describe-secret', '--secret-id', arn,
+                  absent=('ResourceNotFoundException',)) is not None:
+            if time.monotonic() >= deadline:
+                raise TeardownError('Secret purge is still pending; retry before reinstalling: ' + address)
+            time.sleep(5)
 
     def stage(self, phase, label, kinds):
         state = json.loads(self.tf(phase, 'state', 'pull'))
@@ -857,6 +884,8 @@ def parser():
     result.add_argument('--check-backend-empty', action='store_true', help=argparse.SUPPRESS)
     result.add_argument('--bootstrap', action='store_true', help='Delete backend after all module states are empty (separate confirmation)')
     result.add_argument('--retain-vpc', action='store_true', help='Keep VPC/default security group in state for independent resources')
+    result.add_argument('--purge-deleted-secrets', action='store_true',
+                        help='Permanently remove plan-selected secrets after Terraform deletion, without a recovery window; retained credentials are excluded')
     return result
 
 
@@ -879,11 +908,13 @@ def main(argv=None):
     if args.phase:
         phases = [args.phase]
     print(f"Target: {account}, {args.region}, {args.environment}; caller: {identity['Arn']}", flush=True)
+    if args.purge_deleted_secrets:
+        print('Selected secrets will be permanently purged without recovery; retained credentials are excluded.', flush=True)
     if not args.dry_run and not args.phase and not args.check_backend_empty:
         print('Delete ADP runtime and data; keep backend, GitHub credentials and encryption keys.', flush=True)
         if input('Type the full AWS account ID to confirm: ').strip() != account:
             raise TeardownError('Account confirmation did not match')
-    run = Run(args.root, account, args.region, args.environment, args.retain_vpc)
+    run = Run(args.root, account, args.region, args.environment, args.retain_vpc, args.purge_deleted_secrets)
     # Local lock avoids concurrent cleanup and checkpoint corruption. Terraform
     # retains its backend lock independently. A killed run leaves an inspectable lock.
     lock = run.directory / 'running.lock'
@@ -916,7 +947,8 @@ def main(argv=None):
         receipt = {'account': account, 'region': args.region, 'environment': args.environment,
                    'source': command(['git', 'rev-parse', 'HEAD'], cwd=args.root).strip(),
                    'engine_sha256': ENGINE_SHA256,
-                   'retain_vpc': args.retain_vpc, 'selected_phases': phases, 'phases': {}}
+                   'retain_vpc': args.retain_vpc, 'purge_deleted_secrets': args.purge_deleted_secrets,
+                   'selected_phases': phases, 'phases': {}}
         write_json(run.directory / f'run-{run.sequence}.json', receipt)
         receipt['quiesce'] = 'running'
         write_json(journal, receipt)

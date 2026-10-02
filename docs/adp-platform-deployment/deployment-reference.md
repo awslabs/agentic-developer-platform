@@ -1025,6 +1025,17 @@ It does not sweep an account by name prefix. Successful module deletion is disti
 from an account-wide cleanup audit; independent resources and AWS pending deletion
 periods must be reported separately.
 
+For an immediate teardown/reinstall, add `--purge-deleted-secrets` to both the
+dry run and the approved teardown command. This permanently purges secrets
+selected by the Terraform deletion plans after Terraform schedules deletion,
+then waits for AWS to report them absent. It excludes retained GitHub credentials
+and does not sweep untracked secrets. Without this option, recovery windows stay
+in effect and secret names can block reinstall for up to 30 days. Either wait,
+restore and import the exact secret after checking its encryption key, or rerun
+teardown with this option using the retained private deletion receipts. A purge
+timeout stops teardown; retry before reinstalling. KMS deletion waiting periods
+are unchanged.
+
 ### Legacy path (retained)
 
 ```bash

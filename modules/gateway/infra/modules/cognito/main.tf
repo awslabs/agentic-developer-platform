@@ -48,8 +48,13 @@ resource "aws_cognito_user_pool" "main" {
   # MFA configuration
   mfa_configuration = var.mfa_configuration
 
-  software_token_mfa_configuration {
-    enabled = var.enable_software_mfa
+  # Cognito rejects SetUserPoolMfaConfig with OFF plus a configured MFA method.
+  # Omit the method entirely when disabled so repeat applies remain valid.
+  dynamic "software_token_mfa_configuration" {
+    for_each = var.mfa_configuration == "OFF" ? [] : [var.enable_software_mfa]
+    content {
+      enabled = software_token_mfa_configuration.value
+    }
   }
 
   # Threat protection (advanced security) — #5666 (A11).

@@ -56,3 +56,23 @@ def test_unexpected_patch_result_is_not_accepted(tmp_path):
 def test_patch_cannot_escape_reviewed_bundle(tmp_path, name):
     with pytest.raises(ValueError, match='within the reviewed bundle'):
         module.apply_bundle(tmp_path, tmp_path, patch_file=name)
+
+
+@pytest.mark.parametrize('tampered', [False, True])
+def test_upstream_fixed_manifest_verifies_without_patching(tmp_path, tampered):
+    stdlib, bundle, _, after = fixture_bundle(tmp_path, 'unused.patch')
+    (stdlib / 'sample.py').write_bytes(after if not tampered else b'unknown source')
+    manifest = {'sample.py': {'after': hashlib.sha256(after).hexdigest()}}
+    (bundle / 'upstream.json').write_text(json.dumps(manifest))
+    if tampered:
+        with pytest.raises(RuntimeError, match='Unexpected CPython source'):
+            module.apply_bundle(stdlib, bundle, verify_only=True, manifest_file='upstream.json')
+    else:
+        module.apply_bundle(stdlib, bundle, verify_only=True, manifest_file='upstream.json')
+        assert (stdlib / 'sample.py').read_bytes() == after
+
+
+@pytest.mark.parametrize('name', ['../unreviewed.json', '/tmp/unreviewed.json'])
+def test_manifest_cannot_escape_reviewed_bundle(tmp_path, name):
+    with pytest.raises(ValueError, match='within the reviewed bundle'):
+        module.apply_bundle(tmp_path, tmp_path, verify_only=True, manifest_file=name)

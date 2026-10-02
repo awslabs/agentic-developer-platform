@@ -9,6 +9,25 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class UpgradeAlbTests(unittest.TestCase):
+    def test_only_fresh_install_allows_absent_edge_cache(self):
+        shell = '''set -euo pipefail
+aws() { echo "$RESPONSE"; }
+fail() { exit 1; }
+source "$HELPER"
+gateway_alb_vars "$ALLOW_MISSING"
+'''
+        for allowed, response, success in (
+            ('false', {'Parameters': []}, False),
+            ('true', {'Parameters': []}, True),
+            ('true', {'Parameters': [{'Name': 'partial', 'Value': 'x'}]}, False),
+        ):
+            with self.subTest(allowed=allowed, response=response):
+                env = dict(os.environ, ENVIRONMENT='test', AWS_REGION='us-east-1',
+                           HELPER=str(ROOT / 'platform/scripts/gateway-alb-vars.sh'),
+                           ALLOW_MISSING=allowed, RESPONSE=json.dumps(response))
+                result = subprocess.run(['/bin/bash', '-c', shell], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+
     def test_internal_plane_is_preserved_and_errors_fail_closed(self):
         prefix = r'''set -euo pipefail
 aws() {

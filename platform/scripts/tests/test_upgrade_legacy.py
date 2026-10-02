@@ -247,6 +247,46 @@ terraform_update_apply "$MODULE" config.tfvars -var orchestration_tick_upgrade_h
 
 
 class LegacyWorkflowTests(unittest.TestCase):
+    def test_fresh_install_builds_real_image_before_gateway_apply(self):
+        source = (SCRIPTS / 'deploy-all.sh').read_text()
+        start = source.index('if deploy_phase_begin gateway-infra; then')
+        block = source[start:source.index('\nrefresh_credentials', start)]
+        shell = '''set -euo pipefail
+deploy_phase_begin() { return 0; }
+deploy_phase_complete() { :; }
+step() { :; }
+ok() { :; }
+fail() { exit 1; }
+aws() { return 0; }
+gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var internal_alb_arn=cached-alb); }
+python3() { :; }
+prepare_gateway_image() {
+  echo build >> "$CALLS"
+  [ "$BUILD_FAIL" = false ] || return 1
+  GATEWAY_IMAGE="example@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+terraform() {
+  if [ "$1" = apply ]; then
+    test -f "$CALLS" && grep -q build "$CALLS"
+    [[ " $* " == *" orchestration_tick_image_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "* ]]
+    [[ " $* " == *" internal_alb_arn=cached-alb "* ]]
+    echo apply >> "$CALLS"
+  fi
+}
+'''
+        for build_fail in (False, True):
+            with self.subTest(build_fail=build_fail), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'calls'
+                env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(SCRIPTS),
+                           UPDATE_MODE='false', DEPLOY_GATEWAY='true', ENVIRONMENT='dev',
+                           ACCOUNT_ID=ACCOUNT, AWS_REGION='us-east-1', CALLS=str(path),
+                           BUILD_FAIL=str(build_fail).lower())
+                result = subprocess.run(['/bin/bash', '-c', shell + block], env=env,
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, not build_fail, result.stderr)
+                self.assertEqual(path.read_text().splitlines(),
+                                 ['build'] if build_fail else ['build', 'apply'])
+
     def test_missing_engine_builds_before_plan_and_never_hides_errors(self):
         source = (SCRIPTS / 'deploy-all.sh').read_text()
         start = source.index('if deploy_phase_begin gateway-infra; then')

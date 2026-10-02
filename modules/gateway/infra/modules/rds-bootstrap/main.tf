@@ -10,9 +10,9 @@
 #
 # Idempotency:
 # - `GRANT rds_iam TO <user>` is idempotent in PostgreSQL.
-# - The Job name includes a hash of the RDS instance ID so it only re-runs
-#   when the database is recreated. ttlSecondsAfterFinished auto-cleans
-#   completed Jobs so `terraform apply` is a no-op on subsequent runs.
+# - The Job first verifies IAM login, avoiding password auth after rds_iam is granted.
+# - Completed Jobs are retained as evidence; the physical RDS resource ID changes
+#   the Job name when the database is recreated.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -60,6 +60,11 @@ resource "aws_iam_role_policy" "rds_bootstrap_secrets" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.master_user_secret_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["rds-db:connect"]
+        Resource = var.db_connect_arn
       }
     ]
   })
@@ -97,21 +102,19 @@ data "kubernetes_namespace" "gateway" {
 #   2. Connects to Postgres
 #   3. Runs GRANT rds_iam TO <user>
 #
-# ttlSecondsAfterFinished = 120 ensures the completed pod is cleaned up
-# quickly, preventing "already exists" errors on the next terraform apply.
+# Keep the completed Job so later applies can observe successful bootstrap.
 # ---------------------------------------------------------------------------
 
 resource "kubernetes_job" "grant_rds_iam" {
   metadata {
     # Include a short hash of the RDS instance ID so the Job name changes
     # (and therefore re-runs) when the database is recreated.
-    name      = "${var.name_prefix}-rds-bootstrap-${substr(sha256(var.rds_instance_id), 0, 8)}"
+    name      = "${var.name_prefix}-rds-bootstrap-${substr(sha256(var.db_connect_arn), 0, 8)}"
     namespace = var.namespace
   }
 
   spec {
-    ttl_seconds_after_finished = 120
-    backoff_limit              = 6
+    backoff_limit = 6
 
     template {
       metadata {
@@ -124,34 +127,14 @@ resource "kubernetes_job" "grant_rds_iam" {
       spec {
         service_account_name    = kubernetes_service_account.rds_bootstrap.metadata[0].name
         restart_policy          = "OnFailure"
-        active_deadline_seconds = 600
+        active_deadline_seconds = 900
 
         container {
           name  = "bootstrap"
           image = "public.ecr.aws/amazonlinux/amazonlinux:2023"
 
           command = ["/bin/bash", "-c"]
-          args = [<<-EOT
-            set -euo pipefail
-            echo "=== RDS Bootstrap: GRANT rds_iam TO $DB_USER ==="
-            # Package name note: on Amazon Linux 2023 the AWS CLI package is
-            # `awscli-2` (not `aws-cli`). Verified via `dnf list available '*awscli*'`
-            # in a live AL2023 pod. Do NOT redirect install stderr — a silent
-            # "No matches found" leads to a cryptic `aws: command not found`
-            # at the secretsmanager step.
-            dnf install -y postgresql15 jq awscli-2
-            MASTER_JSON=$(aws secretsmanager get-secret-value \
-              --secret-id "$SECRET_ID" \
-              --region "$AWS_REGION" \
-              --query SecretString --output text)
-            MASTER_USER=$(echo "$MASTER_JSON" | jq -r .username)
-            MASTER_PASS=$(echo "$MASTER_JSON" | jq -r .password)
-            PGPASSWORD="$MASTER_PASS" psql \
-              -h "$DB_HOST" -U "$MASTER_USER" -d "$DB_NAME" -p 5432 \
-              -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname='rds_iam') AND member = (SELECT oid FROM pg_roles WHERE rolname='$DB_USER')) THEN EXECUTE 'GRANT rds_iam TO $DB_USER'; RAISE NOTICE 'Granted rds_iam to $DB_USER'; ELSE RAISE NOTICE 'rds_iam already granted to $DB_USER'; END IF; END \$\$;"
-            echo "=== RDS Bootstrap complete ==="
-          EOT
-          ]
+          args    = [file("${path.module}/bootstrap.sh")]
 
           env {
             name  = "SECRET_ID"
@@ -177,11 +160,11 @@ resource "kubernetes_job" "grant_rds_iam" {
           resources {
             requests = {
               cpu    = "100m"
-              memory = "256Mi"
+              memory = "512Mi"
             }
             limits = {
-              cpu    = "250m"
-              memory = "512Mi"
+              cpu    = "1000m"
+              memory = "2Gi"
             }
           }
         }
@@ -189,16 +172,8 @@ resource "kubernetes_job" "grant_rds_iam" {
     }
   }
 
-  # Issue #769: changed from true to false. The job's purpose is to run
-  # `GRANT rds_iam TO bgadmin` once at first deploy, but it fails when
-  # the bgadmin user doesn't yet have rds_iam (chicken-and-egg: the job
-  # grants the privilege it needs to connect with). The grant has already
-  # been applied manually — re-running the job is idempotent (PostgreSQL
-  # GRANT on existing role is a no-op) but cannot block the apply on
-  # legitimately-failing PAM auth. With wait_for_completion=false, the
-  # apply proceeds; the job runs async and an operator inspects pod logs
-  # if a grant truly needs to re-apply (rare).
-  wait_for_completion = false
+  # Gateway migrations require a successful IAM login, not just a submitted Job.
+  wait_for_completion = true
 
   timeouts {
     create = "15m"
@@ -206,6 +181,7 @@ resource "kubernetes_job" "grant_rds_iam" {
 
   depends_on = [
     kubernetes_service_account.rds_bootstrap,
+    aws_iam_role_policy.rds_bootstrap_secrets,
     data.kubernetes_namespace.gateway,
   ]
 }

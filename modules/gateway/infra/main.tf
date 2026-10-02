@@ -1035,6 +1035,8 @@ module "rds_bootstrap" {
   common_tags            = local.common_tags
   rds_instance_id        = module.rds.db_instance_id
 
+  db_connect_arn = "arn:${data.aws_partition.current.partition}:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${module.rds.db_instance_resource_id}/${var.rds_username}"
+
   depends_on = [
     module.rds,
   ]

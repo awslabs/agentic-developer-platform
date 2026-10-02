@@ -1,6 +1,28 @@
-# CPython 3.13.15 security backports
+# Reviewed CPython security sources
 
-The gateway stays on Python 3.13. These runtime-library hunks come from merged
+The gateway now pins Python **3.13.16** at the multi-platform image digest
+`sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81`.
+`manifest-3.13.16.json` verifies upstream source bytes in both build and runtime
+stages; `check.py` still exercises all five security boundaries. No 3.13.15
+patches are reapplied to this already fixed base.
+
+The three reviewed files match the official
+[CPython v3.13.16 sources](https://github.com/python/cpython/tree/v3.13.16/Lib)
+and the image's amd64 layer. `stringprep.py` and `urllib/request.py` exactly
+match our previous patched files. Compared with our patched `tarfile.py`, the
+only change is upstream's PAX size/header-offset handling in `_proc_pax`;
+the three extraction security fixes below remain present. Exact source checks
+and the behavioral regressions must pass on any target architecture.
+
+The old bundle below remains available for other consumers still using 3.13.15.
+The default patch/manifest behavior has not changed. Use
+`apply.py --verify-only --manifest-file manifest-3.13.16.json` for the new base.
+An unknown source still fails closed; future digest updates require review.
+
+## CPython 3.13.15 security backports (retained)
+
+
+These retained runtime-library hunks come from merged
 upstream **3.13** security backports; upstream test and documentation hunks are
 excluded from the installed patch. Exact SHA256 checks guard all three files
 before and after patching. A changed base fails closed until the bundle is
