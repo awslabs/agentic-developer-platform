@@ -155,7 +155,7 @@ Deploying older code is not an automatic database rollback.
 Preview teardown and validate the destroy plans:
 
 ```bash
-AWS_PROFILE=customer ./platform/scripts/undeploy.sh --dry-run
+./platform/scripts/undeploy.sh --aws-profile customer --dry-run
 ```
 
 After reviewing it, run without `--dry-run` and follow its account confirmation.

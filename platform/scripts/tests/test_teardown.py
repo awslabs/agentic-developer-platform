@@ -1,6 +1,10 @@
 """Behavioral regressions from an interrupted, multi-state teardown."""
 import importlib.util
 import json
+import os
+import subprocess
+
+import pytest
 from pathlib import Path
 import tempfile
 import unittest
@@ -380,3 +384,96 @@ class TeardownTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+LAUNCHER = Path(__file__).resolve().parents[1] / "undeploy.sh"
+CREDENTIALS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_ROLE_ARN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_SESSION_NAME",
+)
+
+
+@pytest.fixture
+def launcher(tmp_path):
+    script = tmp_path / "undeploy.sh"
+    script.write_text(LAUNCHER.read_text())
+    (tmp_path / "load-deploy-config.sh").write_text(
+        'export PROFILE_AT_CONFIG="${AWS_PROFILE:-}"\n'
+        'export KEY_AT_CONFIG="${AWS_ACCESS_KEY_ID:-}"\n'
+    )
+    (tmp_path / "teardown.py").write_text(
+        "import json, os, sys\n"
+        'print(json.dumps({"args": sys.argv[1:], "env": dict(os.environ)}))\n'
+    )
+    return script
+
+
+def run(launcher, *args):
+    env = dict(os.environ, AWS_PROFILE="inherited", AWS_DEFAULT_PROFILE="inherited")
+    env.update({key: "fixture-credential" for key in CREDENTIALS})
+    env.pop("PROFILE_AT_CONFIG", None)
+    return subprocess.run(
+        ["bash", str(launcher), *args],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_explicit_profile_precedes_configuration_and_preserves_arguments(launcher):
+    result = run(
+        launcher,
+        "--region",
+        "us-east-1",
+        "--aws-profile",
+        "customer",
+        "--purge-deleted-secrets",
+        "--dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["args"] == [
+        "--region",
+        "us-east-1",
+        "--purge-deleted-secrets",
+        "--dry-run",
+    ]
+    assert data["env"]["PROFILE_AT_CONFIG"] == "customer"
+    assert (
+        data["env"]["AWS_PROFILE"] == data["env"]["AWS_DEFAULT_PROFILE"] == "customer"
+    )
+    assert data["env"]["KEY_AT_CONFIG"] == ""
+    assert all(key not in data["env"] for key in CREDENTIALS)
+
+
+def test_no_profile_keeps_existing_credentials_and_empty_arguments(launcher):
+    result = run(launcher)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["args"] == []
+    assert data["env"]["PROFILE_AT_CONFIG"] == "inherited"
+    assert all(data["env"][key] == "fixture-credential" for key in CREDENTIALS)
+
+
+@pytest.mark.parametrize(
+    "args", [("--aws-profile",), ("--aws-profile", ""), ("--aws-profile", "--dry-run")]
+)
+def test_missing_profile_fails_before_configuration(launcher, args):
+    result = run(launcher, *args)
+    assert result.returncode == 2
+    assert "requires a profile name" in result.stderr
+    assert not result.stdout
+
+
+def test_help_after_profile_does_not_load_configuration(launcher):
+    result = run(launcher, "--aws-profile", "customer", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--aws-profile PROFILE" in result.stdout
+    data = json.loads(result.stdout.splitlines()[-1])
+    assert "PROFILE_AT_CONFIG" not in data["env"]

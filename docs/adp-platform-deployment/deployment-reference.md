@@ -1025,6 +1025,10 @@ It does not sweep an account by name prefix. Successful module deletion is disti
 from an account-wide cleanup audit; independent resources and AWS pending deletion
 periods must be reported separately.
 
+`undeploy.sh --aws-profile customer` selects credentials using the same option
+and precedence as `deploy.sh`. The `AWS_PROFILE` environment variable remains
+supported when the flag is omitted.
+
 For an immediate teardown/reinstall, add `--purge-deleted-secrets` to both the
 dry run and the approved teardown command. This permanently purges secrets
 selected by the Terraform deletion plans after Terraform schedules deletion,
