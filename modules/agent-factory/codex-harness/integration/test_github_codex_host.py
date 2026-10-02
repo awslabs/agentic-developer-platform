@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -37,6 +38,8 @@ def test_packaged_github_sdk(tmp_path, persona, mode):
     context = {"version": 1, "persona": f"agent-codex-{persona}", "repository": "owner/repo", "repositoryId": "123",
                "issue": 12, "snapshot": snapshot, "capabilities": ["artifacts.publish"], "maxTurns": 20, "maxTools": 0,
                "maxOutputTokens": 4096, "harnessRevision": "codex-sdk-0.155.1/adp-v1"}
+    if mode == "budget-http":
+        context["maxTurns"] = 1
     if mode == "repository-read":
         context["capabilities"].append("repository.read")
         context["maxTools"] = 32
@@ -76,7 +79,7 @@ import { writeFileSync } from 'node:fs';
 export async function createCodexPersonaReporter() {
  return { log() {}, progress() {}, async finish(result, provenance) {
   writeFileSync(process.env.FIXTURE_ARTIFACTS + '/report.json', JSON.stringify({ result, provenance }));
- }, async fail() { writeFileSync(process.env.FIXTURE_ARTIFACTS + '/failed', 'true'); } };
+ }, async fail(error) { writeFileSync(process.env.FIXTURE_ARTIFACTS + '/failed', String(error)); } };
 }
 ''')
     binaries = tmp_path / "bin"
@@ -102,7 +105,11 @@ export async function createCodexPersonaReporter() {
         def do_POST(self):
             requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
             if mode == 'unknown':
-                self.send_response(503)
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.connection.close()
+                return
+            if mode in {'persistent-http', 'budget-http'} or (mode == 'transient' and len(requests) == 1):
+                self.send_response(500)
                 self.end_headers()
                 return
             response = {"id": "resp_fixture", "status": "completed", "output": [
@@ -132,10 +139,10 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read'}
+    success = mode in {'success', 'steer', 'repository-read', 'transient'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
-    assert len(requests) == (2 if mode in {'steer', 'repository-read'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
+    assert len(requests) == (3 if mode == 'persistent-http' else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
         assert 'Working through' in (artifacts / 'progress.txt').read_text()
         assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
@@ -154,3 +161,12 @@ export async function createCodexPersonaReporter() {
         operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'claim')) == 1
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'settle')) == 1
+
+    if mode in {'transient', 'persistent-http', 'budget-http'}:
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        model_ops = [value for value in operations if value['kind'] == 'model']
+        assert [value['action'] for value in model_ops] == ['claim', 'settle'] * len(requests)
+        assert len({value['operation_id'] for value in model_ops}) == len(requests)
+        assert json.loads(model_ops[1]['result']) == {'httpStatus': 500}
+        if mode == 'persistent-http':
+            assert 'HTTP 500' in (artifacts / 'failed').read_text()

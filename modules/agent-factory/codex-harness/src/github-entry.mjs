@@ -6,6 +6,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { planningPersona, planningContract, parsePlanning, planningSchemas, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider } from './planning-provider.js';
+import { retryModelHttp } from './model-http.js';
 import { runAdmittedSession } from './session.js';
 import { githubTools, hostCommand } from './github-tools.js';
 import { verifySnapshot, personaSchema } from './persona.js';
@@ -141,7 +142,7 @@ async function main() {
           controls.explain(text);
         },
         async model(request, active) {
-          return controls.operation(async () => {
+          return controls.operation(() => retryModelHttp(async () => {
             if (++operations > context.maxTurns) throw new Error('GitHub model budget exhausted');
             const fresh = await current(active, false);
             const port = Number(process.env.SIGV4_PROXY_PORT ?? '9090');
@@ -152,7 +153,13 @@ async function main() {
               headers: { 'content-type': 'application/json', 'X-Adp-Model-Evidence': fresh.evidenceId },
               body: JSON.stringify({ ...request, model: initial.model, stream: false, store: false }),
             });
-            if (!response.ok || !response.body) throw new Error('GitHub model request failed; no automatic replay');
+            if (!response.ok) {
+              // Settle each observed rejection before retrying with a new claim.
+              // Do not retain provider bodies (which can contain sensitive data).
+              await response.body?.cancel();
+              return { httpStatus: response.status };
+            }
+            if (!response.body) throw new Error('GitHub model response body missing; no automatic replay');
             const reader = response.body.getReader();
             const chunks = []; let bytes = 0;
             try {
@@ -165,7 +172,7 @@ async function main() {
             } finally { await reader.cancel(); }
             return { operationStatus: 'confirmed', response: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
             }, active);
-          });
+          }, active));
         },
       });
       let result, planned, correction;

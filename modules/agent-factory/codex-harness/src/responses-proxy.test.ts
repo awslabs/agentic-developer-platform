@@ -1,3 +1,4 @@
+import { ModelHttpError } from "./model-http.js";
 import { z } from "zod";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -261,4 +262,17 @@ test("native provider metadata and empty placeholders normalize without relaxing
   assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[0], unknown_execution_field: true }] }, policy));
   assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[1],
     content: [{ type: "output_text", text: "fixture", annotations: [], logprobs: [1] }] }] }, policy));
+});
+
+test("explicit HTTP failures preserve sanitized status without SDK replay", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; throw new ModelHttpError(500); }, policy);
+  try {
+    assert.equal((await post(proxy)).status, 502);
+    assert.equal(proxy.failure?.code, "model_http_failed");
+    assert.equal(proxy.failure?.httpStatus, 500);
+    assert.match(String(proxy.failure), /HTTP 500/);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
 });

@@ -1,3 +1,4 @@
+import { ModelHttpError } from "./model-http.js";
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -239,8 +240,8 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
 }
 
 export class ResponsesBridgeError extends Error {
-  constructor(readonly code: "request_bound_exceeded" | "sdk_envelope_bound_exceeded" | "request_contract_invalid" | "handoff_or_response_failed") {
-    super(`Codex Responses bridge: ${code}`);
+  constructor(readonly code: "request_bound_exceeded" | "sdk_envelope_bound_exceeded" | "request_contract_invalid" | "handoff_or_response_failed" | "model_http_failed", readonly httpStatus?: number) {
+    super(`Codex Responses bridge: ${code}${httpStatus === undefined ? "" : ` (HTTP ${httpStatus})`}`);
   }
 }
 
@@ -313,7 +314,9 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       res.writeHead(200, { "content-type": "text/event-stream" }).end(output);
     } catch (error) {
       const bound = error instanceof Error && ["Responses HTTP body exceeds bound", "Responses request exceeds bound"].includes(error.message);
-      failure = new ResponsesBridgeError(dispatched ? "handoff_or_response_failed" : error instanceof Error && error.message === "Responses HTTP body exceeds bound" ? "sdk_envelope_bound_exceeded" : bound ? "request_bound_exceeded" : "request_contract_invalid");
+      failure = error instanceof ModelHttpError
+        ? new ResponsesBridgeError("model_http_failed", error.status)
+        : new ResponsesBridgeError(dispatched ? "handoff_or_response_failed" : error instanceof Error && error.message === "Responses HTTP body exceeds bound" ? "sdk_envelope_bound_exceeded" : bound ? "request_bound_exceeded" : "request_contract_invalid");
       // No automatic replay after possible handoff or malformed input. Arbitrary
       // provider/host errors never reach SDK messages, logs or telemetry.
       failed = true;
