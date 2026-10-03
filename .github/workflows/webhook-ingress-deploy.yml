@@ -56,7 +56,7 @@ on:
         default: ''
 
 concurrency:
-  group: webhook-ingress-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
+  group: gateway-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
 env:
@@ -297,6 +297,12 @@ jobs:
             echo 'TFVARS_EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Preserve the automatically deployed worker image
+        run: |
+          python3 platform/scripts/rollout-worker-image.py \
+            --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+            --terraform-vars "${RUNNER_TEMP}/deployed-worker.tfvars.json"
+
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
@@ -308,7 +314,7 @@ jobs:
           # arguments produced by the guard above, and is empty in the common
           # case where no rollout was requested.
           # shellcheck disable=SC2086
-          bash ../scripts/terraform-webhook.sh apply ${AUTHORITY_VARS} -input=false -auto-approve
+          bash ../scripts/terraform-webhook.sh apply -var-file="${RUNNER_TEMP}/deployed-worker.tfvars.json" ${AUTHORITY_VARS} -input=false -auto-approve
 
       - name: Summary
         if: always()

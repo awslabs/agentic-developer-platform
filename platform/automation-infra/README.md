@@ -388,3 +388,36 @@ manages namespaced objects only in `skypilot`; it has no secret-value reads,
 Terraform, IAM mutation, publishing, or Superplane control-plane authority.
 The workflow prepares its pinned YAML parser in an ephemeral Python environment.
 Validate with `dry_run=true` before an intended manifest rollout.
+
+## Automatic worker image rollout
+
+`Agent Worker Image Build` runs the adapter, installation-boundary and Task API
+checks before building. Its deployment job then resolves the full source SHA to
+an ECR digest, adds that digest to gateway trust, rolls and verifies every gateway
+pod, and updates the worker ScaledJob with KEDA's `gradual` strategy. Running jobs
+keep their images and trusted digests. Optional prepull and warm-pool workloads
+also receive the image. The job does not apply webhook Terraform or enable any
+agent authority flags. Domain-owned worker images retain their own release path.
+
+Bootstrap `enable_worker_deployment=true` in this module using the operator's
+retained inputs. Install `worker-release-rbac.yaml` in the existing cluster. Set
+up GitHub environment `adp-worker-deploy-<environment>` restricted to `main`, with
+`ADP_DEPLOY_ROLE_ARN` from `worker_deployment_role_arn` and `ADP_DEPLOY_REGION`.
+The role can read the worker ECR digest and update only the two worker release
+SSM parameters. Kubernetes RBAC names the worker templates and gateway config;
+it grants neither cluster administration nor IAM mutation. Bootstrap this once
+per deployment target before enabling automatic releases.
+
+Successful rollout records the source SHA and digest in
+`/adp/<environment>/webhook-ingress/deployed-worker-image`. Webhook CI reads that
+pin and the current trust list as its final Terraform overlay, preserving them
+through later infrastructure updates. Explicit authority rollout inputs still
+have precedence. Full platform release deployments select their own release
+images; this pin is for the continuous worker/webhook CI path. A late build of
+an older ancestor is skipped. Worker, gateway and webhook CI deployments share
+a concurrency group; running deployment jobs are not cancelled.
+
+To retry a failed rollout, rerun the failed workflow job. Trust additions are
+idempotent. If gateway verification fails, workers retain their previous image.
+Manual rollback must select a reviewed source revision and update the persisted
+pin as well as the templates; changing a mutable `latest` tag does not roll out.

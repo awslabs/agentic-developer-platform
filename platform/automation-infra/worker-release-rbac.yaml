@@ -1,0 +1,65 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-worker-release
+  namespace: adp-agents
+rules:
+  - apiGroups: [keda.sh]
+    resources: [scaledjobs]
+    resourceNames: [agent-scaledjob]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [agent-warm-pool]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [daemonsets]
+    resourceNames: [agent-image-prepull]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-worker-release
+  namespace: adp-agents
+subjects:
+  - kind: Group
+    name: adp:worker-release
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-worker-release
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: adp-worker-release
+  namespace: adp-gateway
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [bedrockgateway]
+    verbs: [get, patch, watch, list]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [adp-worker-authority-config]
+    verbs: [get, patch]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: ['']
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adp-worker-release
+  namespace: adp-gateway
+subjects:
+  - kind: Group
+    name: adp:worker-release
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: adp-worker-release

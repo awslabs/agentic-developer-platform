@@ -1,6 +1,7 @@
 /** Run the actual Codex CLI with empty stores and explicit loopback-only tools. */
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -71,6 +72,23 @@ export function codexArguments(home, proxy, tools) {
     ...['list_files', 'read_file', 'replace_text', 'submit_patch'].flatMap(name => config(`mcp_servers.repository.tools.${name}.approval_mode="approve"`)), ...config('project_doc_max_bytes=0'), '-'];
 }
 
+// Codex may leave plugin-clone descendants after its own close event. Terminate
+// the detached group before removing the home; force:true alone does not retry
+// ENOTEMPTY when a descendant is still creating files.
+export async function cleanupCodexProcess(child, home, { signal = process.kill, wait = delay, remove = rm } = {}) {
+  if (child?.pid) {
+    const send = kind => {
+      try { signal(-child.pid, kind); return true; }
+      catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+    };
+    if (send('SIGTERM')) {
+      for (let i = 0; i < 20 && send(0); i++) await wait(100);
+      if (send(0)) send('SIGKILL');
+    }
+  }
+  if (home) await remove(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 export async function runCodexTask(start, bridge, definitions, { spawnProcess = spawn, proxyFactory = startResponsesProxy, toolFactory = startToolServer,
   binary = 'codex' } = {}) {
   const maxTokens = start.limits?.max_output_tokens_per_turn, maxRequests = start.limits?.max_turns;
@@ -113,7 +131,10 @@ export async function runCodexTask(start, bridge, definitions, { spawnProcess = 
   } finally {
     clearTimeout(timer); clearTimeout(killer);
     bridge.controller.signal.removeEventListener('abort', stop);
-    await proxy?.close(); await tools?.close();
-    if (home) await rm(home, { recursive: true, force: true });
+    try {
+      await cleanupCodexProcess(child, home);
+    } finally {
+      await Promise.all([proxy?.close(), tools?.close()]);
+    }
   }
 }
