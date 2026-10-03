@@ -624,16 +624,19 @@ async def test_protected_budget_approval_unblocks_same_run_without_resetting_spe
     from sqlalchemy import select
 
     from src.budget.config import budget_config
-    from src.orchestration.compile import ApprovalContext
-    from src.orchestration.continuation import digest
+    from src.orchestration.compile import ApprovalContext, plan_hash
     from src.orchestration.models import OrchestrationAcceptedPlan
+    from src.orchestration.proposal import LoopProposal
     from src.orchestration.shared_budget import BudgetIncreaseRequest, accept_budget_increase, preview_budget_increase
 
     monkeypatch.setattr(budget_config, "budget_run_cap_usd", Decimal("0.01"))
     sent, _ = await invoke(model_path, assignment)
     assert sent[0]["status"] == 402 and model_path.calls == 0
     plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
-    plan.plan_hash = digest(plan.plan_document)
+    proposal = LoopProposal.model_validate(
+        {**plan.plan_document, "title": "Protected worker delivery", "org_id": assignment.flow.org_id, "spec_revision": "1"}
+    )
+    plan.plan_document, plan.plan_hash = proposal.model_dump(mode="json"), plan_hash(proposal)
     plan.accepted_by_decision_id = assignment.grant.authority.reference_id
     await session.flush()
     actor = ApprovalContext(org_id=assignment.flow.org_id, actor_id=assignment.grant.authority.human_id, actor_role="platform_admin")

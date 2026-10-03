@@ -10,17 +10,18 @@ import pytest
 from sqlalchemy import select
 
 from src.orchestration.compile import ApprovalContext
-from src.orchestration.continuation import digest
 from src.orchestration.execution_policy import policy_hash
 from src.orchestration.flow_budget import admission_cost_usd
 from src.orchestration.models import OrchestrationDecision
 from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.proposal import LoopProposal
 from src.orchestration.shared_amendment import SharedAppendError
 from src.orchestration.shared_budget import (
     BudgetIncreaseError,
     BudgetIncreaseRequest,
     FinancialLimits,
     accept_budget_increase,
+    accepted_document_hash,
     only_spend_increased,
     preview_budget_increase,
 )
@@ -34,8 +35,10 @@ async def budget(shared, request):  # noqa: F811
     if request.param == "protected":
         document = copy.deepcopy(shared.plan.plan_document)
         document.pop("execution_continuation")
-        shared.plan.plan_document = document
-    shared.plan.plan_hash = digest(shared.plan.plan_document)
+        shared.plan.plan_document = LoopProposal.model_validate(
+            {**document, "title": "Protected worker delivery", "org_id": shared.flow.org_id, "spec_revision": "1"}
+        ).model_dump(mode="json")
+    shared.plan.plan_hash = accepted_document_hash(shared.plan.plan_document)
     shared.node.state, shared.node.attempts = "running", 1
     await shared.session.flush()
     return SimpleNamespace(
@@ -68,6 +71,7 @@ async def test_live_increase_preserves_plan_assignments_and_all_meter_fields(bud
     b = budget
     before = await effective(b)
     plan = copy.deepcopy(b.s.plan.plan_document)
+    original_hash = b.s.plan.plan_hash
     meter = await b.s.client.hgetall(b.s.target.key())
     ttl = await b.s.client.pttl(b.s.target.key())
     identity = (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.s.plan.version)
@@ -79,7 +83,7 @@ async def test_live_increase_preserves_plan_assignments_and_all_meter_fields(bud
     assert after.policy.policy_hash == policy_hash(after.policy)
     assert after.policy.principal_id == before.policy.principal_id
     assert after.policy._shared_budget_decision_id == receipt["decision_id"]
-    assert b.s.plan.plan_document == plan and b.s.plan.plan_hash == digest(plan)
+    assert b.s.plan.plan_document == plan and b.s.plan.plan_hash == original_hash
     assert identity == (b.s.node.state, b.s.node.attempts, b.s.claim.active_run_id, b.s.claim.generation, b.s.plan.version)
     assert await b.s.client.hgetall(b.s.target.key()) == meter
     assert await b.s.client.pttl(b.s.target.key()) <= ttl
@@ -103,7 +107,7 @@ async def test_invalid_increase_writes_no_financial_decision(budget, case):
     elif case == "expired":
         doc = copy.deepcopy(b.s.plan.plan_document)
         doc["execution_policy"]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-        b.s.plan.plan_document, b.s.plan.plan_hash = doc, digest(doc)
+        b.s.plan.plan_document, b.s.plan.plan_hash = doc, accepted_document_hash(doc)
         b.request = b.request.model_copy(update={"expected_plan_hash": b.s.plan.plan_hash})
         await b.s.session.flush()
     elif case == "service":
@@ -253,7 +257,10 @@ async def test_protected_budget_requires_active_human_accepted_plan(budget, chan
     b = budget
     document = copy.deepcopy(b.s.plan.plan_document)
     document.pop("execution_continuation", None)
-    b.s.plan.plan_document, b.s.plan.plan_hash = document, digest(document)
+    document = LoopProposal.model_validate(
+        {**document, "title": "Protected worker delivery", "org_id": b.s.flow.org_id, "spec_revision": "1"}
+    ).model_dump(mode="json")
+    b.s.plan.plan_document, b.s.plan.plan_hash = document, accepted_document_hash(document)
     b.request = b.request.model_copy(update={"expected_plan_hash": b.s.plan.plan_hash})
     if change == "missing":
         b.s.plan.accepted_by_decision_id = None
@@ -275,3 +282,21 @@ async def test_protected_budget_requires_active_human_accepted_plan(budget, chan
     await b.s.session.flush()
     with pytest.raises(BudgetIncreaseError, match="plan_acceptance_unverifiable|flow_not_active"):
         await preview(b)
+
+
+def test_compiled_plan_hash_preserves_provenance_but_covers_executable_content():
+    from src.orchestration.compile import plan_hash
+
+    proposal = LoopProposal(flow_slug="test", title="Delivery", org_id="org", spec_revision="1", description="Design notes")
+    document = proposal.model_dump(mode="json")
+    assert accepted_document_hash(document) == plan_hash(proposal)
+    document["description"] = "Reworded design notes"
+    assert accepted_document_hash(document) == plan_hash(proposal)
+    document["title"] = "Different delivery"
+    assert accepted_document_hash(document) != plan_hash(proposal)
+
+
+@pytest.mark.parametrize("document", [None, [], {}, {"flow_slug": "invalid"}])
+def test_malformed_accepted_document_is_a_named_refusal(document):
+    with pytest.raises(BudgetIncreaseError, match="accepted_document_unverifiable"):
+        accepted_document_hash(document)

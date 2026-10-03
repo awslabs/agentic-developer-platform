@@ -25,6 +25,21 @@ CONTRACT = "shared-budget-increase/v1"
 KIND = "budget_increased"
 
 
+def accepted_document_hash(document):
+    """Use the same identity as the compiler or continuation that accepted it."""
+    if not isinstance(document, dict):
+        raise BudgetIncreaseError("accepted_document_unverifiable")
+    if document.get("execution_continuation") is not None:
+        return digest(document)
+    from .compile import plan_hash
+    from .proposal import LoopProposal
+
+    try:
+        return plan_hash(LoopProposal.model_validate(document))
+    except ValueError as error:
+        raise BudgetIncreaseError("accepted_document_unverifiable") from error
+
+
 class BudgetIncreaseError(ValueError):
     pass
 
@@ -116,7 +131,7 @@ async def effective_shared_budget(session, plan, policy):
         or not decision.actor_id
         or data.get("contract") != CONTRACT
         or data.get("plan_hash") != plan.plan_hash
-        or plan.plan_hash != digest(plan.plan_document)
+        or plan.plan_hash != accepted_document_hash(plan.plan_document)
         or data.get("original_policy_hash") != policy.policy_hash
         or policy.policy_hash != policy_hash(policy)
         or data.get("principal_id") != policy.principal_id
@@ -137,7 +152,7 @@ async def prepare_increase(session, *, flow_id, actor, request, lock=False):
     flow, plan = await current_plan(session, flow_id=flow_id, actor=actor, lock=lock)
     if plan.version != request.expected_plan_version or plan.plan_hash != request.expected_plan_hash:
         raise BudgetIncreaseError("accepted_plan_changed")
-    if plan.plan_hash != digest(plan.plan_document):
+    if plan.plan_hash != accepted_document_hash(plan.plan_document):
         raise BudgetIncreaseError("accepted_document_hash_changed")
     marker = (plan.plan_document or {}).get("execution_continuation")
     if marker is not None:
