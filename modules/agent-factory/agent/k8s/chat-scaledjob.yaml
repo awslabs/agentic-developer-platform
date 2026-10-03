@@ -53,8 +53,7 @@ data:
   # Personas baked into the image
   PERSONAS_DIR: "/app/personas"
 ---
-# TriggerAuthentication reused from the Python worker (same SA, same SQS role).
-# If not already present from keda-scaledjob.yaml, apply it here too.
+# KEDA assumes the dedicated chat role through the adp-agent service account.
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:

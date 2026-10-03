@@ -67,9 +67,8 @@ popd > /dev/null
 # SIGV4_PROXY_TARGET: the chat agent routes Bedrock through the gateway's REST
 # API (ADP_BEDROCK_VIA=gateway in the manifest), re-signing via a local
 # sigv4-proxy. Without this substitution the manifest ships the literal
-# placeholder, the proxy has no valid upstream, and the entrypoint's health check
-# falls back to direct Bedrock — so chat keeps working and gateway routing is
-# silently off, with nothing logged to say so.
+# placeholder and the proxy has no valid upstream. The worker refuses to run
+# without gateway routing; its dedicated IAM role also denies direct invocation.
 #
 # Read from SSM rather than a Terraform output because gateway-infra publishes it
 # and this module does not own it.
