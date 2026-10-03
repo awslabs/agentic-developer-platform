@@ -15,7 +15,7 @@ export interface TurnContext {
   timeoutMs: number;
   /** @deprecated Ignored; retained for existing host adapters. */
   maxInputBytes?: number;
-  maxOutputBytes: number;
+  maxOutputBytes?: number;
   signal: AbortSignal;
   /** Pinned SDK reports cumulative thread usage after a resumed turn. */
   previousUsage?: Usage;
@@ -33,7 +33,7 @@ export async function runSdkTurn(
   thread: Pick<Thread, "runStreamed" | "id">, prompt: string, context: TurnContext,
   progress: (event: Progress) => Promise<void>, outputSchema?: unknown,
 ): Promise<TurnEvidence> {
-  for (const limit of [context.timeoutMs, context.maxOutputBytes]) {
+  for (const limit of [context.timeoutMs, ...(context.maxOutputBytes === undefined ? [] : [context.maxOutputBytes])]) {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("Invalid turn limit");
   }
   context.signal.throwIfAborted();
@@ -82,7 +82,7 @@ export async function runSdkTurn(
             }
             if (event.type === "item.completed" && kind === "agent_message") {
               response = event.item.text;
-              if (Buffer.byteLength(response) > context.maxOutputBytes) throw new Error("Model response exceeds output budget");
+              if (context.maxOutputBytes !== undefined && Buffer.byteLength(response) > context.maxOutputBytes) throw new Error("Model response exceeds output budget");
             }
           }
           if (event.type === "turn.completed") {

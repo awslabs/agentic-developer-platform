@@ -15,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools", "large-output"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -127,6 +127,12 @@ export async function createCodexPersonaReporter() {
             if (mode == 'repository-read' and len(requests) == 1) or (mode == 'many-tools' and len(requests) <= 35):
                 response["output"] = [{"id": f"fc_fixture_{len(requests)}", "type": "function_call", "call_id": f"call_fixture_{len(requests)}", "name": "repository_file",
                                        "namespace": "mcp__adp", "arguments": json.dumps({"path": "README.md"}), "status": "completed"}]
+            if mode == 'large-output':
+                artifact = planning_output(persona, "issue")
+                artifact['artifact']['design'] = 'Detailed architecture. ' * 500
+                response['output'][0]['content'][0]['text'] = json.dumps(artifact)
+                response['output'].insert(0, {"id": "reasoning_fixture", "type": "reasoning", "encrypted_content": "x" * 70000, "summary": []})
+                response['usage']['output_tokens'] = 12000
             body = json.dumps(response).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -147,7 +153,7 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools'}
+    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools', 'large-output'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
     assert len(requests) == (36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
@@ -190,3 +196,10 @@ export async function createCodexPersonaReporter() {
         operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
         assert sum(op['kind'] == 'tool' and op['action'] == 'settle' for op in operations) == 35
         assert sum(op['kind'] == 'model' and op['action'] == 'settle' for op in operations) == 36
+
+    if requests:
+        assert 'max_output_tokens' not in requests[0]
+    if mode == 'large-output':
+        report = json.loads((artifacts / 'report.json').read_text())
+        assert ('Detailed architecture. ' * 500).strip() in report['result']['response']
+        assert report['result']['usage']['output_tokens'] == 12000

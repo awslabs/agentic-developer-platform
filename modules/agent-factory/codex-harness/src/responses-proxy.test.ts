@@ -313,3 +313,13 @@ test("direct model transport continues beyond legacy operation ceilings", async 
     assert.equal(calls, 40);
   } finally { await proxy.close(); }
 });
+
+
+test("direct responses retain large completed output without a local token or byte ceiling", () => {
+  const direct = { ...policy, maxOutputTokens: undefined, maxResponseBytes: undefined };
+  assert.equal("max_output_tokens" in normalizeTextRequest({ ...request(), max_output_tokens: 4096 }, direct), false);
+  const text = "Detailed report. ".repeat(10000);
+  const large = { ...result(), output: [{ id: "message_large", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: 100, output_tokens: 20000 } };
+  assert.ok(textResponseEvents(large, direct).includes(text));
+  assert.throws(() => textResponseEvents(large, policy));
+});

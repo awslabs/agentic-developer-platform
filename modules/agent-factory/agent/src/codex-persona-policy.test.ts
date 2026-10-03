@@ -136,3 +136,11 @@ it('operation admission bounds credential acquisition and never sends a late req
   await new Promise(resolve => setImmediate(resolve));
   expect(fetch).not.toHaveBeenCalled();
 });
+
+
+it('preserves operation receipts larger than the legacy response ceiling', async () => {
+  const receipt = { status: 'confirmed', result: 'complete report '.repeat(8000) };
+  global.fetch = jest.fn(async () => new Response(JSON.stringify(receipt)));
+  const result = await codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64), action: 'settle', kind: 'model', result: receipt.result }, new AbortController().signal);
+  expect(result).toEqual(receipt);
+});

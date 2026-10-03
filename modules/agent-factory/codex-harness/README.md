@@ -193,3 +193,13 @@ still fences further work. Legacy `maxTurns`/`maxTools` session fields remain
 readable for mixed-version rollout compatibility. Task API retains explicit
 operation budgets from its task grant; removing the GitHub defaults does not
 expand a Task API grant.
+
+
+Direct GitHub report execution also omits a local `max_output_tokens` override
+and response-byte ceiling. Provider output limits and the admitted run deadline
+apply; Task API retains its explicit output grant and IPC limits. Direct model
+requests use the remaining run deadline rather than a separate two-minute
+subdeadline. Completed provider output must still pass schema, usage and tool
+receipt validation. The GitHub operation journal preserves complete receipts;
+underlying service limits, including DynamoDB item size, still apply. Planning
+artifacts retain their declared document schema and size contract.

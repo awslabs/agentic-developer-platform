@@ -23,7 +23,7 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-async function bounded(response: Response): Promise<unknown> {
+async function bounded(response: Response, maxBytes?: number): Promise<unknown> {
   if (!response.ok || !response.body) throw new CodexPersonaAdmissionRefused();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -32,7 +32,7 @@ async function bounded(response: Response): Promise<unknown> {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if ((size += value.length) > 65536) throw new CodexPersonaAdmissionRefused();
+      if (maxBytes !== undefined && (size += value.length) > maxBytes) throw new CodexPersonaAdmissionRefused();
       chunks.push(value);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -68,7 +68,7 @@ export async function admitCodexPersonaModel(persona: string, callerSignal: Abor
       const signed = await signer.sign({ method: 'POST', protocol: url.protocol, hostname: url.hostname,
         path: url.pathname, headers: { host: url.host, 'content-type': 'application/json', ...workerIdentityHeaders() }, body });
       signal.throwIfAborted();
-      return bounded(await fetch(url, { method: 'POST', headers: signed.headers, body, redirect: 'error', signal }));
+      return bounded(await fetch(url, { method: 'POST', headers: signed.headers, body, redirect: 'error', signal }), 65536);
     };
     // Bound credential acquisition as well as fetch; a late result cannot admit work.
     let abort!: () => void;

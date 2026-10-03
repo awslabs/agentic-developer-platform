@@ -33,7 +33,7 @@ class OperationRequest(BaseModel):
     action: Literal["claim", "settle"]
     kind: Literal["model", "report", "tool", "planning"]
     effect_key: str | None = Field(default=None, pattern=r"^(story-create|story-link|story-blocker|dispatch):[a-z0-9:-]{1,140}$")
-    result: str | None = Field(default=None, max_length=65536)
+    result: str | None = None
 
 
 # Only the report adapter is qualified here. Executable capabilities are added
@@ -219,7 +219,7 @@ def operation(store, record, body):
             ]
         )
         return {"status": "admitted"}
-    if body.result is None or len(body.result.encode()) > 65536:
+    if body.result is None:
         raise ValueError("invalid settlement")
     store.client.transact_write_items(
         TransactItems=[

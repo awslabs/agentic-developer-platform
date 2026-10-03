@@ -147,3 +147,15 @@ def test_planning_effects_are_persona_scoped_and_pending_is_not_replayed(admitte
     operation(store, record, claim("planning", effect_key="story-create:audit"))
     with pytest.raises(ValueError, match="reconciliation"):
         operation(store, record, claim("planning", effect_key="story-create:audit"))
+
+
+def test_large_model_receipt_is_preserved_and_replayed_without_truncation(admitted):
+    store, record, grant, env, _ = admitted
+    frozen_context(store, record, grant, env, now=NOW)
+    request = claim()
+    operation(store, record, request)
+    result = json.dumps({"output": "complete report " * 8000})
+    settled = request.model_copy(update={"action": "settle", "result": result})
+    receipt = operation(store, record, settled)
+    assert receipt == {"status": "confirmed", "result": result}
+    assert operation(store, record, request) == receipt

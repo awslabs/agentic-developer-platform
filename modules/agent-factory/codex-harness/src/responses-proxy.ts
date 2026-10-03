@@ -14,8 +14,8 @@ const message = z.strictObject({
 }).transform(({ internal_chat_message_metadata_passthrough: _discarded, id: _discardedId, ...item }) => item);
 const reasoningFields = {
   type: z.literal("reasoning"),
-  encrypted_content: z.string().min(1).max(32768),
-  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string().max(32000) })).max(16),
+  encrypted_content: z.string().min(1),
+  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string() })),
   status: z.literal("completed").optional(),
 };
 const reasoningInput = z.strictObject({ ...reasoningFields,
@@ -62,10 +62,10 @@ const sdkRequest = z.strictObject({
 export interface TextResponsesPolicy {
   model: string;
   effort: "minimal" | "low" | "medium" | "high" | "xhigh";
-  maxOutputTokens: number;
+  maxOutputTokens?: number;
   /** Only set for hosts with a bounded IPC transport. Direct HTTP has no local size gate. */
   maxRequestBytes?: number;
-  maxResponseBytes: number;
+  maxResponseBytes?: number;
   maxOperations?: number;
   timeoutMs: number;
   tools?: ResponsesTools;
@@ -74,7 +74,7 @@ export interface TextResponsesRequest {
   input: z.infer<typeof sdkRequest>["input"];
   instructions?: string;
   reasoning: { effort: TextResponsesPolicy["effort"] };
-  max_output_tokens: number;
+  max_output_tokens?: number;
   tools?: object[];
   parallel_tool_calls?: false;
 }
@@ -88,8 +88,8 @@ const responseSchema = z.strictObject({
   output: z.array(z.union([reasoningOutput, functionOutput, z.strictObject({
     id: z.string().min(1).max(200), type: z.literal("message"), role: z.literal("assistant"), status: z.literal("completed"),
     phase: z.enum(["commentary", "final_answer"]).optional(),
-    content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1).max(64),
-  })])).min(1).max(16), usage: usageSchema,
+    content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1),
+  })])).min(1), usage: usageSchema,
 });
 export type TextResponsesResult = z.infer<typeof responseSchema>;
 export interface ConfirmedTextOperation {
@@ -164,7 +164,7 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
         parameters: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
     input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item && policy.maxRequestBytes !== undefined ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
-    max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
+    ...(policy.maxOutputTokens === undefined ? {} : { max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens) }),
   };
   if (policy.maxRequestBytes !== undefined && Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
   return normalized;
@@ -202,10 +202,10 @@ function normalizeProviderResult(value: unknown): unknown {
 }
 
 export function textResponseEvents(value: unknown, policy: TextResponsesPolicy): string {
-  if (Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
+  if (policy.maxResponseBytes !== undefined && Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
   const response = responseSchema.parse(normalizeProviderResult(value));
   if (!Number.isSafeInteger(response.usage.input_tokens + response.usage.output_tokens)
-    || response.usage.output_tokens > policy.maxOutputTokens
+    || (policy.maxOutputTokens !== undefined && response.usage.output_tokens > policy.maxOutputTokens)
     || ((response.usage.input_tokens_details?.cached_tokens ?? 0) + (response.usage.input_tokens_details?.cache_write_tokens ?? 0)) > response.usage.input_tokens
     || (response.usage.output_tokens_details?.reasoning_tokens ?? 0) > response.usage.output_tokens) throw new Error("Invalid Responses usage");
   const calls = response.output.filter(item => item.type === "function_call");
@@ -254,7 +254,7 @@ export class ResponsesBridgeError extends Error {
  */
 export async function startTextResponsesProxy(host: TextResponsesHost, policy: TextResponsesPolicy) {
   if (!policy.model.trim() || !["minimal", "low", "medium", "high", "xhigh"].includes(policy.effort)) throw new Error("Invalid Responses policy");
-  for (const value of [policy.maxOutputTokens, ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), policy.maxResponseBytes, ...(policy.maxOperations === undefined ? [] : [policy.maxOperations]), policy.timeoutMs]) {
+  for (const value of [...(policy.maxOutputTokens === undefined ? [] : [policy.maxOutputTokens]), ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), ...(policy.maxResponseBytes === undefined ? [] : [policy.maxResponseBytes]), ...(policy.maxOperations === undefined ? [] : [policy.maxOperations]), policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Responses limit");
   }
   // A fresh immutable host snapshot prevents caller mutation during a request.

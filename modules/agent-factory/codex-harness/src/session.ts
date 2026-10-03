@@ -43,8 +43,8 @@ export interface AdmittedSession {
   repository?: RepositoryBinding;
   prompt: string;
   /** Additional host-owned model limits from the admitted run grant. */
-  maxOutputTokens: number;
-  maxResponseBytes: number;
+  maxOutputTokens?: number;
+  maxResponseBytes?: number;
   /** Host transport ceiling; Task IPC retains its 63 KiB payload default. */
   maxRequestBytes?: number;
   signal: AbortSignal;
@@ -89,8 +89,10 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     || plan.capabilities.some(value => value !== "artifacts.publish" && !planningCapabilities.includes(value as "story.create" | "agents.delegate") && !broker?.definitions.some(tool => tool.capability === value))) {
     throw new Error("Session requires the executable capability broker");
   }
-  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 4096
-    || !Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 65536) {
+  if ((maxOutputTokens !== undefined && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1))
+    || (maxResponseBytes !== undefined && (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1))
+    || (source.kind === "task-api" && (maxOutputTokens === undefined || maxOutputTokens > 4096
+      || maxResponseBytes === undefined || maxResponseBytes > 65536))) {
     throw new Error("Invalid admitted model limits");
   }
   for (const skill of plan.persona.skills) {
@@ -108,7 +110,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     ...(planningCapabilities.length ? [`Host planning capabilities: ${planningCapabilities.filter(capability => plan.capabilities.includes(capability)).join(', ')}. These operations are executed by the host after validating your structured artifact, not through model tools. For authorized story creation set publish_stories=true. For authorized dispatch return schedule entries. Do not claim completion before host receipts exist.`] : []),
     ...(plan.unavailableOptionalCapabilities.length ? [`Unavailable optional capabilities: ${plan.unavailableOptionalCapabilities.join(', ')}. Do not attempt these operations.`] : []),
   ].join('\n\n');
-  const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes, 32768)) : undefined;
+  const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes ?? 32768, 32768)) : undefined;
   callerSignal.throwIfAborted();
   const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(plan.limits.maxDurationMs)]);
   await host.assertCurrent(signal);
@@ -127,7 +129,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       execute: (name, args, active) => receipts.execute({ assertCurrent: signal => host.assertCurrent(signal),
         execute: (...args) => broker.execute(...args) }, name, args, active),
     }, { capabilities: plan.capabilities, maxCalls: broker.maxCalls, maxRequestBytes: 63 * 1024,
-      maxResultBytes: maxResponseBytes, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
+      maxResultBytes: maxResponseBytes ?? 65536, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
       maxClientContinuations: host.takeSteering && source.kind !== "task-api" ? null : host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
     // Task API retains explicit task-grant budgets. Direct persona runs do not
     // inherit the legacy hard-coded model/tool call ceilings.
@@ -147,7 +149,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       maxOutputTokens: maxOutputTokens,
       // Reserve wrapper space within the existing 64 KiB Task IPC contract.
       maxRequestBytes, maxResponseBytes: maxResponseBytes,
-      maxOperations, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000),
+      maxOperations, timeoutMs: source.kind === "task-api" ? Math.min(plan.limits.maxDurationMs, 120000) : plan.limits.maxDurationMs,
     });
     // Shared ADP personas already contain the maintained workflow and tool
     // policy. A bounded base avoids duplicating the CLI's coding-agent prompt

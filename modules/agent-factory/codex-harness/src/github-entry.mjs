@@ -117,7 +117,7 @@ async function main() {
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
         source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: planningIssueContext(input, artifactComment, artifactBlock),
           source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
-        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, signal,
+        signal,
       }, {
         assertCurrent: current,
         planningCapabilities: context.capabilities.filter(capability => capability === "story.create" || capability === "agents.delegate"),
@@ -159,12 +159,11 @@ async function main() {
             }
             if (!response.body) throw new Error('GitHub model response body missing; no automatic replay');
             const reader = response.body.getReader();
-            const chunks = []; let bytes = 0;
+            const chunks = [];
             try {
               for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                if ((bytes += value.length) > 48000) throw new Error('Model response exceeds bound');
                 chunks.push(value);
               }
             } finally { await reader.cancel(); }
