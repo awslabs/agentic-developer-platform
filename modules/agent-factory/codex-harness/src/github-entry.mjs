@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ResponsesBridgeError } from './responses-proxy.js';
 import { readModelResponse } from './model-response.js';
 /** GitHub invocation adapter for the shared, isolated official Codex SDK. */
 import { execFile } from 'node:child_process';
@@ -37,7 +38,8 @@ async function main() {
   const { createCodexPersonaReporter } = await shared('codex-persona-reporting');
   const tokenLifecycle = await import(new URL('../../codex-reviewer/dist/token-lifecycle.js', import.meta.url));
   await tokenLifecycle.withGitHubTokenRenewal(async () => {
-    const initial = await admitCodexPersonaModel(persona, AbortSignal.timeout(10000));
+    const lifetime = AbortSignal.timeout(2700000);
+    const initial = await admitCodexPersonaModel(persona, lifetime);
     const context = contextSchema.parse(initial.context);
     const snapshot = verifySnapshot(context.snapshot);
     const definition = personaSchema.parse(JSON.parse(snapshot.definition));
@@ -47,7 +49,7 @@ async function main() {
     }
     const remaining = context.deadlineMs - Date.now();
     if (remaining <= 0) throw new Error('GitHub persona expired');
-    const deadline = AbortSignal.timeout(Math.min(remaining, 2700000));
+    const deadline = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
     const reporter = await createCodexPersonaReporter({ ...context, model: initial.model });
     let controls;
     try {
@@ -63,19 +65,19 @@ async function main() {
       const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, context.capabilities]));
       const journal = async (kind, request, execute, active, effectKey) => {
         const binding = { operation_id: randomUUID(), request_digest: createHash('sha256').update(JSON.stringify(request)).digest('hex'), kind, ...(effectKey ? { effect_key: effectKey } : {}) };
-        const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active);
+        const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active).catch(() => { throw new ResponsesBridgeError('operation_claim_failed'); });
         if (admission.status === 'confirmed') return JSON.parse(admission.result);
         if (admission.status !== 'admitted') throw new Error('Operation requires reconciliation');
         const result = await execute();
         const serialized = JSON.stringify(result);
-        const receipt = await codexPersonaOperation({ ...binding, action: 'settle', result: serialized }, active);
+        const receipt = await codexPersonaOperation({ ...binding, action: 'settle', result: serialized }, active).catch(() => { throw new ResponsesBridgeError('operation_settlement_failed'); });
         if (receipt.status !== 'confirmed' || receipt.result !== serialized) throw new Error('Operation settlement was not confirmed');
         return result;
       };
       const current = async (active, checkpoint = true) => {
         active.throwIfAborted();
         if (checkpoint) await controls.checkpoint();
-        const fresh = await admitCodexPersonaModel(persona, active);
+        const fresh = await admitCodexPersonaModel(persona, active).catch(() => { throw new ResponsesBridgeError('model_authority_failed'); });
         if (fresh.model !== initial.model || fresh.snapshotDigest !== initial.snapshotDigest ||
             fresh.generation !== initial.generation || JSON.stringify(fresh.context) !== JSON.stringify(initial.context)) {
           throw new Error('GitHub persona authority changed');

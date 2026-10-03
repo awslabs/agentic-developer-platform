@@ -3,7 +3,7 @@ import { ModelHttpError } from "./model-http.js";
 import { z } from "zod";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
+import { ResponsesBridgeError, normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
 
 const policy: TextResponsesPolicy = { model: "fixture-model", effort: "medium", maxOutputTokens: 100, maxRequestBytes: 65536, maxResponseBytes: 65536, maxOperations: 2, timeoutMs: 5000 };
 const request = () => ({ model: policy.model, input: [{ role: "user", content: [{ type: "input_text", text: "fixture" }] }], stream: true, store: false, reasoning: { effort: "medium" } });
@@ -335,3 +335,16 @@ test("provider stream failures preserve diagnostics without replay", async () =>
     assert.equal(calls, 1);
   } finally { await proxy.close(); }
 });
+
+for (const code of ['operation_claim_failed', 'operation_settlement_failed', 'model_authority_failed'] as const) {
+  test(`control failure preserves ${code} without replay`, async () => {
+    let calls = 0;
+    const proxy = await startTextResponsesProxy(async () => { calls++; throw new ResponsesBridgeError(code); }, policy);
+    try {
+      assert.equal((await post(proxy)).status, 502);
+      assert.equal(proxy.failure?.code, code);
+      assert.equal((await post(proxy)).status, 409);
+      assert.equal(calls, 1);
+    } finally { await proxy.close(); }
+  });
+}

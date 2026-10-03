@@ -45,7 +45,7 @@ async function bounded(response: Response, maxBytes?: number): Promise<unknown> 
  * Call at every boundary; never reuse a decision after a pause or retry.
  */
 export async function admitCodexPersonaModel(persona: string, callerSignal: AbortSignal) {
-  const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(10000)]);
+  const signal = callerSignal;
   try {
     if (process.env.ADP_AGENT_AUTHORITY_ENABLED !== 'true' ||
         !/^agent-codex-(architect|product|pm|operations|aidlc|intent-refinement)$/.test(persona) ||
@@ -70,7 +70,7 @@ export async function admitCodexPersonaModel(persona: string, callerSignal: Abor
       signal.throwIfAborted();
       return bounded(await fetch(url, { method: 'POST', headers: signed.headers, body, redirect: 'error', signal }), 65536);
     };
-    // Bound credential acquisition as well as fetch; a late result cannot admit work.
+    // Run cancellation covers credential acquisition and fetch; a late result cannot admit work.
     let abort!: () => void;
     const cancelled = new Promise<never>((_, reject) => {
       abort = () => reject(new CodexPersonaAdmissionRefused());
@@ -111,7 +111,7 @@ export async function admitCodexPersonaModel(persona: string, callerSignal: Abor
 /** Protected operation receipt; an ambiguous transport is never retried here. */
 export async function codexPersonaOperation(body: { operation_id: string; request_digest: string;
   action: 'claim' | 'settle'; kind: 'model' | 'report' | 'tool' | 'planning'; effect_key?: string; result?: string }, callerSignal: AbortSignal) {
-  const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(10000)]);
+  const signal = callerSignal;
   const base = process.env.ADP_AGENT_CONTROL_ENDPOINT;
   if (!base || !/^https:\/\/[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?\/[A-Za-z0-9_-]+(?:\/agent)?\/internal\/v1\/agent\/?$/.test(base)) {
     throw new CodexPersonaAdmissionRefused();

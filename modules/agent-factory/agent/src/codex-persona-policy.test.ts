@@ -144,3 +144,22 @@ it('preserves operation receipts larger than the legacy response ceiling', async
   const result = await codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64), action: 'settle', kind: 'model', result: receipt.result }, new AbortController().signal);
   expect(result).toEqual(receipt);
 });
+
+it('control requests use caller cancellation without a ten-second subdeadline', async () => {
+  const timeout = jest.spyOn(AbortSignal, 'timeout');
+  const controller = new AbortController();
+  try {
+    await admitCodexPersonaModel('agent-codex-architect', controller.signal);
+    expect((fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    global.fetch = jest.fn(async () => new Response(JSON.stringify({ status: 'admitted' })));
+    await codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64), action: 'claim', kind: 'model' }, controller.signal);
+    expect((fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    expect(timeout).not.toHaveBeenCalled();
+  } finally { timeout.mockRestore(); }
+});
+
+it('uncertain operation transport is never replayed automatically', async () => {
+  global.fetch = jest.fn(async () => { throw new Error('transport unavailable'); });
+  await expect(codexPersonaOperation({ operation_id: 'fixture', request_digest: 'a'.repeat(64), action: 'claim', kind: 'model' }, new AbortController().signal)).rejects.toThrow();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
