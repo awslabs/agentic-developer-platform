@@ -670,3 +670,14 @@ def test_review_upload_shared_report_transport_checks_exact_byte_receipt(monkeyp
     monkeypatch.setattr(run_report, "request", lambda *args: {"key": key, "sha256": "wrong", "recorded": True})
     with pytest.raises(StatusGatewayError, match="receipt"):
         status_gateway_client.upload_review_result(data)
+
+
+@pytest.mark.parametrize("status,retryable", [(403, False), (409, False), (429, True), (500, True), (503, True)])
+def test_reviewer_transport_distinguishes_temporary_failures(enabled, http, monkeypatch, status, retryable):
+    original = FakeResponse.__init__
+    def response_init(self, **kwargs):
+        original(self, **{**kwargs, "status_code": status})
+    monkeypatch.setattr(FakeResponse, "__init__", response_init)
+    with pytest.raises(StatusGatewayError) as caught:
+        status_gateway_client._post("/review-checks", {"head_sha": "a" * 40})
+    assert caught.value.retryable is retryable

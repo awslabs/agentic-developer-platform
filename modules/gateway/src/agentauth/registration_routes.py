@@ -324,6 +324,32 @@ async def record_status(
     request: Request,
     runtime: RegistrationRuntime = Depends(get_registration_runtime),
 ) -> JSONResponse:
+    if body.status == "complete":
+        try:
+            # Authenticate the presenting workload before querying its assignment.
+            record = await run_in_threadpool(
+                runtime.service._resolve,
+                credential_token=runtime.credential(request),
+                pod=await run_in_threadpool(runtime._verified, request),
+                terminal=True,
+            )
+            if record.status.value != "completed":
+                from src.orchestration.review_assignment import require_reviewer_merge
+                from src.orchestration.run_reports import RunReportError
+                from src.shared.database import get_session_factory
+
+                raw = await run_in_threadpool(runtime.runtime.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+                node_id = (raw or {}).get("orchestration_node_id", {}).get("S")
+                if node_id:
+                    try:
+                        async with get_session_factory()() as session:
+                            await require_reviewer_merge(session, org_id=record.tenant_id, node_id=node_id, run_id=record.invocation_id)
+                    except RunReportError as error:
+                        raise HTTPException(503 if error.retryable else 409, error.code) from None
+        except (RegistrationRefusedError, WorkloadRefusedError, BootstrapRefusedError, CredentialError, ExecutionStateError):
+            raise HTTPException(404, "not found") from None
+        except AuthorityStoreError:
+            raise HTTPException(503, "agent authority unavailable") from None
     response = await _call(runtime.status, request, body, live_runtime=runtime if body.status == "in_progress" else None)
     # The status service has verified the pod, credential and current attempt,
     # and committed a protected terminal report before releasing ownership.

@@ -239,7 +239,7 @@ def worker(delivery, monkeypatch, tmp_path):
     def run(command, **kwargs):
         if command[0] == "node":
             executions.append(envelope["message_id"])
-            return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
+            return MagicMock(returncode=exit_codes[-1], stdout=json.dumps({"status": "merged", "merged": True}), stderr="")
         return MagicMock(
             returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
@@ -680,3 +680,38 @@ def test_codex_review_archives_progress_before_terminal_status(worker, monkeypat
     assert archive.call_args.args[0] == "Live reviewer activity"
     entrypoint._record_session_id.assert_called_once()
     assert row(client, envelope)["transcript_key"] == {"S": "runs/reviewer/transcript.md"}
+
+
+@pytest.mark.parametrize("outcome", ["merged", "blocked", "evidence_error"])
+def test_engine_reviewer_terminal_status_requires_delivery(worker, monkeypatch, outcome):
+    from lib import codex_review_delivery, review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["intent"]["trigger"] = "engine_review_cycle"
+    envelope["review_cycle_input"] = {
+        "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 42,
+        "head_sha": "a" * 40, "accepted_scope": "story-revision", "operation_key": "review:1",
+        "findings": [], "reviewer_owned_delivery": True,
+    }
+    seed(client, envelope)
+    monkeypatch.setattr(review_cycle_input, "checkout_cycle_input", lambda *a, **kw: ("story", "a" * 40))
+    finish = MagicMock(return_value="Evidence recorded")
+    if outcome == "evidence_error":
+        finish.side_effect = RuntimeError("invalid repair lineage")
+    monkeypatch.setattr(codex_review_delivery, "finish_engine_review", finish)
+    if outcome == "blocked":
+        run = entrypoint.subprocess.run
+        def blocked(command, **kwargs):
+            result = run(command, **kwargs)
+            if command[0] == "node":
+                result.stdout = json.dumps({"status": "engine_reviewed", "merged": False,
+                                           "delivery_blocked": "Required design contract missing"})
+            return result
+        monkeypatch.setattr(entrypoint.subprocess, "run", blocked)
+    assert entrypoint.main() == (0 if outcome == "merged" else 1)
+    assert row(client, envelope)["status"] == {"S": "complete" if outcome == "merged" else "failed"}
+    if outcome == "blocked":
+        assert "Required design contract missing" in row(client, envelope)["error_message"]["S"]
+    assert len(executions) == 1
+    ack.assert_called_once()

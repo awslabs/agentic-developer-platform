@@ -210,15 +210,9 @@ class MergeServices:
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
         if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
-            from .run_reports import OrchestrationRunReport
+            from .review_assignment import reviewer_owns_delivery
 
-            report = await session.get(OrchestrationRunReport, run_id)
-            if not (
-                provider_state.merged
-                and report
-                and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True
-                and (report.review_receipt or {}).get("recorded") is True
-            ):
+            if not (provider_state.merged and await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run_id)):
                 raise CycleBlockedError("reviewer_still_active")
         return await load_merge_review(
             session,
@@ -581,10 +575,13 @@ class MergeController:
             from .run_reports import OrchestrationRunReport
 
             report = await session.get(OrchestrationRunReport, run)
-            if report and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True:
+            from .review_assignment import reviewer_owns_delivery
+
+            if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run):
                 # Reviewer delivery owns mutation; the engine only adopts the
                 # independently verified merged state above.
-                if not report.terminal_receipt:
+                raw = await (await self.services.authority_for(context)).protected(node.org_id, run)
+                if (report and not report.terminal_receipt) or (not report and raw and raw.get("status") != {"S": "completed"}):
                     return MergeObservation(ObservationKind.WAITING, detail="Reviewer is delivering the merge.")
                 raise CycleBlockedError("reviewer_merge_not_delivered", BlockCode.HUMAN_INPUT_REQUIRED)
             if state.queue_id:

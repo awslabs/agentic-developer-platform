@@ -13,6 +13,31 @@ from adp_review.client import ReviewError, mint_review_token, submit_review
 from lib import pr_binding, review_delivery, review_result, run_report, status_gateway_client
 
 
+class ReviewDeliveryBlocked(RuntimeError):
+    """A completed model pass is not a completed delivery assignment."""
+
+
+def require_delivery_success(output: str, envelope: dict) -> None:
+    cycle = envelope.get("review_cycle_input")
+    if cycle is None and not (envelope.get("source_ref") or {}).get("pr"):
+        return  # Issue/design reviews have no PR to merge.
+    try:
+        result = json.loads(output.strip().splitlines()[-1])
+    except (IndexError, ValueError, TypeError):
+        raise ReviewDeliveryBlocked("Reviewer returned no verifiable delivery result") from None
+    if not isinstance(result, dict):
+        raise ReviewDeliveryBlocked("Reviewer returned no verifiable delivery result")
+    if cycle is not None:
+        required = cycle.get("reviewer_owned_delivery") is True
+        merged = result.get("merged") is True
+    else:
+        required = os.environ.get("CODEX_REVIEWER_MERGE_ENABLED", "true") == "true"
+        merged = result.get("status") == "merged"
+    if required and not merged:
+        raise ReviewDeliveryBlocked("Reviewer did not deliver a verified merge: " + str(
+            result.get("delivery_blocked") or result.get("repair_blocked") or "unresolved review findings")[:800])
+
+
 def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> str:
     # This is the deterministic adapter's result, not an inferred model verdict.
     result = json.loads(output.strip().splitlines()[-1])
@@ -26,13 +51,9 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
     if head != cycle["head_sha"]:
         if (cycle.get("allow_story_repairs") is not True or base != cycle["head_sha"]):
             raise RuntimeError("Codex repaired head is not a child of its assigned revision")
-        if cycle.get("reviewer_owned_delivery") is True:
-            # The same controller may publish several tested repairs while CI
-            # runs. Every push is fenced; the final result retains its assignment
-            # root instead of pretending each intermediate commit is a new run.
-            run(["git", "merge-base", "--is-ancestor", base, head], cwd=cwd)
-        elif run(["git", "rev-parse", "HEAD^"], cwd=cwd).stdout.strip() != base:
-            raise RuntimeError("Codex repaired head is not a child of its assigned revision")
+        # Both dispatch transports use the same checkpoint controller. Preserve
+        # its assigned root across multiple fenced commits and base merges.
+        run(["git", "merge-base", "--is-ancestor", base, head], cwd=cwd)
     elif base is not None:
         raise RuntimeError("Codex repair result has inconsistent lineage")
 
@@ -81,15 +102,16 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
 def main():
     """Host-only evidence bridge; merge decisions and GitHub merge stay in TS."""
     value = json.load(sys.stdin)
-    run_report._assignment = {
-        "credential": Path(os.environ["ADP_RUN_REPORT_CREDENTIAL_FILE"]).read_text(),
-        "run_id": os.environ["ADP_MESSAGE_ID"],
-        "attempt": int(os.environ["ADP_ORCHESTRATION_ATTEMPT"]),
-        "tenant_id": os.environ["ADP_TENANT_ID"],
-        "repo": value["cycle"]["repo"],
-        "ownership_nonce": os.environ["ADP_RUN_REPORT_OWNERSHIP_NONCE"],
-        "reviewer_owned_delivery": value["cycle"].get("reviewer_owned_delivery") is True,
-    }
+    if os.environ.get("ADP_RUN_REPORT_CREDENTIAL_FILE"):
+        run_report._assignment = {
+            "credential": Path(os.environ["ADP_RUN_REPORT_CREDENTIAL_FILE"]).read_text(),
+            "run_id": os.environ["ADP_MESSAGE_ID"],
+            "attempt": int(os.environ["ADP_ORCHESTRATION_ATTEMPT"]),
+            "tenant_id": os.environ["ADP_TENANT_ID"],
+            "repo": value["cycle"]["repo"],
+            "ownership_nonce": os.environ["ADP_RUN_REPORT_OWNERSHIP_NONCE"],
+            "reviewer_owned_delivery": value["cycle"].get("reviewer_owned_delivery") is True,
+        }
     delivery = review_delivery.ReviewDelivery(
         json.loads(os.environ[review_result.REVIEW_EXPECT_ENV]),
         Path(os.environ[review_result.AGENT_REPORT_PATH_ENV]),

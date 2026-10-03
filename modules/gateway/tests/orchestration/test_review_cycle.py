@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.agentauth.engine import EngineAuthorityWriter
@@ -306,7 +306,32 @@ async def review(ctx, *, approve=False, findings=None, publication=False):
     await ctx.finish(claim.active_run_id)
 
 
-async def test_develop_review_repair_fresh_review_merge_ready(cycle):
+async def legacy_delivery(ctx):
+    """Represent a retained pre-upgrade dispatch, which has no merge ownership."""
+    run_id = ctx.calls[-1]["message_id"]
+    ctx.calls[-1]["review_cycle_input"].pop("reviewer_owned_delivery", None)
+    async with ctx.factory() as db:
+        rows = (
+            await db.scalars(
+                select(OrchestrationDecision).where(OrchestrationDecision.node_id == ctx.node.id, OrchestrationDecision.kind == "agent_dispatched")
+            )
+        ).all()
+        for row in rows:
+            saved = json.loads(row.reason)
+            if saved.get("run_id") == run_id:
+                saved["envelope"]["review_cycle_input"].pop("reviewer_owned_delivery", None)
+                # Seed a pre-upgrade receipt in the isolated test database.
+                # Production decisions remain append-only.
+                await db.execute(
+                    update(OrchestrationDecision.__table__)
+                    .where(OrchestrationDecision.__table__.c.id == row.id)
+                    .values(reason=json.dumps(saved))
+                    .execution_options(synchronize_session=False)
+                )
+        await db.commit()
+
+
+async def test_legacy_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx = cycle
     from src.agentauth.model_policy import _persist_snapshot
     from tests.agentauth.test_model_policy import live_snapshot
@@ -333,6 +358,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx.service.queue.send_message = assert_snapshot_before_send
     result = await tick(ctx)
     assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
+    await legacy_delivery(ctx)
     first = ctx.calls[-1]
     assert first["persona"] == "agent-codex-reviewer"
     assert first["model_resolved"] == "openai.gpt-6-sol"
@@ -345,6 +371,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
+    await legacy_delivery(ctx)
     repair = ctx.calls[-1]
     assert repair["persona"] == "agent-codex-reviewer"
     assert repair["review_cycle_input"]["findings"][0]["finding_id"] == "F1"
@@ -356,6 +383,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     await ctx.finish(repair["message_id"])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
+    await legacy_delivery(ctx)
     fresh = ctx.calls[-1]
     assert fresh["review_expect"]["expected_head_sha"] == ctx.head
     assert fresh["review_expect"]["author_run_id"] == repair["message_id"]
@@ -607,8 +635,10 @@ async def test_repair_has_separate_allowance_and_review_retains_its_history(cycl
         plan.plan_document = document
         await db.commit()
     assert (await tick(cycle)).effects_succeeded == 1
+    await legacy_delivery(cycle)
     await review(cycle, findings=[{"finding_id": "F1", "summary": "Correction required"}])
     assert (await tick(cycle)).effects_succeeded == 1
+    await legacy_delivery(cycle)
     await cycle.finish(cycle.calls[-1]["message_id"])
     cycle.head = "b" * 40
     result = await tick(cycle)
@@ -796,3 +826,20 @@ async def test_failed_reviewer_retries_retained_pr_with_remaining_allowance(cycl
     await review(cycle, approve=True)
     await tick(cycle)
     assert (await state(cycle))[0].phase == "merge_ready"
+
+
+@pytest.mark.parametrize("terminal", ["complete", "failed"])
+async def test_protected_reviewer_owns_delivery_by_default_and_blockers_do_not_dispatch_another_pass(cycle, terminal):
+    assert (await tick(cycle)).effects_succeeded == 1
+    envelope = cycle.calls[-1]
+    assert envelope["review_cycle_input"]["reviewer_owned_delivery"] is True
+    await review(cycle, findings=[{"finding_id": "external", "summary": "Missing required evidence"}])
+    if terminal == "failed":
+        raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+        raw["terminal_outcome"] = {"S": "failed"}
+        cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    result = await tick(cycle)
+    execution, _, _, _ = await state(cycle)
+    assert result.effects_attempted == 0
+    assert len(cycle.calls) == 1
+    assert execution.block_detail == "reviewer_delivery_blocked"

@@ -2,11 +2,11 @@
 
 ## Purpose and owner
 
-The assigned reviewer owns **review → repair → verification → final report** for
+The assigned reviewer owns **review → repair → verification → merge → final report** for
 one existing PR. Fix concrete issues within the accepted scope and available
 authority instead of handing them back merely because they were found in review.
-The review task ends with a verified result or a specific blocker. The configured
-merge owner handles merging; review is not blanket merge/deployment authority.
+The delivery task ends with a verified merge or a specific blocker. Explicit
+review-only assignments stop after the verdict. Deployment remains separate.
 Apply `rules/personas/reviewer.md` for the complete repair and evidence contract.
 
 ## 1. Verify the target and ownership
@@ -144,12 +144,12 @@ publication, but is not an implementation change. Publish multiline comments
 using `--body-file`; do not commit review logs or create report-only PRs that
 trigger another review. Use the artifact service when available.
 
-## 6. Leave merging to its authorized owner
+## 6. Merge and verify delivery
 
-In an engine review action, publish the final evidence for the engine's merge
-phase. If the task explicitly authorizes the reviewer to merge, verify final-head
-checks, required independent approvals, no unresolved blockers and repository
-rules first. Merge only the verified head through the normal guarded path:
+Publish final evidence, then deliver the merge unless this is explicitly a
+review-only assignment. Verify final-head checks, required independent approvals,
+no unresolved blockers and repository rules first. Packaged Codex reviewers use
+the deterministic reviewer controller for this step. Merge only the verified head through the normal guarded path:
 
 ```bash
 gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash \

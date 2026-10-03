@@ -103,7 +103,6 @@ async def current_author_run(session, *, node, default):
                     and committed.flow_id == node.flow_id
                     and committed.actor_kind == "service"
                     and committed.kind == "agent_dispatched"
-                    and saved.get("authority_mode") == "shared_worker_role"
                     and saved.get("run_id") == run_id
                     and saved.get("action") == Action.REPAIR.value
                     and envelope.get("persona") == "agent-codex-reviewer"
@@ -490,6 +489,10 @@ class ReviewCycleServices:
                 session, context, node, binding, detail["active_run_id"], effect.action, reserve=True
             )
             allow_story_repairs = effect.action is Action.REPAIR
+            allow_review_evidence = effect.action is Action.REVIEW
+            if effect.action is Action.REPAIR:
+                await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REVIEW)
+                allow_review_evidence = True
             if effect.action is Action.REVIEW:
                 try:
                     await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR)
@@ -540,11 +543,12 @@ class ReviewCycleServices:
             }
             envelope["review_cycle_input"].update(
                 allow_story_repairs=allow_story_repairs,
+                reviewer_owned_delivery=allow_review_evidence,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
                 operation_key=action.operation_key,
             )
-            if effect.action is Action.REVIEW:
+            if allow_review_evidence:
                 envelope["review_expect"] = {
                     "org_id": node.org_id,
                     "flow_id": node.flow_id,

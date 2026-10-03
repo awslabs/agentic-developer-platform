@@ -391,7 +391,7 @@ export async function runEngineReview(
   const root = envelope.cycle.head_sha;
   const finish = () => ({ ...result, repair_base_sha: result.sha === root ? null : root });
   if (!envelope.cycle.reviewer_owned_delivery) {
-    // Protected assignments leave CI/merge delivery with the engine. Publishing
+    // Retained legacy assignments leave CI/merge delivery with the engine. Publishing
     // a milestone must not end their repair task or consume another dispatch.
     // Reuse the same repair/inspection threads and shared model allowance.
     while (result.checkpoint_remaining.length && !result.merged && !result.repair_blocked) {

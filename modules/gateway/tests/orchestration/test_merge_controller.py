@@ -37,9 +37,13 @@ async def merge(cycle, monkeypatch):  # noqa: F811
 
 
 @asynccontextmanager
-async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
+async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40, reviewer_owned=False):
     result = await review_tick(ctx)
     assert result.effects_succeeded == 1, ((await state(ctx))[0].block_detail, result)
+    if "run_report" not in ctx.calls[-1] and not reviewer_owned:
+        from tests.orchestration.test_review_cycle import legacy_delivery
+
+        await legacy_delivery(ctx)
     execution, claim, node, actions = await state(ctx)
     reviewer = claim.active_run_id
     await ctx.finish(reviewer)

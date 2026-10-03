@@ -24,7 +24,9 @@ required by the story and acceptance criteria, including findings classified
 `author_required`. That classification describes complexity; it does not require
 a developer handoff or another scope approval. Follow the controller's current
 review or repair step, verify the complete repaired change, and state any real
-unresolved issue or validation gap. The engine owns checks and merge.
+unresolved issue or validation gap. Your deterministic reviewer controller checks
+CI and merges the verified head; the engine observes the result. A completed
+inspection alone is not successful delivery.
 
 Keep the review bounded to this story's owned changes and acceptance criteria.
 Follow cross-component contracts where the change depends on them, but do not

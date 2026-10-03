@@ -134,14 +134,11 @@ class ReviewCycleHandler:
             if pending is not None:
                 return await services.observe_dispatch(context, pending)
             if dispatches:
+                from .review_assignment import reviewer_owns_delivery
                 from .review_cycle_dispatch import continuation_run_id
-                from .run_reports import OrchestrationRunReport
 
-                report = await session.get(OrchestrationRunReport, continuation_run_id(dispatches[-1].operation_key))
-                if (
-                    report
-                    and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True
-                    and (report.review_receipt or {}).get("recorded") is True
+                if await reviewer_owns_delivery(
+                    session, org_id=node.org_id, node_id=node.id, run_id=continuation_run_id(dispatches[-1].operation_key)
                 ):
                     head = await services.head(binding)
                     for evidence in reversed(rows):
@@ -153,7 +150,7 @@ class ReviewCycleHandler:
                             and data.get("reviewed_head_sha") == head
                             and data.get("complete_review") == "true"
                             and data.get("publication_outstanding") != "true"
-                            and cycle.get("reviewer_run_id") == report.run_id
+                            and cycle.get("reviewer_run_id") == continuation_run_id(dispatches[-1].operation_key)
                             and cycle.get("author_run_id") == dispatches[-1].detail.get("author_run_id")
                         ):
                             # Observe delivery as soon as review evidence exists.
@@ -199,6 +196,20 @@ class ReviewCycleHandler:
             latest = dispatches[-1] if dispatches else None
             repairs = [row for row in rows if row.kind == "merge_repair_request" and row.status == "succeeded"]
             repair_request = repairs[-1] if repairs else None
+            if latest is not None and facts.get("review_retry_of"):
+                from .review_assignment import reviewer_owns_delivery
+
+                if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=facts["active_run_id"]):
+                    for evidence in rows:
+                        if evidence.kind != "review_evidence" or evidence.status != "succeeded":
+                            continue
+                        data = evidence.detail or {}
+                        try:
+                            reviewed = json.loads(data.get("cycle_input", "{}"))
+                        except (TypeError, ValueError):
+                            continue
+                        if reviewed.get("reviewer_run_id") == facts["active_run_id"] and data.get("reviewed_head_sha") == facts["head_sha"]:
+                            raise CycleBlockedError("reviewer_delivery_blocked", BlockCode.HUMAN_INPUT_REQUIRED)
             if latest is not None and facts["active_run_id"] in {facts.get("bootstrap_retry_of"), facts.get("review_retry_of")}:
                 # Retry a terminal failure with remaining allowance through a new
                 # durable action, retaining its PR, author, findings and allowance.
@@ -255,10 +266,9 @@ class ReviewCycleHandler:
                         )
                     if review.detail.get("publication_outstanding") == "true":
                         raise CycleBlockedError("review_publication_outstanding")
-                    from .run_reports import OrchestrationRunReport
+                    from .review_assignment import reviewer_owns_delivery
 
-                    report = await session.get(OrchestrationRunReport, facts["active_run_id"])
-                    if report and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True:
+                    if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=facts["active_run_id"]):
                         # This reviewer already owned repair. An explicit blocker
                         # is not permission to dispatch the same work again.
                         raise CycleBlockedError("reviewer_delivery_blocked", BlockCode.HUMAN_INPUT_REQUIRED)

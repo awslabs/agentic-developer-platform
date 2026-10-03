@@ -33,8 +33,9 @@ remain internal implementation details.
 
 Engine review and repair continuations select `agent-codex-reviewer` and use the
 protected `review_cycle_input`, without requiring a webhook payload or an
-`agent/issue-N` branch. Shared-worker flows with repair permission let the reviewer
-fix against the story and acceptance criteria, then review the final child commit
+`agent/issue-N` branch. Both protected and shared-worker flows default to reviewer-owned
+delivery. Assignments with repair permission let the reviewer
+fix against the story and acceptance criteria, then review the final descendant commit
 before an exact-lease push. Reviews with no repair permission remain read-only.
 There is no mechanical file/line limit in this story repair path.
 
@@ -62,9 +63,11 @@ return to the same retained repair thread.
 The engine observes the merged PR, validates the accepted review evidence and
 completes the story. It does not perform a competing merge for these assignments.
 A missing worker terminal report after merge does not require another review.
+Both terminal APIs refuse successful delivery before the provider confirms merge.
+Finalization failures report failure rather than leaving an exited worker live.
 Explicit blockers stop delivery; they do not dispatch another paid agent.
 
-Completed review bytes are retained in the worker's existing S3 reporting spool
+For shared-worker reporting, completed review bytes are retained in the existing S3 spool
 before upload and merge. Reporting retries reuse those bytes and never start a
 model. Legacy assignments retain their original single-pass behavior. Review
 reports stay outside implementation commits.

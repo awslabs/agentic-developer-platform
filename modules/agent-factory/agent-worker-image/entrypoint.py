@@ -2982,17 +2982,38 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
             if cycle_input is not None:
-                from lib.codex_review_delivery import finish_engine_review
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, finish_engine_review, require_delivery_success
                 try:
                     summary = finish_engine_review(
                         result.stdout or "", envelope=envelope, delivery=review_delivery,
                         run=run_cmd, cwd=WORK_DIR,
                     )
+                    require_delivery_success(result.stdout or "", envelope)
                 except Exception as exc:
-                    logger.warning("Codex engine evidence delivery failed (%s)", type(exc).__name__)
-                    # Reporting failure is not an agent crash and must not admit
-                    # another paid review. Keep the delivery available for replay.
-                    return AGENT_EXIT_RETRYABLE
+                    # A finished process with undelivered evidence is not live or
+                    # successful. Preserve the concrete delivery outcome instead
+                    # of leaving a phantom worker for the engine to wait on.
+                    error = str(exc) if isinstance(exc, ReviewDeliveryBlocked) else f"Reviewer evidence delivery failed ({type(exc).__name__}); PR merge was not verified"
+                    failure = {"category": "inspection" if isinstance(exc, ReviewDeliveryBlocked) else "contract", "exit_code": 1}
+                    if run_report.enabled():
+                        try:
+                            run_report.spool_undelivered_failure(failure=failure)
+                            run_report.terminal("failed", failure=failure)
+                        except run_report.RunReportError as report_error:
+                            logger.error("Reviewer failure reporting deferred: %s", report_error.code)
+                            return AGENT_EXIT_RETRYABLE
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.error("%s", error)
+                    return 1
+            if cycle_input is None:
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, require_delivery_success
+                try:
+                    require_delivery_success(result.stdout or "", envelope)
+                except ReviewDeliveryBlocked as exc:
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=str(exc))
+                    _delete_message(queue_url, region, receipt_handle)
+                    return 1
             if run_report.enabled():
                 try:
                     run_report.terminal("complete")

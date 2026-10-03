@@ -14,6 +14,8 @@ emulated DynamoDB in ``test_registration.py``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -44,6 +46,10 @@ class StubService:
     def _maybe_refuse(self):
         if self.refuse is not None:
             raise self.refuse
+
+    def _resolve(self, **kwargs):
+        self._maybe_refuse()
+        return SimpleNamespace(status=SimpleNamespace(value="running"), tenant_id="org", invocation_id="run")
 
     def record_status(self, *, credential_token, pod, status, fields=None):
         self.calls.append(("status", {"credential": credential_token, "pod": pod, "status": status, "fields": fields}))
@@ -76,6 +82,7 @@ class StubRuntime:
     def __init__(self, workloads, *, flow_refused=False):
         self.workloads = workloads
         self.flow_refused = flow_refused
+        self.store = SimpleNamespace(_read=lambda *args: {})
 
     def authenticate(self, credential_token, workload_token):
         return self.workloads.verify(workload_token), None, object(), object()
@@ -404,3 +411,34 @@ def test_halted_flow_can_still_report_termination_and_clear(harness, path, body)
     response = client.post(f"/internal/v1/agent/self/{path}", json=body, headers=headers())
     assert response.status_code == 200
     assert len(service.calls) == 1
+
+
+@pytest.mark.parametrize("merged", [False, True])
+def test_completion_checks_authenticated_assignment_before_recording(harness, monkeypatch, merged):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.run_reports import RunReportError
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    client, service, _ = harness()
+    runtime = client.app.dependency_overrides[registration_routes.get_registration_runtime]()
+    runtime.runtime.store._read = lambda *args: {"orchestration_node_id": {"S": "assigned-node"}}
+    gate = AsyncMock(side_effect=None if merged else RunReportError("reviewer_merge_not_delivered"))
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session)
+    monkeypatch.setattr("src.orchestration.review_assignment.require_reviewer_merge", gate)
+    response = client.post("/internal/v1/agent/self/status", json={"status": "complete"}, headers=headers())
+    assert response.status_code == (200 if merged else 409)
+    assert gate.call_args.kwargs == {"org_id": "org", "node_id": "assigned-node", "run_id": "run"}
+    assert len(service.calls) == int(merged)
+
+
+@pytest.mark.parametrize("error,code", [(RegistrationRefusedError("not found"), 404), (AuthorityStoreError("unavailable"), 503)])
+def test_completion_authentication_refusals_do_not_become_server_errors(harness, error, code):
+    client, service, _ = harness(service=StubService(refuse=error))
+    response = client.post("/internal/v1/agent/self/status", json={"status": "complete"}, headers=headers())
+    assert response.status_code == code
+    assert service.calls == []
