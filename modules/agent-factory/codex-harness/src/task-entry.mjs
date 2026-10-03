@@ -37,6 +37,7 @@ async function run() {
   let previousArtifact;
   let clarifications = 0;
   let operations = 0;
+  let analysisStarted = false;
   const maxOperations = Math.min(start.limits.max_turns, policy.limits.maxTurns, JSON.parse(snapshot.definition).limits.maxTurns);
   const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations, repository?.capabilities ?? []) : undefined;
   let repair = false;
@@ -69,7 +70,12 @@ async function run() {
         if (++operations > maxOperations) throw new Error('task model operation budget exhausted');
         return observeOperation("model", () => toolSession ? toolSession.model(request, signal) : bridge.responses(request));
       },
-      async progress(event) { if (event.type === 'turn.started') bridge.progress('Analysing the admitted task and supplied evidence.', 'analysis'); },
+      async progress(event) {
+        if (event.type === 'turn.started' && !analysisStarted) {
+          analysisStarted = true;
+          bridge.progress('Analysing the task and supplied evidence.', 'analysis');
+        }
+      },
     });
     if (bridge.steering.length) {
       if (operations >= maxOperations) throw new Error('task amendments require more model budget');

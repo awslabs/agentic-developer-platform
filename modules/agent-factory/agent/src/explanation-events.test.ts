@@ -63,6 +63,20 @@ describe('real read-only listener', () => {
     expect((await (await request('/agent/state')).json() as any).capabilities.pause).toBe(false);
     await reader.cancel();
   });
+  it('replays retained history larger than the socket buffer without dropping the feed', async () => {
+    for (let n = 0; n < 100; n++) hub.publish(`marker-${n}: ` + 'deployment evidence '.repeat(180));
+    const retained = hub.replay().events;
+    expect(JSON.stringify(retained).length).toBeGreaterThan(65536);
+    const response = await request('/agent/events');
+    hub.publish('live-after-replay');
+    hub.finish();
+    const body = await response.text();
+    const received = body.split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6))).filter(event => event.sequence);
+    expect(received.map(event => event.sequence)).toEqual([...retained.map(event => event.sequence), 101, 102]);
+    expect(received.at(-2).payload.text).toBe('live-after-replay');
+    expect(received.at(-1).kind).toBe('terminal');
+  });
   it('refuses missing auth and wrong generation', async () => {
     expect((await request('/agent/events', 'GET', false)).status).toBe(401);
     expect((await fetch(`http://127.0.0.1:${port}/agent/events`, { headers: {

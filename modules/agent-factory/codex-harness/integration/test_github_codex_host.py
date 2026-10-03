@@ -161,7 +161,13 @@ export async function createCodexPersonaReporter() {
     assert (artifacts / 'report.json').exists() == success
     assert len(requests) == (36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
-        assert 'Working through' in (artifacts / 'progress.txt').read_text()
+        progress = (artifacts / 'progress.txt').read_text()
+        assert progress.count('Starting the repository assessment.') == 1
+        assert 'Working through the admitted task' not in progress
+        if mode in {'repository-read', 'many-tools'}:
+            assert 'Reading README.md (lines 1–100)' in progress
+            assert 'Read README.md (lines 1–100)' in progress
+            assert 'Pinned repository evidence 471.' not in progress
         assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
     if requests:
         assert f'personas/{persona}.md' in json.dumps(requests[0])

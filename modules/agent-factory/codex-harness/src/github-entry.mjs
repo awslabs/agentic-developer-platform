@@ -84,13 +84,15 @@ async function main() {
         }
         return fresh;
       };
+      const reportProgress = (text, detail) => { reporter.progress(text, detail); controls.explain(text, detail); };
+      let analysisStarted = false;
       const tools = githubTools({ persona, repository: context.repository, revision, capabilities: context.capabilities },
         (name, args, work, active) => controls.operation(async () => {
           // PreToolUse already owns the active effect ticket. A nested pause
           // checkpoint here could park the effect that pause is waiting to drain.
           await current(active, false);
           return journal('tool', { name, args, revision }, work, active);
-        }));
+        }), reportProgress);
       const planner = planningPersona(persona);
       if (!planner) throw new Error('Unsupported planning persona');
       const refs = new Set(['issue', ...input.comments.map(comment => `follow_up_input.${comment.id}`)]);
@@ -138,10 +140,13 @@ async function main() {
           const ref = `follow_up_input.control.${createHash('sha256').update(text).digest('hex')}`;
           refs.add(ref); return `Source ref: ${ref}\n${text}`;
         }),
-        async progress() {
-          const text = 'Working through the admitted task and its evidence.';
-          reporter.progress(text);
-          controls.explain(text);
+        async progress(event) {
+          // Repository tools report actual paths and outcomes at their execution
+          // boundary. SDK start/finish notifications are not new model explanations.
+          if (event.type === 'turn.started' && !analysisStarted) {
+            analysisStarted = true;
+            reportProgress('Starting the repository assessment.');
+          }
         },
         async model(request, active) {
           return controls.operation(() => retryModelHttp(async () => {

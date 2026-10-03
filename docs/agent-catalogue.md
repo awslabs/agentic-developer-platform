@@ -84,6 +84,26 @@ Native Architect uses the same reporting/control integration as Developer, inclu
 command activity and explanations. A tool-rich runtime makes comprehensive audits
 possible; it does not by itself prove that an audit is complete.
 
+## Progress and transcript coverage
+
+Progress reports observed activity and public agent messages; it does not expose
+private reasoning. Historical transcripts retain what was actually recorded.
+An old transcript containing generic placeholders cannot be reconstructed into
+a detailed audit afterward.
+
+| Personas / runtime path | Live updates and transcript content |
+|---|---|
+| Codex Developer, Architect and Reviewer | Native command/file activity and public messages. Completed messages update the current explanation as well as the transcript. |
+| Codex Product, PM and Intent Refinement | One assessment-start update, then actual repository paths, requested line ranges/directory pages, and completion/failure outcomes. Tool start/finish events are not presented as invented agent explanations. This replaces the generic placeholder used by the earlier report adapter, including historical Architect runs. |
+| Shared Claude personas: Developer, Architect, Product, PM, Operations, Reviewer, AI-DLC, Intent Refinement; Codex supervisor; Malware Analysis and Superplane personas | Public assistant text and named tool lifecycle events through the shared Claude reporter. They do not use the Codex planning placeholder. Persona availability and domain configuration constraints above still apply. PT Superpower shares this reporting path but retains its separate known persona defect. |
+| Task API shared Codex profiles | Task stages and named, authorized tool outcomes. Repeated SDK turns do not repeat the initial analysis message. |
+| Task API Investigator | Evidence inventory, investigation, verification and synthesis updates from its dedicated adapter. |
+
+All GitHub worker personas share the same live-event transport. Retained history
+must drain through the connection before subsequent live/terminal events; a full
+socket buffer is not an agent failure. Tool output and credentials are not added
+to public updates merely to make them more detailed.
+
 ## Codex capabilities and verification
 
 The six `agent-codex-*` personas use native Codex SDK adapters in the shared

@@ -10,6 +10,7 @@ import type { TextResponsesHost, ToolHistory } from "./responses-proxy.js";
 type Descriptor = z.infer<typeof taskRuntimeToolSchema>;
 type ModelReceipt = Awaited<ReturnType<TextResponsesHost>> & { turnId?: string };
 interface TaskBridge {
+  progress?(message: string, stage: string): void;
   responses(request: Parameters<TextResponsesHost>[0]): Promise<ModelReceipt>;
   tool(name: string, args: Record<string, unknown>, modelCall: { turn_id: string; call_id: string }): Promise<unknown>;
 }
@@ -67,12 +68,14 @@ export class TaskTools {
           const tool = this.descriptors.find(tool => tool.definition.name === name);
           if (!binding || !tool || binding.call.name !== name || this.completed.length >= this.maxCalls * 2) throw new Error("Task tool has no confirmed model binding");
           assert.deepEqual(JSON.parse(binding.call.arguments), args);
+          this.bridge.progress?.(`Running tool: ${tool.permission}`, "analysis");
           const result = confirmedTool.parse(await observeOperation("tool", () => this.bridge.tool(tool.permission, args, { turn_id: binding.turn_id, call_id: binding.call.call_id })));
           signal.throwIfAborted();
           if (Buffer.byteLength(result.content) > 32768) throw new Error("Task tool receipt exceeds bound");
           this.completed.push(binding.call, { type: "function_call_output", call_id: binding.call.call_id, output: [
             { type: "input_text", text: "Wall time: 0 seconds\nOutput:" }, { type: "input_text", text: result.content },
           ] });
+          this.bridge.progress?.(`Tool ${result.is_error ? "failed" : "completed"}: ${tool.permission}`, "analysis");
           pending = undefined;
           return { status: "confirmed", content: result.content, isError: result.is_error };
         },

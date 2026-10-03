@@ -110,7 +110,8 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       text = publicDeveloperText(text);
       control.events?.publish(text, detail);
       if (detail.state !== 'running' || detail.category === 'tool') {
-        live.appendActivity(text);
+        if (detail.category === 'message') live.setExplanation(text);
+        else live.appendActivity(text);
         check.onTurn({ turn: ++sequence, content: [{ type: 'text', text }] });
         log('INFO', text);
       }

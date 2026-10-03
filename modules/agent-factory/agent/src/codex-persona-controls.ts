@@ -1,5 +1,6 @@
 /** Shared signed controls at host model/tool boundaries, never repository hooks. */
 import { request } from 'node:http';
+import type { ProgressDetail } from './explanation-events';
 import { randomUUID } from 'node:crypto';
 import { CodexControlAdapter } from './harnesses/codex-control';
 import { startControlRuntime, type ControlLogger } from './control-runtime-factory';
@@ -46,7 +47,7 @@ export async function startCodexPersonaControls(log: ControlLogger, deadline?: A
     async checkpoint() { await boundary('Stop'); },
     takeSteering() { return amendments.splice(0); },
     pendingSteering() { return amendments.length > 0; },
-    explain(text: string) { control.events?.publish(text); },
+    explain(text: string, detail?: ProgressDetail) { control.events?.publish(text, detail); },
     async operation<T>(execute: () => Promise<T>): Promise<T> {
       const id = randomUUID();
       await boundary('PreToolUse', id);

@@ -1,4 +1,5 @@
 /** Existing GitHub/Activity reporting, with a report completion contract. */
+import type { ProgressDetail } from './explanation-events';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 import { CheckRunStreamer } from './components/checkRunStreamer';
@@ -40,9 +41,10 @@ export async function createCodexPersonaReporter(context: { repository: string; 
   } catch (error) { await close(); throw error; }
   return {
     log,
-    progress(text: string) {
+    progress(text: string, detail?: ProgressDetail) {
       text = publicDeveloperText(text);
-      live.setExplanation(text);
+      if (detail?.category === 'tool') live.appendActivity(text);
+      else live.setExplanation(text);
       check.onTurn({ turn: ++turns, content: [{ type: 'text', text }] });
       log('INFO', text);
     },

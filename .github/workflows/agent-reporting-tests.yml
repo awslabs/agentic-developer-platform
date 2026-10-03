@@ -54,6 +54,7 @@ jobs:
       - name: Verify explanation capture, bounded publication and independent archival
         run: >-
           npm test -- --runInBand --runTestsByPath
+          src/codex-developer-reporting.test.ts
           src/reporting-text.test.ts
           src/components/checkRunStreamer.test.ts
           src/components/checkRunStreamer.token-rotation.test.ts

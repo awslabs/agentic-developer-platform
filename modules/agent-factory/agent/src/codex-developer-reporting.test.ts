@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { createCodexDeveloperReporter, publicDeveloperText } from './codex-developer-reporting';
+import { createCodexPersonaReporter } from './codex-persona-reporting';
 import { startControlRuntime } from './control-runtime-factory';
 
 jest.mock('./worker-activity-log', () => ({ createWorkerActivityLog: () => ({ start: async () => {}, log: jest.fn(), flush: async () => {} }) }));
@@ -112,4 +113,27 @@ test('architect reports its own persona, audit progress and design PR', async ()
   expect(bodies).toContain('docs/design.md');
   expect(bodies).toContain('https://github.com/acme/repository/pull/7');
   expect(bodies).not.toContain('Reading the issue and developing the change');
+});
+
+
+test.each(['developer', 'architect', 'reviewer'] as const)('%s keeps the current authored explanation in the live comment and transcript', async persona => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona });
+  reporter.progress!('I traced the deployment order and found a missing dependency.', { id: 'message-1', category: 'message', state: 'completed' });
+  reporter.progress!('Running: git ls-files', { id: 'tool-1', category: 'tool', state: 'running' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const comments = fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body).body || '');
+  expect(comments.some(body => body.includes('### Agent explanation') && body.includes('I traced the deployment order'))).toBe(true);
+  await reporter.finish({ summary: 'Design ready.', prUrl: 'https://github.com/acme/repository/pull/9' });
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('I traced the deployment order'), 'utf8');
+});
+
+test.each(['product', 'pm', 'intent-refinement'])('Codex %s records distinct repository activity in the transcript', async persona => {
+  const reporter = await createCodexPersonaReporter({ ...context, persona: `agent-codex-${persona}` });
+  reporter.progress('Starting the repository assessment.');
+  reporter.progress('Reading deploy.sh (lines 1–100)', { id: 'read-1', category: 'tool', state: 'running' });
+  reporter.progress('Read deploy.sh (lines 1–100)', { id: 'read-1', category: 'tool', state: 'completed' });
+  await jest.advanceTimersByTimeAsync(5000);
+  await reporter.finish({ response: 'Assessment ready.', threadId: 'session', usage: {} }, {});
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Reading deploy.sh'), 'utf8');
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Read deploy.sh'), 'utf8');
 });
