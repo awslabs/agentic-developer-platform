@@ -29,8 +29,12 @@ from tests.orchestration.test_policy_admission import APPROVER
 from tests.orchestration.test_shared_policy import engine, session, shared  # noqa: F401
 
 
-@pytest.fixture
-async def budget(shared):  # noqa: F811
+@pytest.fixture(params=["shared", "protected"])
+async def budget(shared, request):  # noqa: F811
+    if request.param == "protected":
+        document = copy.deepcopy(shared.plan.plan_document)
+        document.pop("execution_continuation")
+        shared.plan.plan_document = document
     shared.plan.plan_hash = digest(shared.plan.plan_document)
     shared.node.state, shared.node.attempts = "running", 1
     await shared.session.flush()
@@ -242,3 +246,32 @@ async def test_malformed_financial_receipt_fails_closed_without_crashing(budget,
     await b.s.session.flush()
     result = await effective(b)
     assert result.policy is None and result.refusal is not None
+
+
+@pytest.mark.parametrize("change", ["missing", "service", "other_flow", "inactive"])
+async def test_protected_budget_requires_active_human_accepted_plan(budget, change):
+    b = budget
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document.pop("execution_continuation", None)
+    b.s.plan.plan_document, b.s.plan.plan_hash = document, digest(document)
+    b.request = b.request.model_copy(update={"expected_plan_hash": b.s.plan.plan_hash})
+    if change == "missing":
+        b.s.plan.accepted_by_decision_id = None
+    elif change in {"service", "other_flow"}:
+        acceptance = OrchestrationDecision(
+            org_id=b.actor.org_id,
+            flow_id="another-flow" if change == "other_flow" else b.s.flow.id,
+            kind="plan_accepted",
+            actor_kind="service" if change == "service" else "human",
+            actor_id=b.actor.actor_id,
+            actor_role=b.actor.actor_role,
+            reason="Invalid acceptance fixture",
+        )
+        b.s.session.add(acceptance)
+        await b.s.session.flush()
+        b.s.plan.accepted_by_decision_id = acceptance.id
+    else:
+        b.s.flow.state = "passed"
+    await b.s.session.flush()
+    with pytest.raises(BudgetIncreaseError, match="plan_acceptance_unverifiable|flow_not_active"):
+        await preview(b)

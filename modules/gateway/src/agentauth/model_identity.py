@@ -323,6 +323,8 @@ class AgentModelIdentityMiddleware:
                                 raise ModelPolicyRefusedError(decision)
                         if inputs.policy is not None:
                             context._policy_flow_target = meter_target(org_id=caller.tenant_id, flow_id=grant.flow_id, policy=inputs.policy)
+                            if inputs.policy._shared_budget_decision_id:
+                                context._policy_scope_caps = (inputs.policy._shared_run_spend_usd, inputs.policy._shared_chain_spend_usd)
             if context._policy_flow_target is not None:
                 # Buffer only policy-governed requests for a bounded
                 # quote, then replay every original ASGI frame. In
