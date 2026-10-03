@@ -101,3 +101,15 @@ test('reviewer controller operations obey pause admission and release the gate o
   expect(effect).toHaveBeenCalledTimes(1);
   await reporter.fail(new Error('Operator aborted'));
 });
+
+test('architect reports its own persona, audit progress and design PR', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-architect' });
+  reporter.activity('Running: git ls-files');
+  await reporter.finish({ summary: 'Design documented in docs/design.md', prUrl: 'https://github.com/acme/repository/pull/7' });
+  const bodies = fetchMock.mock.calls.map(([, init]) => JSON.stringify(JSON.parse(init.body))).join('\n');
+  expect(bodies).toContain('agent-codex-architect');
+  expect(bodies).toContain('Architecture assessment run');
+  expect(bodies).toContain('docs/design.md');
+  expect(bodies).toContain('https://github.com/acme/repository/pull/7');
+  expect(bodies).not.toContain('Reading the issue and developing the change');
+});

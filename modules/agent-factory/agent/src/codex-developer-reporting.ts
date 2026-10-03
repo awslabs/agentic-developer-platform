@@ -41,6 +41,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
   if (!process.env.ADP_MESSAGE_ID) throw new Error('Codex developer reporting requires a dispatched ADP invocation');
   const persona = context.persona ?? 'agent-codex-developer';
   const reviewer = persona === 'agent-codex-reviewer';
+  const architect = persona === 'agent-codex-architect';
   const token = () => process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
   const activityLog = createWorkerActivityLog(persona, String(context.issue));
   await activityLog.start();
@@ -50,7 +51,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
   const logTimer = setInterval(() => { void activityLog.flush(); }, 5000);
   logTimer.unref?.();
   const [owner, repo] = context.repository.split('/');
-  const live = new LiveStatusComment(createWorkerStages(reviewer ? 'reviewer' : 'developer'), {
+  const live = new LiveStatusComment(createWorkerStages(reviewer ? 'reviewer' : architect ? 'architect' : 'developer'), {
     owner, repo, issueNumber: context.issue, token: token(), log,
   });
   const check = new CheckRunStreamer({
@@ -86,7 +87,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     await live.post();
     metadata({ outcome_comment_url: live.getCommentUrl() });
     live.transition(0, 'complete', 'Repository and worker ready');
-    live.transition(1, 'in_progress', reviewer ? 'Reviewing, fixing and testing the change' : 'Reading the issue and developing the change');
+    live.transition(1, 'in_progress', reviewer ? 'Reviewing, fixing and testing the change' : architect ? 'Auditing the repository and preparing the design PR' : 'Reading the issue and developing the change');
     explanation(`Working on ${context.repository}#${context.issue} with the Codex SDK. Progress and command activity will update here.`);
     await live.flush();
   } catch (error) {

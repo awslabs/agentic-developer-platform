@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { CODEX_PROJECTION_BOUNDARY, COMMON_RULES, phaseRules, projectRules,
   renderProjection, projectionEvidence } from '../../codex-harness/dist/projection.js';
 
-export function loadSharedInstructions(persona: 'developer' | 'reviewer', adapter: string): { text: string; verify: () => void } {
+export function loadSharedInstructions(persona: 'developer' | 'reviewer' | 'architect', adapter: string): { text: string; verify: () => void } {
   // Trusted installation, never the target repository's .adp-rules directory.
   const packaged = fileURLToPath(new URL('../../codex-harness/rules/', import.meta.url));
   const root = existsSync(`${packaged}/core-workflow.md`) ? packaged
@@ -18,6 +18,6 @@ export function loadSharedInstructions(persona: 'developer' | 'reviewer', adapte
   return { text, verify: skills.verify };
 }
 
-export function sharedInstructions(persona: 'developer' | 'reviewer', adapter: string): string {
+export function sharedInstructions(persona: 'developer' | 'reviewer' | 'architect', adapter: string): string {
   return loadSharedInstructions(persona, adapter).text;
 }

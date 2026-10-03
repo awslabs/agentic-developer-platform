@@ -34,7 +34,7 @@ deterministic GitHub Actions pipeline (see [Label triggers](#label-triggers) bel
 | `reviewer` | `@agent-reviewer` | `agent-reviewer` | `agent-reviewer` | The quality gate: reviews for correctness, security, and maintainability. Blocks on real issues, suggests on style. | PR review by mention or label; eligible automatic PR events select the Codex reviewer. |
 | `agent-codex-developer` | `@agent-codex-developer` | *(none)* | *(none)* | Native Codex SDK developer: reads the issue, implements changes, runs tests, commits, pushes and opens a ready PR. | Implement an issue using Codex. Publishes progress, command activity and a final transcript. |
 | `agent-codex-reviewer` | `@agent-codex-reviewer` | *(none)* | *(none)* | Reviews, fixes, tests and merges PRs, including resolving merge conflicts within scope. Respects existing repository merge requirements. Issue-only reviews are read-only. | PR review by mention or eligible automatic PR events; also used by engine review assignments. No separate developer handoff is required. |
-| `agent-codex-architect` | `@agent-codex-architect` | *(none)* | *(none)* | Produces structured designs and implementation stories. On GitHub, can publish requested child stories and their dependency links. | Design an issue or decompose it into linked implementation stories. |
+| `agent-codex-architect` | `@agent-codex-architect` | *(none)* | *(none)* | Audits the repository with native Codex workspace tools and publishes Markdown designs and implementation backlogs in a ready PR. Can create requested GitHub stories using gh. | Design an issue or decompose it into linked implementation stories. |
 | `agent-codex-product` | `@agent-codex-product` | *(none)* | *(none)* | Produces requirements, user stories and acceptance criteria, preserving source requirements and explicit amendments. | Turn a vague request into a testable specification; Task API supports clarification and continuation. |
 | `agent-codex-pm` | `@agent-codex-pm` | *(none)* | *(none)* | Plans work and schedules eligible GitHub issues, respecting blockers and avoiding duplicate dispatch. | Dispatch ready work and leave dependent work blocked until its prerequisites are met. |
 | `agent-codex-intent-refinement` | `@agent-codex-intent-refinement` | *(none)* | *(none)* | Refines an intent into a structured draft with requirements, assumptions and unresolved questions. | Clarify scope before implementation; Task API supports clarification and continuation. |
@@ -54,6 +54,35 @@ It is distinct from the explicitly mentionable Codex Intent Refinement persona.
 **Note on the two label columns:** the webhook label and the ARC label are *different
 names for different dispatch systems* and they do not agree. See
 [Label triggers](#label-triggers).
+
+## Tools and workspace access
+
+This table describes the maintained worker routes. A running installation must
+build and deploy the matching worker image to receive changes. Tool availability
+is separate from authorization: agents must follow the requested scope, repository
+instructions, credential permissions and applicable controls. Access to a CLI does
+not grant permission to deploy, merge, change credentials or act outside the task.
+
+| Agents / execution path | Repository and tools | Publication and constraints |
+|---|---|---|
+| Codex Developer | Native Codex workspace; shell, file reads/edits, repository-wide search via shell, Git, `gh`, tests and network access. | Commits/pushes the assigned branch and opens a ready PR. Completion verifies the published PR matches the clean local commit. No automatic merge. |
+| Codex Architect | Same native workspace/tool access as Codex Developer, with architect rules and its own selected model. Can enumerate tracked files, run inventory/search scripts, inspect build/deployment dependencies and write design documents. | Publishes a ready design PR containing a Markdown artifact, plus the requested implementation backlog. The adapter verifies PR/commit/document delivery; exhaustive semantic coverage still requires review. Tool access alone does not authorize implementing or deploying the proposed system. |
+| Codex Reviewer | Native Codex workspace/shell and local file tools. SDK network access and built-in web search are disabled; the host performs authorized GitHub operations. | PR workflow can inspect, repair, test and merge under existing review/merge requirements. Issue-only review remains read-only. |
+| Codex Product, PM, Intent Refinement (GitHub) | Shared report adapter. Model tools are `repository_files` (directory pages) and `repository_file` (file ranges); no native shell, search, editing or general network tools. | Host publishes reports. PM can dispatch eligible work through its host contract. Capabilities are checked by the host; these are not general-purpose workspace agents. |
+| Claude Developer, Architect, Product, PM, Operations, Reviewer, AI-DLC and automatic Intent Refinement | Shared Claude worker: Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch and Skill. Git/`gh` and other installed CLIs are available through Bash. | Persona/task rules define permitted actions. Knowledge tools are conditional on knowledge-layer configuration; the Task tool is conditional on AI-DLC configuration. Credential mode and policy can restrict actual operations. |
+| Malware Analysis, Superplane Operator, Superplane Researcher | Same shared Claude worker tools, plus installed domain skills/CLIs and configured integrations. | Domain capabilities depend on the installation and credentials; a persona name does not guarantee cloud or service access. |
+| Codex supervisor (`codex`) | Shared Claude worker tools plus the Codex bridge skill/CLI for delegated work. | Separate from the native Codex personas. The supervisor owns review and final delivery. |
+| PT Superpower | Routes through the shared Claude worker, but its persona identity/prompt has the known defect described below. | Registration is not evidence of a working security-review agent. |
+| Task API Codex profiles | Isolated shared harness; native shell is disabled. Receives only the tools explicitly supplied and granted in the Task contract. | GitHub native-workspace access does not change Task API permissions or its report/publication contract. |
+
+Runtime sources: [worker routing](../modules/agent-factory/agent-worker-image/entrypoint.py),
+[native Codex workspace adapter](../modules/agent-factory/codex-reviewer/src/developer.ts),
+[Codex repository tools](../modules/agent-factory/codex-harness/src/github-tools.ts),
+[shared harness configuration](../modules/agent-factory/codex-harness/src/sdk-config.ts),
+and [Claude worker tools](../modules/agent-factory/agent/src/agent-worker.ts).
+Native Architect uses the same reporting/control integration as Developer, including
+command activity and explanations. A tool-rich runtime makes comprehensive audits
+possible; it does not by itself prove that an audit is complete.
 
 ## Codex capabilities and verification
 
@@ -93,7 +122,7 @@ implemented in their GitHub host.
 |---|---|---|
 | Developer | GitHub issue → two-file implementation → seven passing tests → PR; final commit independently tested. Activity completed and progress streamed. [Disposable PR #6795](https://github.com/aws-e/adp/pull/6795) was closed without merging. | Small GitHub task; this test did not exercise engine execution or live control commands. |
 | Reviewer | Earlier bounded PR review and live-control qualification. | The review/fix/test/merge behavior is implemented; this refresh did not rerun merge or engine qualification. |
-| Architect | Two GitHub runs published native child stories and dependency links. | Task profile remains report-only. |
+| Architect | Earlier report adapter: two GitHub runs published native child stories and dependency links. | Historical evidence for the report adapter, not qualification of the native workspace adapter. Task profile remains report-only. |
 | Product | Task clarification completed and the answer was preserved in the requirements. | GitHub workflow was not live-qualified in these checks. |
 | PM | GitHub dispatch selected ready work, respected blockers and reused the child invocation on repeat. | Task profile does not dispatch; full engine orchestration was not qualified in these checks. |
 | Intent Refinement | Task clarification completed and preserved the user's data-access restriction. | GitHub workflow was not live-qualified in these checks. |

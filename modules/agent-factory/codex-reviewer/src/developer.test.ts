@@ -15,3 +15,16 @@ test("developer receives issue amendments and must execute through PR publicatio
   assert.match(prompt, /actually publish the PR/);
   assert.match(prompt, /Never merge/);
 });
+
+test("architect retains its role and publishes design artifacts using native workspace tools", () => {
+  const prompt = developerPrompt({ ...task, persona: "architect" }, { title: "Complete deployment inventory", comments: [{ body: "Include optional modules" }] }, "agent/issue-42", "Architect rules");
+  assert.match(prompt, /native Codex SDK architect/);
+  assert.match(prompt, /native shell, file, git, gh and network tools/);
+  assert.match(prompt, /Include optional modules/);
+  assert.match(prompt, /every|each to a component/);
+  assert.match(prompt, /Markdown design document/);
+  assert.match(prompt, /Actually publish the design PR/);
+  assert.match(prompt, /Do not implement the proposed system or deploy/);
+  assert.match(prompt, /Never merge the PR or force push/);
+  assert.doesNotMatch(prompt, /Use your native shell and file tools to implement the issue/);
+});

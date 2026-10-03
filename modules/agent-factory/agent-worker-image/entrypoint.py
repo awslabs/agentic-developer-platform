@@ -92,7 +92,7 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
 CODEX_PERSONA_PREFIX = "agent-codex-"
-SHARED_CODEX_PERSONAS = frozenset({"agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
+SHARED_CODEX_PERSONAS = frozenset({"agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -191,7 +191,7 @@ def worker_command(persona: str) -> list[str]:
         return ["node", AGENT_BINARY]
     if persona == "agent-codex-reviewer":
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
-    if persona == "agent-codex-developer":
+    if persona in {"agent-codex-developer", "agent-codex-architect"}:
         return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
     if persona in SHARED_CODEX_PERSONAS:
         return ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]

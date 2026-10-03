@@ -3,7 +3,7 @@ import test from 'node:test';
 import { readFileSync, existsSync } from 'node:fs';
 import { sharedInstructions } from './shared-instructions.js';
 
-for (const persona of ['developer', 'reviewer'] as const) {
+for (const persona of ['developer', 'reviewer', 'architect'] as const) {
   test(`${persona}: active compatibility adapter loads common policy and usable frozen skill paths`, () => {
     const adapter = `Preserve ${persona} completion semantics.`;
     const instructions = sharedInstructions(persona, adapter);
@@ -28,7 +28,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-for (const persona of ['developer', 'reviewer'] as const) {
+for (const persona of ['developer', 'reviewer', 'architect'] as const) {
   test(`${persona}: pinned SDK receives shared policy separately from repository content`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'adp-sdk-projection-'));
     const home = join(root, 'home');

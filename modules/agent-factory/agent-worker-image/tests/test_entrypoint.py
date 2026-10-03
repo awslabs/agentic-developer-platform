@@ -4851,7 +4851,7 @@ def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
                                    error_message="Agent developer exit 1: budget_exceeded")
 
 
-@pytest.mark.parametrize("persona", ["architect", "product", "pm", "intent-refinement"])
+@pytest.mark.parametrize("persona", ["product", "pm", "intent-refinement"])
 def test_shared_codex_persona_uses_packaged_host(persona):
     from entrypoint import worker_command
     assert worker_command(f"agent-codex-{persona}") == ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
@@ -4877,7 +4877,7 @@ def test_shared_codex_report_finalization_never_commits_or_opens_pr(tmp_path, mo
     monkeypatch.setattr(entrypoint, "update_invocation_status", status)
     monkeypatch.setattr(entrypoint, "run_cmd", command)
     monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: False)
-    assert entrypoint._handle_success("owner/repo", 12, "main", "agent-codex-architect", "run-a", "now") == (0 if mode == "complete" else 1)
+    assert entrypoint._handle_success("owner/repo", 12, "main", "agent-codex-product", "run-a", "now") == (0 if mode == "complete" else 1)
     assert status.call_args.args[2] == ("complete" if mode == "complete" else "failed")
     command.assert_not_called()
 
@@ -4893,3 +4893,9 @@ def test_all_workers_drop_broad_internal_credentials(monkeypatch, protected):
     with patch.object(entrypoint.boto3, "client", side_effect=AssertionError("worker attempted to fetch shared authority")):
         entrypoint._load_door_api_key("us-east-1")
     assert not any(name in os.environ for name in names)
+
+
+def test_codex_architect_uses_native_workspace_and_pr_lifecycle():
+    import entrypoint
+    assert entrypoint.worker_command("agent-codex-architect") == entrypoint.worker_command("agent-codex-developer")
+    assert "agent-codex-architect" not in entrypoint.SHARED_CODEX_PERSONAS
