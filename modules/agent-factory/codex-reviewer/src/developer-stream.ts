@@ -65,7 +65,8 @@ export async function runDeveloperStream(
         }
         if (event.type === 'turn.completed') usage = event.usage;
         if (event.type === 'turn.failed') throw new Error(event.error.message);
-        if (event.type === 'error') throw new Error(event.message);
+        // SDK `error` events include native reconnect notifications. Like
+        // Thread.run(), consume them; only turn.failed is terminal.
       }
       if (!usage) throw new Error('stream disconnected before completion: missing turn.completed');
       return { items, finalResponse, usage };

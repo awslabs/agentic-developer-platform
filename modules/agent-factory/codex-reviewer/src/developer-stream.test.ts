@@ -88,3 +88,25 @@ test('reused SDK item IDs in later turns cannot overwrite an earlier turn in the
   publishDeveloperEvent(event, first); publishDeveloperEvent(event, first); publishDeveloperEvent(event, second);
   assert.equal(ids[0], ids[1]); assert.notEqual(ids[0], ids[2]);
 });
+
+for (const terminalFailure of [false, true]) {
+  test(`developer preserves native reconnects before ${terminalFailure ? 'terminal failure' : 'success'}`, async () => {
+    const { reporter } = recorder();
+    let starts = 0, notifications = 0;
+    reporter.observeEvent = event => { if (event.type === 'error') notifications++; };
+    const run = runDeveloperStream({ id: 'retained-thread', runStreamed: async () => {
+      starts++;
+      return { events: (async function* (): AsyncGenerator<ThreadEvent> {
+        for (let retry = 1; retry <= 5; retry++) {
+          yield { type: 'error', message: `Reconnecting... ${retry}/5 (stream disconnected before completion)` };
+        }
+        if (terminalFailure) yield { type: 'turn.failed', error: { message: 'stream disconnected before completion: retries exhausted' } };
+        else yield { type: 'turn.completed', usage };
+      })() };
+    } }, 'task', {}, reporter);
+    if (terminalFailure) await assert.rejects(run, /retries exhausted/);
+    else assert.equal((await run).usage, usage);
+    assert.equal(starts, terminalFailure ? 2 : 1);
+    assert.equal(notifications, starts * 5);
+  });
+}
