@@ -129,7 +129,7 @@ export async function createCodexPersonaReporter() {
                                        "namespace": "mcp__adp", "arguments": json.dumps({"path": "README.md"}), "status": "completed"}]
             if mode == 'large-output':
                 artifact = planning_output(persona, "issue")
-                artifact['artifact']['design'] = 'Detailed architecture. ' * 500
+                artifact['artifact']['design'] = 'Detailed architecture. ' * 1800
                 response['output'][0]['content'][0]['text'] = json.dumps(artifact)
                 response['output'].insert(0, {"id": "reasoning_fixture", "type": "reasoning", "encrypted_content": "x" * 70000, "summary": []})
                 response['usage']['output_tokens'] = 12000
@@ -205,7 +205,7 @@ export async function createCodexPersonaReporter() {
         assert requests[0]['stream'] is True
     if mode == 'large-output':
         report = json.loads((artifacts / 'report.json').read_text())
-        assert ('Detailed architecture. ' * 500).strip() in report['result']['response']
+        assert ('Detailed architecture. ' * 1800).strip() in report['result']['response']
         assert report['result']['usage']['output_tokens'] == 12000
 
     if mode == 'broken-stream':

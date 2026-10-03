@@ -1,3 +1,4 @@
+import { ModelStreamError } from "./model-response.js";
 import { ModelHttpError } from "./model-http.js";
 import { z } from "zod";
 import test from "node:test";
@@ -322,4 +323,15 @@ test("direct responses retain large completed output without a local token or by
   const large = { ...result(), output: [{ id: "message_large", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: 100, output_tokens: 20000 } };
   assert.ok(textResponseEvents(large, direct).includes(text));
   assert.throws(() => textResponseEvents(large, policy));
+});
+
+test("provider stream failures preserve diagnostics without replay", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; throw new ModelStreamError("model_stream_failed"); }, policy);
+  try {
+    assert.equal((await post(proxy)).status, 502);
+    assert.equal(proxy.failure?.code, "model_stream_failed");
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
 });

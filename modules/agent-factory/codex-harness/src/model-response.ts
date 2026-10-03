@@ -1,3 +1,9 @@
+export type ModelStreamErrorCode = "model_stream_failed" | "model_stream_incomplete" | "model_stream_interrupted";
+/** Static diagnostics only: provider error bodies may contain private content. */
+export class ModelStreamError extends Error {
+  constructor(readonly code: ModelStreamErrorCode) { super(code); this.name = "ModelStreamError"; }
+}
+
 /** Consume provider transport without publishing partial model output as evidence.
  * A completed Responses event owns the full output and usage. A broken stream
  * is an unknown outcome and must not be automatically replayed.
@@ -20,9 +26,10 @@ export async function readModelResponse(response: Response, signal: AbortSignal)
           const value = JSON.parse(payload);
           const type = event || value.type;
           if (event && value.type && event !== value.type) throw new Error("Model stream event mismatch");
-          if (["error", "response.failed", "response.incomplete"].includes(type)) throw new Error("Model stream did not complete");
+          if (type === "error" || type === "response.failed") throw new ModelStreamError("model_stream_failed");
+          if (type === "response.incomplete") throw new ModelStreamError("model_stream_incomplete");
           if (type === "response.completed") {
-            if (!value.response || value.response.status !== "completed") throw new Error("Model stream did not complete");
+            if (!value.response || value.response.status !== "completed") throw new ModelStreamError("model_stream_incomplete");
             completed = value.response;
           }
         }
@@ -56,11 +63,14 @@ export async function readModelResponse(response: Response, signal: AbortSignal)
       if (completed !== undefined) return completed;
       if (done) break;
     }
-    if (streaming) throw new Error("Model stream ended without completed response");
+    if (streaming) throw new ModelStreamError("model_stream_interrupted");
     // Some compatible providers return JSON even for a streaming request.
     return JSON.parse(buffer);
+  } catch (error) {
+    if (streaming && !signal.aborted && !(error instanceof ModelStreamError)) throw new ModelStreamError("model_stream_interrupted");
+    throw error;
   } finally {
     signal.removeEventListener("abort", abort);
-    await reader.cancel();
+    await reader.cancel().catch(() => {});
   }
 }

@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
-import { planningPersona, planningContract, parsePlanning, planningSchemas, planningIssueContext, planningCorrection } from './planning.js';
+import { planningPersona, planningContract, parsePlanning, directPlanningSchemas, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider } from './planning-provider.js';
 import { retryModelHttp } from './model-http.js';
 import { runAdmittedSession } from './session.js';
@@ -99,7 +99,7 @@ async function main() {
         try {
           const document = JSON.parse(match[1]);
           if (document.planning_persona === planner) {
-            previousArtifact = planningSchemas[planner].parse(document.artifact);
+            previousArtifact = directPlanningSchemas[planner].parse(document.artifact);
             artifactComment = comment.id; artifactBlock = match[0];
           }
         } catch { /* Other issue comments are not planning documents. */ }
@@ -117,7 +117,7 @@ async function main() {
           capabilityLayers: layers, limits: { ...definition.limits, maxTurns: context.maxTurns }, deadlineMs: context.deadlineMs },
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
         source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: planningIssueContext(input, artifactComment, artifactBlock),
-          source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
+          source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner, true) }),
         signal,
       }, {
         assertCurrent: current,
@@ -166,7 +166,7 @@ async function main() {
       let result, planned, correction;
       for (let attempt = 0; attempt < 2; attempt++) {
         result = await invoke(correction);
-        try { planned = parsePlanning(result.response, planner, refs, previousArtifact); break; }
+        try { planned = parsePlanning(result.response, planner, refs, previousArtifact, true); break; }
         catch (error) { if (attempt === 1) throw error; correction = planningCorrection(error); reporter.progress('Correcting planning structure and citations.'); }
       }
       await current(signal);

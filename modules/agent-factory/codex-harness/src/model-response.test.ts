@@ -48,3 +48,10 @@ test("run cancellation interrupts a provider stream that has no data", async () 
 test("compatible JSON responses remain intact", async () => {
   assert.deepEqual(await readModelResponse(new Response(JSON.stringify(result)), signal()), result);
 });
+
+test('stream failures expose static diagnostics without provider content', async () => {
+  for (const [type, code] of [['response.failed', 'model_stream_failed'], ['response.incomplete', 'model_stream_incomplete'], ['response.created', 'model_stream_interrupted']]) {
+    await assert.rejects(readModelResponse(stream(`data: ${JSON.stringify({type, error: {message: 'private provider content'}})}\n\n`), signal()),
+      (error: unknown) => error instanceof Error && error.message === code);
+  }
+});
