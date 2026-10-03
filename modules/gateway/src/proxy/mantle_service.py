@@ -418,6 +418,7 @@ class MantlePassthroughService:
     ) -> MantleResponse:
         start = time.monotonic()
         status_code = 502
+        explicit_server_failure = False
         usage: dict[str, Any] = {}
         metadata: dict[str, str] = {}
         headers = self._headers(body, routed)
@@ -426,6 +427,7 @@ class MantlePassthroughService:
             context._budget_provider_started = True
             resp = await client.post(routed.upstream_url, content=body, headers=headers)
             status_code = resp.status_code
+            explicit_server_failure = 500 <= status_code < 600
             metadata["provider_request_id"] = resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")
             content = resp.content
             # Only extract usage on success bodies; upstream errors pass through untouched.
@@ -451,6 +453,7 @@ class MantlePassthroughService:
                 request_id,
                 agent_run_id,
                 routing_decision=routed.decision,
+                **({"retain_failed_bound": True} if explicit_server_failure else {}),
             )
 
     async def _stream(
@@ -511,7 +514,18 @@ class MantlePassthroughService:
                 latency_ms,
                 error_body[:512].decode("utf-8", errors="replace"),
             )
-            await self._log_usage(context, model, {}, latency_ms, status_code, request_id, agent_run_id, routing_decision=routed.decision)
+            metadata = {"provider_request_id": resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")}
+            await self._log_usage(
+                context,
+                model,
+                self._capture_usage({}, body, model, metadata, base_url=routed.base_url),
+                latency_ms,
+                status_code,
+                request_id,
+                agent_run_id,
+                routing_decision=routed.decision,
+                **({"retain_failed_bound": True} if 500 <= status_code < 600 else {}),
+            )
             raise MantleUpstreamError(
                 status_code,
                 error_body,
@@ -728,6 +742,7 @@ class MantlePassthroughService:
         agent_run_id: str | None,
         *,
         routing_decision: RoutingDecision | None = None,
+        retain_failed_bound: bool = False,
     ) -> None:
         """Write a usage_logs row for this passthrough call.
 
@@ -841,6 +856,7 @@ class MantlePassthroughService:
                 output_tokens=0,
                 actual_cost_usd=Decimal("0"),
                 usage_known=False,
+                **({"retain_failed_bound": True} if retain_failed_bound else {}),
             )
         else:
             await reconcile_budget_reservation(
@@ -851,6 +867,7 @@ class MantlePassthroughService:
                 output_tokens=output_tokens,
                 actual_cost_usd=cost_usd,
                 usage_known=decision is not None and trusted.known,
+                **({"retain_failed_bound": True} if retain_failed_bound else {}),
             )
 
         # Optional transcript emission shares the already-committed SQL receipt.

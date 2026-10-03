@@ -1275,6 +1275,7 @@ class BudgetEnforcementService:
         output_tokens: int,
         actual_cost_usd: Decimal | None = None,
         usage_known: bool = True,
+        retain_failed_bound: bool = False,
     ) -> None:
         """Adjust this request's reservation from estimate to settled actual (#4287).
 
@@ -1350,6 +1351,14 @@ class BudgetEnforcementService:
             # call or missing usage must not turn its estimate into zero spend.
             unresolved = [target for target in targets if target.require_initialization]
             for target in unresolved:
+                # An explicit 5xx can retry against the full server-admitted
+                # quote. No actual usage is invented and no headroom released.
+                if retain_failed_bound and context._policy_quote is not None and await store.retain_failed_bound(request_id, target):
+                    logger.warning(
+                        "Provider HTTP failure retained at full admitted bound; no usage settled",
+                        extra={"request_id": request_id, "budget_scope": target.entity_type},
+                    )
+                    continue
                 await store.mark_unknown(request_id, target)
             if not usage_known:
                 # Retain ordinary estimates too: an ambiguous provider outcome
@@ -2476,6 +2485,7 @@ async def reconcile_budget_reservation(
     output_tokens: int,
     actual_cost_usd: Decimal | None = None,
     usage_known: bool = True,
+    retain_failed_bound: bool = False,
 ) -> None:
     """Metering-side entry point for reservation reconciliation (Issue #4287).
 
@@ -2501,6 +2511,7 @@ async def reconcile_budget_reservation(
             output_tokens=output_tokens,
             **({"actual_cost_usd": actual_cost_usd} if actual_cost_usd is not None else {}),
             **({"usage_known": False} if not usage_known else {}),
+            **({"retain_failed_bound": True} if retain_failed_bound else {}),
         )
     except Exception as exc:
         logger.warning(f"Budget reservation reconcile failed: {exc}")

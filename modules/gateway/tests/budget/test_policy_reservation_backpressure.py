@@ -158,3 +158,134 @@ async def test_reenabling_a_legacy_cap_waits_for_off_mode_usage(ledger):
     assert denied.status == 503 and not denied.app_invoked
     await ledger.store.reconcile("uncapped-call", Decimal("0.12"), [target])
     assert (await request(ledger, targets=[target], strict=False)).status == 200
+
+
+async def test_explicit_failed_bound_preserves_amount_and_cap_until_trusted_receipt(ledger):
+    assert (await request(ledger, request_id="first")).status == 200
+    before = await snapshot(ledger)
+    await ledger.store.mark_unknown("first", ledger.flow)
+    assert await ledger.store.snapshot(ledger.flow) is None
+    assert await ledger.store.retain_failed_bound("first", ledger.flow)
+    assert await ledger.store.retain_failed_bound("first", ledger.flow)  # idempotent recovery
+    after = await snapshot(ledger)
+    for target in ledger.targets:
+        assert after[target.key()][0]["first"] == before[target.key()][0]["first"]
+    assert after[ledger.flow.key()][0]["__initialized__"] == before[ledger.flow.key()][0]["__initialized__"]
+    assert "bounded:first" in after[ledger.flow.key()][0]
+    assert "pending:first" not in after[ledger.flow.key()][0]
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == QUOTE
+    # The full bound still occupies the run cap: an ordinary full quote cannot fit.
+    assert (await request(ledger)).status == 402
+    assert (await request(ledger, quote=Decimal(1))).status == 200
+    await ledger.store.reconcile("first", Decimal("0.12"), ledger.targets)
+    assert "bounded:first" not in await ledger.client.hgetall(ledger.flow.key())
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == Decimal("1.12")
+    # A repeated failure observation cannot overwrite the later actual receipt.
+    assert await ledger.store.retain_failed_bound("first", ledger.flow)
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == Decimal("1.12")
+
+
+@pytest.mark.parametrize("invalid", ["missing", "expired", "anchor", "unbounded"])
+async def test_retaining_failure_never_repairs_missing_or_unbounded_accounting(ledger, invalid):
+    assert (await request(ledger, request_id="first")).status == 200
+    await ledger.store.mark_unknown("first", ledger.flow)
+    if invalid == "missing":
+        await ledger.client.hdel(ledger.flow.key(), "first")
+    elif invalid == "expired":
+        ledger.clock[0] += 86401
+    elif invalid == "anchor":
+        await ledger.client.hdel(ledger.flow.key(), "__initialized__")
+    else:
+        await ledger.client.hset(ledger.flow.key(), "unbounded:first", "0:1000")
+    before = await ledger.client.hgetall(ledger.flow.key())
+    assert not await ledger.store.retain_failed_bound("first", ledger.flow)
+    assert await ledger.client.hgetall(ledger.flow.key()) == before
+    assert await ledger.store.snapshot(ledger.flow) is None
+
+
+async def test_bounded_failure_does_not_clear_an_unresolved_sibling(ledger):
+    assert (await ledger.store.reserve("first", Decimal(2), [ledger.flow])).admitted
+    assert (await ledger.store.reserve("sibling", Decimal(2), [ledger.flow])).admitted
+    await ledger.store.mark_unknown("first", ledger.flow)
+    await ledger.store.mark_unknown("sibling", ledger.flow)
+    before = await ledger.client.hget(ledger.flow.key(), "pending:sibling")
+    assert await ledger.store.retain_failed_bound("first", ledger.flow)
+    assert await ledger.client.hget(ledger.flow.key(), "pending:sibling") == before
+    assert await ledger.store.snapshot(ledger.flow) is None
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_enforcement_retains_full_quote_only_for_explicit_server_failure(ledger, bounded):
+    from tests.orchestration.test_flow_meter import _confirmable_quote
+
+    assert (await request(ledger, request_id="first")).status == 200
+    context = _context()
+    context._policy_quote = await _confirmable_quote()
+    context._policy_flow_target = ledger.flow
+    context._budget_admission_targets = ledger.targets
+    before = await snapshot(ledger)
+    await ledger.service.reconcile_reservation(
+        context,
+        "first",
+        "openai.gpt-6-astra",
+        0,
+        0,
+        actual_cost_usd=Decimal(0),
+        usage_known=False,
+        retain_failed_bound=bounded,
+    )
+    after = await snapshot(ledger)
+    for target in ledger.targets:
+        assert after[target.key()][0]["first"] == before[target.key()][0]["first"]
+    observed = await ledger.store.snapshot(ledger.flow)
+    if bounded:
+        assert observed.total_usd == QUOTE
+        assert (await request(ledger, quote=Decimal(1))).status == 200
+    else:
+        assert observed is None
+        assert (await request(ledger, quote=Decimal(1))).status == 503
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_http_500_to_real_ledger_allows_only_an_affordable_retry(ledger, monkeypatch, stream):
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    from src.budget import enforcement_service
+    from src.proxy import mantle_service
+    from tests.orchestration.test_flow_meter import _confirmable_quote
+
+    monkeypatch.setattr("boto3.client", MagicMock())
+    monkeypatch.setattr(enforcement_service, "budget_enforcement_service", ledger.service)
+    monkeypatch.setattr(mantle_service, "get_session_factory", lambda: lambda: AsyncMock())
+    usage = SimpleNamespace(log_request=AsyncMock())
+    monkeypatch.setattr(mantle_service, "UsageService", lambda _: usage)
+    monkeypatch.setattr(mantle_service, "resolve_routing_decision", AsyncMock(return_value=mantle_service.RoutingDecision()))
+    assert (await request(ledger, request_id="first")).status == 200
+    context = _context()
+    context._policy_quote = await _confirmable_quote()
+    context._policy_flow_target = ledger.flow
+    context._budget_admission_targets = ledger.targets
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(500, json={"error": {"type": "server_error"}}, headers={"x-amzn-requestid": "provider-failure"})
+        )
+    )
+    auth = MagicMock()
+    auth.sign.return_value = {}
+    service = mantle_service.MantlePassthroughService(auth, "https://bedrock-runtime.us-east-1.amazonaws.com", http_client=client)
+    async with client:
+        call = service.create_response(
+            b'{"model":"openai.gpt-6-astra","input":"hello"}', context, stream=stream, model="openai.gpt-6-astra", request_id="first"
+        )
+        if stream:
+            with pytest.raises(mantle_service.MantleUpstreamError):
+                await call
+        else:
+            assert (await call).status_code == 500
+    assert usage.log_request.await_args.kwargs["provider_request_id"] == "provider-failure"
+    assert usage.log_request.await_args.kwargs["pricing_decision"] is None
+    assert (await ledger.store.snapshot(ledger.flow)).total_usd == QUOTE
+    assert (await request(ledger)).status == 402
+    assert (await request(ledger, quote=Decimal(1))).status == 200

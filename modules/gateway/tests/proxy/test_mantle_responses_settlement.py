@@ -226,17 +226,36 @@ async def test_a_truncated_stream_retains_the_hold(settlement):
     assert settlement.await_args.kwargs["usage_known"] is False
 
 
-async def test_an_upstream_error_does_not_settle_at_zero(settlement):
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_an_upstream_error_does_not_settle_at_zero(settlement, stream, status):
     """An error body carries no usage; the hold stands rather than clearing."""
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500, content=b'{"error":"upstream"}')))
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, content=b'{"error":"upstream"}', headers={"x-amzn-requestid": "provider-error-id"})
+        )
+    )
     auth = MagicMock()
     auth.sign.return_value = {"Authorization": "upstream-credential"}
     service = mantle_service.MantlePassthroughService(auth, "https://bedrock-runtime.us-east-1.amazonaws.com", http_client=client)
     async with client:
-        result = await service.create_response(b'{"model": "openai.gpt-5.6-luna", "input": "hello"}', context(), stream=False, model=MODEL)
-        assert result.status_code == 500
+        if stream:
+            with pytest.raises(mantle_service.MantleUpstreamError) as error:
+                await service.create_response(
+                    b'{"model": "openai.gpt-5.6-luna", "input": "hello"}', context(), stream=True, model=MODEL, request_id="req-error"
+                )
+            assert error.value.status_code == status
+        else:
+            result = await service.create_response(
+                b'{"model": "openai.gpt-5.6-luna", "input": "hello"}', context(), stream=False, model=MODEL, request_id="req-error"
+            )
+            assert result.status_code == status
     settlement.assert_awaited_once()
     assert settlement.await_args.kwargs["usage_known"] is False
+    assert settlement.await_args.kwargs.get("retain_failed_bound", False) is (status >= 500)
+    logged = mantle_service.UsageService(None).log_request.await_args.kwargs
+    assert logged["provider_request_id"] == "provider-error-id"
+    assert logged["pricing_decision"] is None
 
 
 async def test_the_trust_decision_comes_from_the_routes_own_adapter(monkeypatch):
