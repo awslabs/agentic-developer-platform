@@ -203,3 +203,11 @@ subdeadline. Completed provider output must still pass schema, usage and tool
 receipt validation. The GitHub operation journal preserves complete receipts;
 underlying service limits, including DynamoDB item size, still apply. Planning
 artifacts retain their declared document schema and size contract.
+
+
+GitHub report personas request provider SSE and consume the terminal completed
+Responses object before settling a model operation. This uses the same streaming
+inference path as the native developer instead of waiting for a complete JSON
+answer on the gateway's non-streaming transport. Partial output, failed/incomplete
+events, malformed streams and disconnects never become confirmed receipts and
+are not automatically retried. Caller cancellation interrupts the stream.

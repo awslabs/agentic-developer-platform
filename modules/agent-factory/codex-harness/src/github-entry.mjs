@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readModelResponse } from './model-response.js';
 /** GitHub invocation adapter for the shared, isolated official Codex SDK. */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -149,7 +150,7 @@ async function main() {
             const response = await fetch(`http://127.0.0.1:${port}/openai/v1/responses`, {
               method: 'POST', redirect: 'error', signal: active,
               headers: { 'content-type': 'application/json', 'X-Adp-Model-Evidence': fresh.evidenceId },
-              body: JSON.stringify({ ...request, model: initial.model, stream: false, store: false }),
+              body: JSON.stringify({ ...request, model: initial.model, stream: true, store: false }),
             });
             if (!response.ok) {
               // Settle each observed rejection before retrying with a new claim.
@@ -157,17 +158,7 @@ async function main() {
               await response.body?.cancel();
               return { httpStatus: response.status };
             }
-            if (!response.body) throw new Error('GitHub model response body missing; no automatic replay');
-            const reader = response.body.getReader();
-            const chunks = [];
-            try {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-              }
-            } finally { await reader.cancel(); }
-            return { operationStatus: 'confirmed', response: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+            return { operationStatus: 'confirmed', response: await readModelResponse(response, active) };
             }, active);
           }, active));
         },

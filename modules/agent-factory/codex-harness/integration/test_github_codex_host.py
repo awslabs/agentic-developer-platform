@@ -15,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools", "large-output"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools", "large-output", "broken-stream"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -133,9 +133,12 @@ export async function createCodexPersonaReporter() {
                 response['output'][0]['content'][0]['text'] = json.dumps(artifact)
                 response['output'].insert(0, {"id": "reasoning_fixture", "type": "reasoning", "encrypted_content": "x" * 70000, "summary": []})
                 response['usage']['output_tokens'] = 12000
-            body = json.dumps(response).encode()
+            body = ('event: response.completed\ndata: ' + json.dumps({'type': 'response.completed', 'response': response}) + '\n\n').encode()
+            if mode == 'broken-stream':
+                body = b'event: response.created\ndata: {"type":"response.created","response":{"status":"in_progress"}}\n\n'
+
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -199,7 +202,12 @@ export async function createCodexPersonaReporter() {
 
     if requests:
         assert 'max_output_tokens' not in requests[0]
+        assert requests[0]['stream'] is True
     if mode == 'large-output':
         report = json.loads((artifacts / 'report.json').read_text())
         assert ('Detailed architecture. ' * 500).strip() in report['result']['response']
         assert report['result']['usage']['output_tokens'] == 12000
+
+    if mode == 'broken-stream':
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        assert [(value['kind'], value['action']) for value in operations] == [('model', 'claim')]

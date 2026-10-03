@@ -29,6 +29,8 @@ export async function captureReportProbe(persona, model) {
     }, { async assertCurrent() {}, async progress() {},
       ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions, repositoryCapabilities: ['repository.read'], maxCalls: 1,
         async execute() { throw new Error('Probe tools cannot execute'); } } } : {}),
+      // The small availability probe retains its bounded JSON response contract.
+      // Production report execution consumes provider SSE through github-entry.
       async model(request) { calls++; body = { ...request, model, stream: false, store: false, include: ['reasoning.encrypted_content'] }; throw new Error('Capture only'); },
     });
   } catch (error) { if (!body) throw error; }
