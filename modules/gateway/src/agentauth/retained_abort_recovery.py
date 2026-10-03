@@ -64,8 +64,12 @@ def _retire_execution(store, *, raw, tenant, invocation, event, events_table):
     )
 
 
-def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_table):
+def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_table, source="interrupted_abort_acceptance_recovery"):
     """Atomically report an exited run while fencing a delayed abort acceptance.
+
+    The caller must first verify termination of this exact workload. The source
+    identifies that trusted observation (including an archived Kubernetes audit
+    event when the original pod has already been removed).
 
     No marker means no accepted abort. If the run has no terminal report, report
     failed execution instead. A concurrent marker or normal terminal report makes
@@ -130,7 +134,7 @@ def _recover_interrupted_acceptance(store, *, raw, tenant, invocation, events_ta
                         ":uid": raw["workload_binding"],
                         ":attempt": raw["current_attempt"],
                         ":outcome": outcome,
-                        ":source": {"S": "interrupted_abort_acceptance_recovery"},
+                        ":source": {"S": source},
                     },
                 }
             },

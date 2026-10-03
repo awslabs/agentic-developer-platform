@@ -357,3 +357,20 @@ def test_incomplete_reservation_binding_keeps_exit_evidence(recovery):
     ctx.store.client.put_item(TableName=AUTHORITY, Item=ctx.raw)
     assert recover(ctx)[0] == 0
     ctx.retention.release.assert_not_called()
+
+
+def test_verified_archived_exit_keeps_audit_attribution_and_records_failure(recovery):
+    from src.agentauth.retained_abort_recovery import _recover_interrupted_acceptance
+
+    ctx = recovery
+    del ctx.raw["abort_command_id"]
+    ctx.store.client.put_item(TableName=AUTHORITY, Item=ctx.raw)
+    source = "kubernetes-audit:00000000-0000-4000-8000-000000000001"
+    _recover_interrupted_acceptance(ctx.store, raw=ctx.raw, tenant=TENANT, invocation=INVOCATION, events_table=EVENTS, source=source)
+    current = ctx.store._read(f"TENANT#{TENANT}", f"EXEC#{INVOCATION}")
+    assert current["terminal_outcome"] == {"S": "failed"}
+    assert current["terminal_reconciled_by"] == {"S": source}
+    assert read_event(ctx.store.client)["status"] == {"S": "failed"}
+    # Repeating an observation does not replace a durable outcome.
+    _recover_interrupted_acceptance(ctx.store, raw=current, tenant=TENANT, invocation=INVOCATION, events_table=EVENTS, source="later-observation")
+    assert ctx.store._read(f"TENANT#{TENANT}", f"EXEC#{INVOCATION}")["terminal_reconciled_by"] == {"S": source}

@@ -63,9 +63,9 @@ async def protected_assignment(session, *, node, request):
         or raw.get("persona") != {"S": "agent-codex-reviewer"}
         or raw.get("orchestration_continuation_action") != {"S": "review"}
         or raw.get("status") != {"S": "completed"}
-        or raw.get("terminal_outcome") != {"S": "complete"}
+        or raw.get("terminal_outcome", {}).get("S") not in {"complete", "failed"}
     ):
-        raise RecoveryRefusedError("reviewer_completion_unverified")
+        raise RecoveryRefusedError("reviewer_exit_unverified")
     try:
         grant = await asyncio.to_thread(
             store.live_grant, invocation_id=request.expected_run_id, tenant_id=node.org_id, attempt=int(raw["current_attempt"]["N"]), now=utcnow()
@@ -81,7 +81,9 @@ async def resume_continuation(session, *, org_id, node_id, actor_id, actor_role,
 
     This does not take over a claim, mark a worker finished or create a dispatch.
     The same run retains its start-once capability; normal outbox/runner checks
-    still govern any subsequent work. Real worker failures require normal retry.
+    still govern any subsequent work. A terminal failed protected reviewer is
+    eligible for the existing bounded review retry; this operation neither
+    supplies success nor increases its allowance.
     """
     node = await session.scalar(select(OrchestrationNode).where(OrchestrationNode.org_id == org_id, OrchestrationNode.id == node_id))
     if node is None:
