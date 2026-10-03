@@ -58,10 +58,38 @@ function complete(verdict: EngineVerdict): boolean {
   return !requiresChanges(verdict) && verdict.validationGaps.length === 0 && inspected(verdict);
 }
 
+export interface RepairMilestone {
+  outcome: 'checkpoint' | 'complete' | 'blocked';
+  summary: string;
+  remainingWork: string[];
+}
+
+export const repairMilestoneSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    outcome: { type: 'string', enum: ['checkpoint', 'complete', 'blocked'] },
+    summary: { type: 'string' },
+    remainingWork: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['outcome', 'summary', 'remainingWork'],
+};
+
+export function parseRepairMilestone(raw: string): RepairMilestone {
+  const result = JSON.parse(raw) as RepairMilestone;
+  if (!result || !['checkpoint', 'complete', 'blocked'].includes(result.outcome)
+      || typeof result.summary !== 'string' || !result.summary.trim()
+      || !Array.isArray(result.remainingWork) || result.remainingWork.some(item => typeof item !== 'string' || !item.trim())
+      || (result.outcome === 'checkpoint' && result.remainingWork.length === 0)
+      || (result.outcome === 'complete' && result.remainingWork.length !== 0)) {
+    throw new Error('Invalid repair milestone result');
+  }
+  return result;
+}
+
 export interface EngineReviewServices {
   github: Pick<GitHubClient, "getPullRequest" | "getIssue" | "getBranch">;
   review(prompt: string): Promise<EngineVerdict>;
-  fix(prompt: string): Promise<void>;
+  fix(prompt: string): Promise<RepairMilestone | void>;
   checks?(head: string): Promise<ReviewerChecks>;
   deliver?(result: EngineReviewResult, envelope: CodexEngineReviewEnvelope): Promise<ReviewerMerge>;
   wait?(milliseconds: number): Promise<unknown>;
@@ -119,9 +147,10 @@ export function createReviewServices(runtime: ReviewRuntime & { repository: stri
         instructions.verify, reviewEvents(runtime.observer, true))).finalResponse));
     },
     fix: async prompt => {
-      runtime.observer?.explanation('Repairing the findings or merge conflicts, then checking the changes.');
-      await budget.run(signal => runResumableTurn(repair, prompt,
-        { signal: reviewSignal(signal, runtime.observer) }, undefined, instructions.verify, reviewEvents(runtime.observer)));
+      runtime.observer?.explanation('Planning the next repair milestone, then checking and publishing its checkpoint.');
+      return budget.run(async signal => parseRepairMilestone((await runResumableTurn(repair, prompt,
+        { outputSchema: repairMilestoneSchema, signal: reviewSignal(signal, runtime.observer) }, undefined,
+        instructions.verify, reviewEvents(runtime.observer, true))).finalResponse));
     },
   };
 }
@@ -206,14 +235,14 @@ async function runEngineReviewPass(
       throw new Error("Codex changed protected Git state");
     }
   };
-  const inspect = async (head: string, workingTree = false) => {
+  const inspect = async (head: string, workingTree = false, checkpoint = false) => {
     const before = await trackedDiff();
     const beforeUntracked = new Set(await untracked());
     const pendingFiles = [...beforeUntracked].filter(file => !baseline.has(file));
     const fingerprint = async () => Promise.all(pendingFiles.map(async file =>
       createHash("sha256").update(await readFile(join(runtime.workspace, file))).digest("hex")));
     const beforeFiles = await fingerprint();
-    const verdict = await controller.review(`${context}\n\nReview ${workingTree ? "the full repaired working tree" : `exact commit ${head}`} against base commit ${baseSha}. Inspect correctness and security and run relevant tests. Explicitly report whether both stages completed and any validation gaps. Return the structured verdict. Do not modify source files, stage, commit or run GitHub commands.`);
+    const verdict = await controller.review(`${context}\n\nReview ${workingTree ? "the full repaired working tree" : `exact commit ${head}`} against base commit ${baseSha}. ${checkpoint ? "This is an incomplete checkpoint. Inspect the changed milestone for correctness and security with focused checks; record unfinished criteria as findings. Leave long final validation for the completed repair, and never approve unfinished work." : "Inspect correctness and security and run relevant tests."} Explicitly report whether both stages completed and any validation gaps. Return the structured verdict. Do not modify source files, stage, commit or run GitHub commands.`);
     await verifyGit(head);
     if (await trackedDiff() !== before) throw new Error("Read-only Codex review modified tracked files");
     if (JSON.stringify(await fingerprint()) !== JSON.stringify(beforeFiles)) {
@@ -240,6 +269,7 @@ async function runEngineReviewPass(
   let verdict = original;
   let head = expected;
   let mergeBase: string | null = null;
+  let milestone: RepairMilestone | void = undefined;
   if ((!verdict || !complete(verdict)) && cycle.allow_story_repairs && !merged) {
     if (initialPr.head.repo?.full_name?.toLowerCase() !== envelope.repository.toLowerCase()) {
       throw new Error("Engine story repairs require the bound repository branch");
@@ -258,7 +288,7 @@ async function runEngineReviewPass(
     // Publish a completed inspection after one repair pass. A second speculative
     // pass used to consume the remaining deadline and lose the first pass too.
     {
-      await controller.fix(`${context}\n\nFix the issues required by this story and its acceptance criteria, including the assigned findings and validation gaps below. ${conflict ? `The controller prepared a merge of base ${baseSha}; resolve every conflict while preserving the story and current base behavior.` : ""} You own the repair; do not hand it to a developer or ask for another scope approval. Make reasonable implementation decisions from the story and existing code. Add or update focused tests and run them. Report a concrete blocker only if the story cannot determine a required decision or an external dependency is unavailable. Do not commit, push, merge, alter Git configuration, call GitHub or write review reports.\n\n<findings-data>${JSON.stringify(verdict ?? cycle.findings).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</findings-data>`);
+      milestone = await controller.fix(`${context}\n\nPlan the required repairs as coherent milestones and explain the plan before editing. Fix the next useful milestone from the assigned findings and validation gaps below, within this story and its acceptance criteria. Return a checkpoint after that milestone, before long validation, and approximately every 15 minutes at a safe tool boundary while changes accumulate. Do not accumulate all remaining work into one turn. Report remaining implementation work in remainingWork with outcome checkpoint; your controller will inspect, commit, push and verify this milestone, then continue in this same task. Use outcome complete only when all repairs are implemented, or blocked for a concrete external blocker. A checkpoint is not approval or story completion. ${conflict ? `The controller prepared a merge of base ${baseSha}; resolve every conflict while preserving the story and current base behavior.` : ""} You own the repair; do not hand it to a developer or ask for another scope approval. Make reasonable implementation decisions from the story and existing code. Add or update focused tests and run them. Report a concrete blocker only if the story cannot determine a required decision or an external dependency is unavailable. Do not commit, push, merge, alter Git configuration, call GitHub or write review reports.\n\n<findings-data>${JSON.stringify(verdict ?? cycle.findings).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</findings-data>`);
       await verifyGit(expected);
       if (conflict) {
         if (mergeBase && await git(["rev-parse", "MERGE_HEAD"]) !== mergeBase) throw new Error("Codex changed the protected merge base");
@@ -284,7 +314,14 @@ async function runEngineReviewPass(
           .replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
         await controller.fix(`${context}\n\nThe repaired tree failed Git validation before publication. Fix only the reported whitespace errors or conflict markers while preserving story behavior. Do not commit, push, merge, change Git configuration, disable checks, or write review reports. The controller will stage, recheck and re-review your changes.\n\n<git-validation-data>${diagnostics}</git-validation-data>`);
       }
-      verdict = await inspect(expected, true);
+      verdict = await inspect(expected, true, milestone?.outcome === 'checkpoint');
+      if (milestone?.outcome === 'blocked') {
+        verdict = { ...verdict, validationGaps: [...verdict.validationGaps, milestone.summary, ...milestone.remainingWork] };
+      }
+      if (milestone?.outcome === 'checkpoint') {
+        verdict = { ...verdict, validationGaps: [...verdict.validationGaps,
+          ...milestone.remainingWork.map(item => `Remaining repair milestone: ${item}`)] };
+      }
     }
     const changed = (await git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD"]))
       .split("\0").filter(Boolean);
@@ -330,6 +367,7 @@ async function runEngineReviewPass(
   }
   if (head !== expected) {
     await observePublishedRepair(controller.github, cycle.pr_number, expected, head, initialPr.head.ref);
+    runtime.observer?.explanation(`Published ${milestone?.outcome === 'checkpoint' ? 'repair checkpoint' : 'reviewed repair'}: https://github.com/${envelope.repository}/commit/${head}. ${milestone?.summary ?? 'The inspected repairs are now on the PR branch.'} ${milestone?.outcome === 'checkpoint' ? `Remaining work: ${milestone.remainingWork.join('; ')}. Continuing the same assignment.` : 'Checking final CI and merge eligibility.'} CI for this revision has not yet been verified.`);
   } else {
     const current = await controller.github.getPullRequest(cycle.pr_number);
     if (current.head.sha !== head) throw new Error("PR head changed before review delivery");
@@ -337,6 +375,8 @@ async function runEngineReviewPass(
   if (!verdict) throw new Error("Engine review produced no inspection");
   return { status: "engine_reviewed", sha: head, merged, reviewed_base_sha: baseSha,
     repair_base_sha: head !== expected ? expected : null,
+    checkpoint_remaining: head !== expected && milestone?.outcome === 'checkpoint' ? milestone.remainingWork : [],
+    ...(milestone?.outcome === "blocked" ? { repair_blocked: milestone.summary } : {}),
     report: engineReport(verdict),
     body: engineReviewBody(verdict, head),
   };
@@ -371,6 +411,7 @@ export async function runEngineReview(
   let queued = false;
   while (true) {
     await reviewOperation(runtime.observer, async () => {});
+    if (result.repair_blocked) return { ...finish(), delivery_blocked: result.repair_blocked };
     if (now() >= deadline) return { ...finish(), delivery_blocked: "Delivery deadline exceeded while waiting for CI or merge; inspected head retained for recovery" };
     if (Object.values(result.report.stages).some(stage => stage !== "completed")) return finish();
     let checks: ReviewerChecks;
@@ -405,7 +446,7 @@ export async function runEngineReview(
       }
     }
     if (checks.base_sha !== result.reviewed_base_sha) checks = { ...checks, base_repair_required: true };
-    if (checks.state === "pending" && !checks.base_repair_required) {
+    if (checks.state === "pending" && !checks.base_repair_required && result.checkpoint_remaining.length === 0) {
       // No model call and no terminal receipt while applicable CI is running.
       await wait(60000);
       continue;
@@ -428,7 +469,7 @@ export async function runEngineReview(
       checks = { ...checks, base_repair_required: true, failures: [delivery.reason] };
     }
     const previous = result;
-    const needsRepair = checks.state === "failed" || checks.base_repair_required;
+    const needsRepair = checks.state === "failed" || checks.base_repair_required || result.checkpoint_remaining.length > 0;
     const findings = [...result.report.findings, {
       source: checks.base_repair_required ? "merge-controller" : "required-checks",
       summary: checks.base_repair_required ? "Repair merge conflict or out-of-date base" : "Canonical CI observation for this exact head",

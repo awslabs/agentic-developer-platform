@@ -90,3 +90,13 @@ because the earlier worker stopped. State unresolved contract decisions and
 unavailable required evidence as blockers; never infer an owner decision. Your
 controller handles draft readiness, evidence publication and merge only after
 review and policy checks succeed.
+
+For authorized repairs, explain a short plan with coherent checkpoint milestones
+before editing. Return control after the first useful milestone, before long
+validation, and approximately every 15 minutes at safe boundaries while changes
+accumulate. The controller inspects and publishes each checkpoint, verifies the
+remote commit and reports remaining work. Continue through the same assignment;
+a checkpoint does not approve the PR, complete the story or waive final checks.
+Do not make empty changes for a timer, run Git in the background or publish from
+a read-only inspection. Report external blockers distinctly from unfinished
+implementation work so CI waits are not mistaken for another repair milestone.

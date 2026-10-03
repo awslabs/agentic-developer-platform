@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseEnvelope, type CodexEngineReviewEnvelope } from "./contracts.js";
-import { engineReport, engineReviewBody, parseEngineVerdict, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
+import { engineReport, engineReviewBody, parseEngineVerdict, parseRepairMilestone, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
 import { runStandaloneReview } from "./standalone-review.js";
 import { deliverEngineReview } from "./engine-delivery.js";
 
@@ -612,3 +612,81 @@ test("PR mention preserves an explicit review-only setting", async t => {
     else process.env.CODEX_REVIEWER_MERGE_ENABLED = previous;
   }
 });
+
+
+test("repair milestone results reject missing or contradictory progress", () => {
+  for (const raw of ["{}", "null", JSON.stringify({ outcome: "checkpoint", summary: "Done", remainingWork: [] }),
+    JSON.stringify({ outcome: "complete", summary: "Done", remainingWork: ["Still missing"] }),
+    JSON.stringify({ outcome: "blocked", summary: " ", remainingWork: [] })]) {
+    assert.throws(() => parseRepairMilestone(raw));
+  }
+  assert.equal(parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["Add coverage"] })).outcome, "checkpoint");
+});
+
+test("repair publishes two milestones before final CI and merges only the completed revision", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, reviews = 0, waits = 0, observations = 0, deliveries = 0;
+  let first = "";
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async prompt => {
+      reviews++;
+      if (reviews === 1) return blocked;
+      if (reviews === 2) assert.match(prompt, /incomplete checkpoint/);
+      return approved; // A partial inspection alone must never approve completion.
+    },
+    fix: async prompt => {
+      repairs++;
+      assert.match(prompt, /Plan the required repairs as coherent milestones/);
+      if (repairs === 2) {
+        first = await state.git("--git-dir", state.remote, "rev-parse", "story");
+        assert.notEqual(first, state.sha, "first checkpoint must already be published");
+        assert.equal(waits, 0, "unfinished work must continue without waiting for checkpoint CI");
+        assert.match(prompt, /Remaining repair milestone: Add input coverage/);
+      }
+      await writeFile(join(state.workspace, "code.txt"), `milestone ${repairs}\n`);
+      return repairs === 1
+        ? { outcome: "checkpoint", summary: "Repair parser", remainingWork: ["Add input coverage"] }
+        : { outcome: "complete", summary: "Coverage complete", remainingWork: [] };
+    },
+    checks: async head => checkObservation(head, ++observations < 3 ? "pending" : "passed", state.sha),
+    wait: async () => { waits++; assert.equal(repairs, 2); },
+    deliver: async result => {
+      deliveries++;
+      assert.equal(observations, 3);
+      assert.equal(repairs, 2);
+      assert.equal(result.report.verdict, "approve");
+      assert.deepEqual(result.checkpoint_remaining, []);
+      return { state: "merged" };
+    },
+  });
+  assert.equal(await state.git("rev-parse", "HEAD^"), first);
+  assert.equal(await state.git("rev-parse", "HEAD~2"), state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+  assert.equal(reviews, 3);
+  assert.equal(waits, 1);
+  assert.equal(deliveries, 1);
+  assert.equal(result.merged, true);
+});
+
+for (const outcome of ["checkpoint", "blocked"] as const) {
+  test(`${outcome} repair cannot approve despite an approving inspection`, async t => {
+    const state = await fixture(t);
+    let reviews = 0;
+    state.envelope.cycle.reviewer_owned_delivery = outcome === "blocked";
+    const result = await runEngineReview(state.envelope, state.runtime, {
+      github: state.github,
+      checks: async () => assert.fail("external blocker must not poll CI or restart repair"),
+      deliver: async () => assert.fail("incomplete work must not merge"),
+      review: async () => ++reviews === 1 ? blocked : approved,
+      fix: async () => {
+        await writeFile(join(state.workspace, "code.txt"), "partial repair\n");
+        return { outcome, summary: "Needs remaining work", remainingWork: ["Missing acceptance evidence"] };
+      },
+    });
+    assert.notEqual(result.sha, state.sha);
+    assert.equal(result.report.verdict, "request-changes");
+    assert.match(result.body, /Missing acceptance evidence/);
+  });
+}
