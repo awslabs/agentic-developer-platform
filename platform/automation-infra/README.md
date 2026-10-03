@@ -404,7 +404,9 @@ retained inputs. Install `worker-release-rbac.yaml` in the existing cluster. Set
 up GitHub environment `adp-worker-deploy-<environment>` restricted to `main`, with
 `ADP_DEPLOY_ROLE_ARN` from `worker_deployment_role_arn` and `ADP_DEPLOY_REGION`.
 The role can read the worker ECR digest and update only the two worker release
-SSM parameters. Kubernetes RBAC names the worker templates and gateway config;
+SSM parameters, read parameter metadata, and use the webhook DynamoDB KMS key
+only through SSM for the trusted-image parameter. Rollout preserves that
+parameter's existing encryption key. Kubernetes RBAC names the worker templates and gateway config;
 it grants neither cluster administration nor IAM mutation. Bootstrap this once
 per deployment target before enabling automatic releases.
 

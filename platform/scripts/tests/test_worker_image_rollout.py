@@ -34,6 +34,8 @@ class Fake(m.Rollout):
     def aws(self, *args):
         if args[:2] == ('ecr', 'describe-images'):
             return {'imageDetails': [{'imageDigest': NEW}]}
+        if args[:2] == ('ssm', 'describe-parameters'):
+            return {'Parameters': [{'KeyId': 'existing-key'}]}
         if args[:2] == ('ssm', 'get-parameter'):
             return {'Parameter': {'Value': OLD + ',' + NEW, 'Type': 'SecureString'}}
         raise AssertionError(args)
@@ -41,7 +43,9 @@ class Fake(m.Rollout):
     def get(self, namespace, kind, name):
         return copy.deepcopy({'scaledjob': self.worker, 'configmap': self.cm, 'deployment': self.gateway}.get(kind)) if name not in ('agent-warm-pool', 'agent-image-prepull') else None
 
-    def put(self, name, value, kind='String'):
+    def put(self, name, value, kind='String', key_id=None):
+        if kind == 'SecureString':
+            assert key_id == 'existing-key'
         self.events.append(('put', name, value))
 
     def patch(self, namespace, kind, obj, changes):

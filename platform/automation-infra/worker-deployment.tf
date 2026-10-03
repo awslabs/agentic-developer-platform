@@ -15,12 +15,23 @@ resource "aws_iam_role" "worker_deployment" {
     } }
   }] })
 }
+data "aws_kms_alias" "worker_parameter" {
+  count = var.enable_worker_deployment ? 1 : 0
+  name  = "alias/${var.name_prefix}-webhook-dynamodb"
+}
 resource "aws_iam_role_policy" "worker_deployment" {
   count = var.enable_worker_deployment ? 1 : 0
   name  = "rollout-existing-worker"
   role  = aws_iam_role.worker_deployment[0].id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Effect = "Allow", Action = "eks:DescribeCluster", Resource = "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}" },
+    { Effect = "Allow", Action = "ssm:DescribeParameters", Resource = "*" },
+    { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = data.aws_kms_alias.worker_parameter[0].target_key_arn,
+      Condition = { StringEquals = {
+        "kms:ViaService"                      = "ssm.${var.aws_region}.amazonaws.com",
+        "kms:EncryptionContext:PARAMETER_ARN" = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/gateway/agent-authority-worker-images"
+      } }
+    },
     { Effect = "Allow", Action = "ecr:DescribeImages", Resource = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/adp-agent-runtime" },
     { Effect = "Allow", Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"], Resource = [
       "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/gateway/agent-authority-worker-images",

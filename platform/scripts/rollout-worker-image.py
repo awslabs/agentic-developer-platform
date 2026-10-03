@@ -38,9 +38,10 @@ class Rollout:
         values = self.aws('ssm', 'get-parameters', '--names', self.release_name)['Parameters']
         return json.loads(values[0]['Value']) if values else None
 
-    def put(self, name, value, kind='String'):
+    def put(self, name, value, kind='String', key_id=None):
         return self.aws('ssm', 'put-parameter', '--name', name, '--value', value,
-                        '--type', kind, '--tier', 'Advanced', '--overwrite')
+                        '--type', kind, '--tier', 'Advanced', '--overwrite',
+                        *(['--key-id', key_id] if key_id else []))
 
     def patch(self, namespace, kind, obj, changes):
         patch = [{'op': 'test', 'path': '/metadata/resourceVersion', 'value': obj['metadata']['resourceVersion']}, *changes]
@@ -111,7 +112,10 @@ class Rollout:
             raise RuntimeError('Invalid existing image trust value')
         value = ','.join(sorted(trust))
         # Retain old digests so active jobs remain authorized throughout the rollout.
-        self.put(trust_name, value, parameter['Type'])
+        metadata = self.aws('ssm', 'describe-parameters', '--parameter-filters', f'Key=Name,Option=Equals,Values={trust_name}')['Parameters']
+        if len(metadata) != 1:
+            raise RuntimeError('Cannot resolve existing image-trust encryption key')
+        self.put(trust_name, value, parameter['Type'], metadata[0].get('KeyId'))
         self.patch('adp-gateway', 'configmap', cm, [{'op': 'add', 'path': '/data/' + key, 'value': value} for key in KEYS])
         # Explicit env entries override envFrom. Keep both sources consistent.
         # Use a strategic merge by name to retain all other env and pod settings.
