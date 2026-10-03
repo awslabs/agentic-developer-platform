@@ -623,9 +623,10 @@ test("repair milestone results reject missing or contradictory progress", () => 
   assert.equal(parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["Add coverage"] })).outcome, "checkpoint");
 });
 
-test("repair publishes two milestones before final CI and merges only the completed revision", async t => {
+for (const ownedDelivery of [false, true]) {
+test(`repair publishes two milestones with ${ownedDelivery ? "reviewer" : "engine"} delivery ownership`, async t => {
   const state = await fixture(t);
-  state.envelope.cycle.reviewer_owned_delivery = true;
+  state.envelope.cycle.reviewer_owned_delivery = ownedDelivery;
   let repairs = 0, reviews = 0, waits = 0, observations = 0, deliveries = 0;
   let first = "";
   const result = await runEngineReview(state.envelope, state.runtime, {
@@ -650,7 +651,10 @@ test("repair publishes two milestones before final CI and merges only the comple
         ? { outcome: "checkpoint", summary: "Repair parser", remainingWork: ["Add input coverage"] }
         : { outcome: "complete", summary: "Coverage complete", remainingWork: [] };
     },
-    checks: async head => checkObservation(head, ++observations < 3 ? "pending" : "passed", state.sha),
+    checks: async head => {
+      assert.equal(ownedDelivery, true, "engine-owned delivery must not invoke reviewer delivery APIs");
+      return checkObservation(head, ++observations < 3 ? "pending" : "passed", state.sha);
+    },
     wait: async () => { waits++; assert.equal(repairs, 2); },
     deliver: async result => {
       deliveries++;
@@ -665,10 +669,12 @@ test("repair publishes two milestones before final CI and merges only the comple
   assert.equal(await state.git("rev-parse", "HEAD~2"), state.sha);
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
   assert.equal(reviews, 3);
-  assert.equal(waits, 1);
-  assert.equal(deliveries, 1);
-  assert.equal(result.merged, true);
+  assert.equal(waits, ownedDelivery ? 1 : 0);
+  assert.equal(deliveries, ownedDelivery ? 1 : 0);
+  assert.equal(result.merged, ownedDelivery);
+  assert.equal(result.repair_base_sha, state.sha);
 });
+}
 
 for (const outcome of ["checkpoint", "blocked"] as const) {
   test(`${outcome} repair cannot approve despite an approving inspection`, async t => {

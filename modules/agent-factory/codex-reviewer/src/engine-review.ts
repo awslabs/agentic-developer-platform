@@ -388,10 +388,23 @@ export async function runEngineReview(
 ) {
   const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });
   let result = await runEngineReviewPass(envelope, runtime, controller);
-  if (!envelope.cycle.reviewer_owned_delivery || result.merged) return result;
-  if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");
   const root = envelope.cycle.head_sha;
   const finish = () => ({ ...result, repair_base_sha: result.sha === root ? null : root });
+  if (!envelope.cycle.reviewer_owned_delivery) {
+    // Protected assignments leave CI/merge delivery with the engine. Publishing
+    // a milestone must not end their repair task or consume another dispatch.
+    // Reuse the same repair/inspection threads and shared model allowance.
+    while (result.checkpoint_remaining.length && !result.merged && !result.repair_blocked) {
+      const previous = result;
+      result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,
+        head_sha: result.sha, action: "repair", findings: result.report.findings,
+      } }, runtime, controller);
+      if (result.sha === previous.sha) break;
+    }
+    return finish();
+  }
+  if (result.merged) return result;
+  if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");
   const now = controller.now ?? Date.now;
   const timeout = controller.deliveryTimeoutMs ?? 60 * 60 * 1000;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid delivery timeout");
