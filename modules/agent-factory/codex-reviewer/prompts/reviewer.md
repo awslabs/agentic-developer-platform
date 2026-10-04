@@ -19,14 +19,23 @@ the practical impact, evidence, location and a concrete repair. Mark a repair
 contract, change a migration already applied, or redesign an authorization or
 state model. Everything else is `author_required`.
 
-For an engine review-and-fix assignment, the same reviewer owns all repairs
-required by the story and acceptance criteria, including findings classified
-`author_required`. That classification describes complexity; it does not require
-a developer handoff or another scope approval. Follow the controller's current
-review or repair step, verify the complete repaired change, and state any real
-unresolved issue or validation gap. Your deterministic reviewer controller checks
-CI and merges the verified head; the engine observes the result. A completed
-inspection alone is not successful delivery.
+For a review-fix-merge assignment, own the assigned PR through completion:
+inspect it, repair concrete defects and missing in-scope implementation, test the
+repairs, and verify the final change. Findings, failed tests and `author_required`
+classifications are work for you, not a handoff to the developer. During read-only
+inspection return findings to the controller; it will send them back to your repair
+step. `request_changes` is an intermediate verdict, not completion of the task.
+Your controller publishes commits, waits for required CI, returns failures for
+repair, and merges the verified head. Do not duplicate its GitHub operations.
+
+Use the issue to establish what this PR must do. Do not turn a linked design or
+another story into a separate review assignment. Repair missing implementation
+using the accepted scope and existing contracts. If an external decision really
+prevents a repair, identify the exact unresolved decision, the affected code or
+test, the evidence you checked, and why existing contracts cannot resolve it.
+An unavailable design document alone does not establish that every repair is
+blocked. Continue independent repairs before reporting an external blocker.
+Do not invent protocol semantics or waive an explicit acceptance requirement.
 
 Keep the review bounded to this story's owned changes and acceptance criteria.
 Follow cross-component contracts where the change depends on them, but do not

@@ -398,6 +398,96 @@ test("successive CI repairs retain original assignment lineage and one controlle
   assert.equal(result.report.verdict, "approve");
 });
 
+for (const ci of ["passed", "pending"] as const) {
+  test(`remaining findings go directly to repair with ${ci} CI`, async t => {
+    const state = await fixture(t);
+    state.envelope.cycle.reviewer_owned_delivery = true;
+    const steps: string[] = [];
+    let repairs = 0;
+    const result = await runEngineReview(state.envelope, state.runtime, {
+      github: state.github,
+      review: async () => {
+        steps.push("review");
+        return repairs === 2 ? approved : blocked;
+      },
+      fix: async prompt => {
+        steps.push("repair");
+        assert.match(prompt, /Story behavior missing/);
+        await writeFile(join(state.workspace, "code.txt"), `repair ${++repairs}\n`);
+        return { outcome: "complete", summary: "Implemented repair", remainingWork: [] };
+      },
+      checks: async head => checkObservation(head, repairs === 2 ? "passed" : ci, state.sha),
+      wait: async () => assert.fail("repair known findings before waiting for CI"),
+      deliver: async result => {
+        assert.equal(result.report.verdict, "approve");
+        assert.equal(repairs, 2);
+        return { state: "merged" };
+      },
+    });
+    assert.deepEqual(steps, ["review", "repair", "review", "repair", "review"]);
+    assert.equal(result.merged, true);
+    assert.equal(result.repair_base_sha, state.sha);
+  });
+}
+
+test("validation-only repair proceeds to merge without an empty commit", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => repairs === 2 ? approved : {
+      ...approved, validationGaps: ["Run the focused compatibility test"],
+    },
+    fix: async () => { repairs++; },
+    checks: async head => checkObservation(head, "passed", state.sha),
+    deliver: async result => {
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(repairs, 2);
+  assert.equal(result.sha, state.sha);
+  assert.equal(result.repair_base_sha, null);
+  assert.equal(result.merged, true);
+});
+
+test("unresolved review findings with no repair progress stop without merge", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => blocked,
+    fix: async () => { repairs++; },
+    checks: async head => checkObservation(head, "passed", state.sha),
+    deliver: async () => assert.fail("unresolved findings must not merge"),
+    wait: async () => assert.fail("no progress must not poll"),
+  });
+  assert.equal(repairs, 2);
+  assert.equal(result.report.verdict, "request-changes");
+  assert.equal(result.merged, false);
+});
+
+test("changing commits cannot bypass the automatic repair retry limit", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => approved,
+    fix: async () => {
+      await writeFile(join(state.workspace, "code.txt"), `attempt ${++repairs}\n`);
+    },
+    checks: async head => checkObservation(head, "failed", state.sha),
+    deliver: async () => assert.fail("failing CI must not merge"),
+  });
+  assert.equal(repairs, 3);
+  assert.equal(result.merged, false);
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /retry limit reached \(3\)/);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+});
+
 test("no-progress repair never approves failed CI or loops model calls", async t => {
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = true;

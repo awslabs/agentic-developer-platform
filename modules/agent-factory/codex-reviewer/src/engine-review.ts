@@ -422,6 +422,7 @@ export async function runEngineReview(
   let observationFailures = 0;
   let deliveryFailures = 0;
   let queued = false;
+  let repairRetries = 0;
   while (true) {
     await reviewOperation(runtime.observer, async () => {});
     if (result.repair_blocked) return { ...finish(), delivery_blocked: result.repair_blocked };
@@ -459,7 +460,8 @@ export async function runEngineReview(
       }
     }
     if (checks.base_sha !== result.reviewed_base_sha) checks = { ...checks, base_repair_required: true };
-    if (checks.state === "pending" && !checks.base_repair_required && result.checkpoint_remaining.length === 0) {
+    if (checks.state === "pending" && !checks.base_repair_required
+        && result.checkpoint_remaining.length === 0 && result.report.verdict === "approve") {
       // No model call and no terminal receipt while applicable CI is running.
       await wait(60000);
       continue;
@@ -482,27 +484,38 @@ export async function runEngineReview(
       checks = { ...checks, base_repair_required: true, failures: [delivery.reason] };
     }
     const previous = result;
-    const needsRepair = checks.state === "failed" || checks.base_repair_required || result.checkpoint_remaining.length > 0;
+    // Remaining findings are a repair assignment, not another read-only review.
+    // Continue useful work while checkpoint CI is pending.
+    const needsRepair = result.report.verdict !== "approve" || checks.state === "failed"
+      || checks.base_repair_required || result.checkpoint_remaining.length > 0;
     const findings = [...result.report.findings, {
       source: checks.base_repair_required ? "merge-controller" : "required-checks",
       summary: checks.base_repair_required ? "Repair merge conflict or out-of-date base" : "Canonical CI observation for this exact head",
       evidence: checks,
     }];
     if (envelope.cycle.allow_story_repairs) {
+      if (repairRetries >= 3) return { ...finish(),
+        delivery_blocked: "Automatic repair retry limit reached (3); unresolved findings or CI require intervention" };
+      repairRetries++;
       result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,
         head_sha: result.sha, action: needsRepair ? "repair" : "review", findings,
       } }, runtime, controller);
     }
     if (result.sha === previous.sha) {
+      // Running missing validation can resolve a finding without a code change.
+      // Reobserve CI and merge eligibility once approval has actually improved.
+      if (previous.report.verdict !== "approve" && result.report.verdict === "approve"
+          && !result.repair_blocked && checks.state !== "failed" && !checks.base_repair_required) continue;
       // A genuine external/no-progress blocker must remain visible. Do not spend
       // another model turn or accidentally approve code with failing checks.
-      if (needsRepair) {
+      if (checks.state === "failed" || checks.base_repair_required) {
         result = { ...result, report: { ...result.report, verdict: "request-changes",
           findings: [...result.report.findings, { finding_id: "delivery-blocked", stage: "functional",
             severity: "blocking", disposition: "open", summary: JSON.stringify(findings.at(-1)) }] },
           body: result.body.replace(/— APPROVE/g, "— REQUEST CHANGES") + "\nDelivery remains blocked: " + JSON.stringify(findings.at(-1)) };
       }
-      return finish();
+      return { ...finish(), delivery_blocked: result.repair_blocked
+        ?? "Reviewer repair made no progress; unresolved findings or checks require intervention" };
     }
     // The pushed child is inspected already. Observe its checks, and only repair
     // new failures/findings; never dispatch another developer or reviewer here.
