@@ -488,6 +488,37 @@ test("changing commits cannot bypass the automatic repair retry limit", async t 
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
 });
 
+test("published implementation checkpoints do not exhaust repair retries", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, reviews = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => ++reviews === 1 ? blocked : approved,
+    fix: async () => {
+      repairs++;
+      await writeFile(join(state.workspace, "code.txt"), `milestone ${repairs}\n`);
+      return repairs < 6
+        ? { outcome: "checkpoint", summary: "Implemented next milestone", remainingWork: ["Finish story"] }
+        : { outcome: "complete", summary: "Story implemented", remainingWork: [] };
+    },
+    checks: async head => {
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), head);
+      return checkObservation(head, repairs < 6 ? "pending" : "passed", state.sha);
+    },
+    wait: async () => assert.fail("continue unfinished implementation while CI is pending"),
+    deliver: async result => {
+      assert.equal(repairs, 6);
+      assert.equal(result.report.verdict, "approve");
+      assert.deepEqual(result.checkpoint_remaining, []);
+      return { state: "merged" };
+    },
+  });
+  assert.equal(repairs, 6);
+  assert.equal(result.merged, true);
+  assert.equal(await state.git("rev-parse", "HEAD~6"), state.sha);
+});
+
 test("no-progress repair never approves failed CI or loops model calls", async t => {
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = true;

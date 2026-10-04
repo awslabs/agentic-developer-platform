@@ -494,9 +494,13 @@ export async function runEngineReview(
       evidence: checks,
     }];
     if (envelope.cycle.allow_story_repairs) {
-      if (repairRetries >= 3) return { ...finish(),
-        delivery_blocked: "Automatic repair retry limit reached (3); unresolved findings or CI require intervention" };
-      repairRetries++;
+      // Published milestones continue implementation within the same model/time
+      // allowance; they are not retries of a supposedly completed repair.
+      if (result.checkpoint_remaining.length === 0) {
+        if (repairRetries >= 3) return { ...finish(),
+          delivery_blocked: "Automatic repair retry limit reached (3); unresolved findings or CI require intervention" };
+        repairRetries++;
+      }
       result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,
         head_sha: result.sha, action: needsRepair ? "repair" : "review", findings,
       } }, runtime, controller);
