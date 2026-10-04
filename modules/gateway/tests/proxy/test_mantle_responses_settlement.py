@@ -11,9 +11,12 @@ that decision through the adapter that issued the bound.
 """
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis.aioredis
 import httpx
 import pytest
 
@@ -113,6 +116,7 @@ async def test_reasoning_output_settles_within_the_reported_output(settlement, s
 async def test_an_absent_usage_block_retains_the_hold(settlement, stream):
     kwargs = await settled(settlement, None, stream=stream)
     assert kwargs["usage_known"] is False
+    assert not kwargs.get("retain_failed_bound", False)
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -224,6 +228,61 @@ async def test_a_truncated_stream_retains_the_hold(settlement):
     assert trailer["code"] == "upstream_stream_incomplete"
     settlement.assert_awaited_once()
     assert settlement.await_args.kwargs["usage_known"] is False
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout("quiet upstream"), httpx.RemoteProtocolError("connection lost"), None])
+async def test_interrupted_stream_allows_retry_while_counting_full_bound(settlement, monkeypatch, error):
+    from src.budget import enforcement_service
+    from src.budget.config import budget_config
+    from src.budget.reservations import ReservationStore, ReservationTarget
+    from src.orchestration.provider_quotes import quote_request
+    from tests.proxy.test_mantle_stream_lifecycle import DELTA, ScriptedStream
+
+    body = json.dumps({"model": MODEL, "input": "hello", "max_output_tokens": 16, "stream": True}).encode()
+    quote = await quote_request(body, "/openai/v1/responses")
+    target = ReservationTarget(
+        org_id="tenant",
+        entity_type="flow",
+        entity_id="flow",
+        period_type="run",
+        period_start="lifetime",
+        headroom_usd=quote.total_usd * 2,
+        ttl_seconds=172800,
+        require_initialization=True,
+    )
+    ctx = context()
+    ctx._policy_quote = quote
+    ctx._policy_flow_target = target
+    ctx._budget_admission_targets = [target]
+    monkeypatch.setattr(budget_config, "budget_reservation_enabled", True)
+    async with fakeredis.aioredis.FakeRedis(decode_responses=True) as redis:
+        store = ReservationStore(redis_url=None, ttl_seconds=120, client=redis)
+        budget = enforcement_service.BudgetEnforcementService()
+        budget._reservations = store
+        monkeypatch.setattr(enforcement_service, "budget_enforcement_service", budget)
+        monkeypatch.setattr(mantle_service, "reconcile_budget_reservation", enforcement_service.reconcile_budget_reservation)
+        assert (await store.reserve("__initialized__", Decimal(0), [replace(target, require_initialization=False)])).admitted
+        assert (await store.reserve("failed", quote.total_usd, [target])).admitted
+        before = await redis.hgetall(target.key())
+        upstream = ScriptedStream([DELTA], error)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=upstream))) as client:
+            auth = MagicMock()
+            auth.sign.return_value = {}
+            proxy = mantle_service.MantlePassthroughService(auth, "https://bedrock-runtime.us-east-1.amazonaws.com", http_client=client)
+            stream = await proxy.create_response(body, ctx, stream=True, model=MODEL, request_id="failed")
+            received = b"".join([chunk async for chunk in stream])
+        assert b'"type": "error"' in received and b"response.completed" not in received
+        assert (await store.snapshot(target)).total_usd == quote.total_usd
+        after = await redis.hgetall(target.key())
+        assert after["failed"] == before["failed"]  # Neither amount nor expiry is reset.
+        assert after["__initialized__"] == before["__initialized__"]
+        assert "bounded:failed" in after and "pending:failed" not in after
+        assert mantle_service.UsageService(None).log_request.await_args.kwargs["pricing_decision"] is None
+        assert (await store.reserve("retry", quote.total_usd, [target])).admitted
+        assert not (await store.reserve("over-cap", Decimal("0.01"), [target])).admitted
+        await store.reconcile("failed", Decimal("0.01"), [target])
+        assert (await store.snapshot(target)).total_usd == quote.total_usd + Decimal("0.01")
+        assert "bounded:failed" not in await redis.hgetall(target.key())
 
 
 @pytest.mark.parametrize("stream", [False, True])

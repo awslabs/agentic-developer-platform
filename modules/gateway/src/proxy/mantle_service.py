@@ -615,6 +615,9 @@ class MantlePassthroughService:
                     request_id,
                     agent_run_id,
                     routing_decision=routed.decision,
+                    # An interrupted stream has no final receipt. Keep its full
+                    # admitted bound, as for HTTP 5xx, so affordable retries work.
+                    **({"retain_failed_bound": True} if outcome in {"read_timeout", "transport_error", "premature_eof"} else {}),
                 )
 
         return _passthrough()

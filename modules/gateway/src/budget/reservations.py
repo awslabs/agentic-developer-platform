@@ -491,7 +491,7 @@ class ReservationStore:
             return None
 
     async def retain_failed_bound(self, request_id: str, target: ReservationTarget) -> bool:
-        """Keep the entire admitted bound after an explicit upstream HTTP 5xx.
+        """Keep the entire admitted bound after HTTP 5xx or a stream interruption.
 
         This is NOT an actual-cost receipt or a release. The request's original
         amount and deadline remain unchanged. A late trusted receipt may still

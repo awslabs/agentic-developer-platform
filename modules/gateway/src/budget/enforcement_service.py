@@ -1351,11 +1351,11 @@ class BudgetEnforcementService:
             # call or missing usage must not turn its estimate into zero spend.
             unresolved = [target for target in targets if target.require_initialization]
             for target in unresolved:
-                # An explicit 5xx can retry against the full server-admitted
+                # A provider failure can retry against the full server-admitted
                 # quote. No actual usage is invented and no headroom released.
                 if retain_failed_bound and context._policy_quote is not None and await store.retain_failed_bound(request_id, target):
                     logger.warning(
-                        "Provider HTTP failure retained at full admitted bound; no usage settled",
+                        "Provider failure retained at full admitted bound; no usage settled",
                         extra={"request_id": request_id, "budget_scope": target.entity_type},
                     )
                     continue

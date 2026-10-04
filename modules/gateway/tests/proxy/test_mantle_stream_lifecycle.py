@@ -90,6 +90,7 @@ async def test_interrupted_stream_reports_error_without_replay_or_false_completi
     assert b"response.completed" not in b"".join(received)
     service._log_usage.assert_awaited_once()
     assert service._log_usage.call_args.args[4] == status
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
     assert stream.closed
     assert "mantle stream completed" not in caplog.text
 
@@ -107,6 +108,7 @@ async def test_partial_event_failure_does_not_inject_into_json(context, error):
     assert received == [partial]
     assert stream.closed
     assert service._log_usage.call_args.args[4] in (502, 504)
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
 
 
 @pytest.mark.parametrize("kind,status", [("response.completed", 200), ("response.incomplete", 200), ("response.failed", 502), ("error", 502)])
@@ -117,6 +119,7 @@ async def test_upstream_terminal_events_are_preserved(context, caplog, kind, sta
     async with client:
         assert b"".join([c async for c in await open_stream(service, context)]) == payload
     assert service._log_usage.call_args.args[4] == status
+    assert not service._log_usage.call_args.kwargs.get("retain_failed_bound", False)
     assert stream.closed
 
 
@@ -126,6 +129,7 @@ async def test_timeout_after_delivered_terminal_does_not_turn_success_into_failu
     async with client:
         assert b"".join([c async for c in await open_stream(service, context)]) == COMPLETED
     assert service._log_usage.call_args.args[4] == 200
+    assert not service._log_usage.call_args.kwargs.get("retain_failed_bound", False)
 
 
 async def test_client_close_cancels_upstream_and_records_cancellation(context):
@@ -137,6 +141,7 @@ async def test_client_close_cancels_upstream_and_records_cancellation(context):
         await result.aclose()
     assert stream.closed
     assert service._log_usage.call_args.args[4] == 499
+    assert not service._log_usage.call_args.kwargs.get("retain_failed_bound", False)
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
