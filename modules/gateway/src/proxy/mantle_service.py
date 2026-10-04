@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import anyio
 import boto3
 import httpx
 
@@ -482,6 +483,24 @@ class MantlePassthroughService:
             upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers, timeout=self._stream_timeout)
             context._budget_provider_started = True
             resp = await client.send(upstream_request, stream=True)
+        except asyncio.CancelledError:
+            # A caller deadline can expire before upstream headers arrive.
+            # Preserve the full admitted cost even though no receipt exists.
+            with anyio.CancelScope(shield=True):
+                if owns_client:
+                    await client.aclose()
+                await self._log_usage(
+                    context,
+                    model,
+                    {},
+                    int((time.monotonic() - start) * 1000),
+                    499,
+                    request_id,
+                    agent_run_id,
+                    routing_decision=routed.decision,
+                    retain_failed_bound=True,
+                )
+            raise
         except httpx.HTTPError as exc:
             if owns_client:
                 await client.aclose()
@@ -583,42 +602,49 @@ class MantlePassthroughService:
                 result_status = 499
                 raise
             finally:
-                sniffer.finish()
-                await resp.aclose()
-                if owns_client:
-                    await client.aclose()
-                latency_ms = (time.monotonic() - start) * 1000
-                if sniffer.terminal_event:
-                    outcome = sniffer.terminal_event.removeprefix("response.")
-                    result_status = 502 if sniffer.terminal_event in {"error", "response.failed"} else status_code
-                logger.log(
-                    logging.WARNING if result_status >= 400 else logging.INFO,
-                    "mantle stream %s (model=%s request_id=%s latency_ms=%d)",
-                    outcome,
-                    model,
-                    request_id,
-                    int(latency_ms),
-                    extra={
-                        "stream_outcome": outcome,
-                        "terminal_event": sniffer.terminal_event,
-                        "stream_read_timeout_seconds": self._stream_timeout.read,
-                        "upstream_status": status_code,
-                        "status_code": result_status,
-                    },
-                )
-                await self._log_usage(
-                    context,
-                    model,
-                    self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
-                    int(latency_ms),
-                    result_status,
-                    request_id,
-                    agent_run_id,
-                    routing_decision=routed.decision,
-                    # An interrupted stream has no final receipt. Keep its full
-                    # admitted bound, as for HTTP 5xx, so affordable retries work.
-                    **({"retain_failed_bound": True} if outcome in {"read_timeout", "transport_error", "premature_eof"} else {}),
-                )
+                # Starlette's disconnect cancellation must not interrupt
+                # closing the upstream or preserving this request's spend.
+                with anyio.CancelScope(shield=True):
+                    sniffer.finish()
+                    await resp.aclose()
+                    if owns_client:
+                        await client.aclose()
+                    latency_ms = (time.monotonic() - start) * 1000
+                    if sniffer.terminal_event:
+                        outcome = sniffer.terminal_event.removeprefix("response.")
+                        result_status = 502 if sniffer.terminal_event in {"error", "response.failed"} else status_code
+                    logger.log(
+                        logging.WARNING if result_status >= 400 else logging.INFO,
+                        "mantle stream %s (model=%s request_id=%s latency_ms=%d)",
+                        outcome,
+                        model,
+                        request_id,
+                        int(latency_ms),
+                        extra={
+                            "stream_outcome": outcome,
+                            "terminal_event": sniffer.terminal_event,
+                            "stream_read_timeout_seconds": self._stream_timeout.read,
+                            "upstream_status": status_code,
+                            "status_code": result_status,
+                        },
+                    )
+                    await self._log_usage(
+                        context,
+                        model,
+                        self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
+                        int(latency_ms),
+                        result_status,
+                        request_id,
+                        agent_run_id,
+                        routing_decision=routed.decision,
+                        # An interrupted stream has no final receipt. Keep its full
+                        # admitted bound, as for HTTP 5xx, so affordable retries work.
+                        **(
+                            {"retain_failed_bound": True}
+                            if outcome in {"read_timeout", "transport_error", "premature_eof", "client_cancelled"}
+                            else {}
+                        ),
+                    )
 
         return _passthrough()
 
