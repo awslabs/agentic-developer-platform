@@ -602,3 +602,70 @@ def test_long_expired_window_cannot_be_silently_or_excessively_renewed(resume, h
 
     now = datetime.now(UTC)
     assert not valid_wall_clock(3600, 3 * 86400 + hours * 3600, now, started=now - timedelta(days=3), resume_expired=resume)
+
+
+async def test_protected_concurrency_supplement_preserves_work_and_budgets(protected_window):
+    from src.orchestration.shared_budget import financial_limits
+    from src.orchestration.shared_concurrency import ConcurrencyIncreaseRequest, accept_concurrency_increase, preview_concurrency_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    request = ConcurrencyIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_concurrent_actions=3,
+        reason="Owner authorizes three concurrent workers on the protected plan.",
+    )
+    preview = await preview_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    request = request.model_copy(update={"expected_snapshot": preview["snapshot"]})
+    receipt = await accept_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    after = (await effective(b)).policy
+    assert after.limits.max_concurrent_actions == 3
+    assert after._shared_concurrency_decision_id == receipt["decision_id"]
+    assert financial_limits(after) == financial_limits(before)
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert after.expires_at == before.expires_at
+    assert b.s.plan.plan_document == document
+    assert b.s.node.attempts == 1 and b.s.node.state == "failed"
+    assert b.execution.status == "concluded"
+    replay = await accept_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    assert not replay["created"]
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=row.org_id,
+            flow_id=row.flow_id,
+            kind=row.kind,
+            actor_id="other-owner",
+            actor_kind=row.actor_kind,
+            actor_role=row.actor_role,
+            reason=row.reason,
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    )
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None
+
+
+@pytest.mark.parametrize("fault", ["owner", "document"])
+async def test_protected_concurrency_refuses_changed_owner_or_document(protected_window, fault):
+    from src.orchestration.shared_concurrency import ConcurrencyIncreaseError, ConcurrencyIncreaseRequest, preview_concurrency_increase
+
+    b = protected_window
+    request = ConcurrencyIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_concurrent_actions=3,
+        reason="An increase must preserve the accepted document and its owner.",
+    )
+    actor = b.actor
+    if fault == "owner":
+        actor = replace(actor, actor_id="other-owner")
+    else:
+        document = copy.deepcopy(b.s.plan.plan_document)
+        document["flow_slug"] = "changed-scope"
+        b.s.plan.plan_document = document
+        await b.s.session.flush()
+    with pytest.raises(ConcurrencyIncreaseError, match="original_principal_required|accepted_document_hash_changed"):
+        await preview_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=actor, request=request)
