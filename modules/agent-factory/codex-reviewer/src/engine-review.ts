@@ -408,7 +408,7 @@ export async function runEngineReview(
   const now = controller.now ?? Date.now;
   const timeout = controller.deliveryTimeoutMs ?? 60 * 60 * 1000;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid delivery timeout");
-  const deadline = now() + timeout;
+  let deadline = now() + timeout;
   const wait = async (milliseconds: number) => {
     runtime.observer?.explanation('Waiting for CI or merge status; the reviewer will continue automatically.');
     const duration = Math.max(0, Math.min(milliseconds, deadline - now()));
@@ -501,9 +501,13 @@ export async function runEngineReview(
           delivery_blocked: "Automatic repair retry limit reached (3); unresolved findings or CI require intervention" };
         repairRetries++;
       }
+      const repairStarted = now();
       result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,
         head_sha: result.sha, action: needsRepair ? "repair" : "review", findings,
       } }, runtime, controller);
+      // Repair work has its own shared model deadline. Preserve time already
+      // spent waiting for CI without charging implementation against it too.
+      deadline += Math.max(0, now() - repairStarted);
     }
     if (result.sha === previous.sha) {
       // Running missing validation can resolve a finding without a code change.

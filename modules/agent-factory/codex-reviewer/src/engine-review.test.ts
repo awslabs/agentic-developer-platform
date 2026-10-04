@@ -650,6 +650,35 @@ for (const queued of [false, true]) test(`delivery deadline retains inspection w
 });
 
 
+test("repair time neither consumes nor resets the CI delivery allowance", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let clock = 0, repairs = 0, reviews = 0, observations = 0;
+  const waits: number[] = [];
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => ++reviews === 1 ? blocked : approved,
+    fix: async () => {
+      repairs++;
+      clock += 180_000; // Each useful repair takes longer than the CI allowance.
+      await writeFile(join(state.workspace, "code.txt"), `milestone ${repairs}\n`);
+      return repairs === 1
+        ? { outcome: "checkpoint", summary: "First milestone", remainingWork: ["Finish story"] }
+        : { outcome: "complete", summary: "Repair complete", remainingWork: [] };
+    },
+    checks: async head => checkObservation(head, ++observations === 3 ? "failed" : "pending", state.sha),
+    deliver: async () => assert.fail("Pending CI must not merge"),
+    now: () => clock, deliveryTimeoutMs: 90_000,
+    wait: async ms => { waits.push(ms); clock += ms; },
+  });
+  assert.equal(repairs, 3);
+  assert.deepEqual(waits, [60_000, 30_000], "CI waiting before a repair remains charged afterward");
+  assert.equal(clock, 3 * 180_000 + 90_000);
+  assert.equal(result.merged, false);
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /deadline exceeded/);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+});
+
 for (const failure of ["semantic", "ci", "validation"] as const) {
   test(`PR mention owns ${failure} fixes, tests and merge without a handoff`, async t => {
     const state = await fixture(t);
