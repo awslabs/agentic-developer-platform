@@ -66,7 +66,10 @@ def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[s
     if action is Action.REVIEW:
         return {**permissions, "pull_requests": "write", "issues": "write"}
     if action in {Action.DEVELOP, Action.REPAIR} and policy.permits(Action.MERGE):
-        return {**permissions, "contents": "write", "pull_requests": "write", "issues": "write"}
+        # Workflow files are repository code too. GitHub requires this additional
+        # permission to publish their repairs; contents-write alone fails at push.
+        # The existing code-write + merge policy gate applies to both scopes.
+        return {**permissions, "contents": "write", "pull_requests": "write", "issues": "write", "workflows": "write"}
     # A provider token that can write contents cannot enforce a human-only merge
     # gate. That needs mediated writes/scoped branch capabilities, not a broad
     # installation-token fallback.
