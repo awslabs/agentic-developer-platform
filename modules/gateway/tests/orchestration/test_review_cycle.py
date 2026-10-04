@@ -843,3 +843,69 @@ async def test_protected_reviewer_owns_delivery_by_default_and_blockers_do_not_d
     assert result.effects_attempted == 0
     assert len(cycle.calls) == 1
     assert execution.block_detail == "reviewer_delivery_blocked"
+
+
+async def test_reviewer_retries_at_depth_limit_preserve_authority_and_attempt_budget(cycle):
+    ctx = cycle
+    root_grant = ctx.store._read(f"TENANT#{ORG}", f"GRANT#{ctx.root}#1")
+    root_grant["max_chain_depth"] = {"N": "1"}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=root_grant)
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = 10
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(ctx)).effects_succeeded == 1
+    first = ctx.calls[-1]["message_id"]
+    # Retry must not regain the ancestor's longer expiry or broader permissions.
+    grant = ctx.store._read(f"TENANT#{ORG}", f"GRANT#{first}#1")
+    expiry = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    grant["expires_at"] = {"S": expiry}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=grant)
+    for index in range(10):
+        run = ctx.calls[-1]["message_id"]
+        raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+        raw.update(status={"S": "completed"}, terminal_outcome={"S": "failed"})
+        ctx.store.client.put_item(TableName=ctx.store.table, Item=raw)
+        result = await tick(ctx)
+        if index == 9:
+            assert result.effects_succeeded == 0
+            assert (await state(ctx))[0].block_code == "attempts_exhausted"
+            break
+        assert result.effects_succeeded == 1
+        retry = ctx.calls[-1]
+        assert retry["correlation"]["chain_depth"] == 1
+        assert retry["correlation"]["parent_principal"] == f"{ctx.root}#1"
+        assert retry["review_expect"]["author_run_id"] == ctx.root
+        live = ctx.store.live_grant(invocation_id=retry["message_id"], tenant_id=ORG, attempt=1, now=datetime.now(UTC))
+        assert live.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ") == expiry
+        assert live.max_chain_depth == 1 and live.repo_scope == frozenset({REPO})
+        assert {action.value for action in live.allowed_actions} == {"monitor"}
+    assert len(ctx.calls) == 10
+    assert len({call["message_id"] for call in ctx.calls}) == 10
+    assert (await state(ctx))[2].attempts == 1
+
+
+@pytest.mark.parametrize("change", ["missing", "revoked", "epoch", "depth"])
+async def test_retry_lineage_refuses_missing_revoked_or_changed_parent(cycle, change):
+    from src.orchestration.review_cycle import CycleBlockedError
+
+    ctx = cycle
+    assert (await tick(ctx)).effects_succeeded == 1
+    run = ctx.calls[-1]["message_id"]
+    raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+    grant = ctx.store.live_grant(invocation_id=run, tenant_id=ORG, attempt=1, now=datetime.now(UTC))
+    if change == "missing":
+        raw.pop("parent_principal")
+    elif change == "epoch":
+        raw["parent_grant_epoch"] = {"N": "999"}
+    elif change == "depth":
+        raw["chain_depth"] = {"N": "0"}
+    else:
+        parent = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{ctx.root}")
+        parent["status"] = {"S": "revoked"}
+        ctx.store.client.put_item(TableName=ctx.store.table, Item=parent)
+    with pytest.raises(CycleBlockedError, match="retry_parent_unverifiable"):
+        await ctx.service.retry_parent(ORG, raw, grant)
+    assert len(ctx.calls) == 1

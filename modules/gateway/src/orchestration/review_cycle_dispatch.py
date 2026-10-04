@@ -511,7 +511,13 @@ class ReviewCycleServices:
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
                 raise CycleBlockedError("head_changed_before_dispatch")
+            delegation_parent = parent
             depth = int(raw["chain_depth"]["N"]) + 1
+            if bootstrap_retry or review_retry:
+                # Retrying an engine-owned stage is a sibling execution, not a
+                # new delegation by the failed worker. Keep its attenuated grant
+                # below, but attach it to the same verified delegation parent.
+                delegation_parent, depth = await self.retry_parent(node.org_id, raw, parent)
             if depth > parent.max_chain_depth:
                 raise CycleBlockedError("chain_depth_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
             genesis = await resolve_engine_genesis(session, org_id=node.org_id, decision_id=parent.authority.reference_id)
@@ -536,7 +542,7 @@ class ReviewCycleServices:
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
             envelope["correlation"].update(
-                correlation_id=attempt_run_id(node.id, node.attempts), chain_depth=depth, parent_principal=parent.principal
+                correlation_id=attempt_run_id(node.id, node.attempts), chain_depth=depth, parent_principal=delegation_parent.principal
             )
             envelope["review_cycle_input"] = {
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
@@ -575,8 +581,8 @@ class ReviewCycleServices:
                 "orchestration_node_attempt": {"N": str(node.attempts)},
                 "orchestration_continuation_receipt": {"S": receipt_id(action.operation_key)},
                 "orchestration_continuation_action": {"S": effect.action.value},
-                "parent_grant_id": {"S": parent.grant_id},
-                "parent_grant_epoch": {"N": str(parent.revocation_epoch)},
+                "parent_grant_id": {"S": delegation_parent.grant_id},
+                "parent_grant_epoch": {"N": str(delegation_parent.revocation_epoch)},
             }
             if effect.action is Action.REVIEW and allow_story_repairs:
                 # The credential broker reads trusted execution metadata, never
@@ -589,7 +595,7 @@ class ReviewCycleServices:
                 "accepted_plan_version": context.identity.accepted_plan_version,
                 "claim_generation": context.identity.claim_generation,
                 "action": effect.action.value,
-                "parent_principal": parent.principal,
+                "parent_principal": delegation_parent.principal,
                 "authority_reference_id": parent.authority.reference_id,
                 "envelope": envelope,
                 "execution_metadata": metadata,
@@ -651,6 +657,29 @@ class ReviewCycleServices:
             )
             await session.commit()
             return envelope, self.child_grant(parent, run_id, binding.repo), metadata
+
+    async def retry_parent(self, tenant_id, failed, failed_grant):
+        """Reuse verified lineage without resetting depth or widening authority."""
+        try:
+            parent_id, attempt = failed["parent_principal"]["S"].rsplit("#", 1)
+            raw_parent = await self.protected(tenant_id, parent_id)
+            parent = await asyncio.to_thread(
+                self.writer.store.live_grant, invocation_id=parent_id, tenant_id=tenant_id, attempt=int(attempt), now=datetime.now(UTC)
+            )
+            depth = int(raw_parent["chain_depth"]["N"]) + 1
+            if (
+                raw_parent.get("status", {}).get("S") in {"cancelled", "revoked"}
+                or parent.grant_id != failed["parent_grant_id"]["S"]
+                or parent.revocation_epoch != int(failed["parent_grant_epoch"]["N"])
+                or parent.authority != failed_grant.authority
+                or not failed_grant.allowed_actions <= parent.delegable_actions
+                or depth != int(failed["chain_depth"]["N"])
+                or not 0 < depth <= min(parent.max_chain_depth, failed_grant.max_chain_depth)
+            ):
+                raise ValueError("retry lineage changed")
+            return parent, depth
+        except (BootstrapRefusedError, KeyError, TypeError, ValueError):
+            raise CycleBlockedError("retry_parent_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
 
     @staticmethod
     def child_grant(parent, run_id, repo):
