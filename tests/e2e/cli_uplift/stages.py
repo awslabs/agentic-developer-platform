@@ -26,6 +26,7 @@ from __future__ import annotations
 import shlex
 
 from . import (
+    assistant_oracles,
     bundle,
     cases,
     cleanup,
@@ -34,6 +35,7 @@ from . import (
     ports as ports_module,
     preflight,
     release,
+    report,
 )
 
 # Stages that must exist in any assembled mapping. `evidence` and `cleanup` are
@@ -343,6 +345,25 @@ def preflight_stage(cfg, ports):
         record["missing_fixtures"] = preflight.missing_fixture_report(cfg, available)
         blocked = cases.block_missing_fixtures(ctx["matrix"], available)
         record["blocked_cases"] = {k: v for k, v in sorted(blocked.items())}
+        if set(ctx["document"].get("suites") or []) == {"assistant"}:
+            for case_id in ctx["matrix"]:
+                if selected(ctx, case_id):
+                    purpose = JOURNEY_DRIVERS[case_id]
+                    if purpose not in bundle.purposes():
+                        record_selected(
+                            ctx,
+                            case_id,
+                            cases.FAILED,
+                            {
+                                "unimplemented": True,
+                                "purpose": purpose,
+                                "detail": f"No reviewed remote/{purpose}.py driver; no assistant test was executed",
+                            },
+                        )
+            if not any(selected(ctx, case_id) for case_id in ctx["matrix"]):
+                raise StageError(
+                    "Assistant cases are blocked or unimplemented; no disposable EC2 instance was allocated"
+                )
         if "E18" in blocked and not any(
             selected(ctx, case_id) for case_id in ctx["matrix"]
         ):
@@ -382,7 +403,7 @@ def user_data(cfg, evaluation_id):
             # Self-destruct timer, armed before anything else can fail.
             f"shutdown -H +{ttl} 'cli-uplift-eval TTL reached' &",
             f"echo {shlex.quote(evaluation_id)} > /etc/cli-uplift-eval-id",
-            "dnf install -y jq >/dev/null 2>&1",
+            "dnf install -y jq libseccomp >/dev/null 2>&1",
             "dnf install -y nodejs22 nodejs22-npm >/dev/null 2>&1 || true",
             "ln -sf /usr/bin/node-22 /usr/local/bin/node || true",
             f"install -d -o ec2-user -g ec2-user -m 700 {WORK_DIR}",
@@ -778,6 +799,14 @@ def personal_aws_stage(cfg, ports):
 # The dispatcher purpose each case is driven by. A purpose with no shipped script
 # is an implementation gap: the case fails naming the module that must be written.
 JOURNEY_DRIVERS = {
+    "E43": "assistant_stream",
+    "E44": "assistant_sources",
+    "E45": "assistant_isolation",
+    "E46": "assistant_sessions",
+    "E47": "assistant_faults",
+    "E48": "assistant_installations",
+    "E49": "assistant_latency",
+    "E50": "assistant_baseline",
     "D01": "hosted_chat",
     "D02": "vault_lifecycle",
     "D03": "hierarchy_lifecycle",
@@ -873,7 +902,6 @@ def journeys_stage(cfg, ports):
                 )
                 continue
             evidence = driver(instance, ctx) or {}
-            ctx["transcript"].extend(evidence.get("transcript") or [])
             # Resources the journey itself removed AND asserted absent. A pair, so
             # a bare id cannot mark the wrong kind's record deleted.
             proved_removed = {
@@ -897,7 +925,6 @@ def journeys_stage(cfg, ports):
                 # removal; the mere absence of an error is not that claim.
                 if (str(kind), str(identifier)) in proved_removed:
                     ctx["manifest"].mark(kind, identifier, cleanup.DELETED)
-            ctx["correlation"].update(evidence.get("correlation") or {})
             if ctx["fault"] == "missing_usage" and case_id in ("E08", "E09"):
                 # Injection: usage evidence absent must fail the case, never pass.
                 evidence = {**evidence, "success": False, "usage": None}
@@ -908,6 +935,69 @@ def journeys_stage(cfg, ports):
             }
             if evidence.get("error"):
                 detail = {**detail, "error": evidence["error"]}
+            if case_id in {"E43", "E44"} and evidence.get("success"):
+                try:
+                    if case_id == "E43":
+                        observations = assistant_oracles.stream(
+                            evidence.get("events"),
+                            request_id=evidence.get("request_id"),
+                            canary=evidence.get("canary"),
+                            canary_check=evidence.get("canary_check"),
+                        )
+                    else:
+                        observations = assistant_oracles.sources(
+                            evidence.get("pages"),
+                            expected_ids=evidence.get("expected_ids"),
+                            allowed_ids=evidence.get("allowed_ids"),
+                            canary=evidence.get("canary"),
+                            canary_check=evidence.get("canary_check"),
+                            expected_timestamps=evidence.get("expected_timestamps"),
+                            window=evidence.get("window"),
+                        )
+                    detail = {**detail, "assistant_observations": observations}
+                except (assistant_oracles.EvidenceError, TypeError) as exc:
+                    evidence = {**evidence, "success": False}
+                    detail = {**detail, "oracle_error": str(exc)}
+            if case_id == "E50" and evidence.get("success"):
+                if not (
+                    detail.get("protocol") == "webchat-response-v1"
+                    and detail.get("phase") == "completed"
+                    and detail.get("history_verified") is True
+                    and all(
+                        detail.get(key)
+                        for key in (
+                            "session_id",
+                            "task_id",
+                            "request_id",
+                            "user_id",
+                            "tenant_id",
+                            "response_sha256",
+                        )
+                    )
+                ):
+                    evidence = {**evidence, "success": False}
+                    detail = {
+                        **detail,
+                        "oracle_error": "Supported assistant baseline evidence is incomplete",
+                    }
+            artifacts = {
+                "detail": detail,
+                "transcript": evidence.get("transcript") or [],
+                "correlation": evidence.get("correlation") or {},
+            }
+            if case_id in {f"E{index}" for index in range(43, 51)}:
+                artifacts = {
+                    name: assistant_oracles.redact_canary(
+                        report.redact(value), evidence.get("canary")
+                    )
+                    for name, value in artifacts.items()
+                }
+            detail = artifacts["detail"]
+            ctx["transcript"].extend(artifacts["transcript"])
+            ctx["correlation"].update(artifacts["correlation"])
+            if case_id in {"E45", "E46", "E47", "E48", "E49"}:
+                evidence = {**evidence, "success": False}
+                detail = {**detail, "unimplemented": True}
             status = cases.PASSED if evidence.get("success") else cases.FAILED
             if (
                 case_id in {"E28", "E37"}

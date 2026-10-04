@@ -239,3 +239,16 @@ These checks use live responses, not inferred module availability. Configured
 module failures, authorization errors, malformed responses, and unavailable
 backends still fail. Blocked cases retain a non-passing nightly verdict and never
 count as full acceptance.
+
+## Assistant headless coverage
+
+The opt-in `assistant` selection (E43–E50) belongs to the existing CLI Uplift
+child, not a second nightly schedule. The 05:00 UTC `nightly` selection and its
+OIDC authority, revision pin, locks, recovery and cleanup gates remain unchanged.
+Do not add these model-spending or faulting cases to scheduled runs until the
+feature journeys, ordinary-user fixtures, cost limits and target-scoped authority
+have been reviewed. See [the existing EC2 evaluation guide](cli-uplift-evaluation.md#assistant-headless-suite-opt-in-not-yet-qualified)
+for fixture shape, the explicit operator-only workflow command, recovery, and
+headless-versus-browser coverage. Missing fixtures are blocked; unimplemented
+journeys fail. E50 executes the current authenticated WebSocket baseline; it
+does not complete E43–E49 or establish platform acceptance.

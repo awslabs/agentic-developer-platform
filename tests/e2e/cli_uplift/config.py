@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # The reviewed, immutable revision of the #5173 EC2 tenant-validation harness.
 # It is NOT on main (verified at implementation time), so the workflow fetches
@@ -183,6 +184,43 @@ def no_secrets(value, path="config"):
             no_secrets(item, f"{path}[{index}]")
 
 
+def validate_assistant_websocket_url(value):
+    message = (
+        "assistant_users requires a clean wss:// websocket_url with a hostname "
+        "and optional port from 1 to 65535; credentials, query, fragment and "
+        "whitespace/control characters are not allowed"
+    )
+    require(
+        isinstance(value, str)
+        and bool(value)
+        and not any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+        and not any(marker in value for marker in ("?", "#")),
+        message,
+    )
+    try:
+        websocket = urlsplit(value)
+        port = websocket.port
+        hostname = websocket.hostname or ""
+    except ValueError:
+        raise ConfigError(message) from None
+    authority_host = (
+        websocket.netloc.rsplit(":", 1)[0] if port is not None else websocket.netloc
+    )
+    expected_host = f"[{hostname}]" if ":" in hostname else hostname
+    require(
+        websocket.scheme == "wss"
+        and bool(hostname)
+        and websocket.username is None
+        and websocket.password is None
+        and authority_host.lower() == expected_host.lower()
+        and (port is None or 1 <= port <= 65535),
+        message,
+    )
+
+
 def validate(config):
     """Validate and default a config dict, returning the normalized copy."""
     require(isinstance(config, dict), "Config must be a JSON object")
@@ -206,6 +244,9 @@ def validate(config):
         "gateway_url must not carry credentials or a query",
     )
     result["gateway_url"] = url
+
+    if result.get("assistant_users") and result.get("websocket_url") not in (None, ""):
+        validate_assistant_websocket_url(result["websocket_url"])
 
     require(REGION.match(str(result["region"])), "region is not a valid AWS region")
     for key in ("platform_account", "destination_account"):
@@ -808,6 +849,14 @@ def fixture_classes(config):
             except ConfigError:
                 continue
             available.add(fixture_class)
+    if config.get("assistant_users"):
+        try:
+            validate_assistant_websocket_url(config.get("websocket_url"))
+            validate_fixture("assistant_users", config["assistant_users"])
+        except ConfigError:
+            pass
+        else:
+            available.add(cases.ASSISTANT_USERS)
     # #5413. `validate()` has already refused a binding set that is too small, or
     # that reuses a URL or a credential reference, so reaching the required count
     # here means three genuinely distinct deployments were configured.

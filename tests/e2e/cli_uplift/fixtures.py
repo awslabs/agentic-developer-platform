@@ -19,6 +19,7 @@ CONTRAST_KEYS = {
     "ordinary_fixture_name",
 }
 KEYS = {
+    "assistant_users": {"a1", "a2", "b1"},
     "tenant_isolation": {"tenant_ids", "user_switch"},
     "usage_tenant": IDENTITY | {"usage_run_id"},
     "capability_contrast": CONTRAST_KEYS,
@@ -83,6 +84,42 @@ def validate_fixture(name, value):
     require(set(value) <= KEYS[name], f"Unknown {name} fixture keys")
     no_secrets(value, name)
     require(redact(value) == value, f"{name} must contain no credential material")
+    if name == "assistant_users":
+        require(
+            set(value) == {"a1", "a2", "b1"},
+            "Assistant requires A1/A2 in tenant A and B1 in tenant B",
+        )
+        for label, user in value.items():
+            require(
+                isinstance(user, dict) and set(user) == IDENTITY | {"fixture_name"},
+                f"assistant_users.{label} requires exact identity and fixture reference",
+            )
+            no_secrets(user, f"assistant_users.{label}")
+            require(
+                all(
+                    isinstance(item, str)
+                    and re.fullmatch(r"[A-Za-z0-9/_.:@+=-]{1,128}", item)
+                    for item in user.values()
+                ),
+                f"assistant_users.{label} has an invalid identifier",
+            )
+            require(
+                not user["fixture_name"].startswith("arn:")
+                and "://" not in user["fixture_name"],
+                "Assistant fixture must be a secret name, not credentials or a URL",
+            )
+        require(
+            value["a1"]["tenant_id"]
+            == value["a2"]["tenant_id"]
+            != value["b1"]["tenant_id"],
+            "Assistant requires two distinct tenants",
+        )
+        for key in ("canonical_user_id", "login_user_id", "fixture_name"):
+            require(
+                len({user[key] for user in value.values()}) == 3,
+                f"Assistant requires three distinct {key} values",
+            )
+        return
     if name == "tenant_isolation":
         tenants = value.get("tenant_ids")
         require(

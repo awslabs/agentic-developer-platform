@@ -306,6 +306,24 @@ def _run_worker(ssm, cfg, install):
                 if plan != recovery_plan(payload):
                     raise ports_module.PortError("Budget recovery plan mismatch")
             manifest.record_diagnostic(purpose, plan)
+        if purpose == "assistant_baseline":
+            if manifest is None:
+                raise ports_module.PortError(
+                    "Assistant baseline requires a durable manifest"
+                )
+            plan = {
+                key: payload.get(key)
+                for key in (
+                    "evaluation_id",
+                    "gateway_url",
+                    "websocket_url",
+                    "assistant_users",
+                )
+            }
+            intent_key = purpose + ":" + str(payload.get("evaluation_id"))
+            prior = intent_key in manifest.read().get("diagnostic_intents", {})
+            manifest.record_diagnostic(purpose, plan)
+            payload = {**payload, "prior_dispatch": prior}
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
         commands = [
@@ -603,6 +621,8 @@ def _journey(ssm, cfg, install, journeys=None):
                     from .remote.hierarchy_plan import recovery_plan
                 payload["recovery_plan"] = recovery_plan(payload)
                 return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
+            if purpose == "assistant_baseline":
+                return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
             return worker(instance_id, purpose, payload)
 
         return drive
@@ -714,6 +734,8 @@ def _journey_payload(cfg, ctx):
         "usage_tenant": cfg.get("usage_tenant") or {},
         "human_task_coding": cfg.get("human_task_coding") or {},
         "human_task_chat": cfg.get("human_task_chat") or {},
+        "assistant_users": cfg.get("assistant_users") or {},
+        "websocket_url": cfg.get("websocket_url") or "",
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
         "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},
         "knowledge_lifecycle": cfg.get("knowledge_lifecycle") or {},

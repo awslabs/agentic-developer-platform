@@ -146,7 +146,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `knowledge`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `assistant`, `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `knowledge`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 The `knowledge` checkpoint runs E01 installation, login and E32 knowledge command
@@ -535,3 +535,136 @@ stdin. The seed and codes never belong in workflow inputs, bindings, or reports.
 Username/password-only fixtures remain supported when the target permits them.
 This qualifies native login and refresh under the configured MFA policy; it does
 not claim the separate E02 password-challenge/non-admin acceptance scenario.
+
+## Assistant headless suite (opt-in, not yet qualified)
+
+The `assistant` selection adds E43–E50 to the existing EC2 runner, state,
+report, recovery and cleanup. E50 is the executable baseline for the currently
+supported WebSocket protocol: ordinary-user identity, server-issued session,
+correlated final response and owned HTTP history readback. It uses the registered
+`assistant_baseline` remote driver. Offline compatibility tests consume frames
+from the production response router, including its one-based chunk sequence.
+`hosted-chat` (D01) remains a separate CLI Task diagnostic.
+
+E43–E49 retain the future feature contracts. They remain failed/unimplemented
+until their feature-story drivers exist; E48 also needs the installed ledger.
+They cannot pass merely because E50 passes. Missing ordinary-user fixtures block
+the cases. Nightly defaults and schedules remain unchanged. The approved design
+is [the merged epic design](../architecture/adp-assistant-6929.md#story-6939);
+#6937 owns final live qualification. Synthetic E43/E44 oracle events describe
+future requirements, not claims about the currently deployed wire protocol.
+
+Default HTTP/WebSocket adapter calls launch an ordinary-user subprocess with a
+fixed environment and only a preconnected target socket. Linux `libseccomp.so.2`
+is required: before receiving the user's token, the child installs a syscall
+allowlist that denies file opens, new connections (including IMDS), process
+inspection and program execution. No controller descriptors or refresh/provider
+credentials enter the child. Missing confinement fails closed; there is no
+unrestricted fallback. Privileged fixture resolution and ordinary-session refresh
+remain in the controller; only that user's current access or ID token crosses the
+pipe. The isolated interpreter uses only its configured Python library directory,
+not inherited loader paths, to keep native imports compatible on CI. The child verifies TLS and sends the ordinary bearer/query-token protocol,
+never identity headers. This isolates harness clients, not the deployed worker's
+sandbox; E46 still requires independent process-isolation probes.
+
+E43 retains bounded lifecycle/tool/cursor observations and request/session IDs,
+without answer text. E44 requires fixture-owned `expected_timestamps` plus a
+`window` containing timezone-aware `start`, `end`, and an IANA `timezone` (for
+example `UTC`). The window includes its start and excludes its end. Grading
+compares normalized instants, not generated prose. Persisted case details include
+source IDs, UTC timestamps, citation IDs and page counts; credentials and the
+synthetic secret canary are redacted before state or report persistence. Do not
+derive timestamp expectations from the returned answer.
+
+Remote evidence is also sanitized before it reaches retained SSM stdout, on both
+success and failure. The shared emitter checks raw events/pages for the synthetic
+canary, removes the raw canary field, and redacts its occurrences in every emitted
+field, including metadata, transcript and correlation keys. It carries a
+`canary_check` result (`passed`, `failed` or `missing`) instead of the raw value.
+Downstream grading requires a passed pre-redaction check for sanitized evidence
+and still validates event ordering, source coverage and citations. An observation
+leak fails the case even when the leaked text has been redacted.
+
+Pass only non-secret fixture *references* through the existing `fixtures_json`
+input, with real references held in the selected protected environment:
+
+```json
+{"assistant_users":{"a1":{"login_user_id":"a1-example","canonical_user_id":"a1-example","tenant_id":"tenant-a","fixture_name":"example/assistant/a1"},"a2":{"login_user_id":"a2-example","canonical_user_id":"a2-example","tenant_id":"tenant-a","fixture_name":"example/assistant/a2"},"b1":{"login_user_id":"b1-example","canonical_user_id":"b1-example","tenant_id":"tenant-b","fixture_name":"example/assistant/b1"}}}
+```
+
+E50 uses A1; A2/B1 are reserved for the future cross-user scenarios. Its secret
+must contain `ordinary_session` with `access_token`, `id_token`, and absolute
+Unix `expires_at` (at least 60 seconds remaining at start). Provision/renew this
+ordinary session privately before dispatch. The existing EC2 fixture role must
+have scoped read access to that secret. An expired/missing session fails; the
+baseline does not borrow the administrator login or widen fixture permissions.
+The gateway must expose `/auth/me`, `/chat/capabilities` and owned
+`/chat/sessions/{session_id}` readback with chat enabled for the fixture user.
+
+E50 sends one fixed, short chat request. Its private run-directory journal records
+session/request/task IDs, phases and a response hash; it stores no response text
+or tokens. The caller persists a dispatch intent in the durable manifest before
+SSM starts the worker. If a retry loses the local journal, it refuses another
+submission using that retained intent. Resume reuses completed evidence. After an interrupted create/send,
+it refuses automatic resubmission because the existing WebSocket protocol does
+not guarantee idempotency. Inspect the retained IDs and reconcile the original
+turn before starting a separately authorized new evaluation. Temporary client
+processes/sockets are closed on failure; existing EC2 cleanup removes the run
+journal. Server-owned conversation history follows normal retention; this case
+does not invent a session deletion API or certify deployed sandbox destruction.
+
+A1 and A2 share tenant A; B1 belongs to tenant B. Each fixture name must
+refer to a separately onboarded **ordinary** Cognito user, never the harness's
+admin login or inline tokens. No client may receive the EC2 controller's IAM,
+provider or metadata credentials. The configured `websocket_url` and
+`gateway_url` must identify the approved deployed ingress/gateway; source event
+IDs, citation expectations, synthetic canaries, bounded fault grants and costs
+must be reviewed before feature drivers can run. Configuration alone does not
+prove any of these capabilities. Preflight performs only existing read-only
+discovery; it never sends chat, provisions users or injects faults.
+
+With the approved target, revision and explicit spend/fault authority supplied
+privately by an operator, use the **existing** workflow (never a PR event):
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
+  -f mode=start -f suites=assistant -f fixtures_json="$ASSISTANT_FIXTURES_JSON"
+```
+
+`EVAL_ENVIRONMENT`, `EVAL_REVISION` and `ASSISTANT_FIXTURES_JSON` are private
+operator inputs, not values to paste from this public document. A baseline run
+requires explicit live/model-spend authorization; expect the suite verdict to
+remain non-passing while E43–E49 are unimplemented. For an
+already-authorized run, use the existing `mode=status`, `mode=resume` and
+`mode=cleanup` commands below with its immutable evaluation ID; repeat cleanup
+until the run-owned inventory reports no remaining resources. Missing cleanup
+prevents a clean verdict. Offline client and fixture checks require no service or
+browser. Run on Linux with Python, `libseccomp.so.2`, and `openssl` (used only to
+generate temporary test certificates). TLS tests use Unix socketpairs, not TCP;
+the recovery test interrupts an assistant fixture run, restores the existing
+durable state store through an in-memory S3 transport, resumes the runner, and
+repeats cleanup. Required placeholders remain failures throughout:
+
+```bash
+uv run --no-project --with pytest --with jsonschema --with pyyaml --with boto3 python -m pytest -q \
+  tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_uplift.py \
+  tests/unit/test_cli_regression.py
+python3 scripts/check-public-docs.py
+```
+
+| Case | Headless criterion and future required evidence | Boundary |
+| --- | --- | --- |
+| E50 | HEAD01/HEAD03/HEAD04: supported authenticated chat and owned history | #6939; no durable ACK/replay or deployed isolation claim |
+| E43 | DATA/ACT: authenticated WebSocket, durable ack, ordered events, tool/answer, replay and history | #6931; no browser paint |
+| E44 | ACT/EXT: ADP and GitHub/GitLab activity IDs, timezones, citations, coverage and pagination | #6933/#6934; no model-only oracle |
+| E45 | SEC: A1/A2/B1 scoped memory, history, artifacts and installation access including denial | #6931/#6932; ordinary identity required |
+| E46 | SES: concurrent/persistent/ephemeral turns, stale leases and independent sandbox destruction | #147; HTTP denial alone is insufficient |
+| E47 | SES/QUAL: explicitly authorized bounded queue/worker faults and turn reconciliation | #147/#6937; fault controller separate from clients |
+| E48 | DEP/EXT: installation diagnostics, redaction and implemented upgrade ledger | #6935; ledger cases blocked pending #6896/#6927 |
+| E49 | WARM/QUAL: protocol-client latency and idle cost with phase instrumentation | #6937; browser rendering in #6936/#6937 |
+| — | UI: navigation, rendering, accessibility, controls and browser paint | Browser/operator-only #6936/#6937; not headless coverage |
+
+The UI navigation, accessibility, control behavior and browser-perceived latency
+are not covered here; #6936/#6937 collect those observations separately. A
+headless verdict cannot stand in for their browser/operator evidence.

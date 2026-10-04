@@ -1012,6 +1012,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E42",
         "E25",
         "E27",
+        *[f"E{number}" for number in range(43, 51)],
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E28"]["status"] == cases.NOT_RUN
@@ -1768,7 +1769,7 @@ def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     assert report.validate(document) == []
 
 
-@pytest.mark.parametrize("invalid_id", ("D00", "D07", "E43", "C02", "diagnostic"))
+@pytest.mark.parametrize("invalid_id", ("D00", "D07", "E51", "C02", "diagnostic"))
 def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
     document = published_report()
     document["cases"][0]["id"] = invalid_id
@@ -4130,6 +4131,53 @@ def test_live_stages_block_github_cases_when_no_isolated_fixture_exists(tmp_path
         assert document["matrix"][case_id]["detail"]["missing_fixtures"]
 
 
+@pytest.mark.parametrize("configured", (False, True))
+def test_assistant_only_reports_gaps_without_allocating_ec2(
+    tmp_path, configured, monkeypatch
+):
+    # No runnable drivers: retain the pre-allocation guard even if a baseline
+    # module is unavailable in the selected release.
+    purposes = bundle.purposes()
+    monkeypatch.setattr(
+        bundle,
+        "purposes",
+        lambda: tuple(k for k in purposes if k != "assistant_baseline"),
+    )
+    users = {
+        label: {
+            "login_user_id": label,
+            "canonical_user_id": label + "-canonical",
+            "tenant_id": "tenant-a" if label != "b1" else "tenant-b",
+            "fixture_name": "example/assistant/" + label,
+        }
+        for label in ("a1", "a2", "b1")
+    }
+    settings = (
+        {"assistant_users": users, "websocket_url": "wss://example.invalid/ws"}
+        if configured
+        else {}
+    )
+    result = run_live_stages(tmp_path, extra=("--suite", "assistant"), **settings)
+    document = result.document
+    assert result.code == 1
+    assert not document.get("instance_id")
+    assert document["stages"]["ec2"] != "complete"
+    for case_id in (f"E{number}" for number in range(43, 51)):
+        entry = document["matrix"][case_id]
+        if configured and case_id != "E48":
+            assert entry["status"] == cases.FAILED
+            assert entry["detail"]["unimplemented"] is True
+        else:
+            assert entry["status"] == cases.BLOCKED
+            expected = (
+                [cases.ASSISTANT_LEDGER] if configured else [cases.ASSISTANT_USERS]
+            )
+            if case_id == "E48" and not configured:
+                expected = sorted((cases.ASSISTANT_LEDGER, cases.ASSISTANT_USERS))
+            assert entry["detail"]["missing_fixtures"] == expected
+    assert document["status"] != cases.PASSED
+
+
 def test_a_case_with_no_shipped_script_fails_as_unimplemented_never_blocked(tmp_path):
     """Absent WORK must fail; only an absent FIXTURE may block.
 
@@ -5058,11 +5106,18 @@ def test_every_purpose_a_stage_can_ask_for_is_shipped_or_named_as_missing():
         )
     # Today's honest state, asserted so shipping a script has to update it.
     # E13's `api_parity` has left this list: it is implemented and registered.
-    # The five that remain need fixtures that are still BLOCKED (a second
+    # The five pre-existing purposes need fixtures that are still BLOCKED (a second
     # destination account, an isolated GitHub App/repo, a hosted queue), and each
     # must be reported as an implementation gap rather than a skip.
     assert sorted(asked - shipped) == [
         "agent_task",
+        "assistant_faults",
+        "assistant_installations",
+        "assistant_isolation",
+        "assistant_latency",
+        "assistant_sessions",
+        "assistant_sources",
+        "assistant_stream",
         "bedrock_rungs",
         "github_app",
         "github_login",
@@ -7890,6 +7945,54 @@ def test_offline_job_disables_sockets():
     assert "ruff format --check" in steps
 
 
+def test_assistant_guards_are_in_the_existing_offline_workflow():
+    import shlex
+
+    document, triggers = workflow()
+    module = "tests/unit/test_cli_assistant_harness.py"
+    assert module in triggers["pull_request"]["paths"]
+    steps = document["jobs"]["offline"]["steps"]
+    tests = next(step for step in steps if step.get("name") == "Offline guards")
+    arguments = shlex.split(tests["run"])
+    assert module in arguments
+    assert "--disable-socket" in arguments
+    assert "--allow-unix-socket" in arguments
+    assert not any(argument.startswith("--allow-hosts") for argument in arguments)
+    assert tests["env"]["AWS_EC2_METADATA_DISABLED"] == "true"
+    lint = next(step for step in steps if step.get("name") == "Lint and format check")
+    for prefix in ("ruff check ", "ruff format --check "):
+        command = next(
+            line for line in lint["run"].splitlines() if line.startswith(prefix)
+        )
+        assert module in shlex.split(command)
+
+
+def test_assistant_isolation_dependencies_are_installed_before_offline_guards():
+    document, _ = workflow()
+    steps = document["jobs"]["offline"]["steps"]
+    dependency_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Install assistant isolation test dependencies"
+    )
+    test_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Offline guards"
+    )
+    dependencies = steps[dependency_index]
+    assert dependency_index < test_index
+    assert "if" not in dependencies
+    assert not dependencies.get("continue-on-error", False)
+    assert "set -euo pipefail" in dependencies["run"]
+    assert (
+        "apt-get install -y --no-install-recommends libseccomp2 openssl"
+        in dependencies["run"]
+    )
+    assert 'ctypes.CDLL("libseccomp.so.2")' in dependencies["run"]
+    assert "openssl version" in dependencies["run"]
+
+
 def test_recovery_job_runs_even_when_the_evaluation_was_cancelled():
     """The whole point: `always()` inside the live job cannot cover cancellation."""
     document, _ = workflow()
@@ -8474,6 +8577,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E42",
         "E25",
         "E27",
+        *[f"E{number}" for number in range(43, 51)],
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -8613,7 +8717,9 @@ def test_runbook_points_at_the_schema_file_that_exists():
     """A dead link to the result contract sends a consumer to guess the shape."""
     assert "report.schema.json" in runbook()
     for target in re.findall(r"\]\((\.\.?/[^)]+)\)", runbook()):
-        assert (RUNBOOK_PATH.parent / target).resolve().exists(), target
+        assert (RUNBOOK_PATH.parent / target.split("#", 1)[0]).resolve().exists(), (
+            target
+        )
 
 
 def test_runbook_names_report_json_status_as_the_authority():

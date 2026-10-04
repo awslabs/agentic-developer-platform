@@ -511,11 +511,11 @@ class Evaluation:
             )
             ok = False
         outstanding = self.manifest.outstanding()
+        document["cleanup_outstanding"] = [
+            f"{entry['kind']}:{entry['id']}" for entry in outstanding
+        ]
         if outstanding:
             ok = False
-            document["cleanup_outstanding"] = [
-                f"{entry['kind']}:{entry['id']}" for entry in outstanding
-            ]
         document["stages"]["cleanup"] = "complete" if ok else "failed"
         document["cleanup_manifest_summary"] = self.manifest.summary()
         return ok
@@ -846,6 +846,7 @@ def main(argv=None, stages=None, *, clock=time.time, store=None):
                 on_manifest_change=manifest_publisher(store, document),
             )
             ok = evaluation.cleanup(evaluation.context(document), document)
+            document["cleanup_ok"] = ok
             state.write(document)
             # Persist the post-sweep manifest, so a repeated cleanup (E15) sees
             # what this one already deleted instead of retrying every entry.
