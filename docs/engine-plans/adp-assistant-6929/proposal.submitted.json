@@ -1,0 +1,483 @@
+{
+  "flow_slug": "adp-assistant-6929",
+  "title": "ADP assistant: implementation and qualification",
+  "org_id": "example-org",
+  "spec_revision": "0ff2ff15d5b818554684b594a59eb93d1b09517a",
+  "intent_ref": "6929",
+  "description": "INERT DRAFT; amend before approval. #6930 excluded. Proposed code-only limits: $100 shared spend, 24h, 3 attempts/stage, concurrency 1; not yet authorized. Design/plan: PR #6938 at 694255844a7182a4026cae8ccd3d71c3c832dbc2. Repository machine evidence is unbound and evaluate authority withheld. Resolve merge-triggered deployment guards before acceptance. Final assistant EC2 qualification is human/external; no automatic repair loop.",
+  "nodes": [
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+      "kind": "story",
+      "title": "Extend existing nightly EC2 harness with assistant cases",
+      "issue_ref": "6939",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "kind": "story",
+      "title": "Scoped identity, history, memory, artifacts and rollout guards",
+      "issue_ref": "6932",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "kind": "story",
+      "title": "Separate trusted coordination and fresh model sandboxes",
+      "issue_ref": "6931",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "kind": "story",
+      "title": "User-scoped ADP activity and task evidence",
+      "issue_ref": "6933",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/provider-activity",
+      "kind": "story",
+      "title": "Authorized GitHub and GitLab activity",
+      "issue_ref": "6934",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/installation-tools",
+      "kind": "story",
+      "title": "Authorized installation diagnostics and ledger adapter",
+      "issue_ref": "6935",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+      "kind": "story",
+      "title": "Exclusive persistent sessions with mailbox and fencing",
+      "issue_ref": "147",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+      "kind": "story",
+      "title": "Warm node/image capacity with fresh execution",
+      "issue_ref": "183",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/assistant-ui",
+      "kind": "story",
+      "title": "Integrate assistant UI, streaming and session controls",
+      "issue_ref": "6936",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/delivery/repository-evidence",
+      "kind": "eval",
+      "title": "Repository evidence for all implementation stories; machine binding pending"
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/qualification/live-readiness",
+      "kind": "gate",
+      "title": "Authorize target and verify deployment, fixtures, baseline and live-suite readiness"
+    },
+    {
+      "address": "adp-assistant-6929/epic-6929/qualification/assistant-qualification",
+      "kind": "eval",
+      "title": "Assistant-only EC2 results, browser evidence and final human qualification",
+      "issue_ref": "6937",
+      "evaluation": {
+        "schema_version": 1,
+        "acceptance_mode": "human",
+        "evidence_schema": "orchestration-evaluation/v1",
+        "criteria": [
+          {
+            "criterion_id": "HEAD01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "HEAD02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "HEAD03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "HEAD04",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "HEAD05",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "HEAD06",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DATA01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DATA02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DATA03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DATA04",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SEC01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SEC02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SEC03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SEC04",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SEC05",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "ACT01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "ACT02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "ACT03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "EXT01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "EXT02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "EXT03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DEP01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DEP02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "DEP03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SES01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SES02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SES03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "SES04",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "WARM01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "WARM02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "WARM03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "UI01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "UI02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "UI03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "QUAL01",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "QUAL02",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "QUAL03",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "QUAL04",
+            "required": true,
+            "kind": "functional"
+          },
+          {
+            "criterion_id": "QUAL05",
+            "required": true,
+            "kind": "functional"
+          }
+        ],
+        "max_duration_seconds": 7200,
+        "max_age_seconds": 3600
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/scoped-data"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/adp-activity"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/installation-tools"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/provider-activity"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/persistent-sessions"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/warm-capacity"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/provider-activity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/installation-tools",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/provider-activity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/installation-tools",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/assistant-ui",
+      "to_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/delivery/repository-evidence",
+      "to_address": "adp-assistant-6929/epic-6929/qualification/live-readiness"
+    },
+    {
+      "from_address": "adp-assistant-6929/epic-6929/qualification/live-readiness",
+      "to_address": "adp-assistant-6929/epic-6929/qualification/assistant-qualification"
+    }
+  ],
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-6929",
+      "title": "User-scoped ADP assistant",
+      "description": "Deliver scoped tools, isolated responsive chat and evidence-backed qualification using the existing nightly EC2 harness."
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-6929",
+      "wave_ref": "delivery",
+      "title": "Implementation and repository evidence",
+      "description": "Nine code stories with explicit dependencies, Codex development and existing review/fix/merge. One aggregate repository evaluation preserves per-story criteria."
+    },
+    {
+      "epic_ref": "epic-6929",
+      "wave_ref": "qualification",
+      "title": "Authorized live qualification",
+      "description": "Run only the assistant suite on the existing disposable EC2 workflow. Include browser evidence and independent cleanup; final acceptance is human."
+    }
+  ],
+  "execution_policy": {
+    "schema_version": 1,
+    "org_id": "example-org",
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "environment_connection_ids": [],
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge"
+    ],
+    "human_gates": [],
+    "evaluation_acceptance": {
+      "adp-assistant-6929/epic-6929/delivery/repository-evidence": "machine",
+      "adp-assistant-6929/epic-6929/qualification/assistant-qualification": "human"
+    },
+    "expires_at": "2026-10-10T15:01:35.386611+00:00",
+    "limits": {
+      "max_spend_usd": "100",
+      "max_wall_clock_seconds": 86400,
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 1
+    }
+  }
+}

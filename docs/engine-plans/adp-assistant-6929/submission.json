@@ -1,0 +1,21 @@
+{
+  "flow_id": "00000000-0000-0000-0000-000000000000",
+  "plan_version": 1,
+  "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "decision_id": "00000000-0000-0000-0000-000000000000",
+  "nodes_created": 13,
+  "edges_created": 25,
+  "already_registered": false,
+  "acceptance_gate_address": "adp-assistant-6929/epic-6929/delivery/accept",
+  "status": "registered_inert_not_accepted",
+  "observed_acceptance_gate": "awaiting_gate",
+  "observed_other_nodes": "pending",
+  "execution_started": false,
+  "preview_execution_is_unbounded": false,
+  "remaining_before_acceptance": [
+    "review design PR #6938",
+    "bind repository machine evidence and evaluate authority",
+    "resolve merge-triggered deployment boundary",
+    "review proposed limits and renew expiry if necessary"
+  ]
+}

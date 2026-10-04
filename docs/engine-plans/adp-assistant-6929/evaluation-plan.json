@@ -1,0 +1,187 @@
+{
+  "status": "evaluation_design_not_dispatch_contract",
+  "design_revision": "6db1df61a63cf7ce36ca4e58d491956d12f474a7",
+  "excluded_design_issue": 6930,
+  "repository_checkpoint": {
+    "address": "adp-assistant-6929/epic-6929/delivery/repository-evidence",
+    "intended_acceptance": "machine",
+    "binding_status": "pending real check identities and verifier digest",
+    "required_story_predecessors": [
+      "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+      "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "adp-assistant-6929/epic-6929/delivery/provider-activity",
+      "adp-assistant-6929/epic-6929/delivery/installation-tools",
+      "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+      "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+      "adp-assistant-6929/epic-6929/delivery/assistant-ui"
+    ],
+    "expected_contract": "repository-evaluation/v1",
+    "obligations": [
+      "review and merge receipts for exact PR heads",
+      "passing required checks from trusted app identities",
+      "criterion-to-test evidence for each story",
+      "no source test presented as live acceptance",
+      "no required case silently removed, waived or downgraded"
+    ]
+  },
+  "live_checkpoint": {
+    "address": "adp-assistant-6929/epic-6929/qualification/assistant-qualification",
+    "issue": 6937,
+    "acceptance": "human",
+    "dispatch_owner": "authorized operator through existing reusable GitHub workflow",
+    "workflow": ".github/workflows/eval-cli-uplift.yml",
+    "requested_suite": "assistant",
+    "suite_status": "not implemented; #6939 owns registration and workflow/config validation",
+    "nightly_parent_triggered": false,
+    "runner": "existing disposable EC2 harness",
+    "input_binding": "Use actual inputs after #6939; resolve immutable tested/deployed/workflow revisions and protected fixture references. No invented run IDs, receipt hashes or targets.",
+    "required_jobs": [
+      "live test job",
+      "independent recovery/cleanup job"
+    ],
+    "required_evidence": [
+      "all 39 non-design criteria, with repository versus live proof distinguished",
+      "exact deployed revisions/images for all changed components",
+      "complete case inventory and graded results",
+      "run-owned fixture inventory and independent cleanup verdict",
+      "latency baseline/candidate raw samples and cost observations",
+      "browser UI evidence from #6936",
+      "ledger/provider capabilities or an explicit blocked outcome"
+    ],
+    "failure_rule": "Missing fixture -> blocked; unimplemented case -> failed/unimplemented; missing/skipped/not_run required cases are not passed. Partial suite success is not full-platform acceptance.",
+    "repair_mode": "Manual triage and explicitly scoped follow-up work. Reuse engine correction machinery only after assistant adapter compatibility and repair/deploy/retest lineage are verified; no automatic loop is claimed."
+  },
+  "stories": [
+    {
+      "issue": 6939,
+      "node": "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+      "criteria": [
+        "HEAD01",
+        "HEAD02",
+        "HEAD03",
+        "HEAD04",
+        "HEAD05",
+        "HEAD06"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6939",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6932,
+      "node": "adp-assistant-6929/epic-6929/delivery/scoped-data",
+      "criteria": [
+        "DATA01",
+        "DATA02",
+        "DATA03",
+        "DATA04"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6932",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6931,
+      "node": "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+      "criteria": [
+        "SEC01",
+        "SEC02",
+        "SEC03",
+        "SEC04",
+        "SEC05"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6931",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6933,
+      "node": "adp-assistant-6929/epic-6929/delivery/adp-activity",
+      "criteria": [
+        "ACT01",
+        "ACT02",
+        "ACT03"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6933",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6934,
+      "node": "adp-assistant-6929/epic-6929/delivery/provider-activity",
+      "criteria": [
+        "EXT01",
+        "EXT02",
+        "EXT03"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6934",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6935,
+      "node": "adp-assistant-6929/epic-6929/delivery/installation-tools",
+      "criteria": [
+        "DEP01",
+        "DEP02",
+        "DEP03"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6935",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 147,
+      "node": "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+      "criteria": [
+        "SES01",
+        "SES02",
+        "SES03",
+        "SES04"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-147",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 183,
+      "node": "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+      "criteria": [
+        "WARM01",
+        "WARM02",
+        "WARM03"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-183",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6936,
+      "node": "adp-assistant-6929/epic-6929/delivery/assistant-ui",
+      "criteria": [
+        "UI01",
+        "UI02",
+        "UI03"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6936",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    },
+    {
+      "issue": 6937,
+      "node": "adp-assistant-6929/epic-6929/qualification/assistant-qualification",
+      "criteria": [
+        "QUAL01",
+        "QUAL02",
+        "QUAL03",
+        "QUAL04",
+        "QUAL05"
+      ],
+      "contract_url": "https://github.com/aws-e/adp/blob/6db1df61a63cf7ce36ca4e58d491956d12f474a7/docs/architecture/adp-assistant-6929.md#story-6937",
+      "source_acceptance": "Tests and reviewed merge for code; live obligations remain pending until qualified.",
+      "live_acceptance": "Required live cases attributed to this story in #6937; missing external capabilities stay blocked."
+    }
+  ]
+}
