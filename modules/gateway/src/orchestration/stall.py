@@ -689,26 +689,22 @@ async def _examine(
 
 async def _continuation_clock(session, candidate):
     """Measure the current assigned worker, never a previous worker's start."""
-    from .models import OrchestrationAcceptedPlan, OrchestrationExecution, OrchestrationWorkClaim
+    from .models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
     from .run_reports import OrchestrationRunReport
 
     row = (
         await session.execute(
-            select(OrchestrationRunReport, OrchestrationExecution, OrchestrationAcceptedPlan)
-            .join(OrchestrationWorkClaim, OrchestrationWorkClaim.active_run_id == OrchestrationRunReport.run_id)
+            select(OrchestrationWorkClaim, OrchestrationExecution, OrchestrationAcceptedPlan)
             .join(OrchestrationExecution, OrchestrationExecution.claim_id == OrchestrationWorkClaim.id)
             .join(OrchestrationAcceptedPlan, OrchestrationAcceptedPlan.flow_id == OrchestrationExecution.flow_id)
             .where(
-                OrchestrationRunReport.org_id == candidate.org_id,
-                OrchestrationRunReport.flow_id == candidate.flow_id,
-                OrchestrationRunReport.node_id == candidate.node_id,
-                OrchestrationRunReport.attempt == candidate.attempts,
                 OrchestrationWorkClaim.org_id == candidate.org_id,
                 OrchestrationWorkClaim.owner_kind == "engine_flow",
                 OrchestrationWorkClaim.owner_ref == candidate.flow_id,
                 OrchestrationWorkClaim.state == "held",
                 OrchestrationWorkClaim.generation == OrchestrationExecution.claim_generation,
                 OrchestrationExecution.org_id == candidate.org_id,
+                OrchestrationExecution.flow_id == candidate.flow_id,
                 OrchestrationExecution.node_id == candidate.node_id,
                 OrchestrationExecution.cycle == candidate.attempts,
                 OrchestrationExecution.status.not_in({"concluded", "superseded"}),
@@ -719,10 +715,33 @@ async def _continuation_clock(session, candidate):
     ).one_or_none()
     if row is None:
         return False, None
-    row, execution, plan = row
+    claim, execution, plan = row
     from .plan_lineage import ancestor_plan
 
     if await ancestor_plan(session, plan, execution.accepted_plan_version, node_id=candidate.node_id) is None:
+        return False, None
+    row = await session.get(OrchestrationRunReport, claim.active_run_id)
+    if row is None:
+        # Protected workers have no SQL run report. Their committed dispatch
+        # starts the current pod's clock, not the original developer's clock.
+        from .review_cycle_dispatch import continuation_run_id
+
+        dispatch = await session.scalar(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == candidate.org_id,
+                OrchestrationAction.execution_id == execution.id,
+                OrchestrationAction.kind == "review_cycle_dispatch",
+                OrchestrationAction.status == "succeeded",
+            )
+            .order_by(OrchestrationAction.created_at.desc(), OrchestrationAction.id.desc())
+            .limit(1)
+        )
+        if dispatch is None or continuation_run_id(dispatch.operation_key) != claim.active_run_id:
+            return False, None
+        since = dispatch.created_at
+        return True, since.replace(tzinfo=UTC) if since.tzinfo is None else since
+    if (row.org_id, row.flow_id, row.node_id, row.attempt) != (candidate.org_id, candidate.flow_id, candidate.node_id, candidate.attempts):
         return False, None
     if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
         return True, None
