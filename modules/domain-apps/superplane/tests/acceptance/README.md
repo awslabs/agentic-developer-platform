@@ -13,7 +13,8 @@ It produces a scenario report and an AC-01–AC-04 matrix. The report is labelle
 `offline-fixture` and can only say `FAIL`, `BLOCKED`, or `NOT RUN`: a completed
 fixture command (exit 0) **does not mean the workspace is Ready or removed**.
 No cloud, browser, database, approval, or provider action is performed by this
-command. Its live mode currently refuses before reading inputs or making effects.
+command. Live mode validates owner-only private selection, authority and browser
+state, then reports `BLOCKED` without browser, provider or resource effects.
 
 From the repository root, with Python 3.12+ and no private credentials, run
 the same fictional input builder used by the acceptance tests. `mktemp -d`
