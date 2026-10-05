@@ -1,34 +1,39 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-05T23:41:50.084Z",
+  "updated_at": "2026-10-05T23:45:10.915Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Preserve original sealed allocation and establish separate exact-name cleanup authority",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py",
         "modules/domain-apps/superplane/workspace_provisioning/retirement_access_plan.py",
         "modules/domain-apps/superplane/workspace_provisioning/retirement_access_runtime.py"
       ],
-      "note": "Exact grant recipe remains subject to design decision D3; do not enable mutation without it."
+      "note": "Original-seal refusal committed and tested. D3 needs an approved scoped actor/procedure for creating exact-name ClusterRole and ClusterRoleBinding; namespace-scoped registrar cannot create them, and broad cluster-admin fallback is prohibited.",
+      "commits": [
+        "c83f065"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Run PostgreSQL allocation-bound cleanup-authority unit and integration tests",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-01-c1"
       ],
       "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_access_seal_postgres.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests"
       ],
-      "note": ""
+      "note": "75 cleanup-access tests passed with zero skips; new test checks the seal guard against PostgreSQL, but end-to-end sealed inventory and exact grant execution await D3."
     },
     {
       "id": "AC-01-c2",
