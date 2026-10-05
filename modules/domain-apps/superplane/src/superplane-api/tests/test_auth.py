@@ -922,6 +922,24 @@ class TestWorkspaceAuthorizationEnforcement:
         assert id_response.status_code == 401
         assert id_response.headers["WWW-Authenticate"] == "Bearer"
 
+    @pytest.mark.parametrize(
+        ("client_id", "audience"),
+        [("another-client", None), (None, TEST_CLIENT_ID)],
+    )
+    @pytest.mark.asyncio
+    async def test_signed_non_allowlisted_client_is_refused(
+        self, client, enforcing, client_id, audience
+    ):
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        org_claim = {"custom:org_id": str(org_id)}
+        token = _mint(enforcing, **org_claim, client_id=client_id, aud=audience)
+        response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
     @pytest.mark.asyncio
     async def test_no_token_is_401(self, client, enforcing):
         _, workspace_id = await _seed_workspace("workspace:read")
