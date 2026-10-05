@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T15:06:37.965Z",
+  "updated_at": "2026-10-05T15:09:04.192Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -45,7 +45,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Changed inputs fail classification."
+      "note": "Changed inputs reject classification."
     },
     {
       "id": "AC-02-c1",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Recipe repair at b7d60f5 awaits actual image builds to satisfy its covering test.",
+      "note": "Recipe repair at b7d60f5 awaits actual image builds.",
       "commits": [
         "b7d60f5"
       ]
@@ -76,7 +76,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local source-hash, regression and recipe checks pass; no existing container builder/socket is available."
+      "note": "Source hashes, five security regressions and recipe tests pass; no container builder/socket is available."
     },
     {
       "id": "AC-02-c2",
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Python compatibility repaired at 467acf4; exact donor manifest/authorization cannot be determined because credential discovery returns insufficient_scope. Digest remains unchanged.",
+      "note": "Python repair at 467acf4; exact ECR donor manifest cannot be verified because credential discovery returns insufficient_scope. Digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -106,34 +106,36 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Pinned-donor consistency tests pass; actual builds and manifest verification require authorized existing registry/builder access."
+      "note": "Donor consistency tests pass; registry verification and builds require authorized existing access."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Wire repaired recipes into scanner prepare and required-target inventory",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "codebuild/security_image_targets.py",
-        "codebuild/scan_security_images.py"
+        "codebuild/security_image_targets.py"
       ],
-      "note": "Next independent task: strengthen required-target rejection without relying on live registry access."
+      "note": "Six executable context recipes required at e590b19; verified by AC-02-t3.",
+      "commits": [
+        "e590b19"
+      ]
     },
     {
       "id": "AC-02-t3",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Reject omitted required targets through scanner inventory tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c-wire"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Run scanner reconciliation suite."
+      "note": "Deleting parser recipe fails discovery; full scanner test file passes."
     },
     {
       "id": "AC-03-c1",
@@ -146,7 +148,7 @@
         "codebuild/scan_security_images.py",
         ".github/workflows/security-scan.yml"
       ],
-      "note": "Inspect current enforcement."
+      "note": "Next task: inspect current enforcement."
     },
     {
       "id": "AC-03-t1",
@@ -158,7 +160,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and coordinator after integration; authorized metered rerun needed."
+      "note": "deployed-target: executor and coordinator after integration; authenticated metered rerun needed."
     },
     {
       "id": "AC-04-c1",
