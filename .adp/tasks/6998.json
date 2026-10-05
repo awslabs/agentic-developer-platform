@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T16:44:42.242Z",
+  "updated_at": "2026-10-05T16:56:53.165Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Source mapping pushed at 19c9252; original private SARIF cannot be read because credential discovery returns 403 insufficient_scope.",
+      "note": "Source mapping pushed; original private SARIF requires an authorized scan-reader connection. Credential discovery returned 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Published selectors and scanned-source fetches verified; original report hash and severity remain unverified."
+      "note": "Published selectors pass local checks; original report hash and severity remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -40,8 +40,7 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src/lib/url-guard.ts",
-        "modules/agent-factory/agent/src/clients/gitlab_client.ts"
+        "modules/agent-factory/agent/src/lib/url-guard.ts"
       ],
       "note": "Verified merged PR #6733."
     },
@@ -55,10 +54,9 @@
         "AC-02-c1"
       ],
       "files": [
-        "modules/agent-factory/agent/src/clients/gitlab_client.test.ts",
-        "modules/agent-factory/agent/src/lib/url-guard.test.ts"
+        "modules/agent-factory/agent/src/clients/gitlab_client.test.ts"
       ],
-      "note": "Two suites, 61 tests passed."
+      "note": "61 tests passed."
     },
     {
       "id": "AC-02-c2",
@@ -70,7 +68,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.ts"
       ],
-      "note": "Live status pinned to GitHub API origin; pushed at abb4039.",
+      "note": "GitHub live-status origin pinned; pushed at abb4039.",
       "commits": [
         "abb4039"
       ]
@@ -87,7 +85,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.test.ts"
       ],
-      "note": "Six suites, 139 tests and agent build passed with inherited GitHub token variables removed."
+      "note": "139 focused tests and agent build passed."
     },
     {
       "id": "AC-02-c3",
@@ -114,10 +112,9 @@
         "AC-02-c3"
       ],
       "files": [
-        "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts",
-        "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.test.ts"
+        "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts"
       ],
-      "note": "Nine suites, 136 tests and agent build passed."
+      "note": "136 focused tests and agent build passed."
     },
     {
       "id": "AC-02-c4",
@@ -127,10 +124,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/codex-reviewer/src/github.ts",
-        "modules/agent-factory/codex-harness/src/github-entry.mjs"
+        "modules/agent-factory/codex-reviewer/src/github.ts"
       ],
-      "note": "Reviewer repository validated before token acquisition; existing redirect and loopback controls verified. Pushed at 03d35c3.",
+      "note": "Reviewer repository validated before token acquisition; pushed at 03d35c3.",
       "commits": [
         "03d35c3"
       ]
@@ -145,10 +141,9 @@
         "AC-02-c4"
       ],
       "files": [
-        "modules/agent-factory/codex-reviewer/src/github.test.ts",
-        "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
+        "modules/agent-factory/codex-reviewer/src/github.test.ts"
       ],
-      "note": "Reviewer focused GitHub tests: 45 pass; harness suite: 156 pass. Reviewer full-suite gap remains under AC-04-t1."
+      "note": "45 focused reviewer GitHub tests and 156 harness tests passed."
     },
     {
       "id": "AC-02-c-wire",
@@ -158,10 +153,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src/github-comments.ts",
-        "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
+        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "Verified runtime constructors use the guarded clients."
+      "note": "Verified live runtime constructors use guarded clients."
     },
     {
       "id": "AC-02-t5",
@@ -177,10 +171,9 @@
         "AC-02-c-wire"
       ],
       "files": [
-        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts",
-        "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
+        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "Local redirect targets received zero requests; four agent suites, 90 tests and build passed. Pushed at f83a57d.",
+      "note": "90 focused tests passed; redirect targets received zero requests. Pushed at f83a57d.",
       "commits": [
         "f83a57d"
       ]
@@ -193,10 +186,9 @@
       "status": "blocked",
       "covers": [],
       "files": [
-        "data/security/issue-6998-http-destinations.json",
-        ".github/scripts/issue_6998_candidate.py"
+        "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Provisional per-record evidence pushed at 7049c2e; all 18 remain unresolved. Private original report and durable raw-result publication are unavailable.",
+      "note": "Provisional evidence pushed at 7049c2e; all 18 unresolved. Original private report and durable raw-result retention unavailable.",
       "commits": [
         "7049c2e"
       ]
@@ -211,10 +203,9 @@
         "AC-03-c1"
       ],
       "files": [
-        ".github/scripts/tests/test_issue_6998_http_destinations.py",
-        ".github/scripts/diff_security_findings.py"
+        ".github/scripts/issue_6998_candidate.py"
       ],
-      "note": "Current-registry candidate scan matched 18; 13 in-source unaccepted, five unsuppressed. Three catalog tests and 38 resolver tests pass. Exact scan-time ruleset and original report cannot be compared."
+      "note": "Current-registry candidate maps 18; exact scan-time rule and original SARIF cannot be compared."
     },
     {
       "id": "AC-04-c-wire",
@@ -224,11 +215,12 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent",
-        "modules/agent-factory/codex-harness",
-        "modules/agent-factory/codex-reviewer"
+        "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Next independent work; ready PR awaits required pre-submit checks."
+      "note": "Handoff pushed at 23dab9f and ready PR #7023 opened; remains open until its covering full-suite test passes.",
+      "commits": [
+        "23dab9f"
+      ]
     },
     {
       "id": "AC-04-t1",
@@ -240,11 +232,9 @@
         "AC-04-c-wire"
       ],
       "files": [
-        "modules/agent-factory/agent/package.json",
-        "modules/agent-factory/codex-harness/package.json",
-        "modules/agent-factory/codex-reviewer/package.json"
+        ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Full agent suite not yet run; full reviewer suite fails in installed-skill fixture tests that cannot locate their expected path."
+      "note": "Installs and builds pass; agent full suite 2856/2859, harness 156/156, reviewer full suite 196/198. Handoff catalog tests pass."
     },
     {
       "id": "AC-04-c1",
@@ -254,7 +244,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Post-merge integration belongs to the epic coordinator."
+      "note": "Pending merge and epic-coordinator handoff; no deployed-artifact claim."
     },
     {
       "id": "AC-04-t2",
@@ -266,7 +256,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Post-merge verification belongs to the epic coordinator."
+      "note": "Post-merge verification remains with the epic coordinator; production rollout is separate."
     }
   ]
 }
