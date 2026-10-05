@@ -424,6 +424,7 @@ export interface HumanWorkspaceAccess {
   principal_type: 'human';
   subject: string;
   effective_permissions: string[];
+  source: 'explicit_assignment' | 'preexisting_grant';
   granted_by: string | null;
   reason: string | null;
   request_id: string | null;
@@ -436,6 +437,7 @@ function parseHumanWorkspaceAccess(raw: unknown): HumanWorkspaceAccess | null {
       typeof raw.subject !== 'string' || !Array.isArray(raw.effective_permissions) ||
       !raw.effective_permissions.every((permission) => typeof permission === 'string' &&
         ['workspace:read', 'workspace:spend', 'workspace:provision', 'workspace:renew_credential', 'workspace:administer'].includes(permission)) ||
+      !['explicit_assignment', 'preexisting_grant'].includes(raw.source as string) ||
       (raw.granted_by !== null && typeof raw.granted_by !== 'string') ||
       (raw.reason !== null && typeof raw.reason !== 'string') ||
       (raw.request_id !== null && typeof raw.request_id !== 'string')) return null;

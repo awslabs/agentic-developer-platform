@@ -32,6 +32,7 @@ class WorkspaceAccessResponse(BaseModel):
     principal_type: Literal["human"]
     subject: str
     effective_permissions: list[Permission]
+    source: Literal["explicit_assignment", "preexisting_grant"]
     granted_by: str | None = None
     reason: str | None = None
     request_id: uuid.UUID | None = None

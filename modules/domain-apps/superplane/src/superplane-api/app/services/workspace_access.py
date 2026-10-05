@@ -33,6 +33,7 @@ def _response(row: WorkspaceGrantRecord, event: Event | None = None) -> Workspac
         workspace_id=row.workspace_id, grant_id=row.id, revision=row.revision,
         principal_type="human", subject=row.principal,
         effective_permissions=_effective(row),
+        source="explicit_assignment" if event else "preexisting_grant",
         granted_by=event.principal if event else None,
         reason=details.get("reason"),
         request_id=uuid.UUID(details["request_id"]) if details.get("request_id") else None,

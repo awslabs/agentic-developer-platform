@@ -30,14 +30,27 @@ def test_all_public_routes_come_from_maintained_inventory():
     assert actual == expected
 
 
-@pytest.mark.parametrize("method,tail", [
-    ("GET", "me"),
-    ("POST", "grants"),
-])
+@pytest.mark.parametrize(
+    "method,tail",
+    [
+        ("GET", "me"),
+        ("POST", "grants"),
+    ],
+)
 def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, method, tail):
     calls = []
-    body = {"target_subject": "human-approver", "principal_type": "human", "permissions": ["workspace:read"],
-            "reason": "approver_setup", "expected_revision": 0, "request_id": "11111111-1111-1111-1111-111111111111"} if method == "POST" else None
+    body = (
+        {
+            "target_subject": "human-approver",
+            "principal_type": "human",
+            "permissions": ["workspace:read"],
+            "reason": "approver_setup",
+            "expected_revision": 0,
+            "request_id": "11111111-1111-1111-1111-111111111111",
+        }
+        if method == "POST"
+        else None
+    )
 
     def upstream(request):
         calls.append(request)

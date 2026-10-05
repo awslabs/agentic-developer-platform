@@ -12,6 +12,7 @@ const administrator = {
   workspace_id: 'workspace-1', grant_id: 'grant-owner', revision: 1,
   principal_type: 'human', subject: 'owner',
   effective_permissions: ['workspace:read', 'workspace:administer'],
+  source: 'preexisting_grant',
   granted_by: null, reason: null, request_id: null,
 };
 
@@ -28,6 +29,7 @@ it('grants only read access to a selected distinct immutable human subject', asy
       return HttpResponse.json({
         ...administrator, grant_id: 'grant-approver', subject: 'human-approver',
         effective_permissions: ['workspace:read'], granted_by: 'owner',
+        source: 'explicit_assignment',
         reason: 'approver_setup', request_id: sent.request_id,
       });
     }),
@@ -73,6 +75,7 @@ it('retains request identity across an uncertain retry and refuses email identit
       return deliveries === 1 ? new HttpResponse(null, { status: 503 }) : HttpResponse.json({
         ...administrator, grant_id: 'grant-approver', subject: 'human-approver',
         effective_permissions: ['workspace:read'], granted_by: 'owner',
+        source: 'explicit_assignment',
         reason: 'approver_setup', request_id: body.request_id,
       });
     }),

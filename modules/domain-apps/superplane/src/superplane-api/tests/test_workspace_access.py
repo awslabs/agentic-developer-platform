@@ -65,6 +65,7 @@ async def test_mounted_grant_and_effective_access(access):
     assert result["grant_id"]
     assert result["revision"] == 1
     assert result["effective_permissions"] == ["workspace:read"]
+    assert result["source"] == "explicit_assignment"
     assert result["granted_by"] == "owner"
     assert result["request_id"] == request["request_id"]
     response = await client.get(f"/workspaces/{workspace_id}/access/v1/me", headers=token("approver"))
@@ -184,6 +185,15 @@ async def test_read_requires_current_member_even_without_guard_setting(access, m
     membership.allowed.remove("owner")
     response = await client.get(f"/workspaces/{workspace_id}/access/v1/me", headers=token())
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_preexisting_creator_grant_reports_unknown_assignment_source(access):
+    client, workspace_id, _, token = access
+    response = await client.get(f"/workspaces/{workspace_id}/access/v1/me", headers=token())
+    assert response.status_code == 200, response.text
+    assert response.json()["source"] == "preexisting_grant"
+    assert response.json()["granted_by"] is None
 
 
 @pytest.mark.asyncio

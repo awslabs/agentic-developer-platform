@@ -8,7 +8,7 @@ import { getWorkspaceAccess, grantWorkspaceAccess, isSuperseded, type HumanWorks
 type AccessState =
   | { phase: 'loading' }
   | { phase: 'unavailable'; detail: string }
-  | { phase: 'viewer' }
+  | { phase: 'viewer'; access: HumanWorkspaceAccess }
   | { phase: 'admin'; access: HumanWorkspaceAccess };
 
 export function ApproverAccessControl({ workspaceId, guard, sessionToken }: {
@@ -35,7 +35,7 @@ export function ApproverAccessControl({ workspaceId, guard, sessionToken }: {
         return;
       }
       setState(outcome.value.effective_permissions.includes('workspace:administer')
-        ? { phase: 'admin', access: outcome.value } : { phase: 'viewer' });
+        ? { phase: 'admin', access: outcome.value } : { phase: 'viewer', access: outcome.value });
     });
     return () => { active = false; };
   }, [workspaceId, guard, sessionToken]);
@@ -71,7 +71,7 @@ export function ApproverAccessControl({ workspaceId, guard, sessionToken }: {
       <h4 className="font-semibold">Set up a distinct human approver</h4>
       {state.phase === 'loading' && <p role="status">Checking your current workspace access…</p>}
       {state.phase === 'unavailable' && <Alert variant="warning" title="Access check unavailable">{state.detail}</Alert>}
-      {state.phase === 'viewer' && <p>Only a current explicit workspace administrator can grant another person access.</p>}
+      {state.phase === 'viewer' && <p>Only a current explicit workspace administrator can grant another person access. Your access comes from {state.access.source === 'explicit_assignment' ? 'an explicit assignment' : 'a pre-existing grant without recorded assignment provenance'}.</p>}
       {state.phase === 'admin' && (
         <form onSubmit={(event) => { void submit(event); }}>
           <p>Grant read-only workspace access for approval setup. This does not approve a request or give the other person your identity.</p>
