@@ -1,34 +1,38 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-05T23:41:43.553Z",
+  "updated_at": "2026-10-05T23:44:57.282Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Mount a versioned human workspace-grant API with explicit request and response schemas",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/"
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/main.py"
       ],
-      "note": "Coordinate only new route inventory and consumer contract on #6970; preserve existing routes."
+      "note": "Mounted GET /workspaces/{workspace_id}/access/v1/me and POST /workspaces/{workspace_id}/access/v1/grants at commit 77e56f7; covered by AC-01-t1.",
+      "commits": [
+        "77e56f7"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Prove grant request, effective response and mounted HTTP contract with API tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": ""
+      "note": "Mounted signed-token grant, effective-access read, and replay pass; 53 passed, 2 xfailed with permission-contract suite."
     },
     {
       "id": "AC-02-c1",
@@ -38,9 +42,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "No platform/org-role inheritance, service target or implicit restoration."
+      "note": "Implementation in initial checkpoint; denial and stale-membership evidence still required before done."
     },
     {
       "id": "AC-02-t1",
@@ -78,9 +82,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
+        "modules/domain-apps/superplane/src/superplane-api/alembic/versions/043_workspace_grant_changes.py"
       ],
-      "note": "Existing revoked rows stay revoked; no authority cache."
+      "note": "Initial code committed; concurrency, rollback and PostgreSQL evidence pending."
     },
     {
       "id": "AC-03-t1",
@@ -104,9 +109,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Record actor, target, principal types, scope, before/after, reason, timestamp and correlation without secrets."
+      "note": "Initial code committed; audit-failure rollback evidence pending."
     },
     {
       "id": "AC-04-t1",
@@ -130,9 +135,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Restrict shared-file edits to this route after #6970 coordination."
+      "note": "New routes registered and coordinated on #6970; full integration evidence pending."
     },
     {
       "id": "AC-05-t1",
@@ -146,7 +152,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/"
       ],
-      "note": "No validation infrastructure will be provisioned; report any unavailable PostgreSQL or remote CI evidence precisely."
+      "note": "No validation infrastructure will be provisioned; PostgreSQL and remote CI evidence not yet checked."
     }
   ]
 }
