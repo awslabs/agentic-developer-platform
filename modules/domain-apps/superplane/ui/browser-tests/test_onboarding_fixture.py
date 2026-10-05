@@ -1,9 +1,13 @@
 """Exercise the browser fixture transport without a browser or provider access."""
 
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import verify_onboarding_browser as browser_checks
 from verify_onboarding_browser import (
     APPROVAL,
     EXPIRY_PATHS,
@@ -15,6 +19,41 @@ from verify_onboarding_browser import (
     WORKSPACE,
     fixture_transport,
 )
+
+
+@pytest.fixture
+def browser_runtime_unavailable(monkeypatch):
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+
+
+def test_fixture_module_imports_without_browser_runtime(browser_runtime_unavailable):
+    specification = importlib.util.spec_from_file_location(
+        "onboarding_fixture_without_browser",
+        Path(__file__).with_name("verify_onboarding_browser.py"),
+    )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    route = fixture_route(PROPOSALS)
+
+    module.fixture_transport([], False)(route)
+
+    route.fulfill.assert_called_once_with(
+        json={"workspace_id": WORKSPACE, "proposals": []}
+    )
+
+
+def test_browser_runner_requires_runtime_before_effects(
+    browser_runtime_unavailable, monkeypatch
+):
+    output = Mock()
+    output.mkdir.side_effect = AssertionError("browser effects before dependency check")
+    monkeypatch.setattr(browser_checks, "OUTPUT", output)
+
+    with pytest.raises(ModuleNotFoundError, match="playwright"):
+        browser_checks.main()
+
+    output.mkdir.assert_not_called()
 
 
 def fixture_route(path, method="GET", body=None, origin=ORIGIN):

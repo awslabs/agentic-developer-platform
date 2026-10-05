@@ -10,8 +10,6 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-from playwright.sync_api import expect, sync_playwright
-
 ROOT = Path(__file__).resolve().parents[5]
 FRONTEND = ROOT / "modules/gateway/frontend"
 OUTPUT = ROOT / "test-results/superplane-browser"
@@ -304,6 +302,8 @@ def fixture_transport(requests, failure, *, continuation=False, expire_action=No
 
 
 def exercise(page, requests, failure):
+    from playwright.sync_api import expect
+
     page.route("**/*", fixture_transport(requests, failure))
     page.goto(ORIGIN + "/onboarding-browser-check.html")
     page.get_by_role("button", name="Begin onboarding").click()
@@ -365,6 +365,8 @@ def exercise(page, requests, failure):
 
 
 def activate(page, button):
+    from playwright.sync_api import expect
+
     expect(button).to_be_visible()
     expect(button).to_be_enabled()
     for _attempt in range(60):
@@ -386,6 +388,8 @@ def check_layout(page, scenario):
 
 
 def prepare_continuation(page, resuming=False):
+    from playwright.sync_api import expect
+
     activate(page, page.get_by_role("button", name="Review this lifecycle plan"))
     if not resuming:
         activate(
@@ -410,6 +414,8 @@ def assert_no_creation_or_removal(requests):
 
 
 def exercise_continuation(page, requests, failure):
+    from playwright.sync_api import expect
+
     page.route("**/*", fixture_transport(requests, failure, continuation=True))
     page.goto(ORIGIN + "/onboarding-browser-check.html?continuation")
     if failure:
@@ -444,6 +450,8 @@ def exercise_continuation(page, requests, failure):
 
 
 def exercise_expiry(page, requests, action):
+    from playwright.sync_api import expect
+
     page.route(
         "**/*",
         fixture_transport(
@@ -504,6 +512,8 @@ def exercise_expiry(page, requests, action):
 
 
 def main():
+    from playwright.sync_api import sync_playwright
+
     OUTPUT.mkdir(parents=True, exist_ok=True)
     entry_path = FRONTEND / "onboarding-browser-entry.tsx"
     page_path = FRONTEND / "onboarding-browser-check.html"
