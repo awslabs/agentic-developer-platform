@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-05T23:46:27.537Z",
+  "updated_at": "2026-10-05T23:49:32.322Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -43,7 +43,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Live guard, membership and grant rechecks, typed target and permission ceiling; covered by AC-02-t1 and AC-02-t2 at 94b9309.",
+      "note": "Covered by AC-02-t1 and AC-02-t2 at 94b9309.",
       "commits": [
         "94b9309"
       ]
@@ -60,7 +60,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted SQLite-backed negative tests pass; real PostgreSQL coverage remains AC-05-t1."
+      "note": "Mounted SQLite-backed negative tests pass; remote PostgreSQL coverage remains pending."
     },
     {
       "id": "AC-02-t2",
@@ -74,7 +74,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Service target and caller, existing service subject, unsupported permission and viewer self-escalation rejected."
+      "note": "Typed-target and service-substitution cases pass locally; remote PostgreSQL coverage remains pending."
     },
     {
       "id": "AC-03-c1",
@@ -87,7 +87,11 @@
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/alembic/versions/043_workspace_grant_changes.py"
       ],
-      "note": "Initial code exists; concurrent and PostgreSQL proof pending."
+      "note": "Source committed at 7604c97 and 0404ea0; covering PostgreSQL test has not executed yet.",
+      "commits": [
+        "0404ea0",
+        "7604c97"
+      ]
     },
     {
       "id": "AC-03-t1",
@@ -99,9 +103,9 @@
         "AC-03-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Do not provision a validation service."
+      "note": "Four PostgreSQL cases authored; locally skipped because no disposable server is configured; exact-head remote CI is queued."
     },
     {
       "id": "AC-04-c1",
@@ -113,7 +117,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Initial code exists; audit failure rollback proof pending."
+      "note": "Initial implementation exists; failure rollback evidence pending."
     },
     {
       "id": "AC-04-t1",
@@ -154,7 +158,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/"
       ],
-      "note": "Real PostgreSQL and remote CI evidence not yet checked."
+      "note": "Exact-head remote CI is queued; no local validation service provisioned."
     }
   ]
 }
