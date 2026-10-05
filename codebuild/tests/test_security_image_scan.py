@@ -1,10 +1,12 @@
 """Verify selected image coverage and the real Superplane staging contract."""
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -232,6 +234,43 @@ def test_docs_fixture_classification_requires_original_example_inputs(source):
     fixture.with_name("README.md").write_text("No reviewed classification")
     with pytest.raises(ValueError, match="review its scan classification"):
         discover(source)
+
+
+@pytest.mark.parametrize("image", ("codegraph-context", "context-mcp", "litellm-proxy"))
+def test_shared_stdlib_recipe_uses_reviewed_base_and_regressions(image):
+    dockerfile = ROOT / "modules/agent-context/images" / image / "Dockerfile"
+    source = dockerfile.read_text()
+    gateway_base = (ROOT / "modules/gateway/Dockerfile").read_text().splitlines()[7].split(" AS ", 1)[0]
+    assert gateway_base.startswith("FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:")
+    assert gateway_base in source
+    assert "COPY security-stdlib/ /opt/adp-stdlib-security/" in source
+    assert "python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json" in source
+    assert "&& python /opt/adp-stdlib-security/check.py" in source
+    assert "apt-get install -y --no-install-recommends patch" not in source
+    assert any(step[1] == "modules/gateway/security/stdlib" for step in
+               next(target for target in discover(ROOT) if target["dockerfile"] == str(dockerfile.relative_to(ROOT)))["prepare"])
+
+
+def test_reviewed_stdlib_sources_and_security_boundaries(tmp_path):
+    if sys.version_info[:3] != (3, 13, 16):
+        pytest.skip("CPython 3.13.16 source verification requires the reviewed interpreter")
+    bundle = ROOT / "modules/gateway/security/stdlib"
+    spec = importlib.util.spec_from_file_location("stdlib_security_apply", bundle / "apply.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads((bundle / "manifest-3.13.16.json").read_text())
+    stdlib = Path(sysconfig.get_path("stdlib"))
+    module.verify(stdlib, manifest, "after")
+    with pytest.raises(RuntimeError, match="Unexpected CPython source"):
+        module.verify(stdlib, json.loads((bundle / "manifest.json").read_text()), "before")
+    subprocess.run([sys.executable, str(bundle / "check.py")], check=True)
+    for name in manifest:
+        destination = tmp_path / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(stdlib / name, destination)
+    (tmp_path / "stringprep.py").write_text("unexpected upstream source")
+    with pytest.raises(RuntimeError, match="Unexpected CPython source"):
+        module.verify(tmp_path, manifest, "after")
 
 
 def test_copy_tree_preparation_replaces_stale_build_inputs(tmp_path):

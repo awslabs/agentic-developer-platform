@@ -1,6 +1,6 @@
 # LiteLLM Proxy — pre-baked image for Agent Context Intelligence Platform
 # Eliminates slow pip install at pod startup; dependencies are cached in the image layer.
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
@@ -20,12 +20,10 @@ RUN addgroup --system --gid 10001 appgroup && \
 ENV HOME=/home/appuser \
     XDG_CACHE_HOME=/home/appuser/.cache \
     PYTHONDONTWRITEBYTECODE=1
-# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+# Verify the reviewed Python 3.13.16 source bytes and security behavior.
 COPY security-stdlib/ /opt/adp-stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/adp-stdlib-security/apply.py \
-    && python /opt/adp-stdlib-security/check.py \
-    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
+    && python /opt/adp-stdlib-security/check.py
 
 USER appuser
 
