@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-05T23:36:28.519Z",
+  "updated_at": "2026-10-05T23:39:56.044Z",
   "tasks": [
     {
       "id": "AC01-c1",
@@ -14,7 +14,7 @@
         "modules/domain-apps/superplane/contracts/access-cases-v1.json",
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Covered by AC01-t1; committed and pushed at adbdaf1.",
+      "note": "Covered by AC01-t1; pushed at adbdaf1.",
       "commits": [
         "adbdaf1"
       ]
@@ -31,33 +31,37 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Focused suite: 58 passed, 2 existing expected failures."
+      "note": "Focused suite passed."
     },
     {
       "id": "AC02-c1",
       "kind": "code",
       "criterion": "AC02",
       "title": "Reconcile versioned action matrix with mounted API and maintained client surfaces",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Next task; preserve merged retirement mapping and mark missing administration surfaces absent."
+      "note": "Covered by AC02-t1; pushed at 6412476.",
+      "commits": [
+        "6412476"
+      ]
     },
     {
       "id": "AC02-t1",
       "kind": "test",
       "criterion": "AC02",
       "title": "Test mounted inventory and UI, CLI and tool action parity",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC02-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": ""
+      "note": "59 passed, 2 existing expected failures; MCP tools confirmed separate from domain API routes."
     },
     {
       "id": "AC03-c1",
@@ -70,7 +74,7 @@
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
         "modules/domain-apps/superplane/contracts/access-cases-v1.json"
       ],
-      "note": "Cover bootstrap, revocation precedence and no inherited workspace authority."
+      "note": "Next task; cover bootstrap, revocation precedence and no inherited workspace authority."
     },
     {
       "id": "AC03-t1",
@@ -122,7 +126,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "External domain/auth-owner decision is pending; independent code work continues."
+      "note": "External domain/auth-owner decision pending; independent work continues."
     },
     {
       "id": "AC04-t2",
@@ -136,7 +140,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Depends on AC04-c2; owner approval cannot be inferred from fixtures."
+      "note": "Depends on AC04-c2."
     },
     {
       "id": "AC05-c1",
@@ -163,7 +167,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Include local and exact-head remote CI evidence in the PR."
+      "note": "Include local and exact-head remote CI evidence in PR."
     },
     {
       "id": "AC05-t2",
@@ -175,7 +179,7 @@
         "AC05-c1"
       ],
       "files": [],
-      "note": "External review remains required; a ready PR is not owner sign-off."
+      "note": "External owner review still required."
     }
   ]
 }
