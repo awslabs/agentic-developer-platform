@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:25:37.353Z",
+  "updated_at": "2026-10-05T17:03:31.076Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Commit 716512b; synthetic covering tests passed.",
+      "note": "Prior commit 716512b; synthetic covering tests passed.",
       "commits": [
         "716512b"
       ]
@@ -42,7 +42,10 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Synthetic coverage, immutable input, report, companion and provenance binding implemented; broker credential:list and credential:assume-role both return 403 insufficient_scope, so assigned reports remain unverified."
+      "note": "Provenance-binding code pushed in 369f37b; broker discovery and role assumption each return 403 insufficient_scope, so private inputs remain unverified.",
+      "commits": [
+        "369f37b"
+      ]
     },
     {
       "id": "AC-01-t2",
@@ -56,7 +59,7 @@
       "files": [
         ".github/scripts/tests/test_inventory_security_occurrences.py"
       ],
-      "note": "Ten synthetic binding/tamper cases pass (102 related tests passed, 2 skipped); assigned private SARIF hashes, counts and coverage still cannot be checked without broker authorization."
+      "note": "Synthetic tamper checks pass; private report verification requires broker access."
     },
     {
       "id": "AC-02-c1",
@@ -68,7 +71,7 @@
       "files": [
         "platform/security/curl-8.22.0/Dockerfile"
       ],
-      "note": "Source signature, checksum, and 18 advisory receipts checked; candidate applicability remains unverified."
+      "note": "Prior source checks do not establish candidate applicability; assigned evidence and verified build access are unavailable."
     },
     {
       "id": "AC-02-t1",
@@ -82,7 +85,7 @@
       "files": [
         "platform/security/curl-8.22.0/verify-upstream.sh"
       ],
-      "note": "No local container builder; CodeBuild access cannot be verified until the named broker role can be assumed. Exact candidate TLS and runtime checks are outstanding."
+      "note": "No local builder; CodeBuild cannot be accessed without assuming the selected role."
     },
     {
       "id": "AC-02-c2",
@@ -94,7 +97,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile"
       ],
-      "note": "Affected packages, paths, advisories, and compatible fixes require the assigned reports and image."
+      "note": "Actual affected packages and candidate runtime require the assigned reports and build."
     },
     {
       "id": "AC-02-t2",
@@ -106,7 +109,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "No local candidate builder; remote build access awaits named role assumption. Runtime fixtures are outstanding."
+      "note": "No verified candidate container is available."
     },
     {
       "id": "AC-02-c3",
@@ -118,7 +121,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "Its historical parent cannot safely be replaced without coverage mapping and a validated new digest."
+      "note": "The parent cannot safely be replaced without coverage mapping and a tested composed digest."
     },
     {
       "id": "AC-02-t3",
@@ -130,7 +133,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "No local builder; CodeBuild access cannot be verified until the named broker role can be assumed. Overlay checks are outstanding."
+      "note": "Composed overlay build access is unverified because role assumption is denied."
     },
     {
       "id": "AC-03-c1",
@@ -142,7 +145,7 @@
       "files": [
         ".github/scripts/review_security_occurrences.py"
       ],
-      "note": "Commit e637f24 provides the fail-closed ledger; actual finding review remains pending.",
+      "note": "Prior commit e637f24 provides a fail-closed ledger; actual finding review remains pending.",
       "commits": [
         "e637f24"
       ]
@@ -157,7 +160,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Requires assigned reports and existing-capability image build/scanning access."
+      "note": "Requires private reports and authenticated candidate build and scanner access."
     },
     {
       "id": "AC-03-t2",
@@ -171,7 +174,7 @@
       "files": [
         ".github/scripts/tests/test_review_security_occurrences.py"
       ],
-      "note": "46 combined synthetic inventory, ledger, and differ tests passed locally."
+      "note": "Synthetic ledger and regression checks passed locally."
     },
     {
       "id": "AC-04-c-wire",
@@ -184,7 +187,7 @@
         "modules/agent-context/images/deepwiki/Dockerfile",
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "Ordinary DeepWiki has a pinned curl input; the high-security parent and new scanned artifacts cannot be bound without coverage and a build."
+      "note": "The high-security parent's link to a reviewed composed candidate is unverified."
     },
     {
       "id": "AC-04-t1",
@@ -196,7 +199,7 @@
         "AC-04-c-wire"
       ],
       "files": [],
-      "note": "No composed image or container builder is available."
+      "note": "No verified composed candidate can be built while role assumption is denied."
     },
     {
       "id": "AC-04-c1",
@@ -206,7 +209,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Exact tested candidate digests and complete dispositions are unavailable; older receipts do not establish this scan's result."
+      "note": "Exact tested digests and complete dispositions are unavailable; production rollout remains separate."
     },
     {
       "id": "AC-04-t2",
@@ -218,7 +221,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Cannot review a complete handoff until candidate evidence exists."
+      "note": "Complete candidate evidence is required for review."
     }
   ]
 }
