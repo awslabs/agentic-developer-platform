@@ -134,3 +134,10 @@ test('missing or expired host deadline refuses Codex before process or model sta
     assert.equal(started, false);
   }
 });
+
+test('Node timers reject string source while deadline callbacks remain callable', () => {
+  assert.throws(() => setTimeout('throw Error("evaluated")', 0), { code: 'ERR_INVALID_ARG_TYPE' });
+  assert.throws(() => setInterval('throw Error("evaluated")', 0), { code: 'ERR_INVALID_ARG_TYPE' });
+  const timer = setTimeout(() => {}, 1000);
+  try { assert.equal(typeof timer, 'object'); } finally { clearTimeout(timer); }
+});

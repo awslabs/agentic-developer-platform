@@ -52,8 +52,9 @@ The raw copy at the private run-local path is not a published or durable artifac
 A wider registry scan of these ten source files emitted 32 findings but reported
 one partially analyzed file; it is **not** evidence of a clean full scan.
 
-Focused frontend checks passed 99 tests; the frontend and agent builds passed,
-35 heartbeat/control tests passed, and 24 Task SDK tests passed with one optional
+The full frontend suite passed 2,915 tests across 176 files (the focused
+redirect subset passed 99); the frontend and agent builds passed, 36
+heartbeat/control tests passed, and 25 Task SDK tests passed with one optional
 Codex CLI integration test skipped because `CODEX_BRIDGE_TEST_BIN` was not set.
 Local Node tests and Semgrep do not establish a deployed artifact or production
 availability. No provider workload was run.
