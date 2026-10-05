@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-05T23:44:57.282Z",
+  "updated_at": "2026-10-05T23:46:27.537Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -12,10 +12,9 @@
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/main.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py"
       ],
-      "note": "Mounted GET /workspaces/{workspace_id}/access/v1/me and POST /workspaces/{workspace_id}/access/v1/grants at commit 77e56f7; covered by AC-01-t1.",
+      "note": "Mounted and covered by AC-01-t1 at 77e56f7.",
       "commits": [
         "77e56f7"
       ]
@@ -32,47 +31,50 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted signed-token grant, effective-access read, and replay pass; 53 passed, 2 xfailed with permission-contract suite."
+      "note": "Signed-token grant, access read and duplicate delivery passed."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Enforce live explicit administrator authority, same-org current human target and assignable ceiling",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Implementation in initial checkpoint; denial and stale-membership evidence still required before done."
+      "note": "Live guard, membership and grant rechecks, typed target and permission ceiling; covered by AC-02-t1 and AC-02-t2 at 94b9309.",
+      "commits": [
+        "94b9309"
+      ]
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Exercise denied viewer, cross-org, lost membership and privilege-ceiling cases via HTTP and database tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": ""
+      "note": "Mounted SQLite-backed negative tests pass; real PostgreSQL coverage remains AC-05-t1."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Exercise human/service substitution and self-escalation denial via HTTP and database tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": ""
+      "note": "Service target and caller, existing service subject, unsupported permission and viewer self-escalation rejected."
     },
     {
       "id": "AC-03-c1",
@@ -85,7 +87,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/alembic/versions/043_workspace_grant_changes.py"
       ],
-      "note": "Initial code committed; concurrency, rollback and PostgreSQL evidence pending."
+      "note": "Initial code exists; concurrent and PostgreSQL proof pending."
     },
     {
       "id": "AC-03-t1",
@@ -99,7 +101,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/"
       ],
-      "note": ""
+      "note": "Do not provision a validation service."
     },
     {
       "id": "AC-04-c1",
@@ -111,7 +113,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Initial code committed; audit-failure rollback evidence pending."
+      "note": "Initial code exists; audit failure rollback proof pending."
     },
     {
       "id": "AC-04-t1",
@@ -138,7 +140,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "New routes registered and coordinated on #6970; full integration evidence pending."
+      "note": "Route registered and coordinated on #6970; final integration proof pending."
     },
     {
       "id": "AC-05-t1",
@@ -152,7 +154,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/"
       ],
-      "note": "No validation infrastructure will be provisioned; PostgreSQL and remote CI evidence not yet checked."
+      "note": "Real PostgreSQL and remote CI evidence not yet checked."
     }
   ]
 }
