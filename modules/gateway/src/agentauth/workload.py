@@ -28,6 +28,10 @@ class WorkloadRefusedError(Exception):
     """The request has no verified, approved workload identity."""
 
 
+class WorkloadUnavailableError(WorkloadRefusedError):
+    """Live workload authority could not be queried."""
+
+
 @dataclass(frozen=True)
 class VerifiedPod:
     uid: str
@@ -38,6 +42,7 @@ class VerifiedPod:
     # Optional lifecycle evidence controls pause, not workload identity. A Jobs
     # API blip must not invalidate a task already assigned to the same verified pod.
     deadline_at: str | None = field(default=None, compare=False)
+    image_digest: str | None = field(default=None, compare=False)
 
 
 class KubernetesWorkloadVerifier:
@@ -126,7 +131,7 @@ class KubernetesWorkloadVerifier:
             # while this service is running.
             gateway_token = self._gateway_token_path.read_text().strip()
             if not gateway_token:
-                raise WorkloadRefusedError("workload verifier unavailable")
+                raise WorkloadUnavailableError("workload verifier unavailable")
             headers = {"Authorization": f"Bearer {gateway_token}"}
             review = self._client.post(
                 "/apis/authentication.k8s.io/v1/tokenreviews",
@@ -161,7 +166,7 @@ class KubernetesWorkloadVerifier:
         except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
             # Do not expose an HTTP exception or request body: TokenReview
             # contains the worker credential, and Authorization contains ours.
-            raise WorkloadRefusedError("workload verifier unavailable") from None
+            raise WorkloadUnavailableError("workload verifier unavailable") from None
 
     def verify_bound(self, *, name: str, uid: str) -> VerifiedPod:
         """Recheck a previously TokenReview-bound pod from protected metadata."""
@@ -193,11 +198,19 @@ class KubernetesWorkloadVerifier:
                 or not pod_status.get("podIP")
             ):
                 raise WorkloadRefusedError("workload refused")
-            return VerifiedPod(uid, name, self._namespace, self._service_account, pod_status["podIP"], self._deadline(pod, headers))
+            return VerifiedPod(
+                uid,
+                name,
+                self._namespace,
+                self._service_account,
+                pod_status["podIP"],
+                self._deadline(pod, headers),
+                containers[0]["imageID"].rsplit("@", 1)[-1],
+            )
         except WorkloadRefusedError:
             raise
         except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
-            raise WorkloadRefusedError("workload verifier unavailable") from None
+            raise WorkloadUnavailableError("workload verifier unavailable") from None
 
     def _deadline(self, pod: dict, headers: dict) -> str | None:
         """Conservative absolute lifetime from Kubernetes, including Job retries.

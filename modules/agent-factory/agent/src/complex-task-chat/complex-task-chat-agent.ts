@@ -28,7 +28,12 @@ import { Scrubber } from './context/scrubber';
 import { vaultToolsForTurn } from './vault/tools';
 import { buildToolSanitizers } from './tool-sanitizers';
 import { draftToolsForTurn } from './draft/tools';
-import { buildDraftStore } from './draft/dynamo-draft-store';
+import { buildDraftStore } from './draft/factory';
+import { ChatDataClient } from './gateway/chat-data-client';
+import { BedrockSummarizer } from './context/summarize/bedrock-summarizer';
+import { Summarizer } from './context/summarize/port';
+import { loadLcmConfig } from './context/lcm/config';
+import { readIdentityToken } from '../lib/runIdentity';
 import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
@@ -60,8 +65,101 @@ const VAULT_INTERNAL_API_KEY = process.env.VAULT_INTERNAL_API_KEY ?? '';
  */
 const AGUI_ENABLED = (process.env.AGUI_EVENTS_ENABLED ?? '1') === '1';
 
+/** Agent cwd for the turn; the gateway artifact store publishes only from under it. */
+const WORKSPACE_ROOT = '/tmp/workspace';
+
+/** Same identifier grammar the ChatDataClient binds sessions with. */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+export interface ChatStores {
+  context: ReturnType<typeof buildContextManager>;
+  memory: ReturnType<typeof buildMemoryProvider>;
+  artifacts: ReturnType<typeof buildArtifactStore>;
+  /** Issue #4208: persistence for the intent-intake draft panel. */
+  draftStore: ReturnType<typeof buildDraftStore>;
+}
+
+export interface ChatStoreDeps {
+  /** Overrides the projected-token reader (tests). Default: ADP_WORKLOAD_TOKEN_FILE via readIdentityToken. */
+  workloadToken?: () => Promise<string>;
+  /** Overrides the compaction summarizer (tests). Default: BedrockSummarizer over the run routing proxy. */
+  summarizer?: Summarizer;
+  workspaceRoot?: string;
+}
+
+/**
+ * Compose the four per-turn stores for one message (#6932).
+ *
+ * ADP_CHAT_DATA_ENABLED !== 'true': exactly the pre-existing direct stores with
+ * their existing env vars — no client, no gateway argument, same construction order.
+ *
+ * ADP_CHAT_DATA_ENABLED === 'true': ONE workload-bound ChatDataClient is built from
+ * the projected token file and the gateway https origin, then handed to every
+ * factory. Every precondition is checked here, before any store or model call, and
+ * a failure throws instead of falling back to a broad-role direct store.
+ *
+ * Base URL: ADP_CHAT_DATA_URL, the gateway's https origin. The client itself
+ * carries the workload token and the session capability, so it cannot ride the
+ * SigV4 loopback proxy (which strips X-Adp-Workload-Token and only serves
+ * loopback http); it uses the same https front door the gateway already serves.
+ */
+export async function buildChatStores(
+  env: Record<string, string | undefined>,
+  task: Pick<TaskPayload, 'session_id'>,
+  deps: ChatStoreDeps = {},
+): Promise<ChatStores> {
+  if (env.ADP_CHAT_DATA_ENABLED !== 'true') {
+    const context = buildContextManager(env);
+    const memory = buildMemoryProvider(env);
+    const artifacts = buildArtifactStore(env);
+    const draftStore = buildDraftStore(env);
+    return { context, memory, artifacts, draftStore };
+  }
+
+  const direct = (['CONTEXT_STRATEGY', 'MEMORY_STRATEGY', 'ARTIFACT_STRATEGY'] as const).filter(key => env[key] !== 'gateway');
+  if (direct.length > 0) {
+    throw new Error(`Scoped chat data requires ${direct.map(key => `${key}=gateway`).join(', ')}; refusing direct-store fallback`);
+  }
+  if (!env.ADP_CHAT_DATA_URL) {
+    throw new Error('Scoped chat data requires ADP_CHAT_DATA_URL (https origin of the gateway)');
+  }
+  const sessionId = task.session_id;
+  if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error('Scoped chat data requires a valid task session_id');
+  }
+  let workloadToken = deps.workloadToken;
+  if (!workloadToken) {
+    const tokenFile = env.ADP_WORKLOAD_TOKEN_FILE;
+    if (!tokenFile) throw new Error('Scoped chat data requires ADP_WORKLOAD_TOKEN_FILE (projected workload token)');
+    // Re-read per exchange so a rotated projection is picked up on renewal.
+    workloadToken = async () => readIdentityToken(tokenFile);
+  }
+  // Probe the token source once up front: an absent or unreadable projection must
+  // stop the turn here, not surface as a mid-turn store failure.
+  try {
+    await workloadToken();
+  } catch {
+    throw new Error('Scoped chat data requires a readable workload token; refusing to start without one');
+  }
+
+  let client: ChatDataClient;
+  try {
+    client = new ChatDataClient({ baseUrl: env.ADP_CHAT_DATA_URL, workloadToken });
+  } catch {
+    throw new Error('Scoped chat data requires ADP_CHAT_DATA_URL to be an https origin without path, query or credentials');
+  }
+  const summarizer = deps.summarizer ?? new BedrockSummarizer(loadLcmConfig(env).summaryModel, env.AWS_REGION ?? 'us-east-1');
+  const workspaceRoot = deps.workspaceRoot ?? WORKSPACE_ROOT;
+
+  const context = buildContextManager(env, { client, summarizer });
+  const memory = buildMemoryProvider(env, { client });
+  const artifacts = buildArtifactStore(env, { client, sessionId, workspaceRoot });
+  const draftStore = buildDraftStore(env, { client, sessionId });
+  return { context, memory, artifacts, draftStore };
 }
 
 async function main(): Promise<void> {
@@ -79,25 +177,17 @@ async function main(): Promise<void> {
   for (const msg of messages) {
     const task: TaskPayload = JSON.parse(msg.Body ?? '{}');
     await withChatBedrockRouting(task, async () => {
-      const context = buildContextManager();
-      const memory = buildMemoryProvider();
-      const artifacts = buildArtifactStore();
-      const draftStore = buildDraftStore();
-      await processOne(msg, { context, memory, artifacts, draftStore, sqs });
+      // Built after routing so the summarizer sees the run proxy; before any
+      // model call so a scoped-data misconfiguration fails the turn closed.
+      const stores = await buildChatStores(process.env, task);
+      await processOne(msg, { ...stores, sqs });
     }, msg.Body);
   }
 }
 
 async function processOne(
   msg: { Body?: string; ReceiptHandle?: string; MessageId?: string },
-  deps: {
-    context: ReturnType<typeof buildContextManager>;
-    memory: ReturnType<typeof buildMemoryProvider>;
-    artifacts: ReturnType<typeof buildArtifactStore>;
-    /** Issue #4208: persistence for the intent-intake draft panel. */
-    draftStore: ReturnType<typeof buildDraftStore>;
-    sqs: SqsClient;
-  },
+  deps: ChatStores & { sqs: SqsClient },
 ): Promise<void> {
   const task: TaskPayload = JSON.parse(msg.Body ?? '{}');
   const {
@@ -437,7 +527,7 @@ async function processOne(
       tools,
       toolSanitizers: toolSanitizers.size > 0 ? toolSanitizers : undefined,
       model: task.model_resolved ?? persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
-      cwd: '/tmp/workspace',
+      cwd: WORKSPACE_ROOT,
       env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),
       // Issue #4179: spill oversized tool results to the artifact store.
@@ -660,7 +750,11 @@ function checkDeliveryConsistency(reply: string, publishCount: number): void {
   }
 }
 
-main().catch(err => {
-  console.error('[chat-agent] Fatal error:', err);
-  process.exit(1);
-});
+// startup.sh runs this file directly (`node dist/complex-task-chat/complex-task-chat-agent.js`);
+// the guard keeps `buildChatStores` importable by tests without starting a consumer.
+if (require.main === module) {
+  main().catch(err => {
+    console.error('[chat-agent] Fatal error:', err);
+    process.exit(1);
+  });
+}

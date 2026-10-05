@@ -104,9 +104,35 @@ interface SessionOwner {
   userId: string;
 }
 
+const OWNER_FIELDS: Record<string, keyof SessionOwner> = {
+  orgId: 'orgId',
+  tenantId: 'orgId',
+  teamId: 'teamId',
+  ownerUserId: 'userId',
+  org_id: 'orgId',
+  tenant_id: 'orgId',
+  team_id: 'teamId',
+  user_id: 'userId',
+  owner_user_id: 'userId',
+};
+
+const OWNER_PARAMETERS = { orgId: ':org', teamId: ':team', userId: ':user' };
+const CONTEXT_OWNER_FIELDS = ['orgId', 'tenantId', 'teamId', 'ownerUserId'];
+
+function matchesOwnerFields(row: Record<string, unknown>, owner: SessionOwner): boolean {
+  return Object.entries(OWNER_FIELDS).every(([field, component]) =>
+    row[field] === undefined || row[field] === null || row[field] === owner[component],
+  );
+}
+
+function ownsContextRow(row: Record<string, unknown>, owner: SessionOwner): boolean {
+  return CONTEXT_OWNER_FIELDS.every(field => row[field] === owner[OWNER_FIELDS[field]]) && matchesOwnerFields(row, owner);
+}
+
 interface DynamoDBStreamEvent {
   Records: Array<{
     eventName: string;
+    userIdentity?: { type?: string; principalId?: string };
     dynamodb?: {
       Keys?: Record<string, { S?: string }>;
       OldImage?: Record<string, unknown>;
@@ -123,30 +149,37 @@ function streamString(image: Record<string, unknown> | undefined, key: string): 
 /**
  * Extract the owner identity from the expiring header image.
  *
- * Returns null when any component is absent. A partial identity is treated as
- * no identity on purpose: a prefix built from a blank segment collapses to a
- * shallower scope that spans other principals, which is the bug being fixed.
+ * Returns null when any component is absent. An explicitly empty team identifies
+ * a personal session using the gateway's reserved artifact path segment.
  */
 export function extractSessionOwner(
   oldImage: Record<string, unknown> | undefined,
 ): SessionOwner | null {
   const orgId = streamString(oldImage, 'orgId');
-  const teamId = streamString(oldImage, 'teamId');
+  const teamAttribute = oldImage?.teamId as { S?: unknown } | undefined;
+  if (typeof teamAttribute?.S !== 'string') return null;
+  const teamId = teamAttribute.S;
   const userId = streamString(oldImage, 'ownerUserId');
-  if (!orgId || !teamId || !userId) return null;
+  if (!orgId || !userId || streamString(oldImage, 'tenantId') !== orgId) return null;
   // A segment containing a separator would escape its own level of the layout.
-  for (const segment of [orgId, teamId, userId]) {
-    if (!/^[A-Za-z0-9_-]+$/.test(segment)) return null;
+  for (const segment of [orgId, userId, ...(teamId === '' ? [] : [teamId])]) {
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(segment) || segment.includes('..') || segment === '.') return null;
   }
-  return { orgId, teamId, userId };
+  const owner = { orgId, teamId, userId };
+  const consistent = Object.entries(OWNER_FIELDS).every(([field, component]) => {
+    const attribute = oldImage?.[field] as { S?: unknown; NULL?: boolean } | undefined;
+    return attribute === undefined || attribute?.NULL === true ||
+      (typeof attribute?.S === 'string' && attribute.S === owner[component]);
+  });
+  return consistent ? owner : null;
 }
 
 /**
  * Build the S3 prefix for one session's artifacts, at the full depth of the
- * hierarchical layout. Mirrors `S3ArtifactStore.buildS3Key`.
+ * hierarchical layout, including the gateway's personal-session namespace.
  */
 export function deriveSessionPrefix(owner: SessionOwner, sessionId: string): string {
-  return `o/${owner.orgId}/t/${owner.teamId}/u/${owner.userId}/s/${sessionId}/`;
+  return `o/${owner.orgId}/t/${owner.teamId || '~personal'}/u/${owner.userId}/s/${sessionId}/`;
 }
 
 /**
@@ -174,7 +207,9 @@ export function isFullDepthSessionPrefix(prefix: string): boolean {
 
 export async function handler(event: DynamoDBStreamEvent): Promise<void> {
   for (const record of event.Records) {
-    if (record.eventName !== 'REMOVE') continue;
+    if (record.eventName !== 'REMOVE' ||
+        record.userIdentity?.type !== 'Service' ||
+        record.userIdentity?.principalId !== 'dynamodb.amazonaws.com') continue;
 
     const pk = record.dynamodb?.Keys?.PK?.S;
     const sk = record.dynamodb?.Keys?.SK?.S;
@@ -220,6 +255,10 @@ export async function handler(event: DynamoDBStreamEvent): Promise<void> {
         emitMetric('SessionsPlanned', 1);
         continue;
       }
+      if (outcome === 'quarantined') {
+        emitMetric('SessionsSkipped', 1, 'unverified_artifact_owner');
+        continue;
+      }
       console.log(`[sweeper] Successfully cleaned session: ${sessionId}`);
       emitMetric('SessionsSwept', 1);
     } catch (err) {
@@ -257,22 +296,27 @@ async function assertSessionStillExpired(sessionId: string): Promise<void> {
 }
 
 /** Delete rows only while the expired session still has no current header. */
-async function cleanupSessionRows(sessionId: string, owner: SessionOwner): Promise<void> {
+async function cleanupSessionRows(sessionId: string, owner: SessionOwner): Promise<boolean> {
   const pk = `session#${sessionId}`;
 
   // 1. Delete all context table rows for this session
-  await deleteAllByPK(CONTEXT_TABLE, pk);
+  await deleteAllByPK(CONTEXT_TABLE, pk, owner);
 
   // 2. Delete only artifact rows whose key and recorded identity both prove
   // they belong to the expired owner. The partition itself is client-derived
   // and can contain forged or legacy rows from before ownership enforcement.
   if (ARTIFACTS_TABLE) {
-    await deleteOwnedArtifactRows(pk, deriveSessionPrefix(owner, sessionId), owner);
+    return deleteOwnedArtifactRows(pk, deriveSessionPrefix(owner, sessionId), owner);
   }
+  return Boolean(ARTIFACTS_BUCKET);
 }
 
-async function cleanupSession(sessionId: string, owner: SessionOwner): Promise<'dry-run' | 'enforced'> {
-  await cleanupSessionRows(sessionId, owner);
+async function cleanupSession(sessionId: string, owner: SessionOwner): Promise<'dry-run' | 'enforced' | 'quarantined'> {
+  const ambiguousObjects = await cleanupSessionRows(sessionId, owner);
+  if (ambiguousObjects) {
+    console.warn(`[sweeper] Quarantining artifacts for ${sessionId}: ownership or object layout is unverified`);
+    return 'quarantined';
+  }
 
   // 3. Delete S3 objects under the owner-derived session prefix
   if (ARTIFACTS_BUCKET) {
@@ -285,8 +329,10 @@ async function deleteOwnedArtifactRows(
   pk: string,
   sessionPrefix: string,
   owner: SessionOwner,
-): Promise<void> {
+): Promise<boolean> {
   let lastEvaluatedKey: Record<string, unknown> | undefined;
+  let ambiguousObjects = false;
+  const ownedRows: Record<string, unknown>[] = [];
 
   do {
     const result = await ddb.send(
@@ -294,7 +340,8 @@ async function deleteOwnedArtifactRows(
         TableName: ARTIFACTS_TABLE,
         KeyConditionExpression: 'PK = :pk',
         ExpressionAttributeValues: { ':pk': pk },
-        ProjectionExpression: 'PK, SK, s3Key, org_id, team_id, user_id',
+        ProjectionExpression: `PK, SK, s3Key, ${Object.keys(OWNER_FIELDS).join(', ')}`,
+        ConsistentRead: true,
         ExclusiveStartKey: lastEvaluatedKey,
         Limit: 250,
       }),
@@ -308,11 +355,17 @@ async function deleteOwnedArtifactRows(
         s3Key.length > sessionPrefix.length &&
         s3Key.startsWith(sessionPrefix) &&
         !s3Key.includes('..') &&
+        !s3Key.includes('\\') &&
         item.org_id === owner.orgId &&
         item.team_id === owner.teamId &&
-        item.user_id === owner.userId;
+        item.user_id === owner.userId &&
+        (owner.teamId !== '' || ownsContextRow(item, owner)) &&
+        matchesOwnerFields(item, owner);
     });
     const skippedCount = items.length - ownedItems.length;
+    if (items.some(item => typeof item.s3Key === 'string' && item.s3Key.startsWith(sessionPrefix) && !ownedItems.includes(item))) {
+      ambiguousObjects = true;
+    }
 
     if (skippedCount > 0) {
       console.warn(
@@ -322,20 +375,18 @@ async function deleteOwnedArtifactRows(
       emitMetric('ArtifactRowsSkipped', skippedCount, 'unverified_artifact_owner');
     }
 
-    if (isDryRun()) {
-      if (ownedItems.length > 0) {
-        console.log(
-          `[sweeper][dry-run] Would delete ${ownedItems.length} verified artifact rows for ${pk}`,
-        );
-      }
-      continue;
-    }
-
-    await deleteRowsConditionally(ARTIFACTS_TABLE, pk, ownedItems);
+    ownedRows.push(...ownedItems);
   } while (lastEvaluatedKey);
+  if (ambiguousObjects) return true;
+  if (isDryRun()) {
+    if (ownedRows.length > 0) console.log(`[sweeper][dry-run] Would delete ${ownedRows.length} verified artifact rows for ${pk}`);
+    return false;
+  }
+  await deleteRowsConditionally(ARTIFACTS_TABLE, pk, ownedRows, owner, 'artifact');
+  return false;
 }
 
-async function deleteAllByPK(tableName: string, pk: string): Promise<void> {
+async function deleteAllByPK(tableName: string, pk: string, owner: SessionOwner): Promise<void> {
   let lastEvaluatedKey: Record<string, unknown> | undefined;
 
   do {
@@ -344,7 +395,7 @@ async function deleteAllByPK(tableName: string, pk: string): Promise<void> {
         TableName: tableName,
         KeyConditionExpression: 'PK = :pk',
         ExpressionAttributeValues: { ':pk': pk },
-        ProjectionExpression: 'PK, SK',
+        ProjectionExpression: `PK, SK, ${Object.keys(OWNER_FIELDS).join(', ')}`,
         ExclusiveStartKey: lastEvaluatedKey,
         Limit: 250,
       }),
@@ -353,14 +404,18 @@ async function deleteAllByPK(tableName: string, pk: string): Promise<void> {
     const items = result.Items ?? [];
     lastEvaluatedKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
 
+    const ownedItems = items.filter(item => ownsContextRow(item, owner));
+    if (items.length !== ownedItems.length) {
+      emitMetric('ContextRowsSkipped', items.length - ownedItems.length, 'unverified_owner');
+    }
     if (isDryRun()) {
-      if (items.length > 0) {
-        console.log(`[sweeper][dry-run] Would delete ${items.length} rows from ${tableName} for ${pk}`);
+      if (ownedItems.length > 0) {
+        console.log(`[sweeper][dry-run] Would delete ${ownedItems.length} rows from ${tableName} for ${pk}`);
       }
       continue;
     }
 
-    await deleteRowsConditionally(tableName, pk, items);
+    await deleteRowsConditionally(tableName, pk, ownedItems, owner, 'context');
   } while (lastEvaluatedKey);
 }
 
@@ -368,6 +423,8 @@ async function deleteRowsConditionally(
   tableName: string,
   pk: string,
   items: Record<string, unknown>[],
+  owner: SessionOwner,
+  kind: 'context' | 'artifact',
 ): Promise<void> {
   // Each delete batch is conditional on the context header still being
   // absent. A delayed TTL event therefore cannot delete rows belonging to a
@@ -385,7 +442,22 @@ async function deleteRowsConditionally(
             },
           },
           ...batch.map(item => ({
-            Delete: { TableName: tableName, Key: { PK: item.PK, SK: item.SK } },
+            Delete: {
+              TableName: tableName,
+              Key: { PK: item.PK, SK: item.SK },
+              ConditionExpression: [
+                ...Object.entries(OWNER_FIELDS).map(([field, component]) =>
+                  (kind === 'context' || owner.teamId === '') && CONTEXT_OWNER_FIELDS.includes(field)
+                    ? `${field} = ${OWNER_PARAMETERS[component]}`
+                    : `(attribute_not_exists(${field}) OR ${field} = :null OR ${field} = ${OWNER_PARAMETERS[component]})`,
+                ),
+                ...(kind === 'artifact' ? ['s3Key = :s3Key', 'org_id = :org', 'team_id = :team', 'user_id = :user'] : []),
+              ].join(' AND '),
+              ExpressionAttributeValues: {
+                ':org': owner.orgId, ':team': owner.teamId, ':user': owner.userId, ':null': null,
+                ...(kind === 'artifact' ? { ':s3Key': item.s3Key } : {}),
+              },
+            },
           })),
         ],
       }),
@@ -434,7 +506,7 @@ async function deleteS3Prefix(sessionId: string, owner: SessionOwner): Promise<v
     }
 
     await assertSessionStillExpired(sessionId);
-    await s3.send(
+    const deletion = await s3.send(
       new DeleteObjectsCommand({
         Bucket: ARTIFACTS_BUCKET,
         Delete: {
@@ -443,5 +515,6 @@ async function deleteS3Prefix(sessionId: string, owner: SessionOwner): Promise<v
         },
       }),
     );
+    if (deletion.Errors?.length) throw new Error('artifact deletion partially failed');
   } while (continuationToken);
 }

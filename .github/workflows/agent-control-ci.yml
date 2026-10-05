@@ -450,6 +450,17 @@ jobs:
             tests/activity/test_stats_service.py \
             -v --tb=short --timeout=120
 
+      - name: Setup Node for chat ports
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      - name: Install chat-worker test dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev --ignore-scripts
+
       - name: Run delegated authorization tests
         working-directory: modules/gateway
         # Require the existing security suites by name, then collect the whole
@@ -485,7 +496,14 @@ jobs:
           # round-robin distribution breaks (see gateway-ci.yml for the measured
           # case: 9 phantom failures without it, 6 with). Removing it here
           # invites the same class of flake.
+          # The chat data-path suites (tests/agentauth/test_chat_*.py, #6932) are
+          # gateway storage tests: ~500 tests that each boot moto + the app. They
+          # run in Gateway CI's full-tree shards and its dedicated chat-ports job.
+          # Running them again here pushed this single-runner job from ~1700 to
+          # ~3000 tests and the runner died mid-run (log ends at 30% with no
+          # summary); this gate stays scoped to agent-control suites.
           pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
+            --ignore-glob='tests/agentauth/test_chat_*.py' \
             -v --tb=short --timeout=120 -n 4 --dist loadfile
 
       # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide

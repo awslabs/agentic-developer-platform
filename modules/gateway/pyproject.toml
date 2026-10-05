@@ -138,6 +138,7 @@ markers = [
     "browser: requires Playwright",
     "e2e: mark test as end-to-end test",
     "integration: mark test as integration test",
+    "chat_ports: requires the Node chat-worker dependencies and local gateway/storage emulators",
     "slow: mark test as slow running",
     "auth: authentication and token management tests",
     "admin: admin dashboard, RBAC, logging, and metrics tests",

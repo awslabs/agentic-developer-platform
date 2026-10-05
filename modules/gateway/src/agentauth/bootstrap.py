@@ -84,6 +84,7 @@ class BootstrapStore:
         grant_metadata: dict | None = None,
         events_table: str | None = None,
         event_item: dict | None = None,
+        retained_chat_input: tuple[str, dict] | None = None,
     ) -> None:
         """Called only after the trusted ingress validates the human event.
 
@@ -138,6 +139,7 @@ class BootstrapStore:
         execution_metadata = execution_metadata or {}
         grant_metadata = grant_metadata or {}
         if set(execution_metadata) - {
+            "chat_user_turn",
             "issue_number",
             "installation_id",
             "chain_depth",
@@ -173,6 +175,11 @@ class BootstrapStore:
         }
         authority_check = self._authority_check(grant)
         transaction = [self._put(execution), self._put(grant_item), self._put(lookup), authority_check]
+        if retained_chat_input is not None:
+            input_table, input_item = retained_chat_input
+            if not input_table or "chat_user_turn" not in execution_metadata:
+                raise BootstrapRefusedError("invalid retained chat input")
+            transaction.append({"Put": {"TableName": input_table, "Item": input_item, "ConditionExpression": "attribute_not_exists(PK)"}})
         if events_table or event_item:
             if (
                 not events_table

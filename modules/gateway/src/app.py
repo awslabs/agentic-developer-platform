@@ -57,6 +57,7 @@ UNIT_MODULES = [
     "src.agentauth.model_policy_keys",
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
+    "src.agentauth.chat_data_routes",
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
     # #5028 (AC4): the worker's own status/registration writes, moved off the

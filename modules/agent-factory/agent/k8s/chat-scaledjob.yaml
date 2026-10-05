@@ -36,6 +36,20 @@ data:
   MEMORY_STRATEGY: "dynamo"
   ARTIFACT_STRATEGY: "s3"
 
+  # Scoped chat data switch (#6932). "false" keeps the direct DynamoDB/S3 stores
+  # above exactly as they are today. Enablement is one coordinated change:
+  #   ADP_CHAT_DATA_ENABLED: "true"
+  #   CONTEXT_STRATEGY / MEMORY_STRATEGY / ARTIFACT_STRATEGY: "gateway"
+  #   ADP_CHAT_DATA_URL: https origin of the gateway (no path/query); the
+  #     worker exchanges the projected ADP_WORKLOAD_TOKEN_FILE for a session-
+  #     bound capability at <origin>/v1/chat/data/bootstrap.
+  # The worker fails closed when the switch is "true" but any of those values,
+  # the token file or the gateway's own ADP_CHAT_DATA_ENABLED is missing — it
+  # never falls back to the direct stores. The chat_worker role's direct table/
+  # bucket permissions are removed only after live verification (#6931, #6937).
+  ADP_CHAT_DATA_ENABLED: "false"
+  ADP_CHAT_DATA_URL: ""
+
   # Token + model config
   CONTEXT_TOKEN_BUDGET: "150000"
   ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-5"
