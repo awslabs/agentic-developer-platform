@@ -238,3 +238,52 @@ async def test_self_assignment_refused_even_by_sole_administrator(access):
         json=_grant_request(target_subject="owner", expected_revision=1), headers=token(),
     )
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_member_removed_between_initial_check_and_write_is_refused(access, monkeypatch):
+    from sqlalchemy import select
+
+    client, workspace_id, membership, token = access
+    original_read = membership.read
+    target_reads = 0
+
+    async def remove_target_before_write(*, subject, principal_type, adp_org_id):
+        nonlocal target_reads
+        if subject == "approver":
+            target_reads += 1
+            if target_reads == 2:
+                membership.allowed.remove("approver")
+        return await original_read(
+            subject=subject, principal_type=principal_type, adp_org_id=adp_org_id,
+        )
+
+    monkeypatch.setattr(membership, "read", remove_target_before_write)
+    response = await client.post(
+        f"/workspaces/{workspace_id}/access/v1/grants",
+        json=_grant_request(), headers=token(),
+    )
+    assert response.status_code == 403
+    assert target_reads == 2
+    async with async_session_test() as db:
+        assert await db.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id,
+            WorkspaceGrantRecord.principal == "approver",
+        )) is None
+
+
+@pytest.mark.asyncio
+async def test_request_id_is_bound_to_the_administrator(access):
+    client, workspace_id, membership, token = access
+    membership.allowed.add("co-owner")
+    async with async_session_test() as db:
+        org_id = (await db.get(Workspace, workspace_id)).org_id
+        db.add(WorkspaceGrantRecord(
+            workspace_id=workspace_id, org_id=org_id, principal="co-owner",
+            principal_type="human", permissions="workspace:administer",
+        ))
+        await db.commit()
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    body = _grant_request()
+    assert (await client.post(url, json=body, headers=token())).status_code == 200
+    assert (await client.post(url, json=body, headers=token("co-owner"))).status_code == 409

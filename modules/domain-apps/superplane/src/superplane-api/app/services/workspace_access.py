@@ -39,6 +39,20 @@ def _response(row: WorkspaceGrantRecord, event: Event | None = None) -> Workspac
     )
 
 
+async def _require_current_pair(reader, caller, target_subject: str) -> None:
+    try:
+        await require_current_identity(
+            reader, subject=caller.principal.subject, principal_type="human",
+            adp_org_id=caller.source_org_id, membership_id=caller.identity_evidence,
+        )
+        await require_current_identity(
+            reader, subject=target_subject, principal_type="human",
+            adp_org_id=caller.source_org_id,
+        )
+    except IdentityUnavailable:
+        raise HTTPException(403, "current human membership required") from None
+
+
 async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, reader) -> WorkspaceAccessResponse:
     if caller.principal.account_type != "human" or not caller.source_org_id:
         raise HTTPException(403, "human workspace identity required")
@@ -86,17 +100,7 @@ async def grant_human_access(
     ).with_for_update())
     if workspace is None or workspace.status in ("Teardown", "Deleted"):
         raise HTTPException(403, "active workspace binding required")
-    try:
-        await require_current_identity(
-            reader, subject=caller.principal.subject, principal_type="human",
-            adp_org_id=caller.source_org_id, membership_id=caller.identity_evidence,
-        )
-        await require_current_identity(
-            reader, subject=body.target_subject, principal_type="human",
-            adp_org_id=caller.source_org_id,
-        )
-    except IdentityUnavailable:
-        raise HTTPException(403, "current human membership required") from None
+    await _require_current_pair(reader, caller, body.target_subject)
     actor = await db.scalar(select(WorkspaceGrantRecord).where(
         WorkspaceGrantRecord.workspace_id == workspace_id,
         WorkspaceGrantRecord.org_id == org_id,
@@ -115,7 +119,10 @@ async def grant_human_access(
     if target is not None and (target.revoked_at is not None or target.org_id != org_id
                                or target.principal_type != "human"):
         raise HTTPException(409, "grant cannot be restored or substituted")
-    fingerprint = hashlib.sha256(body.model_dump_json(exclude={"request_id"}).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps({
+        "actor": caller.principal.subject, "org_id": str(org_id),
+        "request": body.model_dump(mode="json", exclude={"request_id"}),
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     previous = await db.scalar(select(WorkspaceGrantChange).where(
         WorkspaceGrantChange.workspace_id == workspace_id,
         WorkspaceGrantChange.request_id == body.request_id,
@@ -128,6 +135,7 @@ async def grant_human_access(
     revision = target.revision if target else 0
     if body.expected_revision != revision:
         raise HTTPException(409, "stale workspace grant revision")
+    await _require_current_pair(reader, caller, body.target_subject)
     before = [str(permission) for permission in _effective(target)] if target else []
     if target is None:
         target = WorkspaceGrantRecord(
