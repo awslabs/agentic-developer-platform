@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:16:22.797Z",
+  "updated_at": "2026-10-05T15:22:38.231Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_inventory_security_occurrences.py"
       ],
-      "note": "41 inventory and existing differ tests passed locally."
+      "note": "Inventory and existing differ tests passed locally."
     },
     {
       "id": "AC-01-c2",
@@ -133,34 +133,41 @@
       "kind": "code",
       "criterion": "AC-03",
       "title": "Record exact-candidate dispositions for every assigned occurrence",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Use fixed, evidence-reviewed not-applicable, or unresolved; retain private raw evidence outside public docs."
+      "files": [
+        ".github/scripts/review_security_occurrences.py"
+      ],
+      "note": "Commit e637f24 implements fail-closed per-record candidate dispositions; actual evidence review remains AC-03-t1.",
+      "commits": [
+        "e637f24"
+      ]
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Rescan three exact candidate images and compare assigned records",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Needs report access and a compatible builder/scanner; no validation service will be provisioned."
+      "note": "Requires private reports and a container builder/scanner; no validation service will be provisioned."
     },
     {
       "id": "AC-03-t2",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Reject unsupported safe dispositions and new critical/high regressions",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c1"
       ],
-      "files": [],
-      "note": "Blank fix versions or a patched version string alone cannot close a record."
+      "files": [
+        ".github/scripts/tests/test_review_security_occurrences.py"
+      ],
+      "note": "46 inventory, ledger, and existing differ tests passed locally with synthetic fixtures."
     },
     {
       "id": "AC-04-c-wire",
