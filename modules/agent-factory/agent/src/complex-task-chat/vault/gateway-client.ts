@@ -102,11 +102,20 @@ export class VaultGatewayClient {
   private readonly apiKey: string;
 
   constructor(config: VaultClientConfig) {
-    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
-    // semgrep's taint path from config.baseUrl → fetch() (#3582, #3713).
-    // allowHttp: internal cluster communication uses plain HTTP.
-    const parsed = new URL(config.baseUrl);
-    this.baseUrl = validateBaseUrl(config.baseUrl, { allowHttp: true, pinHost: parsed.hostname }).replace(/\/$/, '');
+    const configured = process.env.VAULT_GATEWAY_URL;
+    if (!configured) throw new Error('VAULT_GATEWAY_URL must configure the trusted vault origin');
+    const origin = (value: string): string => {
+      const parsed = new URL(value);
+      if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+        throw new Error('Vault gateway URL must be an origin without path, query or fragment');
+      }
+      return validateBaseUrl(value, { allowHttp: true });
+    };
+    const trustedOrigin = origin(configured);
+    if (origin(config.baseUrl) !== trustedOrigin) {
+      throw new Error('Vault gateway baseUrl does not match the configured origin');
+    }
+    this.baseUrl = trustedOrigin;
     this.apiKey = config.apiKey;
   }
 
@@ -135,7 +144,7 @@ export class VaultGatewayClient {
     if (invocationId) {
       url += `&invocation_id=${encodeURIComponent(invocationId)}`;
     }
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated + host-pinned at construction via validateBaseUrl({pinHost}); only static internal API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl matches the independently configured VAULT_GATEWAY_URL origin; only static internal API paths are interpolated and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
@@ -154,7 +163,7 @@ export class VaultGatewayClient {
 
   private async post(path: string, body: unknown): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated + host-pinned at construction via validateBaseUrl({pinHost}); only static internal API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl matches the independently configured VAULT_GATEWAY_URL origin; only static internal API paths are interpolated and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
