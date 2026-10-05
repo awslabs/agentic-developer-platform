@@ -899,6 +899,30 @@ class TestWorkspaceAuthorizationEnforcement:
     """R6: authority is a server-held grant, re-read per operation."""
 
     @pytest.mark.asyncio
+    async def test_signed_access_token_passes_but_signed_id_token_is_401(
+        self, client, enforcing
+    ):
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        claims = {"custom:org_id": str(org_id)}
+        access_token = _mint(enforcing, **claims)
+        id_token = _mint(
+            enforcing, **claims, token_use="id", client_id=None, aud=TEST_CLIENT_ID
+        )
+
+        access_response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        id_response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {id_token}"},
+        )
+
+        assert access_response.status_code == 200
+        assert id_response.status_code == 401
+        assert id_response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.asyncio
     async def test_no_token_is_401(self, client, enforcing):
         _, workspace_id = await _seed_workspace("workspace:read")
         response = await client.get(f"/workspaces/{workspace_id}")
