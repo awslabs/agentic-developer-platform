@@ -803,8 +803,8 @@ function loadRules(): string {
   const phaseMap: Record<string, string[]> = {
     product: ['phases/inception/requirements-analysis.md', 'phases/inception/user-stories.md'],
     architect: ['phases/inception/application-design.md', 'phases/inception/units-generation.md', 'phases/construction/functional-design.md'],
-    developer: ['phases/construction/code-generation.md'],
-    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md'],
+    developer: ['phases/construction/code-generation.md', 'phases/construction/task-breakdown.md'],
+    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md', 'phases/construction/task-breakdown.md'],
     operations: ['phases/operations/deployment.md'],
   };
 

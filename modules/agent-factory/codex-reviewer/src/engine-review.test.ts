@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseEnvelope, type CodexEngineReviewEnvelope } from "./contracts.js";
-import { engineReport, engineReviewBody, parseEngineVerdict, parseRepairMilestone, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
+import { BATCH_BUDGET_SHARE, engineReport, engineReviewBody, milestonesPerPublish, parseEngineVerdict, parseRepairMilestone, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
+import { readTaskBoardFile, writeTaskBoardFile, type Task } from "./task-board.js";
 import { runStandaloneReview } from "./standalone-review.js";
 import { deliverEngineReview } from "./engine-delivery.js";
 
@@ -17,6 +18,13 @@ const blocked: EngineVerdict = { ...approved, verdict: "request_changes", findin
   id: "F1", title: "Story behavior missing", details: "The implementation rejects valid input", file: "code.txt", line: 1,
   impact: "high", confidence: "high", blocking: true, fixClass: "author_required", recommendedFix: "Implement the story behavior",
 }] };
+
+/** Pin the legacy publish-every-milestone cadence for tests that count per-milestone commits. */
+function perMilestone(t: test.TestContext) {
+  const previous = process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH;
+  process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = "1";
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH; else process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = previous; });
+}
 
 async function fixture(t: test.TestContext, trackedLearning = false) {
   const directory = await mkdtemp(join(tmpdir(), "codex-engine-test-"));
@@ -489,6 +497,7 @@ test("changing commits cannot bypass the automatic repair retry limit", async t 
 });
 
 test("published implementation checkpoints do not exhaust repair retries", async t => {
+  perMilestone(t);
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = true;
   let repairs = 0, reviews = 0;
@@ -656,6 +665,7 @@ for (const queued of [false, true]) test(`delivery deadline retains inspection w
 
 
 test("repair time neither consumes nor resets the CI delivery allowance", async t => {
+  perMilestone(t);
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = true;
   let clock = 0, repairs = 0, reviews = 0, observations = 0;
@@ -769,17 +779,30 @@ test("PR mention preserves an explicit review-only setting", async t => {
 });
 
 
-test("repair milestone results reject missing or contradictory progress", () => {
-  for (const raw of ["{}", "null", JSON.stringify({ outcome: "checkpoint", summary: "Done", remainingWork: [] }),
-    JSON.stringify({ outcome: "complete", summary: "Done", remainingWork: ["Still missing"] }),
-    JSON.stringify({ outcome: "blocked", summary: " ", remainingWork: [] })]) {
-    assert.throws(() => parseRepairMilestone(raw));
-  }
-  assert.equal(parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["Add coverage"] })).outcome, "checkpoint");
+test("repair milestone results are coerced to an honest outcome with warnings; only non-JSON is rejected", () => {
+  assert.throws(() => parseRepairMilestone("not json"), /not JSON/);
+  const empty = parseRepairMilestone("{}");
+  assert.equal(empty.outcome, "checkpoint");
+  assert.equal(empty.summary, "(no summary)");
+  assert.deepEqual(empty.remainingWork, ["(remaining work not stated)"]);
+  assert.ok(empty.warnings.length >= 2);
+  assert.equal(parseRepairMilestone("null").outcome, "checkpoint");
+  const noRemaining = parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Done", remainingWork: [] }));
+  assert.equal(noRemaining.outcome, "checkpoint");
+  assert.match(noRemaining.warnings.join("; "), /listed no remaining work/);
+  const contradictory = parseRepairMilestone(JSON.stringify({ outcome: "complete", summary: "Done", remainingWork: ["Still missing"] }));
+  assert.equal(contradictory.outcome, "checkpoint", "complete with remaining work is a checkpoint, not a failure");
+  const blank = parseRepairMilestone(JSON.stringify({ outcome: "blocked", summary: " ", remainingWork: [] }));
+  assert.equal(blank.outcome, "blocked");
+  assert.equal(blank.summary, "(no summary)");
+  const clean = parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["Add coverage"] }));
+  assert.equal(clean.outcome, "checkpoint");
+  assert.deepEqual(clean.warnings, []);
 });
 
 for (const ownedDelivery of [false, true]) {
 test(`repair publishes two milestones with ${ownedDelivery ? "reviewer" : "engine"} delivery ownership`, async t => {
+  perMilestone(t);
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = ownedDelivery;
   let repairs = 0, reviews = 0, waits = 0, observations = 0, deliveries = 0;
@@ -851,3 +874,157 @@ for (const outcome of ["checkpoint", "blocked"] as const) {
     assert.match(result.body, /Missing acceptance evidence/);
   });
 }
+
+/** Commit a developer board file on the story branch and point the PR at it. */
+async function seedBoardFile(state: Awaited<ReturnType<typeof fixture>>, tasks: Task[]): Promise<string> {
+  await writeTaskBoardFile(state.workspace, 42, tasks);
+  await state.git("add", ".adp/tasks/42.json");
+  await state.git("commit", "-m", "chore(#42): task board after turn 2");
+  const head = await state.git("rev-parse", "HEAD");
+  await state.git("push", state.remote, "HEAD:refs/heads/story");
+  state.envelope.cycle.head_sha = head;
+  state.pr.head.sha = head;
+  return head;
+}
+
+const boardTask = (id: string, kind: Task["kind"], status: Task["status"], covers: string[] = []): Task =>
+  ({ id, kind, status, covers, criterion: id.split("-")[0]!, title: `${kind} ${id}`, files: [], note: "" });
+
+test("milestones per publish defaults to three and ignores invalid overrides", t => {
+  const previous = process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH;
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH; else process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = previous; });
+  delete process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH;
+  assert.equal(milestonesPerPublish(), 3);
+  process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = "0";
+  assert.equal(milestonesPerPublish(), 3);
+  process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = "5";
+  assert.equal(milestonesPerPublish(), 5);
+});
+
+test("repair milestones carry a validated task board and reject a dishonest one", () => {
+  const tasks = [boardTask("AC1-c1", "code", "done"), boardTask("AC1-t1", "test", "open", ["AC1-c1"])];
+  const parsed = parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["AC1-t1"], tasks }));
+  assert.deepEqual(parsed.tasks, tasks);
+  assert.deepEqual(parseRepairMilestone(JSON.stringify({ outcome: "complete", summary: "Done", remainingWork: [], tasks: [] })).tasks, []);
+  const loose = parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "x", remainingWork: ["y"],
+    tasks: [boardTask("AC1-t1", "test", "open")] }));
+  assert.equal(loose.tasks?.length, 1, "a flawed board is kept and the flaw is reported, not fatal");
+  assert.match(loose.warnings.join("; "), /does not name the code task it proves/);
+});
+
+test("several repair tasks are finished before one inspection and one publication, named in the commit and PR board", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  const developerBoard = [boardTask("AC1-c1", "code", "done"), boardTask("AC1-t1", "test", "done", ["AC1-c1"]),
+    boardTask("AC2-c1", "code", "open"), boardTask("AC2-t1", "test", "open", ["AC2-c1"])];
+  state.pr.body = "Developer prose";
+  const start = await seedBoardFile(state, developerBoard);
+  let repairs = 0, reviews = 0;
+  const bodies: string[] = [];
+  const prompts: string[] = [];
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: { ...state.github, updatePullRequestBody: async (_number, body) => { bodies.push(body); } },
+    review: async prompt => {
+      reviews++;
+      prompts.push(prompt);
+      return reviews === 1 ? blocked : approved;
+    },
+    fix: async prompt => {
+      repairs++;
+      if (repairs === 1) {
+        assert.match(prompt, /Current task board/);
+        assert.match(prompt, /AC2-c1/, "the developer's board is the repair plan");
+      } else {
+        assert.match(prompt, /accepted locally and not yet published/);
+        assert.doesNotMatch(prompt, /Plan the required repairs/);
+      }
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), start, "nothing is pushed between batched tasks");
+      await writeFile(join(state.workspace, "code.txt"), `task ${repairs}\n`);
+      const board = developerBoard.map(task => ({ ...task, status: (task.id === "AC2-c1" || (task.id === "AC2-t1" && repairs >= 2)) ? "done" as const : task.status }));
+      return repairs < 2
+        ? { outcome: "checkpoint", summary: "Behavior added", remainingWork: ["AC2-t1: prove it"], tasks: board }
+        : { outcome: "complete", summary: "Covered", remainingWork: [], tasks: board };
+    },
+    checks: async head => checkObservation(head, "passed", state.pr.base.sha),
+    deliver: async result => { assert.equal(result.report.verdict, "approve"); return { state: "merged" }; },
+    wait: async () => assert.fail("no CI wait expected"),
+  });
+  assert.equal(repairs, 2);
+  assert.equal(reviews, 2, "one inspection before repair, one after the whole batch");
+  assert.equal(await state.git("rev-parse", "HEAD^"), start, "the batch is a single published commit");
+  assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1, AC2-t1$/);
+  assert.match(prompts[1]!, /Files changed by this repair batch: code.txt/);
+  assert.equal(bodies.length, 1);
+  assert.match(bodies[0]!, /^Developer prose/);
+  assert.doesNotMatch(bodies[0]!, /adp-task-board-data/);
+  const published = (await state.git("rev-parse", "HEAD")).slice(0, 7);
+  assert.match(bodies[0]!, new RegExp(`AC2-c1 — code AC2-c1 · \`${published}\``), "the PR body names the commit that finished each task");
+  assert.match(bodies[0]!, new RegExp(`AC2-t1 — test AC2-t1 \\(covers AC2-c1\\) · \`${published}\``));
+  // The branch board rides in the batch commit; it cannot name that commit itself.
+  const committed = JSON.parse(await state.git("show", "HEAD:.adp/tasks/42.json"));
+  assert.deepEqual(committed.tasks.map((task: Task) => task.status), ["done", "done", "done", "done"]);
+  assert.equal(committed.issue, 42);
+  assert.equal(await state.git("show", `HEAD:.adp/tasks/42.json`) !== "", true);
+  assert.match(bodies[0]!, /Reviewer: all tasks done/);
+  assert.equal(result.merged, true);
+});
+
+test("a batch ends at the configured task count or when the model allowance is mostly spent", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, reviews = 0, pushes = 0, lastRemote = state.sha;
+  let used = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    budgetUsedShare: () => used,
+    review: async () => ++reviews === 1 ? blocked : approved,
+    fix: async () => {
+      repairs++;
+      const remote = await state.git("--git-dir", state.remote, "rev-parse", "story");
+      if (remote !== lastRemote) { pushes++; lastRemote = remote; }
+      await writeFile(join(state.workspace, "code.txt"), `task ${repairs}\n`);
+      // Tasks 1-3 fill the default batch; task 4 then trips the budget guard.
+      if (repairs === 4) used = BATCH_BUDGET_SHARE;
+      return repairs < 5
+        ? { outcome: "checkpoint", summary: `task ${repairs}`, remainingWork: ["more"] }
+        : { outcome: "complete", summary: "done", remainingWork: [] };
+    },
+    checks: async head => checkObservation(head, "passed", state.sha),
+    deliver: async () => ({ state: "merged" }),
+    wait: async () => assert.fail("unfinished work continues without CI waits"),
+  });
+  assert.equal(repairs, 5);
+  // Publications: after task 3 (count), after task 4 (budget), after task 5 (complete).
+  assert.equal(pushes + 1, 3);
+  assert.equal(await state.git("rev-parse", "HEAD~3"), state.sha);
+  assert.equal(result.merged, true);
+});
+
+test("the reviewer resumes from the branch board file when the developer left one, before any PR-body fallback", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  const developerBoard = [boardTask("AC1-c1", "code", "done"), boardTask("AC1-t1", "test", "done", ["AC1-c1"]), boardTask("AC2-c1", "code", "open")];
+  // The developer committed the board with its work; the PR body has no data section.
+  await seedBoardFile(state, developerBoard);
+  let reviews = 0, repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => ++reviews === 1 ? blocked : approved,
+    fix: async prompt => {
+      repairs++;
+      assert.match(prompt, /Current task board/);
+      assert.match(prompt, /☐ `code` AC2-c1/, "the board came from the branch file, not the PR body");
+      await writeFile(join(state.workspace, "code.txt"), "AC2 behavior\n");
+      return { outcome: "complete", summary: "AC2 done", remainingWork: [],
+        tasks: developerBoard.map(task => ({ ...task, status: "done" as const })) };
+    },
+    checks: async head => checkObservation(head, "passed", state.pr.base.sha),
+    deliver: async () => ({ state: "merged" }),
+    wait: async () => assert.fail("no CI wait expected"),
+  });
+  assert.equal(repairs, 1);
+  assert.equal(result.merged, true);
+  const after = await readTaskBoardFile(state.workspace, 42);
+  assert.deepEqual(after.tasks?.map(task => task.status), ["done", "done", "done"]);
+  assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1$/);
+});

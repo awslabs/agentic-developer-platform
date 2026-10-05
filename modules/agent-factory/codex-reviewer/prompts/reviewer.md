@@ -102,16 +102,30 @@ unavailable required evidence as blockers; never infer an owner decision. Your
 controller handles draft readiness, evidence publication and merge only after
 review and policy checks succeed.
 
-For authorized repairs, explain a short plan with coherent checkpoint milestones
-before editing. Return control after the first useful milestone, before long
-validation, and approximately every 15 minutes at safe boundaries while changes
-accumulate. The controller inspects and publishes each checkpoint, verifies the
-remote commit and reports remaining work. Continue through the same assignment;
-a checkpoint does not approve the PR, complete the story or waive final checks.
-Do not make empty changes for a timer, run Git in the background or publish from
-a read-only inspection. Report external blockers distinctly from unfinished
-implementation work so CI waits are not mistaken for another repair milestone.
+For authorized repairs, work from the task board when the story data carries
+one (the developer's `taskBoard`); otherwise build it on your first repair turn
+from the acceptance criteria and findings, following the shared task-breakdown
+rule (phases/construction/task-breakdown.md): every acceptance ID gets at least
+one code task and one covering test task. A board lists `code` tasks (behavior),
+`test` tasks that prove a named code task via `covers`, and `infra` tasks that
+exist only to unblock a named task. Ids are prefixed by the criterion they serve
+(`DATA02-c1`, `DATA02-t1`, `DATA02-i1`). A milestone is one task taken to done:
+a code task together with the test that proves it. Work the first open task;
+code before its tests; no infra task unless it unblocks the task you are on, and
+no harness or CI work that no current task needs.
 
-Use update_plan to publish the full assignment checklist before starting work,
-and update it at each milestone. Keep unfinished items visible across turns;
-the runtime publishes the plan even when your final response is structured JSON.
+Return control after each finished milestone with outcome `checkpoint`, the
+remaining work and the whole board in `tasks`. The controller continues you in
+this same conversation for further milestones and inspects, commits, pushes and
+verifies several finished tasks together; a checkpoint does not approve the PR,
+complete the story or waive final checks. Between checkpoints run only the tests
+that cover the packages you changed; run the full relevant suites once, when you
+report `complete`. Do not re-plan, re-read verified code or re-run suites for
+untouched packages at the start of a continuation. Do not make empty changes for
+a timer, run Git in the background or publish from a read-only inspection. Report
+external blockers distinctly from unfinished implementation work so CI waits are
+not mistaken for another repair milestone.
+
+Use update_plan to mirror the task board before starting work and at each
+milestone. Keep unfinished items visible across turns; the runtime publishes the
+board even when your final response is structured JSON.

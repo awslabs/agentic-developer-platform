@@ -103,6 +103,21 @@ it('pins the latest checklist across tool history eviction and clears it on a di
   expect(screen.queryByRole('region', { name: 'Task checklist' })).not.toBeInTheDocument();
 });
 
+it('animates the in-progress task marker and highlights its row without touching other rows', () => {
+  render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
+  const update = explanation(1, 'code 1/2 · test 0/1 · infra 0/0 · ▶ now working: DATA02-c2 (code, DATA02): ACL write (since 14:05 UTC)\n\n**DATA02**\n- ☑ `code` DATA02-c1 — authorize reads\n- ▶ `code` DATA02-c2 — ACL write\n- ☐ `test` DATA02-t2 — revoked member (covers DATA02-c2)');
+  update.event!.payload.progress = { id: 'adp-task-board', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
+  act(() => send(update));
+  const markers = screen.getAllByRole('img', { name: 'in progress' });
+  expect(markers).toHaveLength(2); // summary line + the task row
+  for (const marker of markers) expect(marker.className).toMatch(/animate-pulse/);
+  const row = screen.getByText(/ACL write$/, { selector: 'li' });
+  expect(row.getAttribute('aria-current')).toBe('step');
+  expect(row.className).toMatch(/bg-blue-50/);
+  expect(screen.getByText(/authorize reads/, { selector: 'li' }).getAttribute('aria-current')).toBeNull();
+  expect(screen.getByText(/revoked member/, { selector: 'li' }).className).toBe('');
+});
+
 it('filters tool activity while retaining the checklist and a single stream connection', () => {
   render(<LiveExplanations invocationId="run" isOpen terminal={false} workspace />);
   act(() => {

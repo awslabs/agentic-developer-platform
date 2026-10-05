@@ -15,6 +15,10 @@ async function main() {
       : process.env.CODEX_DEVELOPER_MODEL ?? "openai.gpt-6-sol"),
     baseUrl: embedded ? `http://127.0.0.1:${process.env.SIGV4_PROXY_PORT ?? "9090"}/openai/v1` : process.env.OPENAI_BASE_URL,
     apiKey: embedded ? "sigv4-proxy-placeholder" : process.env.OPENAI_API_KEY,
+    // The developer owns most of the story's model time; the reviewer finishes.
+    // Same env family as CODEX_REVIEWER_TURN_TIMEOUT_MS on the ScaledJob.
+    timeoutMs: Number(process.env.CODEX_DEVELOPER_TURN_TIMEOUT_MS ?? 180 * 60 * 1000),
+    maxTurns: Number(process.env.CODEX_DEVELOPER_MAX_TURNS ?? 24),
   };
   if (!embedded && !value("--workspace")) throw new Error("Standalone execution requires --workspace pointing to a new clone directory");
   // Use the same broker/token-file renewal already used by the Codex reviewer.

@@ -208,6 +208,11 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues/${number}`);
   }
 
+  /** Controller-owned PR description update (task board section). */
+  async updatePullRequestBody(number: number, body: string): Promise<void> {
+    await this.request(`/repos/${this.repository}/pulls/${number}`, { method: "PATCH", body: JSON.stringify({ body }) });
+  }
+
   /** Recent persisted plans are task context, never verified acceptance evidence. */
   async taskChecklists(number: number, total = 0): Promise<string[]> {
     if (!Number.isSafeInteger(total) || total <= 0) return [];

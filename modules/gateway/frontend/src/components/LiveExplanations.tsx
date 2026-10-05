@@ -1,8 +1,38 @@
 import './run-workspace.css';
-import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { Children, useEffect, useRef, useState, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import { useRevalidatingFeaturesQuery } from '@/hooks/useFeatures';
 import { FeedError, readExplanations, type LiveExplanation } from '@/services/agentExplanations';
+
+/** The task board marks the task being worked with ▶ (controller-assigned, see
+ * codex-reviewer/src/task-board.ts). Markdown cannot animate, so the renderer
+ * turns that marker into a pulsing indicator and highlights its row. */
+const IN_PROGRESS = '▶';
+
+function animateMarker(children: ReactNode): { children: ReactNode; active: boolean } {
+  let active = false;
+  const mapped: ReactNode[] = [];
+  Children.toArray(children).forEach((child, index) => {
+    if (typeof child !== 'string' || !child.includes(IN_PROGRESS)) { mapped.push(child); return; }
+    active = true;
+    const at = child.indexOf(IN_PROGRESS);
+    mapped.push(child.slice(0, at),
+      <span key={`marker-${index}`} role="img" aria-label="in progress"
+        className="inline-block animate-pulse motion-reduce:animate-none text-blue-600 dark:text-blue-400 font-bold">{IN_PROGRESS}</span>,
+      child.slice(at + IN_PROGRESS.length));
+  });
+  return { children: mapped, active };
+}
+
+const planComponents: Components = {
+  img: () => null,
+  li: ({ children }) => {
+    const marked = animateMarker(children);
+    return <li className={marked.active ? 'rounded bg-blue-50 dark:bg-blue-950/40 px-1 -mx-1' : undefined}
+      aria-current={marked.active ? 'step' : undefined}>{marked.children}</li>;
+  },
+  p: ({ children }) => <p>{animateMarker(children).children}</p>,
+};
 
 /** Authored explanations remain separate from control acknowledgements. */
 export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, workspace = false }: {
@@ -96,7 +126,7 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, w
     <aside className="run-checklist">
     {plan && <section aria-label="Task checklist" className="rounded border p-3 prose prose-sm dark:prose-invert max-w-none">
       <h4>Task checklist</h4>
-      <ReactMarkdown skipHtml components={{ img: () => null }}>{plan.payload.text}</ReactMarkdown>
+      <ReactMarkdown skipHtml components={planComponents}>{plan.payload.text}</ReactMarkdown>
     </section>}
     {!plan && <p className="text-sm text-gray-500">{terminal ? 'Assignment checklist was not captured in this live view. Check the retained run record.' : 'Waiting for the assignment checklist.'}</p>}
     <p className="text-xs text-gray-500 mt-3">Agent-reported tasks. Checked items do not prove review acceptance or merge.</p>

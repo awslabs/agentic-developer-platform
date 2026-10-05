@@ -53,6 +53,16 @@ The gateway still enforces the flow's policy window, spend and claim on every
 observation and model call. A repair that makes no progress returns its real
 findings rather than repeating model calls on the same head.
 
+Repairs are worked as a code/test task board (`src/task-board.ts`), seeded from
+the developer's board in the PR body when present. The repair thread finishes up
+to `CODEX_REVIEWER_MILESTONES_PER_PUBLISH` tasks (default 3, or fewer once 60% of
+the model allowance is spent) before one scoped inspection, one commit named
+after the finished task ids and one push; a full inspection runs when the repair
+reports `complete`. The reviewer starts from `.adp/tasks/<issue>.json` when the
+developer left one, writes its finished tasks back into that file inside each batch
+commit, and keeps the PR body's rendered board and the issue checklist current. Set
+the variable to `1` for the former publish-every-milestone cadence.
+
 The TypeScript reviewer publishes its exact-head verdict through the existing
 Python evidence adapter, then checks current merge permission and repository
 rules. It calls GitHub with the reviewed SHA and the allowed merge method (or
@@ -151,7 +161,47 @@ The workspace must be a new path; the runner clones the repository there.
 Use `--base branch-name` to develop against a specific base branch. Run the
 standalone command inside an environment where the agent is authorized to use
 the available shell credentials. It has full shell and network access, matching
-the worker's execution model. The default model turn deadline is 30 minutes.
+the worker's execution model.
+
+The developer owns the story: its first turn returns a code/test/infra task board,
+and every later turn takes the next open task to done (code together with the
+test that covers it), commits with the task id, pushes and keeps one ready PR
+current. Turns end in a structured `complete | checkpoint | blocked` outcome; a
+checkpoint continues the same SDK thread, so the run stops only on completion,
+a concrete blocker, or the allowance. `CODEX_DEVELOPER_TURN_TIMEOUT_MS` (default
+180 minutes of cumulative model execution) and `CODEX_DEVELOPER_MAX_TURNS`
+(default 24) bound the run. A PR is reported only with the honest outcome: a
+`checkpoint` or exhausted run returns `pr_created` with `completion` and
+`remainingWork` so the reviewer finishes from the published board; a `complete`
+claim with open or uncovered tasks is rejected and sent back for correction.
+Controller checks steer rather than fail: a malformed or dishonest outcome is
+corrected to the nearest honest shape (a `complete` with open tasks becomes a
+checkpoint; a prose reply gets one request to restate, then the last board is
+kept), the corrections are fed back on the next turn, and a run that ends with an
+uncommitted tree or no ready PR gets one short finishing turn before the result is
+judged.
+
+Boards follow the shared rule `rules/phases/construction/task-breakdown.md`,
+projected into both the developer and reviewer instructions (and the Claude
+worker's phase rules): one code task and one covering test task per acceptance
+ID from the issue, a negative test per impact-analysis failure row, an explicit
+wiring task for cross-component rows, and `deployed-target:` blocked tasks for
+live evidence. The controller checks a returned board against the issue's
+acceptance IDs and reports gaps as notes on the next turn — never as failures —
+and surfaces a size signal (more than twelve code tasks, or more than two
+criteria needing a deployed target) so the owner can split the story.
+
+The board's home is the story branch: `.adp/tasks/<issue>.json`, written and
+committed only by the controller (`chore(#<issue>): task board after turn N`), so
+the branch history carries the task state next to the code. Whichever process
+comes online next — a restarted developer or the reviewer — reads that file and
+resumes at the first open task instead of re-planning; a file that fails
+validation is reported and rebuilt, never trusted. The PR body carries only the
+rendered board and the issue checklist mirrors it. The controller also maps
+commits to tasks from Git after each turn: a commit whose subject names task ids
+is attributed to them, otherwise to the tasks that became done in that turn; the
+short SHAs appear on each task row. The file stays on the default branch after
+merge as the story's delivery record.
 
 ### Hosted progress reporting
 

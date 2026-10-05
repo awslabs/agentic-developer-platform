@@ -49,6 +49,8 @@ export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperRep
 export async function runDeveloperStream(
   thread: Pick<Thread, 'runStreamed' | 'id'>, prompt: string, options: TurnOptions, reporter: DeveloperReporter,
   verifyInstructions: () => void = () => {},
+  /** Structured turns end in a JSON outcome; the controller publishes its summary after validation. */
+  structured = false,
 ): Promise<RunResult> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -60,7 +62,7 @@ export async function runDeveloperStream(
       let usage: RunResult['usage'] = null;
       const streamReporter = scopedProgress(reporter);
       for await (const event of events) {
-        publishDeveloperEvent(event, streamReporter);
+        if (!(structured && 'item' in event && event.item.type === 'agent_message')) publishDeveloperEvent(event, streamReporter);
         if (event.type === 'item.completed') {
           items.push(event.item);
           if (event.item.type === 'agent_message') finalResponse = event.item.text;
