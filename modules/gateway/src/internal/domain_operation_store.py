@@ -41,6 +41,7 @@ class DomainBinding:
     repo: str
     observation_url: str
     observation_credential_secret_id: str
+    worker_scaled_job: str = "superplane-paid-worker"
 
     @property
     def domain_org_id(self):

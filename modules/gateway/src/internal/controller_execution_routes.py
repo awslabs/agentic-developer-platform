@@ -90,7 +90,8 @@ async def execution_authority(
     return {"version": 1, **dict(row)}
 
 
+from src.internal.domain_operation_binding_proof_routes import router as binding_router  # noqa: E402
 from src.internal.domain_operation_routes import router as domain_router  # noqa: E402
 
-for domain_route in domain_router.routes:
+for domain_route in (*domain_router.routes, *binding_router.routes):
     router.routes.append(domain_route)
