@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:39:36.168Z",
+  "updated_at": "2026-10-05T23:41:23.320Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Existing behavior covered by mounted HTTP regression."
+      "note": "Existing behavior verified."
     },
     {
       "id": "R5.1-t1",
@@ -27,7 +27,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Committed as d72fb72.",
+      "note": "Commit d72fb72.",
       "commits": [
         "d72fb72"
       ]
@@ -42,7 +42,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Existing policy/startup behavior covered by signed mounted-token and configuration tests."
+      "note": "Existing behavior verified."
     },
     {
       "id": "R5.2-t1",
@@ -56,7 +56,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "New mounted wrong/missing client tests; 10 focused and 148 full-file tests passed. Commit efe6765.",
+      "note": "Commit efe6765.",
       "commits": [
         "efe6765"
       ]
@@ -66,20 +66,20 @@
       "kind": "code",
       "criterion": "R5.3",
       "title": "Preserve strict domain validation and separate internal credentials",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
         "modules/domain-apps/superplane/src/superplane-api/app/routers/internal.py"
       ],
-      "note": "Do not create another validator or revive #5386."
+      "note": "Merged validators unchanged; mounted boundary tests pass."
     },
     {
       "id": "R5.3-t1",
       "kind": "test",
       "criterion": "R5.3",
       "title": "Run mounted domain and internal credential-boundary tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.3-c1"
       ],
@@ -87,21 +87,24 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": ""
+      "note": "Both directions covered; commit b683a2e.",
+      "commits": [
+        "b683a2e"
+      ]
     },
     {
       "id": "R5.3-t2",
       "kind": "test",
       "criterion": "R5.3",
       "title": "Verify malformed Unicode internal bearer denies without a server error",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.3-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": ""
+      "note": "Raw and UTF-8 non-ASCII bearer cases return 401; commit b683a2e."
     },
     {
       "id": "R5.4-c1",
