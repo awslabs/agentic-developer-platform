@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-05T23:46:14.189Z",
+  "updated_at": "2026-10-05T23:48:25.021Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "modules/gateway/src/internal/domain_current_identity.py",
         "modules/gateway/src/internal/domain_operation_routes.py"
       ],
-      "note": "Commit 02119b1; covered by AC-01-t1 and AC-01-t2.",
+      "note": "Commit 02119b1; covered by AC-01-t1/t2.",
       "commits": [
         "02119b1"
       ]
@@ -28,10 +28,9 @@
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Commit 02119b1; reader is typed and restricted to its configured organization. Startup composition remains AC-05."
+      "note": "Commit 02119b1; startup composition remains AC-05."
     },
     {
       "id": "AC-01-t1",
@@ -47,7 +46,7 @@
         "modules/gateway/tests/internal/test_domain_current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "Gateway 9 passed; domain identity and binding suites 19 passed."
+      "note": "Gateway 9 passed; domain identity and binding suites passed."
     },
     {
       "id": "AC-01-t2",
@@ -62,19 +61,22 @@
       "files": [
         "modules/gateway/tests/internal/test_domain_current_identity.py"
       ],
-      "note": "Corrected inactive-selection assumption: nonrevoked membership remains valid after workspace switch. Route tests also cover missing membership, substitution, unavailable Cognito and registry mismatch."
+      "note": "Nonrevoked membership remains valid after workspace switch; unavailable provider is distinct from denial."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Preserve organization-local subject mapping and reject ambiguous legacy projections",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
       ],
-      "note": "Inspect migration 036; add only demonstrated gap."
+      "note": "Commit 2c3280a; covered by passing AC-02-t2. Existing migration 036 is reused.",
+      "commits": [
+        "2c3280a"
+      ]
     },
     {
       "id": "AC-02-t1",
@@ -88,21 +90,21 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py"
       ],
-      "note": ""
+      "note": "New real-migration test committed; skipped locally without PostgreSQL. Exact-head Domain CI queued."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Reject ambiguous legacy organization mappings in database-backed binding tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
       ],
-      "note": ""
+      "note": "20 local identity/binding tests passed, including UUID collision denial and unaffected legacy access."
     },
     {
       "id": "AC-03-c1",
@@ -171,7 +173,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests"
       ],
-      "note": "Consume #6048's authoritative membership contract when available."
+      "note": "Use #6048's authoritative membership contract."
     },
     {
       "id": "AC-04-c1",
@@ -267,7 +269,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Route registration exists at this checkpoint; signed transport and real composition still need integration proof."
+      "note": "Route exists; signed transport and actual composition remain to be proven."
     },
     {
       "id": "AC-05-t1",
