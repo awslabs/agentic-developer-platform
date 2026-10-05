@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "issue": 6998,
+  "updated_at": "2026-10-05T14:54:11.279Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Map all 18 findings to current inputs, call sites, and artifact consumers",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src",
+        "modules/agent-factory/codex-harness/src/github-entry.mjs",
+        "modules/agent-factory/codex-reviewer/src/github.ts"
+      ],
+      "note": "Inspect the original private SARIF through the authorized scan-reader connection; preserve hash and individual selectors in the evidence."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify record-by-record mapping against the original report and source revision",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        ".github/scripts/diff_security_findings.py"
+      ],
+      "note": "Check severity using native ratings before CVSS; retain unresolved entries rather than calling them safe."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Verify or repair configured GitLab origin and shared URL-guard behavior",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/lib/url-guard.ts",
+        "modules/agent-factory/agent/src/clients/gitlab_client.ts"
+      ],
+      "note": "Reuse merged PR #6733 and preserve supported operator-configured services."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run GitLab and URL-guard unit fixtures for allowed requests",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/clients/gitlab_client.test.ts",
+        "modules/agent-factory/agent/src/lib/url-guard.test.ts"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain GitHub-bound calls and credentials to independently trusted origins",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/github-comments.ts",
+        "modules/agent-factory/agent/src/utils/comment-authority.ts",
+        "modules/agent-factory/agent/src/utils/installation.ts"
+      ],
+      "note": "Also trace the assigned check-run call."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run GitHub caller unit fixtures for trusted requests",
+      "status": "open",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain gateway, Door, Bedrock, and artifact calls without breaking configured services",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat",
+        "modules/agent-factory/agent/src/invocability-probe",
+        "modules/agent-factory/agent/src/lib"
+      ],
+      "note": "Include persona-policy and recall paths after input tracing."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run signed-gateway and provider unit fixtures for trusted requests",
+      "status": "open",
+      "covers": [
+        "AC-02-c3"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c4",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain Codex harness and reviewer GitHub call sites",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/codex-harness/src/github-entry.mjs",
+        "modules/agent-factory/codex-reviewer/src/github.ts"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t4",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run harness and reviewer unit fixtures for trusted requests",
+      "status": "open",
+      "covers": [
+        "AC-02-c4"
+      ],
+      "files": [
+        "modules/agent-factory/codex-harness",
+        "modules/agent-factory/codex-reviewer"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire shared destination checks into the affected runtime paths",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/lib/url-guard.ts"
+      ],
+      "note": "Confirm any shared helper reaches its actual callers."
+    },
+    {
+      "id": "AC-02-t5",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run local HTTP negative fixtures for hostile origins, redirects, and malformed identifiers",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c2",
+        "AC-02-c3",
+        "AC-02-c4",
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src",
+        "modules/agent-factory/codex-harness/src",
+        "modules/agent-factory/codex-reviewer/src"
+      ],
+      "note": "Assert untrusted destinations never receive credentials."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record individual candidate dispositions and reproducible scanner evidence",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "data/security"
+      ],
+      "note": "Keep private raw reports outside public documentation; name unresolved records explicitly."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rerun exact Semgrep rule with reviewed suppressions and compare all 18 records",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        ".github/scripts/diff_security_findings.py"
+      ],
+      "note": "Retain raw candidate results and check for new critical/high findings."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate affected packages and publish candidate revision, rollback, and AC handoff",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent",
+        "modules/agent-factory/codex-harness",
+        "modules/agent-factory/codex-reviewer"
+      ],
+      "note": "Open and maintain a ready PR; do not merge or claim rollout."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run npm ci, agent tests and build, plus harness and reviewer tests and builds",
+      "status": "open",
+      "covers": [
+        "AC-04-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/agent/package.json",
+        "modules/agent-factory/codex-harness/package.json",
+        "modules/agent-factory/codex-reviewer/package.json"
+      ],
+      "note": "Record exact revision and actual results."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Confirm merged composition and transfer verification to the epic coordinator",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Post-merge integration belongs to the epic coordinator; pending until the PR is merged."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Repeat affected checks on the final composed artifact",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Post-merge verification belongs to the epic coordinator; production rollout is separate."
+    }
+  ]
+}
