@@ -210,6 +210,10 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # shared-placement eligibility across the caller's whole organization, not
     # one workspace, so it takes the same scope for the same reason.
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
+    ("GET", "/workspaces/{workspace_id}/access/v1/me"): (Scope.WORKSPACE, Permission.READ),
+    ("POST", "/workspaces/{workspace_id}/access/v1/grants"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
         Permission.PROVISION,

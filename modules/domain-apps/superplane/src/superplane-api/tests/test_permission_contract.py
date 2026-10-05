@@ -94,7 +94,9 @@ def test_sensitive_actions_have_independent_requirements():
     ))
     assert actions["approval.decision"]["principal"] == "human"
     assert "selected_distinct_current_human_approver" in actions["approval.decision"]["extra"]
-    assert actions["workspace.access.manage"]["routes"] == []
+    assert actions["workspace.access.manage"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants"
+    ]
     assert actions["cluster.use"]["scope"] != actions["workspace.read"]["scope"]
     # Do not turn first-install bootstrap or machine transport restrictions into
     # blanket action permissions for subsequent workspaces or cluster observers.

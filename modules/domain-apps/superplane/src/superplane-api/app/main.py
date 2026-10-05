@@ -43,6 +43,7 @@ from app.routers.quota import router as quota_router
 from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
+from app.routers.workspace_access import router as workspace_access_router
 from app.services.vault_sync import VaultSyncReconciler
 from app.services.workspace_reconciler import WorkspaceReconciler
 
@@ -338,6 +339,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)
 app.include_router(workspaces_router)
+app.include_router(workspace_access_router)
 app.include_router(provider_connections_router)
 app.include_router(proxy_router)
 app.include_router(cost_router)
