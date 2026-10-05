@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-05T23:46:22.609Z",
+  "updated_at": "2026-10-05T23:50:28.874Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained prior checkpoint.",
+      "note": "Prior implementation retained.",
       "commits": [
         "1de1440"
       ]
@@ -26,7 +26,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Retained prior frontend evidence; final-head rerun pending."
+      "note": "Prior frontend evidence; final-head rerun pending."
     },
     {
       "id": "AC-02-c1",
@@ -36,7 +36,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained prior checkpoint.",
+      "note": "Prior checkpoint retained.",
       "commits": [
         "40b67d2"
       ]
@@ -49,7 +49,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Pre-registration recovery without a known request ID still needs a backend discovery contract.",
+      "note": "Pre-registration recovery without an ID still needs backend discovery.",
       "commits": [
         "8ef3966"
       ]
@@ -77,7 +77,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Offline fixture evidence, not live acceptance."
+      "note": "Offline fixture evidence only."
     },
     {
       "id": "AC-02-t2",
@@ -91,7 +91,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Prior refusal tests retained."
+      "note": "Retained; adjacent suite passed on b94733b."
     },
     {
       "id": "AC-02-t3",
@@ -104,7 +104,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; compatible backend and separately authorized live evaluation required."
+      "note": "deployed-target: #5540/live-evaluation owner; separately authorized release and integration required."
     },
     {
       "id": "AC-02-t4",
@@ -118,7 +118,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/contract.test.ts"
       ],
-      "note": "Prior source-drift evidence retained."
+      "note": "Passed on b94733b."
     },
     {
       "id": "AC-02-c3",
@@ -131,7 +131,10 @@
         "modules/domain-apps/superplane/ui/contract.ts",
         "modules/domain-apps/superplane/ui/client.ts"
       ],
-      "note": "Producer branch 8cf97d0 still leaves cleanup-access router unmounted/unallowlisted/uninventoried and retirement admission always 503. Source-shaped preview parsing and no-request gate are implemented; a real positive schema and mounted routes are needed before this title can be marked done."
+      "note": "b94733b implements guarded, source-shaped access preview; producer 8cf97d0 has unmounted access routes and unconditional retirement refusal. Positive contract integration remains.",
+      "commits": [
+        "b94733b"
+      ]
     },
     {
       "id": "AC-02-t5",
@@ -146,7 +149,7 @@
         "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts",
         "modules/domain-apps/superplane/ui/__tests__/contract.test.ts"
       ],
-      "note": "102 adjacent frontend tests pass, including 4 new source-bound checks for current refusal, missing route and malformed/mismatched access responses. Positive mounted admission still needs a producer contract and fresh verification."
+      "note": "Four new source-bound tests pass; revalidate against the published positive producer contract."
     },
     {
       "id": "AC-02-c4",
@@ -158,7 +161,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Added for the new assignment; must require producer-backed authority and approval, never auto-approve."
+      "note": "Requires the actual approved producer contract; do not auto-approve."
     },
     {
       "id": "AC-02-t6",
@@ -172,7 +175,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Added for the new assignment; transport doubles must follow actual published schemas."
+      "note": "Pending source implementation and producer schema."
     },
     {
       "id": "AC-03-c1",
@@ -182,7 +185,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained prior implementation.",
+      "note": "Prior implementation retained.",
       "commits": [
         "916b5e9"
       ]
@@ -197,7 +200,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior focused results retained."
+      "note": "Prior focused evidence retained."
     },
     {
       "id": "AC-03-t2",
@@ -209,7 +212,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior negative-path results retained."
+      "note": "Prior negative-path evidence retained."
     },
     {
       "id": "AC-03-c2",
@@ -219,7 +222,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior repair retained."
+      "note": "Prior implementation retained."
     },
     {
       "id": "AC-03-t3",
@@ -231,7 +234,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Prior focused results retained."
+      "note": "Retirement component suite passed on b94733b."
     },
     {
       "id": "AC-03-c3",
@@ -241,7 +244,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior committed repair retained."
+      "note": "Prior repair retained."
     },
     {
       "id": "AC-03-t4",
@@ -253,7 +256,7 @@
         "AC-03-c3"
       ],
       "files": [],
-      "note": "Prior regression results retained."
+      "note": "Prior regression evidence retained."
     },
     {
       "id": "AC-03-c4",
@@ -265,7 +268,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Added for the new assignment; distinct original, access and retirement IDs must not be replaced on replay."
+      "note": "Pending."
     },
     {
       "id": "AC-03-t5",
@@ -279,7 +282,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Added negative-path coverage for the new assignment."
+      "note": "Pending."
     },
     {
       "id": "AC-04-c1",
@@ -328,7 +331,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Added for the new assignment; operation success alone is not provider absence or survivor proof."
+      "note": "Pending; operation success cannot establish provider absence."
     },
     {
       "id": "AC-04-t3",
@@ -342,7 +345,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Added for the new assignment."
+      "note": "Pending."
     },
     {
       "id": "AC-05-c1",
@@ -352,7 +355,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior component implementation retained.",
+      "note": "Prior implementation retained.",
       "commits": [
         "1b3b104"
       ]
@@ -367,7 +370,7 @@
         "AC-05-c1"
       ],
       "files": [],
-      "note": "Component evidence retained; not real-browser proof."
+      "note": "Component evidence only."
     },
     {
       "id": "AC-05-t2",
@@ -382,7 +385,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
       ],
-      "note": "First open saved task. Maintained CI installs Playwright; actual final-head run and artifacts still required.",
+      "note": "Actual browser run and artifacts pending.",
       "commits": [
         "194af4a"
       ]
@@ -407,7 +410,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Prior fixture tests retained; not browser evidence."
+      "note": "Prior fixture tests; not browser evidence."
     },
     {
       "id": "AC-05-c3",
@@ -417,10 +420,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/onboarding-entry.tsx",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+        "modules/domain-apps/superplane/ui/browser-tests/onboarding-entry.tsx"
       ],
-      "note": "Added for #5539 acceptance-driver handoff; do not change its owned framework."
+      "note": "Pending."
     },
     {
       "id": "AC-05-t4",
@@ -434,7 +436,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
       ],
-      "note": "Added for the new assignment; final browser execution required."
+      "note": "Pending."
     },
     {
       "id": "AC-06-c1",
@@ -444,7 +446,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior wiring and bounded mapping retained."
+      "note": "Prior implementation retained."
     },
     {
       "id": "AC-06-t1",
@@ -456,7 +458,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "Final-head local and remote results unverified."
+      "note": "Final-head local and remote checks pending."
     },
     {
       "id": "AC-06-t2",
@@ -468,7 +470,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; requires authorized release and actual workspace and operation IDs."
+      "note": "deployed-target: #5540/live-evaluation owner; requires authorized release and actual IDs."
     },
     {
       "id": "AC-06-t3",
