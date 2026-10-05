@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-05T23:56:30.627Z",
+  "updated_at": "2026-10-05T23:59:33.345Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -156,7 +156,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Original-ID read-only re-entry exists at 0116fc0; dedicated-managed approval/admission awaits backend producer.",
+      "note": "Read-only original-ID re-entry exists; dedicated-managed admission awaits backend producer.",
       "commits": [
         "0116fc0"
       ]
@@ -268,7 +268,7 @@
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
         "modules/domain-apps/superplane/ui/OnboardingView.tsx"
       ],
-      "note": "7343120 adds principal-scoped retirement receipts and immutable, cross-tab-locked operation lineage.",
+      "note": "7343120 adds principal-scoped receipts and immutable operation lineage.",
       "commits": [
         "7343120"
       ]
@@ -286,7 +286,7 @@
         "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "116 focused tests pass, including A→B→A, uncertain response, late reply and conflicting identities."
+      "note": "116 focused tests pass, including A→B→A, uncertain response and conflicting identities."
     },
     {
       "id": "AC-04-c1",
@@ -335,7 +335,10 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Operation accepted/running/failed/cancelled/unknown/succeeded states are described separately from verified cleanup. The UI labels provider absence and preservation unverified and residual cost unknown until authoritative producer evidence exists; it never derives removal from operation success."
+      "note": "6851867 separates all operation states from unverified removal and unknown residual cost.",
+      "commits": [
+        "6851867"
+      ]
     },
     {
       "id": "AC-04-t3",
@@ -349,7 +352,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "72 focused tests passed including six actual operation-response states, partial-failure wording, 503 recovery, planned survivor versus verified preservation, unknown cost and no POST retirement. TypeScript and domain-UI lint passed."
+      "note": "72 focused tests pass, including six operation states, failed recovery and no admission."
     },
     {
       "id": "AC-05-c1",
