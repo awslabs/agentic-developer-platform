@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "issue": 7002,
+  "updated_at": "2026-10-05T14:54:02.042Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Map assigned findings to shipped paths and runner-image lineage",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/arc-runner/Dockerfile",
+        "platform/automation-infra/Dockerfile"
+      ],
+      "note": "Check source SARIF hashes, severity resolution, provenance, and existing fixes before changing images."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify complete occurrence inventory against private SARIF fixture",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Assert counts and per-record uniqueness; no unverified-safe dispositions."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Refresh shipped ARC runner toolchain from reviewed upstream releases",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/arc-runner/Dockerfile"
+      ],
+      "note": "Preserve runner capabilities and avoid declaration-only fixes."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Pin automation derivative to the reviewed ARC base image",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/automation-infra/Dockerfile"
+      ],
+      "note": "Keep both image builds on one verifiable base lineage."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run image build and runner registration/job fixture with CLI smoke checks",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "Use existing local/CI recipes; no provider workloads or new validation infrastructure."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Check runner identity and toolchain regression paths in disposable fixture",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "Include executable provenance, Go module metadata, and global npm inventory."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record per-occurrence fixed or narrowly supported dispositions",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Unfixed or unknown findings remain unresolved; retain private raw evidence."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rescan both immutable candidate images and compare assigned occurrences",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Preserve raw scan and evidence for each original finding."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject unresolved findings and new critical/high regressions",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Blank fixes and broad suppression do not count as resolution."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Document reviewed image inputs, consumer, and rollback handoff",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Identify release/build consumer without asserting production rollout."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate derivative build against exact reviewed base digest",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/automation-infra/Dockerfile"
+      ],
+      "note": "Rebuild composed artifact after shared changes."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Repeat affected checks on final composed artifact",
+      "status": "open",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c-wire"
+      ],
+      "files": [],
+      "note": "Include AC evidence and distinguish local checks from post-merge handoff."
+    }
+  ]
+}
