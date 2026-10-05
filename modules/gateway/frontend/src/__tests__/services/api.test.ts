@@ -214,3 +214,61 @@ describe('buildQueryString', () => {
     expect(result).toBe('?name=test&status=active');
   });
 });
+
+const nativeFetchForRedirects = globalThis.fetch;
+describe('API redirect boundaries', () => {
+  let client: ApiClient;
+  let mockFetch: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+    client = new ApiClient('/api');
+  });
+  afterEach(() => { globalThis.fetch = nativeFetchForRedirects; });
+for (const destination of ['same-origin', 'cross-origin']) {
+  for (const status of [200, 302, 307, 308]) {
+    it(`refuses HTTP ${status} ${destination} redirects before forwarding API authorization`, async () => {
+      const { createServer } = await import('node:http');
+      const listen = async (server: ReturnType<typeof createServer>) => {
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('missing fixture port');
+        return address.port;
+      };
+      let forwarded = 0;
+      const target = createServer((_request, response) => {
+        forwarded += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+      const targetPort = await listen(target);
+      const source = createServer((request, response) => {
+        if (request.url === '/forwarded') forwarded += 1;
+        if (status === 200 || request.url === '/forwarded') {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end('{}');
+          return;
+        }
+        response.writeHead(status, { location: destination === 'same-origin'
+          ? '/forwarded' : `http://127.0.0.1:${targetPort}/forwarded` });
+        response.end();
+      });
+      const sourcePort = await listen(source);
+      mockFetch.mockImplementation((_url, init) => nativeFetchForRedirects(`http://127.0.0.1:${sourcePort}/fixture`, init));
+      sessionStorage.setItem('cognito_access_token', 'test-token');
+      try {
+        if (status === 200) await expect(client.get('/fixture')).resolves.toEqual({});
+        else await expect(client.get('/fixture')).rejects.toThrow();
+        expect(mockFetch.mock.calls[0][1]).toMatchObject({
+          redirect: 'error', headers: { Authorization: 'Bearer test-token' },
+        });
+        expect(forwarded).toBe(0);
+      } finally {
+        source.closeAllConnections(); target.closeAllConnections();
+        await Promise.all([source, target].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+        sessionStorage.removeItem('cognito_access_token');
+      }
+    });
+  }
+}
+});

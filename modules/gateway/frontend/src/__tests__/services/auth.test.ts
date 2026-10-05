@@ -170,6 +170,7 @@ describe('Auth Service - OAuth PKCE', () => {
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          redirect: 'error',
         })
       );
       expect(result).toEqual(mockTokenResponse);
@@ -545,6 +546,25 @@ describe('post-login redirect (deep-link preservation)', () => {
     for (const bad of ['https://evil.example', '//evil.example/x', 'javascript:alert(1)', '']) {
       authService.storePostLoginRedirect(bad);
       expect(authService.consumePostLoginRedirect()).toBeNull();
+    }
+  });
+});
+
+describe('broker exchange redirect boundary', () => {
+  it('sends code and state only to the configured broker, without following redirects', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', 'https://broker.example.test');
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: 'token' }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await authService.exchangeBrokerCode('code', 'state');
+      expect(fetcher).toHaveBeenCalledWith('https://broker.example.test/exchange', expect.objectContaining({
+        method: 'POST', redirect: 'error', body: JSON.stringify({ code: 'code', app_state: 'state' }),
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
     }
   });
 });

@@ -183,6 +183,7 @@ export async function getMyTranscript(invocationId: string): Promise<string> {
     `${baseUrl}/me/agent-invocations/${encodeURIComponent(invocationId)}/transcript`,
     {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      redirect: 'error',
     },
   );
   if (!response.ok) {
@@ -208,6 +209,7 @@ export async function getAdminTranscript(
     `${baseUrl}/admin/agent-invocations/${encodeURIComponent(invocationId)}/transcript${query}`,
     {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      redirect: 'error',
     },
   );
   if (!response.ok) {

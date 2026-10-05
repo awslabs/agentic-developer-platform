@@ -27,6 +27,7 @@ describe('canonical Task activity', () => {
     await readTaskEvents(task, `${task}:1`, new AbortController().signal, update);
     expect(fetch.mock.calls[0][0]).toContain(`/v1/tasks/${task}/events`);
     expect(fetch.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer test-token', 'Last-Event-ID': `${task}:1` });
+    expect(fetch.mock.calls[0][1].redirect).toBe('error');
     expect(update.mock.calls.map(call => call[0])).toEqual([{ kind: 'snapshot', status: 'running' }, { kind: 'event', event, cursor: `${task}:2` }]);
   });
   it.each(['foreign', 'snapshot_id', 'oversize', 'bad_event_id'])('rejects %s frames', async fault => {

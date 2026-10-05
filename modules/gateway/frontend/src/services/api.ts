@@ -81,6 +81,7 @@ export class ApiClient {
     const config: RequestInit = {
       method,
       headers: requestHeaders,
+      redirect: 'error',
       signal,
     };
 

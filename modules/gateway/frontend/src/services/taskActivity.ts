@@ -23,7 +23,7 @@ export async function readTaskEvents(taskId: string, cursor: string | undefined,
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' };
   if (cursor) headers['Last-Event-ID'] = cursor;
   const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}/v1/tasks/${encodeURIComponent(taskId)}/events`,
-    { headers, signal, cache: 'no-store' });
+    { headers, signal, cache: 'no-store', redirect: 'error' });
   if (!response.ok) throw new TaskStreamError(response.status);
   if (!response.body || !response.headers.get('content-type')?.startsWith('text/event-stream')) throw new TaskStreamError(503);
   const reader = response.body.getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
