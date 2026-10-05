@@ -1,32 +1,38 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T14:54:02.042Z",
+  "updated_at": "2026-10-05T14:58:48.874Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Map assigned findings to shipped paths and runner-image lineage",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "platform/arc-runner/Dockerfile",
-        "platform/automation-infra/Dockerfile"
+        "platform/automation-infra/Dockerfile",
+        "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "Check source SARIF hashes, severity resolution, provenance, and existing fixes before changing images."
+      "note": "Inventory helper published; original SARIF and coverage access blocked by credential:list and credential:assume-role 403. The derivative's RUNNER_IMAGE lineage is confirmed from source, not from the private scan.",
+      "commits": [
+        "c6b43a7"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Verify complete occurrence inventory against private SARIF fixture",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-01-c1"
       ],
-      "files": [],
-      "note": "Assert counts and per-record uniqueness; no unverified-safe dispositions."
+      "files": [
+        "platform/arc-runner/security/scan/test_reconcile.py"
+      ],
+      "note": "Five synthetic tests pass; exact original report hashes and 554 assigned occurrences remain unverified because private S3 access is denied."
     },
     {
       "id": "AC-02-c1",
@@ -38,7 +44,7 @@
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Preserve runner capabilities and avoid declaration-only fixes."
+      "note": "No toolchain change asserted without finding provenance."
     },
     {
       "id": "AC-02-c-wire",
@@ -50,7 +56,7 @@
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "Keep both image builds on one verifiable base lineage."
+      "note": "Requires a reviewed candidate digest."
     },
     {
       "id": "AC-02-t1",
@@ -63,7 +69,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Use existing local/CI recipes; no provider workloads or new validation infrastructure."
+      "note": "Docker is unavailable in this worker; no validation infrastructure provisioned."
     },
     {
       "id": "AC-02-t2",
@@ -76,7 +82,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Include executable provenance, Go module metadata, and global npm inventory."
+      "note": "Binary and npm inventory not run."
     },
     {
       "id": "AC-03-c1",
@@ -86,7 +92,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Unfixed or unknown findings remain unresolved; retain private raw evidence."
+      "note": "No finding has been marked fixed or not applicable."
     },
     {
       "id": "AC-03-t1",
@@ -98,7 +104,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Preserve raw scan and evidence for each original finding."
+      "note": "Candidate images and Grype are unavailable."
     },
     {
       "id": "AC-03-t2",
@@ -110,7 +116,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Blank fixes and broad suppression do not count as resolution."
+      "note": "Comparison pending exact candidate scans."
     },
     {
       "id": "AC-04-c1",
@@ -120,7 +126,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Identify release/build consumer without asserting production rollout."
+      "note": "No candidate digest exists for handoff."
     },
     {
       "id": "AC-04-c-wire",
@@ -132,7 +138,7 @@
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "Rebuild composed artifact after shared changes."
+      "note": "Reviewed base digest pending."
     },
     {
       "id": "AC-04-t1",
@@ -145,7 +151,7 @@
         "AC-04-c-wire"
       ],
       "files": [],
-      "note": "Include AC evidence and distinguish local checks from post-merge handoff."
+      "note": "Final composed artifact not built."
     }
   ]
 }
