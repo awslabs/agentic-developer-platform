@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T15:09:04.192Z",
+  "updated_at": "2026-10-05T15:24:07.227Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -76,7 +76,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Source hashes, five security regressions and recipe tests pass; no container builder/socket is available."
+      "note": "Local source-hash, security and recipe checks pass; no container builder/socket."
     },
     {
       "id": "AC-02-c2",
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Python repair at 467acf4; exact ECR donor manifest cannot be verified because credential discovery returns insufficient_scope. Digest unchanged.",
+      "note": "Python repair at 467acf4; exact ECR donor manifest remains inaccessible under current credential scope. Digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -106,7 +106,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Donor consistency tests pass; registry verification and builds require authorized existing access."
+      "note": "Local donor consistency tested; real registry input and builds unverified."
     },
     {
       "id": "AC-02-c-wire",
@@ -118,7 +118,7 @@
       "files": [
         "codebuild/security_image_targets.py"
       ],
-      "note": "Six executable context recipes required at e590b19; verified by AC-02-t3.",
+      "note": "Verified by AC-02-t3 at e590b19.",
       "commits": [
         "e590b19"
       ]
@@ -135,20 +135,23 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Deleting parser recipe fails discovery; full scanner test file passes."
+      "note": "Missing parser recipe fails discovery."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
       "title": "Preserve immutable revision, pinned inputs and paired provenance",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "codebuild/scan_security_images.py",
-        ".github/workflows/security-scan.yml"
+        ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Next task: inspect current enforcement."
+      "note": "Local validation at d67a512; cannot mark code done until its covering authenticated paired run succeeds.",
+      "commits": [
+        "d67a512"
+      ]
     },
     {
       "id": "AC-03-t1",
@@ -159,8 +162,10 @@
       "covers": [
         "AC-03-c1"
       ],
-      "files": [],
-      "note": "deployed-target: executor and coordinator after integration; authenticated metered rerun needed."
+      "files": [
+        ".github/scripts/tests/test_security_scan_tool_invocations.py"
+      ],
+      "note": "deployed-target: executor and coordinator after integration; authorized scan identity and metered rerun required."
     },
     {
       "id": "AC-04-c1",
@@ -170,9 +175,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "codebuild/scan_security_images.py"
+        ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Review lifecycle."
+      "note": "Next task: inspect lifecycle and local checks."
     },
     {
       "id": "AC-04-t1",
