@@ -14,7 +14,7 @@
         "docs/security/issue-6999-evidence.md",
         ".github/scripts/reconcile_6999.py"
       ],
-      "note": "Source inventory is published; original per-record indices and native ratings cannot be verified without private SARIF access.",
+      "note": "Source inventory is published; the verified owner-selected target role can list CodeBuild projects but cannot read the separate platform-account SARIF (HeadObject 403, GetObject AccessDenied). Original indices and native ratings remain unverified.",
       "commits": [
         "f365039"
       ]
@@ -31,7 +31,7 @@
       "files": [
         ".github/scripts/tests/test_reconcile_6999.py"
       ],
-      "note": "Four synthetic tests pass; original-report check cannot run because credential discovery returns HTTP 403 for missing `credential:list` scope."
+      "note": "Four synthetic tests pass; credential discovery and target-role assumption now work, but original-report verification cannot run because cross-account GetObject returns AccessDenied."
     },
     {
       "id": "AC-02-c1",
@@ -93,7 +93,7 @@
       "files": [
         "docs/security/issue-6999-evidence.md"
       ],
-      "note": "All eleven candidate rows remain explicitly unresolved until original identities and ratings can be checked and dispositions reviewed."
+      "note": "All eleven candidate rows remain explicitly unresolved: the target role cannot read original evidence from the separate account (GetObject AccessDenied), so identities, native ratings and dispositions cannot be reviewed."
     },
     {
       "id": "AC-03-t1",

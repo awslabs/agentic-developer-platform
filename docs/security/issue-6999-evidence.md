@@ -7,6 +7,13 @@ controls, with zero scan errors. All eleven records remain **unresolved** until
 the original report is reconciled and their dispositions are reviewed. The source baseline is
 `fa75f1c407ffeb075d43271eb8a18accaa6458b3`; the original report digest is
 `4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd`.
+On the resumed run, the owner-selected connection successfully listed, assumed
+the expected role in the expected target account, and listed CodeBuild projects.
+The same verified role received HTTP 403 from `HeadObject` and `AccessDenied`
+from `GetObject` for the separate platform-account original report. Target-role
+access does **not** establish permission to read that cross-account evidence.
+The scan-reader permission or authorized connection is still required; no
+ambient worker identity was used as a substitute.
 The script `.github/scripts/reconcile_6999.py` verifies that digest and the
 exact rule/path/line selector for **each** record, using the baseline severity
 resolver (native before CVSS; `error` alone is unrated). It reports accepted
@@ -51,6 +58,11 @@ the retained raw SARIF from this local run has SHA-256
 The raw copy at the private run-local path is not a published or durable artifact.
 A wider registry scan of these ten source files emitted 32 findings but reported
 one partially analyzed file; it is **not** evidence of a clean full scan.
+The resumed pinned scan again found eleven assigned matches, two unsafe-control
+matches, zero accepted suppressions and no scan errors; its private run-local
+SARIF SHA-256 is
+`75824c888ae54390a30a33d1918ad78feda0ac05ad0167d4e31fe1fff9bba2cf`.
+Neither candidate scan substitutes for the unavailable original report.
 
 The full frontend suite passed 2,915 tests across 176 files (the focused
 redirect subset passed 99); the frontend and agent builds passed, 36
