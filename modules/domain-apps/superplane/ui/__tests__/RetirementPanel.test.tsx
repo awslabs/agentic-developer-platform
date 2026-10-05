@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { server } from '@/mocks/server';
 import { ScopeGuard } from '@superplane-ui/client';
 import { DOMAIN_BASE, ENDPOINTS } from '@superplane-ui/contract';
-import { claimPreviewIdentity, memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
+import { claimPreviewIdentity, markSubmissionStage, memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
 import { RetirementPanel } from '@superplane-ui/RetirementPanel';
 
 const workspaceId = '6ac27035-3856-49d6-bb80-3c19b73a4511';
@@ -249,5 +249,72 @@ describe('C1 retirement preview and admission refusal', () => {
     mount();
     expect(screen.getByRole('button', { name: 'Review removal' })).toBeDisabled();
     expect(screen.getByText(/does not support reviewing the exact workspace retirement inventory/i)).toBeInTheDocument();
+  });
+});
+
+
+describe('source-backed removal request re-entry', () => {
+  const originalRequestId = 'bd2c9abd-b27b-4ab0-a521-0828d8e0ae39';
+
+  async function savedRequest(submitted: boolean) {
+    const store = memoryReceiptStore();
+    const intent = `retire-workspace:${workspaceId}`;
+    await claimPreviewIdentity(store, scope, intent, { workspaceId }, () => originalRequestId, new Date().toISOString());
+    if (submitted) await markSubmissionStage(store, scope, intent, originalRequestId, 'submitted');
+    return store;
+  }
+
+  it('uses the original scoped request after refresh and does not mistake running for removed', async () => {
+    const store = await savedRequest(true);
+    const lookups: string[] = [];
+    let admissions = 0;
+    server.use(
+      http.get(API('/operations/by-idempotency/:requestId'), ({ params }) => {
+        lookups.push(String(params.requestId));
+        return HttpResponse.json({
+          request_id: originalRequestId, provisioning_operation_id: 'server-operation-id',
+          workspace_id: workspaceId, state: 'running', phase: 'execution', retryable: false,
+        });
+      }),
+      http.post(API('/workspaces/:workspaceId/retirement'), () => {
+        admissions += 1;
+        return HttpResponse.json({});
+      }),
+    );
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText('Operation state: running')).toBeInTheDocument();
+    expect(screen.getByText('Server operation ID: server-operation-id')).toBeInTheDocument();
+    expect(screen.getByText(/does not verify resource deletion/i)).toBeInTheDocument();
+    cleanup();
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText('Operation state: running')).toBeInTheDocument();
+    expect(lookups).toEqual([originalRequestId, originalRequestId]);
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
+    expect(store.keys()).toHaveLength(1);
+    expect(admissions).toBe(0);
+  });
+
+  it('refuses a substituted workspace operation without clearing the original receipt', async () => {
+    const store = await savedRequest(true);
+    server.use(http.get(API('/operations/by-idempotency/:requestId'), () => HttpResponse.json({
+      request_id: originalRequestId, provisioning_operation_id: 'other-operation',
+      workspace_id: 'other-workspace', state: 'succeeded', phase: 'execution',
+    })));
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/another workspace or identity/i)).toBeInTheDocument();
+    expect(screen.queryByText('Operation state: succeeded')).toBeNull();
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
+  });
+
+  it('does not look up a review-only identity as though it were submitted', async () => {
+    const store = await savedRequest(false);
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/original removal review is saved, but no removal was submitted/i)).toBeInTheDocument();
+    expect(screen.getByText(`Saved removal request ID: ${originalRequestId}`)).toBeInTheDocument();
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
   });
 });

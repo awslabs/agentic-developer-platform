@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button } from '@/components/ui';
 import { getAccessToken } from '@/services/auth';
 
-import { isSuperseded, previewRetirement, type ScopeGuard } from './client';
-import { ENDPOINTS, type RetirementReview, unavailableFor, type Unavailable } from './contract';
-import { claimPreviewIdentity, type ClaimOutcome, type ReceiptScope, type ReceiptStore } from './operations';
+import { isSuperseded, previewRetirement, recoverOperation, type ScopeGuard } from './client';
+import { ENDPOINTS, type OperationReceipt, type RetirementReview, unavailableFor, type Unavailable } from './contract';
+import { claimPreviewIdentity, readReceipt, type ClaimOutcome, type ReceiptScope, type ReceiptStore } from './operations';
 
 type ReviewState =
   | { phase: 'idle' | 'loading' }
@@ -20,6 +20,50 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
   sessionToken: string;
 }) {
   const [state, setState] = useState<ReviewState>({ phase: 'idle' });
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<
+    { phase: 'idle' | 'loading' } | { phase: 'observed'; receipt: OperationReceipt } |
+    { phase: 'failed'; unavailable: Unavailable }
+  >({ phase: 'idle' });
+  const recoverRequest = async () => {
+    if (getAccessToken() !== sessionToken) {
+      setRecovery({ phase: 'failed', unavailable: {
+        reason: 'not-permitted', detail: 'Your session changed. Sign in again to recover this removal request.',
+      } });
+      return;
+    }
+    let saved;
+    try { saved = readReceipt(store, scope, `retire-workspace:${workspaceId}`); }
+    catch { saved = null; }
+    if (!saved || (requestId !== null && saved.idempotencyKey !== requestId)) {
+      setRecovery({ phase: 'failed', unavailable: {
+        reason: 'unknown', detail: 'The original scoped removal request could not be read. No new removal was submitted.',
+      } });
+      return;
+    }
+    setRequestId(saved.idempotencyKey);
+    if (saved.submissionStage !== 'submitted') {
+      setRecovery({ phase: 'failed', unavailable: {
+        reason: 'unknown', detail: 'The original removal review is saved, but no removal was submitted. Review it again with the same request ID.',
+      } });
+      return;
+    }
+    const generation = guard.current();
+    setRecovery({ phase: 'loading' });
+    const result = await recoverOperation(guard, saved.idempotencyKey);
+    if (isSuperseded(result) || !guard.isCurrent(generation) || getAccessToken() !== sessionToken) return;
+    if (!result.ok) {
+      if ('unavailable' in result) setRecovery({ phase: 'failed', unavailable: result.unavailable });
+      return;
+    }
+    if (result.value.idempotencyKey !== saved.idempotencyKey || result.value.workspaceId !== workspaceId) {
+      setRecovery({ phase: 'failed', unavailable: {
+        reason: 'unknown', detail: 'The service returned a removal request for another workspace or identity. No new removal was submitted.',
+      } });
+      return;
+    }
+    setRecovery({ phase: 'observed', receipt: result.value });
+  };
   const reviewRef = useRef<HTMLDivElement>(null);
   const problemRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -58,6 +102,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
       } });
       return;
     }
+    setRequestId(claim.receipt.idempotencyKey);
     const result = await previewRetirement(guard, workspaceId, {
       operation_id: claim.receipt.idempotencyKey,
     });
@@ -76,6 +121,20 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
   return (
     <section aria-label="Workspace retirement" className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
       <h3 className="font-semibold">Workspace retirement</h3>
+      <div role="group" aria-label="Removal request" className="mt-3 space-y-2">
+        {requestId && <p className="break-all">Saved removal request ID: {requestId}</p>}
+        <Button variant="secondary" disabled={recovery.phase === 'loading'}
+          onClick={() => void recoverRequest()}>Recover removal request</Button>
+        {recovery.phase === 'loading' && <p role="status">Checking the original request without submitting another removal…</p>}
+        {recovery.phase === 'failed' && <Alert variant="warning" title="Removal request status unavailable">
+          {recovery.unavailable.detail} Keep the original request ID and retry the lookup; no new removal was submitted.
+        </Alert>}
+        {recovery.phase === 'observed' && <div role="status">
+          <p>Operation state: {recovery.receipt.state}</p>
+          <p className="break-all">Server operation ID: {recovery.receipt.operationId ?? 'Not yet assigned'}</p>
+          <p>Operation status does not verify resource deletion or preservation. Review the workspace and provider inventory independently.</p>
+        </div>}
+      </div>
       <p className="mt-2 text-sm">Review owned deletions and resources that must survive before requesting removal. Reviewing does not delete anything.</p>
       {!ENDPOINTS.previewRetirement.served && (
         <Alert variant="warning" title="Removal review unavailable">

@@ -156,26 +156,26 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Wire separate human approval, exact-plan admission and durable retirement re-entry",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Requires the actual approved producer contract; do not auto-approve."
+      "note": "Added explicit re-entry using the original scoped receipt and GET /operations/by-idempotency/{id}, rejecting mismatched workspace/request IDs. #5534 source 8cf97d0 still has unmounted cleanup access, BYOC-only access authority and unconditional retirement 503; dedicated managed approval/admission and positive schemas cannot safely be wired yet. Coordination: #5534 comment 6005801840."
     },
     {
       "id": "AC-02-t6",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test approved submission, accepted progress and no duplicate removal after lost response",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c4"
       ],
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Pending source implementation and producer schema."
+      "note": "16 retirement component tests and 4 access contract tests passed, including refresh, running state, cross-workspace substitution and draft-only refusal. No positive approved admission can be tested against the current producer; revalidate after its contract lands."
     },
     {
       "id": "AC-03-c1",
