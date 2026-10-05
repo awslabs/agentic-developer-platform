@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:22:38.231Z",
+  "updated_at": "2026-10-05T15:25:37.353Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Commit 716512b; covering synthetic test passed.",
+      "note": "Commit 716512b; synthetic covering tests passed.",
       "commits": [
         "716512b"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_inventory_security_occurrences.py"
       ],
-      "note": "Inventory and existing differ tests passed locally."
+      "note": "Passed locally."
     },
     {
       "id": "AC-01-c2",
@@ -40,7 +40,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Credential broker returned 403 insufficient_scope for credential:list; the scan-reader connection cannot be selected."
+      "note": "Scan-reader connection discovery returns 403 insufficient_scope."
     },
     {
       "id": "AC-01-t2",
@@ -52,7 +52,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Requires authorized access to the assigned private S3 reports."
+      "note": "Assigned private reports cannot be read."
     },
     {
       "id": "AC-02-c1",
@@ -64,7 +64,7 @@
       "files": [
         "platform/security/curl-8.22.0/Dockerfile"
       ],
-      "note": "Source and advisory provenance checked; candidate applicability needs report access and a builder."
+      "note": "Source signature, checksum, and 18 advisory receipts checked; candidate applicability remains unverified."
     },
     {
       "id": "AC-02-t1",
@@ -78,7 +78,7 @@
       "files": [
         "platform/security/curl-8.22.0/verify-upstream.sh"
       ],
-      "note": "Source checks passed; candidate TLS and runtime fixtures require a container builder."
+      "note": "No container builder for exact candidate TLS and runtime tests."
     },
     {
       "id": "AC-02-c2",
@@ -90,7 +90,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile"
       ],
-      "note": "Affected paths and compatible fixes require the assigned reports and candidate image."
+      "note": "Affected packages, paths, advisories, and compatible fixes require the assigned reports and image."
     },
     {
       "id": "AC-02-t2",
@@ -102,7 +102,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Runtime fixtures require a candidate container; this runner has no builder."
+      "note": "No candidate container available for runtime fixtures."
     },
     {
       "id": "AC-02-c3",
@@ -114,7 +114,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "The fixed historical parent digest cannot be replaced without coverage mapping and a validated new parent."
+      "note": "Its historical parent cannot safely be replaced without coverage mapping and a validated new digest."
     },
     {
       "id": "AC-02-t3",
@@ -126,7 +126,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "No container builder is available to test a composed image."
+      "note": "No builder for composed overlay checks."
     },
     {
       "id": "AC-03-c1",
@@ -138,7 +138,7 @@
       "files": [
         ".github/scripts/review_security_occurrences.py"
       ],
-      "note": "Commit e637f24 implements fail-closed per-record candidate dispositions; actual evidence review remains AC-03-t1.",
+      "note": "Commit e637f24 provides the fail-closed ledger; actual finding review remains pending.",
       "commits": [
         "e637f24"
       ]
@@ -153,7 +153,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Requires private reports and a container builder/scanner; no validation service will be provisioned."
+      "note": "Requires assigned reports and existing-capability image build/scanning access."
     },
     {
       "id": "AC-03-t2",
@@ -167,54 +167,54 @@
       "files": [
         ".github/scripts/tests/test_review_security_occurrences.py"
       ],
-      "note": "46 inventory, ledger, and existing differ tests passed locally with synthetic fixtures."
+      "note": "46 combined synthetic inventory, ledger, and differ tests passed locally."
     },
     {
       "id": "AC-04-c-wire",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Integrate the reviewed curl artifact into both DeepWiki variants",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile",
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "Keep a single shared curl decision for downstream image owners."
+      "note": "Ordinary DeepWiki has a pinned curl input; the high-security parent and new scanned artifacts cannot be bound without coverage and a build."
     },
     {
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Run composed image smoke, TLS, import, and overlay checks",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-04-c-wire"
       ],
       "files": [],
-      "note": "Verify final composed artifacts, not isolated package version strings."
+      "note": "No composed image or container builder is available."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Prepare reviewed candidate, rollback, and rollout handoff",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Report tested revisions and digests; production rollout remains separate."
+      "note": "Exact tested candidate digests and complete dispositions are unavailable; older receipts do not establish this scan's result."
     },
     {
       "id": "AC-04-t2",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Review AC-to-evidence mapping and downstream curl disposition",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Do not claim merged or deployed acceptance from a PR or local build."
+      "note": "Cannot review a complete handoff until candidate evidence exists."
     }
   ]
 }
