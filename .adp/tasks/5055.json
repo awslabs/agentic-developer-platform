@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:45:54.892Z",
+  "updated_at": "2026-10-05T23:47:47.390Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -171,7 +171,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Offline/live split added because R5.5-t1 needs a deployed target; commit cdf629e.",
+      "note": "Offline/live split; commit cdf629e.",
       "commits": [
         "cdf629e"
       ]
@@ -186,7 +186,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Offline mounted service scope and server-held grant recheck verified; production integration is not claimed."
+      "note": "Offline service scope verified; production integration is not claimed."
     },
     {
       "id": "R5.6-t1",
@@ -200,7 +200,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Read 200, provision 403, read after revocation 403; 153 auth tests passed. Commit 2992049.",
+      "note": "Read 200, provision 403, revoked read 403; commit 2992049.",
       "commits": [
         "2992049"
       ]
@@ -222,26 +222,30 @@
       "kind": "code",
       "criterion": "R5.7",
       "title": "Preserve sanitized proxy ingress and server-derived actor context",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": ""
+      "note": "Mounted guard publishes the sanitized mapping; verified principal remains authoritative."
     },
     {
       "id": "R5.7-t1",
       "kind": "test",
       "criterion": "R5.7",
       "title": "Run spoofed-header, body-actor and sanitized-context tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.7-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_proxy.py"
       ],
-      "note": ""
+      "note": "205 auth/proxy tests passed; commit 314e66d.",
+      "commits": [
+        "314e66d"
+      ]
     },
     {
       "id": "R6.1-c1",
