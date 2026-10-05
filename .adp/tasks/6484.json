@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "issue": 6484,
+  "updated_at": "2026-10-05T23:33:34.289Z",
+  "tasks": [
+    {
+      "id": "AC01-c1",
+      "kind": "code",
+      "criterion": "AC01",
+      "title": "Reconcile authoritative role and principal fixtures with explicit grants",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/access-cases-v1.json",
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
+      ],
+      "note": "Next task; distinguish platform role, selected-org membership, typed service identity and domain grants."
+    },
+    {
+      "id": "AC01-t1",
+      "kind": "test",
+      "criterion": "AC01",
+      "title": "Test Gateway role sources and positive/negative SQLite grant fixtures",
+      "status": "open",
+      "covers": [
+        "AC01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC02-c1",
+      "kind": "code",
+      "criterion": "AC02",
+      "title": "Reconcile versioned action matrix with mounted API and maintained client surfaces",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+      ],
+      "note": "Retain the merged retirement mapping; mark missing administration surfaces absent."
+    },
+    {
+      "id": "AC02-t1",
+      "kind": "test",
+      "criterion": "AC02",
+      "title": "Test mounted inventory and UI, CLI and tool action parity",
+      "status": "open",
+      "covers": [
+        "AC02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC03-c1",
+      "kind": "code",
+      "criterion": "AC03",
+      "title": "Pin independent workspace permissions and separate organization and cluster scopes",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
+        "modules/domain-apps/superplane/contracts/access-cases-v1.json"
+      ],
+      "note": "Cover bootstrap, revocation precedence and no inherited workspace authority."
+    },
+    {
+      "id": "AC03-t1",
+      "kind": "test",
+      "criterion": "AC03",
+      "title": "Test all implications and non-implications plus scope and revoked-grant denials",
+      "status": "open",
+      "covers": [
+        "AC03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC04-c1",
+      "kind": "code",
+      "criterion": "AC04",
+      "title": "Prepare bounded D1 and D5 decisions with compatibility impact",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
+      ],
+      "note": "Do not enable privilege-widening behavior without domain/auth-owner disposition."
+    },
+    {
+      "id": "AC04-t1",
+      "kind": "test",
+      "criterion": "AC04",
+      "title": "Test approval and delegation declarations against fixed contract fixtures",
+      "status": "open",
+      "covers": [
+        "AC04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC04-c2",
+      "kind": "code",
+      "criterion": "AC04",
+      "title": "Record domain/auth-owner disposition of D1 and D5",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
+      ],
+      "note": "External decision: the provided issue explicitly says owner disposition is pending; code work proceeds independently."
+    },
+    {
+      "id": "AC04-t2",
+      "kind": "test",
+      "criterion": "AC04",
+      "title": "Verify recorded owner decisions before claiming policy acceptance",
+      "status": "blocked",
+      "covers": [
+        "AC04-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
+      ],
+      "note": "Depends on AC04-c2; cannot manufacture owner approval."
+    },
+    {
+      "id": "AC05-c1",
+      "kind": "code",
+      "criterion": "AC05",
+      "title": "Reconcile design and endpoint gaps with named downstream owners",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+      ],
+      "note": "Respect read-only ownership of shared identity, endpoint inventory and lifecycle implementations."
+    },
+    {
+      "id": "AC05-t1",
+      "kind": "test",
+      "criterion": "AC05",
+      "title": "Run focused contract and mounted-route suites on final source head",
+      "status": "open",
+      "covers": [
+        "AC05-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": "Include independently reproducible local results and remote final-head CI in ready PR."
+    },
+    {
+      "id": "AC05-t2",
+      "kind": "test",
+      "criterion": "AC05",
+      "title": "Obtain recorded domain/auth-owner review of the completed contract",
+      "status": "blocked",
+      "covers": [
+        "AC05-c1"
+      ],
+      "files": [],
+      "note": "External review is explicitly retained by the issue; PR creation and CI do not constitute owner sign-off."
+    }
+  ]
+}
