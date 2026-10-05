@@ -119,8 +119,6 @@ Agent ──► MCP Gateway (single endpoint)
 
 The gateway handles: tool catalog aggregation, namespace collision prevention, per-tool auth/rate-limiting, health checks, circuit breakers, and audit logging.
 
-Also contains `docker/agent-mail/` — an email gateway that forwards messages to agents (used by the cyber domain for SIEM alert ingestion).
-
 ## Current State
 
 The harness is in early development:

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "task_id": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+  "invocation_id": "f6239542-784b-44b1-adf0-fde1e8c3a9d5",
+  "status": "accepted",
+  "created_at": "2026-09-25T04:49:40Z",
+  "deadline_at": "2026-09-25T05:19:40Z",
+  "status_url": "/v1/tasks/tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+  "events_url": "/v1/tasks/tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742/events",
+  "request_id": "469ee34b-fa0f-4176-9d20-39a724e19b86",
+  "idempotent_replay": false
+}

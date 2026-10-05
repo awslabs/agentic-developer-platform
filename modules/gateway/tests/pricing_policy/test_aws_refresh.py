@@ -176,8 +176,9 @@ def test_canonical_hash_ignores_database_session_timezone():
 def test_all_published_cards_and_catalog_cover_every_reviewed_endpoint_variant():
     snapshot = load_snapshot("2026-09-12.1")
     parsed = []
-    for slug in CARD_SLUGS.values():
-        parsed.extend(parse_card(slug, snapshot.rates))
+    for model, slug in CARD_SLUGS.items():
+        if model in snapshot.models:
+            parsed.extend(parse_card(slug, snapshot.rates))
     parsed.extend(catalog())
     actual = {row.variant_key: row for row in parsed}
     expected = {row.variant_key: row for row in snapshot.rates}
@@ -193,3 +194,34 @@ def test_all_published_cards_and_catalog_cover_every_reviewed_endpoint_variant()
             "cache_write_policy",
         ):
             assert getattr(row, field) == getattr(baseline, field), (key, field)
+
+
+@pytest.mark.parametrize("global_label", [b"Global CRIS (pricing reference)", b"Global CRIS"])
+def test_astra_multi_tier_card_keeps_standard_rates_separate(global_label):
+    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes().replace(b"Global CRIS (pricing reference)", global_label)
+    templates = tuple(template("openai.gpt-6-astra", g, c) for g in ("in_region", "geo_cris", "global_cris") for c in ("short", "long"))
+    rows = parse_model_card(content, "openai.gpt-6-astra", templates, source_url="https://aws.example", verified_at=VERIFIED)
+    assert len(rows) == 6
+    assert {r.service_tier for r in rows} == {"standard"}
+    assert next(r for r in rows if r.geography == "in_region" and r.context_tier == "short").input_price_per_1k_tokens == Decimal("0.011")
+    assert next(r for r in rows if r.geography == "global_cris" and r.context_tier == "long").output_price_per_1k_tokens == Decimal("0.075")
+    with pytest.raises(SourceValidationError):
+        parse_model_card(
+            content.replace(b"$82.50 | $6.60", b"$82.51 | $6.60"),
+            "openai.gpt-6-astra",
+            templates,
+            source_url="https://aws.example",
+            verified_at=VERIFIED,
+        )
+
+
+def test_unknown_astra_ultrafast_geography_is_still_rejected():
+    content = (FIXTURES / "astra-multiple-tiers.md").read_bytes().replace(b"Global CRIS (pricing reference)", b"Unreviewed region")
+    with pytest.raises(SourceValidationError, match="unrecognized inference option"):
+        parse_model_card(
+            content,
+            "openai.gpt-6-astra",
+            (template("openai.gpt-6-astra", "global_cris", "short"),),
+            source_url="https://aws.example",
+            verified_at=VERIFIED,
+        )

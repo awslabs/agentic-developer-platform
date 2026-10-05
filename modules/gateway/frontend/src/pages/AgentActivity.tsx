@@ -1,3 +1,5 @@
+import { TaskActivity } from '@/components/activity/TaskActivity';
+import './AgentActivity.css';
 /**
  * Agent Activity page — paginated list of agent invocations.
  *
@@ -24,6 +26,8 @@ import { TableSkeleton } from '@/components/LoadingScreen';
 import { FilterChips } from '@/components/activity/FilterChips';
 import { ActivityCardList } from '@/components/activity/ActivityCardList';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
+import { useRevalidatingFeaturesQuery } from '@/hooks/useFeatures';
+import { LiveStreamLink } from '@/components/activity/LiveStreamLink';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
@@ -71,7 +75,8 @@ function StatusBadge({ status, skipReason }: { status: InvocationStatus; skipRea
   const reasonText = isNonRunStatus(status) ? skipReasonLabel(skipReason) : null;
   return (
     <span
-      className={`inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
+      className={`activity-status-badge inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
+      data-status={status}
       title={reasonText ? `${config.label}: ${reasonText}` : undefined}
     >
       <span aria-hidden="true">{config.glyph}</span>
@@ -103,7 +108,8 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
   return (
     <div className="flex flex-col gap-1">
       <span
-        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
+        className={`activity-trigger-badge inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
+        data-trigger-kind={triggerKind}
         data-testid={`trigger-badge-${triggerKind}`}
       >
         <span aria-hidden="true">{config.icon}</span>
@@ -143,18 +149,18 @@ interface ChainRowProps {
   onDetailClick: (item: InvocationItem) => void;
   onNodeClick: (invocationId: string) => void;
   onTranscriptClick: (invocationId: string) => void;
+  liveStreamEnabled?: boolean;
 }
 
-function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick }: ChainRowProps) {
+function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick, liveStreamEnabled }: ChainRowProps) {
   const { root } = chain;
-  const statusConfig = describeStatus(root.status);
   const isSingleton = chain.descendant_count === 0;
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+    <div className="activity-chain-row border-b border-gray-200 dark:border-gray-700 last:border-b-0">
       {/* Chain row header */}
       <div
-        className="flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+        className="activity-chain-main flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
         onClick={() => {
           if (isSingleton) {
             onDetailClick(root);
@@ -205,15 +211,14 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
         </span>
 
         {/* Status */}
-        <span className={`flex-shrink-0 ${statusConfig.colorClass}`}>
-          <span className="text-sm font-medium">{statusConfig.glyph}</span>
-          <span className="text-xs ml-1">{statusConfig.label}</span>
-        </span>
+        <StatusBadge status={root.status} skipReason={root.skip_reason} />
 
         {/* Chain total cost */}
         <div className="flex-shrink-0 text-right min-w-[60px]">
           <ChainCostBadge cost={chain.chain_total_cost_usd} />
         </div>
+
+        <LiveStreamLink enabled={liveStreamEnabled} status={root.status} onOpen={() => onDetailClick(root)} />
 
         {/* Transcript link (Issue #3069) */}
         {root.transcript_key && (
@@ -245,53 +250,57 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
           {chain.descendants.map((desc) => {
             const descStatus = describeStatus(desc.status);
             return (
-              <button
-                key={desc.invocation_id}
-                type="button"
-                onClick={() => onNodeClick(desc.invocation_id)}
-                className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-              >
-                <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
-                  └─
-                </span>
-                <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
-                  {descStatus.glyph}
-                </span>
-                <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
-                  {desc.topic || <span className="italic text-gray-400">untitled</span>}
-                </span>
-                {desc.total_cost_usd != null && (
-                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-                    {formatAmount(desc.total_cost_usd)}
-                  </span>
-                )}
-                {desc.transcript_key && (
-                  <span
-                    role="link"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTranscriptClick(desc.invocation_id);
-                    }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
-                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                    title="View full run transcript"
-                  >
-                    Transcript
-                  </span>
-                )}
-                {desc.persona && (
-                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
-                    {desc.persona}
-                  </span>
-                )}
-                <span
-                  className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
-                  title={formatDateTime(desc.invoked_at)}
+              <div key={desc.invocation_id} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onNodeClick(desc.invocation_id)}
+                  className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
                 >
-                  {formatRelativeTime(desc.invoked_at)}
-                </span>
-              </button>
+                  <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
+                    └─
+                  </span>
+                  <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
+                    {descStatus.glyph}
+                  </span>
+                  <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                    {desc.topic || <span className="italic text-gray-400">untitled</span>}
+                  </span>
+                  {desc.total_cost_usd != null && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
+                      {formatAmount(desc.total_cost_usd)}
+                    </span>
+                  )}
+                  {desc.transcript_key && (
+                    <span
+                      role="link"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTranscriptClick(desc.invocation_id);
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      title="View full run transcript"
+                    >
+                      Transcript
+                    </span>
+                  )}
+                  {desc.persona && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                      {desc.persona}
+                    </span>
+                  )}
+                  <span
+                    className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
+                    title={formatDateTime(desc.invoked_at)}
+                  >
+                    {formatRelativeTime(desc.invoked_at)}
+                  </span>
+                </button>
+                <LiveStreamLink enabled={liveStreamEnabled} status={desc.status} onOpen={() => {
+                  void getMyInvocationDetail(desc.invocation_id).then(onDetailClick).catch(() => onNodeClick(desc.invocation_id));
+                }} />
+              </div>
             );
           })}
         </div>
@@ -316,6 +325,7 @@ function SourceLink({ item }: { item: InvocationItem }) {
         href={item.source_url}
         target="_blank"
         rel="noopener noreferrer"
+        title={label}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm hover:underline"
       >
         {label} ↗
@@ -361,6 +371,7 @@ const CHANNEL_OPTIONS = [
 const PERSONA_OPTIONS = [
   { value: '', label: 'All personas' },
   { value: 'developer', label: 'Developer' },
+  { value: 'agent-codex-developer', label: 'Codex Developer' },
   { value: 'architect', label: 'Architect' },
   { value: 'reviewer', label: 'Reviewer' },
   { value: 'ops', label: 'Ops' },
@@ -375,6 +386,8 @@ export default function AgentActivity() {
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
   // Issue #3770: Responsive layout — card view below lg breakpoint
+  const explanationFlags = useRevalidatingFeaturesQuery();
+  const liveStreamEnabled = !explanationFlags.isPending && !explanationFlags.isError && explanationFlags.data?.agent_explanations === true;
   const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
 
   // Issue #3632: URL query-param deep-linking
@@ -800,9 +813,9 @@ export default function AgentActivity() {
   }, [resetPagination]);
 
   return (
-    <div className="space-y-6">
+    <div className="blueprint-activity space-y-4">
       {/* Header + view toggle */}
-      <div className="flex items-center justify-between">
+      <div className="activity-header flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Agent Activity
@@ -821,13 +834,13 @@ export default function AgentActivity() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="activity-header-actions flex items-center gap-3">
           {/* Issue #4022: freshness caption — makes the 30 s poll visible */}
           <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
 
           {/* Issue #1662: Group-by toggle (by run / by chain) */}
           {viewMode === 'mine' && (
-            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
+            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
               <button
                 role="tab"
                 aria-selected={groupBy === 'chain'}
@@ -856,7 +869,7 @@ export default function AgentActivity() {
           )}
 
           {isAdmin && (
-            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist">
+            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="View scope">
               <button
                 role="tab"
                 aria-selected={viewMode === 'mine'}
@@ -886,9 +899,11 @@ export default function AgentActivity() {
         </div>
       </div>
 
+      {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
+
       {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="blueprint-card activity-filters bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+        <div className="activity-filter-grid grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Status
@@ -964,7 +979,7 @@ export default function AgentActivity() {
           </div>
         </div>
         {/* Issue #1658: Show all events toggle */}
-        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+        <div className="activity-all-events mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
           <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
             <input
               type="checkbox"
@@ -1013,6 +1028,28 @@ export default function AgentActivity() {
         isOpen={detailItem !== null}
         onClose={() => setDetailItem(null)}
         isAdmin={viewMode === 'all' && isAdmin}
+        /*
+          Issue #3966: re-read the open run after a live control command.
+
+          `detailItem` is a snapshot taken when the row was clicked, so a
+          pause/resume/abort would otherwise leave the modal's status row
+          contradicting the control panel beside it. Failures are ignored on
+          purpose: the panel already reports the command's own outcome, and a
+          refresh error is not evidence about the command.
+        */
+        onRefreshItem={() => {
+          const openId = detailItem?.invocation_id;
+          if (!openId) return;
+          getMyInvocationDetail(openId)
+            .then((item) => {
+              // Only apply if the same run is still open — the operator may have
+              // closed or switched runs while this was in flight.
+              setDetailItem((current) =>
+                current && current.invocation_id === openId ? item : current,
+              );
+            })
+            .catch(() => {});
+        }}
       />
 
       {/* Issue #3069: Transcript viewer — opened from table row transcript links */}
@@ -1039,7 +1076,7 @@ export default function AgentActivity() {
 
       {/* Table / Chain list */}
       {!error && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="blueprint-card activity-results bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           {isLoading ? (
             <TableSkeleton rows={10} />
           ) : isChainView && chainData && chainData.chains.length > 0 ? (
@@ -1050,6 +1087,7 @@ export default function AgentActivity() {
                   <ChainRow
                     key={chain.chain_id}
                     chain={chain}
+                    liveStreamEnabled={liveStreamEnabled}
                     isExpanded={expandedChains.has(chain.chain_id)}
                     onToggle={() => toggleChainExpand(chain.chain_id)}
                     onDetailClick={(item) => setDetailItem(item)}
@@ -1077,7 +1115,7 @@ export default function AgentActivity() {
               </div>
 
               {/* Pagination */}
-              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>
@@ -1108,13 +1146,14 @@ export default function AgentActivity() {
                 /* Card layout for narrow viewports (<1024px) — Issue #3770 */
                 <ActivityCardList
                   items={flatData.items}
+                  liveStreamEnabled={liveStreamEnabled}
                   onDetailClick={(item) => setDetailItem(item)}
                   onTranscriptClick={(id) => setTranscriptInvocationId(id)}
                 />
               ) : (
               /* Table layout for wide viewports (>=1024px) */
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <table className="activity-table min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-900">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1173,11 +1212,11 @@ export default function AgentActivity() {
                             onViewChain={(cid) => handleViewChain(cid, item.invocation_id)}
                           />
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="activity-source px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <span className="capitalize">{item.channel}</span>
                           {item.persona && (
-                            <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
-                              ({item.persona})
+                            <span className="activity-source-persona text-xs text-gray-400 dark:text-gray-500">
+                              {item.persona}
                             </span>
                           )}
                         </td>
@@ -1218,6 +1257,7 @@ export default function AgentActivity() {
                           <SourceLink item={item} />
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
+                          <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => setDetailItem(item)} />
                           {item.transcript_key ? (
                             <button
                               type="button"
@@ -1242,7 +1282,7 @@ export default function AgentActivity() {
               )}
 
               {/* Pagination */}
-              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>

@@ -9,11 +9,49 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Add lambda root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 os.environ.setdefault("IDENTITY_INDEX_TABLE", "adp-dev-identity-index")
 os.environ.setdefault("AWS_REGION", "us-east-1")
+
+
+@pytest.fixture(autouse=True)
+def _canonical_active(monkeypatch):
+    import importlib
+
+    def canonical(iid):
+        tenant = "acme-hackathon" if str(iid) == "146123525" else "aws-e"
+        return {"state": "resolved", "tenant_id": tenant, "revocation_checked": True}
+
+    monkeypatch.setattr(
+        importlib.import_module("common.gateway_client"),
+        "resolve_installation_by_id",
+        canonical,
+    )
+
+
+def _guarded_transaction_table(table):
+    current_get = table.get_item
+    if hasattr(current_get, "return_value") and current_get.side_effect is None:
+        current_get.side_effect = lambda **kwargs: (
+            {}
+            if kwargs["Key"].get("identity_type") == "github_installation_revoked"
+            else current_get.return_value
+        )
+
+    def transact(*, TransactItems):  # noqa: N803
+        check = TransactItems[0]["ConditionCheck"]
+        assert check["Key"]["identity_type"] == "github_installation_revoked"
+        assert check["ConditionExpression"] == "attribute_not_exists(identity_type)"
+        operation = dict(TransactItems[1]["Put"])
+        operation.pop("TableName")
+        return table.put_item(**operation)
+
+    table.meta.client.transact_write_items.side_effect = transact
+    return table
 
 
 class TestResolveInstallationForTenant:
@@ -34,10 +72,11 @@ class TestResolveInstallationForTenant:
             }
         }
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("aws-e")
 
         assert result == 124731131
-        mock_table.return_value.get_item.assert_called_once_with(
+        mock_table.return_value.get_item.assert_any_call(
             Key={
                 "identity_type": "org_installation",
                 "identity_value": "aws-e",
@@ -53,6 +92,7 @@ class TestResolveInstallationForTenant:
         # Issue #3860: forward-scan fallback also finds nothing
         mock_table.return_value.query.return_value = {"Items": []}
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("unknown-org")
 
         assert result is None
@@ -62,6 +102,7 @@ class TestResolveInstallationForTenant:
         """Empty org_id returns None without querying DDB."""
         from common.installation_resolver import resolve_installation_for_tenant
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("")
 
         assert result is None
@@ -72,6 +113,7 @@ class TestResolveInstallationForTenant:
         """None org_id returns None without querying DDB."""
         from common.installation_resolver import resolve_installation_for_tenant
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant(None)
 
         assert result is None
@@ -90,6 +132,7 @@ class TestResolveInstallationForTenant:
             }
         }
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("aws-e")
 
         assert result is None
@@ -101,6 +144,7 @@ class TestResolveInstallationForTenant:
 
         mock_table.return_value.get_item.side_effect = Exception("DDB timeout")
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("aws-e")
 
         assert result is None
@@ -128,6 +172,7 @@ class TestResolveInstallationForTenant:
             }
         }
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("aws-e")
 
         assert result == 124731274
@@ -159,6 +204,7 @@ class TestForwardScanFallback:
             ]
         }
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("acme-hackathon")
 
         assert result == 146123525
@@ -194,6 +240,7 @@ class TestForwardScanFallback:
             ]
         }
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("ambiguous-org")
 
         assert result is None
@@ -211,14 +258,14 @@ class TestForwardScanFallback:
         # Forward-scan returns nothing
         table.query.return_value = {"Items": []}
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("ghost-org")
 
         assert result is None
         table.put_item.assert_not_called()
 
     @patch("common.installation_resolver._get_table")
-    def test_write_through_failure_still_returns_id(self, mock_table):
-        """If write-through fails, the resolution still succeeds."""
+    def test_guarded_heal_failure_denies_resolution(self, mock_table):
         from common.installation_resolver import resolve_installation_for_tenant
 
         table = mock_table.return_value
@@ -237,10 +284,11 @@ class TestForwardScanFallback:
         # Write-through fails
         table.put_item.side_effect = Exception("DDB write error")
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("acme-hackathon")
 
         # Resolution still succeeds even though write-through failed
-        assert result == 146123525
+        assert result is None
 
     @patch("common.installation_resolver._get_table")
     def test_forward_scan_query_error_returns_none(self, mock_table):
@@ -253,6 +301,7 @@ class TestForwardScanFallback:
         # Forward-scan query errors
         table.query.side_effect = Exception("DDB query timeout")
 
+        _guarded_transaction_table(mock_table.return_value)
         result = resolve_installation_for_tenant("error-org")
 
         assert result is None

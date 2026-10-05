@@ -358,7 +358,7 @@ becoming a runtime `helm: not found` inside a reconcile loop.
 The image for the reviewed implementation commit `060a3c2764a408b6c3207db8795e0c8159ef28ea`
 was built by [controller build 35663521595](https://github.com/aws-e/adp/actions/runs/35663521595):
 
-`879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed`
+`000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed`
 
 [Validation run 35669683518](https://github.com/aws-e/adp/actions/runs/35669683518)
 verified that image's source-revision label and collected Syft 1.52.0 and Grype

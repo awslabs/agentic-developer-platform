@@ -66,8 +66,10 @@ def persona_compatibility_class(persona_key: str) -> str | None:
     # The staged copy is asserted to match the authoritative source by a
     # parity test — see tests/admin/persona_models/test_persona_parity.py.
     from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS
+    from src.tasks.personas import TASK_PERSONAS
 
-    return PERSONA_COMPATIBILITY_CLASS.get(persona_key)
+    profile = TASK_PERSONAS.get(persona_key)
+    return profile.compatibility_class if profile else PERSONA_COMPATIBILITY_CLASS.get(persona_key)
 
 
 def compatibility_class_harness_contract_revision(compatibility_class: str) -> str | None:
@@ -86,6 +88,10 @@ def persona_harness_contract_revision(persona_key: str) -> str:
     targets.  A newly registered compatibility class therefore cannot borrow
     another class's revision or silently emit a null revision.
     """
+    from src.tasks.personas import TASK_PERSONAS
+
+    if persona_key in TASK_PERSONAS:
+        return TASK_PERSONAS[persona_key].harness_contract_revision
     compatibility_class = persona_compatibility_class(persona_key)
     if compatibility_class is None:
         raise ValueError(f"Unknown persona key '{persona_key}'.")
@@ -163,6 +169,23 @@ class CatalogueModel:
 # Listing is not evidence.  Price coverage is not entitlement.  #2300.
 PLATFORM_MODEL_CATALOGUE: tuple[CatalogueModel, ...] = (
     # --- Opus family ---
+    # Account availability verified 2026-09-24; membership is not invocation proof.
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-5-5",
+        model_family="Opus",
+        canonical_version="5.5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # US profile: exact Task cyber Messages probe verified 2026-09-26.
+    # CLI harness readiness still requires its own persisted evidence.
+    CatalogueModel(
+        canonical_model_id="us.anthropic.claude-opus-5",
+        model_family="Opus",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
     CatalogueModel(
         canonical_model_id="global.anthropic.claude-opus-5",
         model_family="Opus",
@@ -241,6 +264,28 @@ PLATFORM_MODEL_CATALOGUE: tuple[CatalogueModel, ...] = (
         compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
         harness_contract_revision=HARNESS_CONTRACT_REVISION,
     ),
+    # --- GPT-6 family (native Codex personas only) ---
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-astra",
+        model_family="GPT-6 Astra",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-sol",
+        model_family="GPT-6 Sol",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-luna",
+        model_family="GPT-6 Luna",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
 )
 
 # Index for O(1) lookups by canonical model ID.
@@ -257,13 +302,17 @@ def catalogue_lookup(canonical_model_id: str) -> CatalogueModel | None:
 # ---------------------------------------------------------------------------
 # Restricted to models in PLATFORM_MODEL_CATALOGUE.  This is deliberately
 # narrower than model_resolver.py's DEFAULT_MODEL_ALIASES, which includes
-# non-Anthropic families (openai.* for the Codex bridge) that D6 forbids
-# for persona execution.
+# additional models outside the persona catalogue. Compatibility is enforced
+# separately: OpenAI entries are available only to native Codex personas.
 #
 # Bare/ambiguous aliases (opus, sonnet, haiku) are refused, not resolved,
 # to prevent silent drift when a provider moves a "latest" pointer (#2300).
 
 PERSONA_MODEL_ALIASES: dict[str, str] = {
+    "gpt6-astra": "openai.gpt-6-astra",
+    "gpt6-sol": "openai.gpt-6-sol",
+    "gpt6-luna": "openai.gpt-6-luna",
+    "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
@@ -301,13 +350,16 @@ def resolve_alias(alias: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Persona-selection allowed patterns (§3.4, C3)
 # ---------------------------------------------------------------------------
-# Separate from model_resolver.py's DEFAULT_ALLOWED_PATTERNS, which includes
-# openai.* to keep the Codex bridge working (#2709/#2713).  D6 permits
-# Anthropic Claude only for persona execution.
+# Model access and harness compatibility are independent gates. Only pinned
+# GPT-6 members join the baseline; this does not authorize Claude personas to
+# execute them or widen explicit tenant/service restrictions.
 
 PERSONA_ALLOWED_PATTERNS: tuple[str, ...] = (
     "anthropic.claude-*",
     "us.anthropic.claude-*",
     "eu.anthropic.claude-*",
     "global.anthropic.claude-*",
+    "openai.gpt-6-astra",
+    "openai.gpt-6-sol",
+    "openai.gpt-6-luna",
 )

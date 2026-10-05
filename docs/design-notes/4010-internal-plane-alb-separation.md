@@ -33,7 +33,7 @@ routing-layer backstop underneath.
 
 The issue specified putting the API-GW VPC-Link integrations on a **separate ALB
 listener port** from the CloudFront-facing port. Spikes against the live dev
-account (`879318057152`, `us-east-1`) produced two findings that block that exact
+account (`000000000101`, `us-east-1`) produced two findings that block that exact
 shape, and one that opens a better one.
 
 ### Finding 1 — an out-of-band deny rule can never be ordered before the catch-all
@@ -91,7 +91,7 @@ gateway outage until ... re-pointed at the new DNS").
 
 Also confirmed: today's `group.name: bedrockgw` annotation **is already a no-op**.
 The live ALB is `k8s-adpgatew-bedrockg-8c0085afd5`, tagged
-`ingress.eks.amazonaws.com/stack: adp-gateway/bedrockgateway` — the implicit
+`gateway-15.example.com/stack: adp-gateway/bedrockgateway` — the implicit
 single-Ingress pattern, not a `bedrockgw` group.
 
 ### Finding 3 — the REST `uri` port DOES route (the issue's doc citation is wrong)
@@ -160,7 +160,7 @@ call. Path is the only discriminator available at that ALB, hence the explicit
 |---|---|
 | Secret-header discriminator | Explicitly rejected in the approved design (re-couples layers) |
 | Blanket app-middleware `/internal/*` reject | Explicitly rejected — would 403 the ClusterIP ingestion status callback and halt ingestion platform-wide |
-| `conditions.*` `source-ip` scoped to VPC-Link subnets (the issue's fallback) | **Would not actually separate the planes.** CloudFront's ENIs (`10.0.11.75`, `10.0.10.219`) and API Gateway's VPC-Link ENIs (`10.0.11.48`, `10.0.10.6`) sit in the **same two private subnets** (`10.0.10.0/24`, `10.0.11.0/24`) |
+| `conditions.*` `source-ip` scoped to VPC-Link subnets (the issue's fallback) | **Would not actually separate the planes.** CloudFront's ENIs (`192.0.2.20`, `192.0.2.20`) and API Gateway's VPC-Link ENIs (`192.0.2.20`, `192.0.2.20`) sit in the **same two private subnets** (`192.0.2.0/24`, `192.0.2.0/24`) |
 | Terraform `aws_lb_listener_rule` deny on the existing listener | Finding 1 — cannot be ordered before the controller's priority-1 catch-all; silent no-op |
 
 The ClusterIP status callback is untouched by design: it goes pod → Service →
@@ -220,7 +220,7 @@ made **strictly last**, and conditional on the repoint being observable:
    deny, so the edge behavior is **unchanged**. `ingress-internal.yaml` is applied
    and the controller begins provisioning the internal ALB (~2–3 min).
 2. **Discovery** — `wire-gateway-alb.sh` finds the internal ALB by its
-   `ingress.eks.amazonaws.com/stack` tag and caches it to SSM. This now runs even
+   `gateway-15.example.com/stack` tag and caches it to SSM. This now runs even
    when the edge ALB is already cached (the `exit 0` short-circuit was the root
    cause of step 2 in the outage above).
 3. **Repoint** — `gateway-infra-apply.yml` re-applies with
@@ -264,7 +264,7 @@ coin-flip with two. Picking the internal-plane ALB for `internal_alb_dns` would
 point CloudFront's VPC origin and the public `/{proxy+}` route at an ALB that
 only serves `/internal` — **a full gateway outage.**
 
-Discovery now matches on the `ingress.eks.amazonaws.com/stack` tag
+Discovery now matches on the `gateway-15.example.com/stack` tag
 (`find_alb_by_stack()`), which is the only deterministic discriminator, keeping
 the old heuristics as a fallback. The script also **fails loudly** if the two
 resolve to the same ALB, since that would mean the separation silently does not
@@ -334,7 +334,7 @@ Confirm the two ALBs are genuinely distinct:
 aws elbv2 describe-tags --resource-arns $(
   aws elbv2 describe-load-balancers \
     --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' --output text | tr '\t' ' '
-) --query "TagDescriptions[?Tags[?Key=='ingress.eks.amazonaws.com/stack']].{ARN:ResourceArn,Stack:Tags[?Key=='ingress.eks.amazonaws.com/stack']|[0].Value}"
+) --query "TagDescriptions[?Tags[?Key=='gateway-15.example.com/stack']].{ARN:ResourceArn,Stack:Tags[?Key=='gateway-15.example.com/stack']|[0].Value}"
 ```
 
 Regression: CloudFront `/api/*` and `/.well-known/*` still serve; GitLab
@@ -376,7 +376,7 @@ Record the pre-change edge ALB DNS/ARN so rollback never depends on a live probe
 
 ```
 ALB : k8s-adpgatew-bedrockg-8c0085afd5
-DNS : internal-k8s-adpgatew-bedrockg-8c0085afd5-428441231.us-east-1.elb.amazonaws.com
+DNS : gateway-16.example.com
 ```
 
 ## Follow-up

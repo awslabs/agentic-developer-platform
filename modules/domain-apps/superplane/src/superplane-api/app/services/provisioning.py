@@ -255,7 +255,7 @@ class OperationFacade(Protocol):
         permission: str,
         parameters: dict[str, str],
     ) -> OperationProgress:
-        """Authorize and start one operation, returning the facade's first report.
+        """Authorize and idempotently start one operation, returning its first report.
 
         The facade resolves the principal itself and binds the operation to it.
         ``org_id`` comes from the caller's *verified* token at the API boundary,
@@ -337,26 +337,38 @@ def _check_parameters(parameters: dict[str, str]) -> None:
 
 
 async def _start(
-    *, action: str, workspace_id: str, org_id: str, parameters: dict[str, str]
+    *,
+    operation_id: str,
+    action: str,
+    workspace_id: str,
+    org_id: str,
+    parameters: dict[str, str],
 ) -> OperationProgress:
     """Open an authorized operation, or raise. Shared by both verbs."""
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled(lifecycle="runtime_config_sha256" in parameters)
     if action not in PROVISIONING_ACTIONS:
         raise ProvisioningRefused(f"unknown provisioning action: {action!r}")
     _check_parameters(parameters)
     facade = _require_facade()
 
+    if not isinstance(operation_id, str) or not operation_id.strip():
+        raise ProvisioningRefused("A stable request identity is required")
     progress = await facade.open_operation(
         action=action,
         workspace_id=workspace_id,
         org_id=org_id,
         permission=REQUIRED_PERMISSION,
-        parameters=parameters,
+        parameters={**parameters, "idempotency_key": operation_id},
     )
     if not isinstance(progress, OperationProgress):
         # A facade returning something else is a contract breach on B's side, and
         # it must surface here rather than being handed to a caller who would read
         # `.state` off an arbitrary object.
         raise ProvisioningError("facade progress report is not an OperationProgress")
+    # The facade derives its operation ID from admitted approval state. The
+    # client's request identity is an idempotency key, not that server-owned ID.
     logger.info(
         "Opened %s operation %s for workspace %s (state=%s)",
         action,
@@ -367,8 +379,22 @@ async def _start(
     return progress
 
 
+async def start_planned_provision(
+    *, operation_id: str, workspace_id: str, org_id: str, parameters: dict[str, str]
+) -> OperationProgress:
+    """Admit the exact server-generated preview that the human approved."""
+    return await _start(
+        operation_id=operation_id,
+        action=PROVISION,
+        workspace_id=workspace_id,
+        org_id=org_id,
+        parameters=parameters,
+    )
+
+
 async def start_provision(
     *,
+    operation_id: str,
     workspace_id: str,
     org_id: str,
     workspace_name: str,
@@ -388,6 +414,7 @@ async def start_provision(
     if account:
         parameters["aws_account_id"] = account
     return await _start(
+        operation_id=operation_id,
         action=PROVISION,
         workspace_id=workspace_id,
         org_id=org_id,
@@ -396,10 +423,11 @@ async def start_provision(
 
 
 async def start_teardown(
-    *, workspace_id: str, org_id: str, workspace_name: str
+    *, operation_id: str, workspace_id: str, org_id: str, workspace_name: str
 ) -> OperationProgress:
     """Begin tearing down a workspace under an authorized operation."""
     return await _start(
+        operation_id=operation_id,
         action=TEARDOWN,
         workspace_id=workspace_id,
         org_id=org_id,

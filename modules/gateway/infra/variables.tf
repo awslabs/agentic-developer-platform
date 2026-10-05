@@ -21,6 +21,29 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+# Update mode recovers these from the installed layer versions. Fresh deploys
+# continue to use the mutable CodeBuild upload keys; a prior release's
+# immutable package and retention setting must never be silently reverted.
+variable "pyjwt_layer_s3_key" {
+  type    = string
+  default = "lambda-layers/pyjwt-py313.zip"
+}
+
+variable "pyjwt_layer_skip_destroy" {
+  type    = bool
+  default = false
+}
+
+variable "psycopg2_layer_s3_key" {
+  type    = string
+  default = "lambda-layers/psycopg2-py312.zip"
+}
+
+variable "psycopg2_layer_skip_destroy" {
+  type    = bool
+  default = false
+}
+
 variable "cost_center" {
   type        = string
   description = "Cost center for billing allocation"
@@ -146,11 +169,38 @@ variable "pool_account_arns" {
 
 variable "cognito_mfa_configuration" {
   type        = string
-  description = "MFA configuration for Cognito User Pool: OFF, ON, or OPTIONAL"
-  default     = "OPTIONAL"
+  description = "Cognito MFA configuration: OFF (default), ON (required), or OPTIONAL (user-elected)."
+  # The GitHub auth broker cannot complete Cognito MFA challenges.
+  # Keep both module defaults OFF; enable MFA explicitly after validating sign-in flows.
+  default = "OFF"
+
   validation {
     condition     = contains(["OFF", "ON", "OPTIONAL"], var.cognito_mfa_configuration)
     error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
+  }
+}
+
+variable "cognito_threat_protection_mode" {
+  type        = string
+  description = "Cognito threat protection (advanced security) mode: OFF, AUDIT (detect + log risk, no enforcement) or ENFORCED (block/challenge risky sign-ins). AUDIT and ENFORCED require the Cognito Plus feature plan, billed per monthly active user."
+
+  # #5666 (A11): threat protection had no path through this root module at all —
+  # opting in would have meant editing module internals. Exposed here so it is a
+  # one-line tfvars change per environment.
+  #
+  # The default MIRRORS the inner module's default deliberately. A wrapper default
+  # that disagreed with the module it wraps is the precise defect above: the outer
+  # value silently wins and the inner hardening becomes dead code. Keeping the two
+  # equal means this pass-through cannot shadow anything.
+  #
+  # OFF, unlike the other defaults in this issue, because the Plus plan is a
+  # per-monthly-active-user charge: a merge must not change an AWS bill. AUDIT is
+  # the recommended first step — it logs risk without altering any sign-in outcome.
+  default = "OFF"
+
+  validation {
+    condition     = contains(["OFF", "AUDIT", "ENFORCED"], var.cognito_threat_protection_mode)
+    error_message = "cognito_threat_protection_mode must be OFF, AUDIT, or ENFORCED."
   }
 }
 
@@ -223,6 +273,37 @@ variable "github_oauth_client_secret" {
   description = "GitHub OAuth App client secret. Required when enable_github_oauth is true."
   default     = ""
   sensitive   = true
+}
+
+# =============================================================================
+# Task API Submission Route (Issue #5795, T2)
+# =============================================================================
+# The Lambda that serves POST /v1/tasks is owned by
+# modules/agent-factory/webhook-ingress, a separate Terraform state, so its
+# identifiers come in as variables the way internal_alb_arn does.
+#
+# Two independent switches, deliberately: this route can EXIST without
+# ACCEPTING anything. Publishing it is a gateway apply; accepting submissions
+# additionally requires ADP_TASK_API_ADMISSION_ENABLED on the Lambda. So the
+# edge can be in place and verified before any task is admitted, and admission
+# can be withdrawn without a gateway apply.
+
+variable "task_api_lambda_invoke_arn" {
+  type        = string
+  description = "Invoke ARN of the webhook-ingress Lambda serving POST /v1/tasks. Empty publishes no task route."
+  default     = ""
+}
+
+variable "task_api_lambda_function_name" {
+  type        = string
+  description = "Function name of the webhook-ingress Lambda serving POST /v1/tasks (for the scoped aws_lambda_permission)."
+  default     = ""
+}
+
+variable "enable_task_api_route" {
+  type        = bool
+  description = "Publish the explicit POST /v1/tasks route on the main API Gateway and exact /api/v1/tasks CloudFront route. Default off; publishing the route does not admit any task on its own."
+  default     = false
 }
 
 # =============================================================================
@@ -437,6 +518,18 @@ variable "orchestration_tick_schedule" {
   default     = "rate(5 minutes)"
 }
 
+variable "orchestration_tick_schedule_enabled" {
+  description = "Desired engine schedule state; upgrades preserve an intentionally disabled schedule."
+  type        = bool
+  default     = true
+}
+
+variable "orchestration_tick_upgrade_hold" {
+  description = "Temporary deployment hold until migrations, gateway and workers have been verified. Not a retained operator setting."
+  type        = bool
+  default     = false
+}
+
 variable "orchestration_tick_image_tag" {
   type        = string
   description = <<-EOT
@@ -445,6 +538,16 @@ variable "orchestration_tick_image_tag" {
     the same artifact the pod does.
   EOT
   default     = "latest"
+}
+
+variable "orchestration_tick_image_digest" {
+  type        = string
+  default     = null
+  description = "Optional immutable gateway image digest. Overrides the tag during staged upgrades."
+  validation {
+    condition     = var.orchestration_tick_image_digest == null ? true : can(regex("^sha256:[0-9a-f]{64}$", var.orchestration_tick_image_digest))
+    error_message = "The orchestration image digest must be sha256 followed by 64 lowercase hexadecimal characters."
+  }
 }
 
 variable "orchestration_alert_email_addresses" {
@@ -539,16 +642,12 @@ variable "orchestration_dispatch_max_per_tick" {
 variable "orchestration_engine_enabled" {
   type        = bool
   description = <<-EOT
-    Whether the orchestration engine's feature flag is on for this environment
-    (FEATURE_ORCHESTRATION_ENGINE_ENABLED on the tick).
-
-    Default false, and the committed value must STAY false: this is the same
-    three-place flag the gateway's k8s manifest and frontend catalogue carry, and
-    `tests/orchestration/test_feature_flag_parity.py` enforces the parity. Enabling
-    the engine in an environment is a deliberate per-environment override, not a
-    committed change.
+    Enable the orchestration engine for this environment. Enabled by default
+    for new deployments; set false to retain GitHub-only operation. Keep the
+    gateway SSM feature-orchestration-engine override aligned with this value.
+    Runtime consumers require an explicit true value and reject malformed flags.
   EOT
-  default     = false
+  default     = true
 }
 
 variable "orchestration_webhook_events_table" {

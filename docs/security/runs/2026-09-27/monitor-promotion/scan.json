@@ -1,0 +1,13 @@
+{
+  "image": "security27/monitor:fixed",
+  "docker_root_descriptor": "sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+  "config_digest": "sha256:10716ab167a23f81c48f9077651248280e5ef57740fb36217b972e5dc0739ab2",
+  "time": "2026-09-27T08:13:27.330721+00:00",
+  "packages": 16,
+  "native_counts": {
+    "Medium": 2
+  },
+  "sbom_sha256": "ccfc0368f42f388305f4b553e107ce9e3e6180bc1902f1ce3b013f11e624e96e",
+  "grype_sha256": "ced099748abd786f7dbc4ead1cee534d679e288dc18df6ac99fbb398717b87e9",
+  "archive_sha256": "9d06bd619e31997f3dfe7b143fcb10c5551fe7fef9e9e40f3f275725cf9d7839"
+}

@@ -1,0 +1,37 @@
+{
+  "$fixture": {
+    "description": "An envelope carrying the SQS receipt handle and transport message ID. The design fixes message_id to the ADP invocation ID precisely so a transport identifier never becomes a run handle: a redelivered message has a new transport ID but the same run, and confusing the two is how a redelivery turns into a second run.",
+    "schema": "envelope.schema.json#/$defs/task_dispatch_envelope",
+    "expect": "invalid",
+    "reason": "receipt_handle and sqs_message_id are forbidden envelope fields; message_id must be the invocation ID",
+    "violates": [
+      "envelope.schema.json#/$defs/task_dispatch_envelope/not"
+    ],
+    "owner": "T3",
+    "criteria": [
+      "T0-AC02",
+      "T3-AC02",
+      "V0-03",
+      "V3-02"
+    ]
+  },
+  "kind": "adp.task",
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "message_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "persona": "agent-task-investigator",
+  "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+  "request_digest": "9c1e3f5a7d40b2c4e6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2",
+  "input_ref": {
+    "record_type": "TASK",
+    "input_digest": "4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c61"
+  },
+  "assignment_ref": {
+    "grant_pk": "TENANT#acme",
+    "grant_sk": "TASK_RUN#3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20#GEN#0000000001",
+    "generation": 1
+  },
+  "receipt_handle": "AQEBwJnKyrHigUMZj6rYigCgxlaS3SLy0a...",
+  "sqs_message_id": "b9f1c0d3-2e4a-4b6c-8d0e-1f3a5b7c9d11"
+}

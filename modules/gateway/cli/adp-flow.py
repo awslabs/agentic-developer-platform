@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -521,6 +522,26 @@ def list_plans(args, api):
     if unavailable:
         return unavailable
     versions = api.request("GET", f"{FLOWS}/{segment(args.flow_id)}/plans")
+    current = next((plan for plan in reversed(versions) if plan.get("superseded_at") is None), None)
+    acceptance = "unknown"
+    if current and current.get("accepted_by_decision_id"):
+        # The storage column also points to PLAN_DRAFTED. A decision ID alone
+        # proves attribution, not approval. Resolve actual human decisions.
+        decisions = api.request("GET", f"{FLOWS}/{segment(args.flow_id)}/decisions")
+        source = next((d for d in decisions if d.get("id") == current["accepted_by_decision_id"]), {})
+        approvals = {"plan_accepted", "plan_amended", "gate_approved"}
+
+        def human_approval(decision):
+            return decision.get("actor_kind") == "human" and decision.get("kind", "").lower() in approvals
+
+        if human_approval(source):
+            acceptance = "accepted"
+        elif source.get("kind", "").lower() == "plan_drafted":
+            # A policyless draft can be accepted by answering its gate without
+            # writing a new plan row. Draft revision refuses any prior approval.
+            acceptance = "accepted" if any(human_approval(d) for d in decisions) else "proposed"
+    elif current:
+        acceptance = "proposed"
     rows = [
         {
             "version": plan.get("version"),
@@ -528,28 +549,29 @@ def list_plans(args, api):
             "accepted_by_decision_id": plan.get("accepted_by_decision_id"),
             "superseded_at": plan.get("superseded_at"),
             "created_at": plan.get("created_at"),
-            # A plan nobody accepted and nothing superseded is the live proposal.
-            # Derived here rather than asked of the server, which exposes no such
-            # field — and named so a reader is not left inferring it from two nulls.
-            "current_proposal": plan.get("accepted_by_decision_id") is None and plan.get("superseded_at") is None,
+            "current_proposal": plan is current and acceptance == "proposed",
         }
         for plan in versions
     ]
     detail = {"flow_id": args.flow_id, "versions": rows}
     if args.json:
         detail["documents"] = versions
-    accepted = [row for row in rows if row["accepted_by_decision_id"] and not row["superseded_at"]]
+    accepted = [row for row in rows if row["superseded_at"] is None and acceptance == "accepted"]
     proposed = [row for row in rows if row["current_proposal"]]
     detail["accepted_version"] = accepted[-1]["version"] if accepted else None
     detail["proposed_version"] = proposed[-1]["version"] if proposed else None
+    detail["current_version"] = current["version"] if current else None
+    detail["acceptance_status"] = acceptance
     if proposed:
         row = proposed[-1]
         action = (
             f"Version {row['version']} is proposed and not accepted. Read it with --json, then bind your approval to it: "
             f"'adp flow gate approve GATE_ID --expect-plan-hash {row['plan_hash']}'."
         )
+    elif accepted:
+        action = "The current plan has a recorded human approval; see flow show for pause state and remaining gates."
     else:
-        action = "Every version here is accepted or superseded; there is no pending proposal."
+        action = "Acceptance could not be verified from these records. Inspect flow decisions and flow show before proceeding."
     return common.envelope("ok", "flow plans", detail, action)
 
 
@@ -682,6 +704,26 @@ def check_plan_revision(api, flow, expected_hash):
         )
 
 
+def request_gate_answer(api, gate_id, *, approve, body):
+    """Submit a gate answer and make an expired reviewed policy actionable."""
+    try:
+        return api.request(
+            "POST",
+            f"{GATES}/{segment(gate_id)}/{'approve' if approve else 'reject'}",
+            body,
+        )
+    except CliError as exc:
+        if exc.code == "execution_policy_expired":
+            raise CliError(
+                "The reviewed execution policy has expired, so nothing was approved. "
+                "Continue planning or request a newly derived plan, review its new revision and policy, then approve that exact revision.",
+                exc.code,
+                exc.exit_code,
+                status_code=exc.status_code,
+            ) from None
+        raise
+
+
 def answer_gate(args, api):
     """Approve or reject one gate, showing what it is attached to first."""
     command = "flow gate " + args.gate_action
@@ -747,11 +789,7 @@ def answer_gate(args, api):
         # is the enforcement point: it is compared inside the same transaction that
         # moves the gate, which is the part no client re-read can do.
         body["expected_plan_hash"] = args.expect_plan_hash
-    result = api.request(
-        "POST",
-        f"{GATES}/{segment(args.gate_id)}/{'approve' if approving else 'reject'}",
-        body,
-    )
+    result = request_gate_answer(api, args.gate_id, approve=approving, body=body)
     detail = dict(
         context,
         status=result.get("status"),
@@ -904,6 +942,9 @@ def preview_text(preview):
             "    ^ this plan declares NO execution policy, which means legacy UNBOUNDED semantics: "
             "no repository restriction, no action allowlist, no spend ceiling and no expiry."
         )
+    for epic in preview.get("epic_metadata") or []:
+        lines.append(f"  {epic.get('title') or epic.get('epic_ref')} ({epic.get('epic_ref')}):")
+        lines.append(f"    {epic.get('description') or ''}")
     lines += wave_lines(preview.get("waves") or [])
     lines += conclusion_lines(preview.get("nodes") or [])
     lines.append(f"  cost so far: {graph.get('cost')}")
@@ -927,18 +968,24 @@ def wave_lines(waves):
     if not waves:
         return []
     lines = ["  execution order (waves at the same stage run concurrently):"]
+
+    def label(wave):
+        ref = f"{wave.get('epic_ref')}/{wave.get('wave_ref')}"
+        return f"{wave['title']} ({ref})" if wave.get("title") else ref
+
     by_stage = {}
     for wave in waves:
         by_stage.setdefault(wave.get("stage"), []).append(wave)
     staged = [stage for stage in by_stage if stage is not None]
     for stage in sorted(staged):
-        labels = ", ".join(f"{wave.get('epic_ref')}/{wave.get('wave_ref')}" for wave in by_stage[stage])
+        labels = ", ".join(label(wave) for wave in by_stage[stage])
         concurrent = " (concurrent)" if len(by_stage[stage]) > 1 else ""
         lines.append(f"    stage {stage}{concurrent}: {labels}")
     for wave in by_stage.get(None, []):
-        lines.append(
-            f"    stage unknown: {wave.get('epic_ref')}/{wave.get('wave_ref')} — its wave dependencies form a cycle, so ADP cannot say when it runs."
-        )
+        lines.append(f"    stage unknown: {label(wave)} — its wave dependencies form a cycle, so ADP cannot say when it runs.")
+    for wave in waves:
+        if wave.get("description"):
+            lines.append(f"    {label(wave)}: {wave['description']}")
     return lines
 
 
@@ -957,7 +1004,12 @@ def conclusion_lines(nodes):
     tally = {}
     for node in nodes:
         tally.setdefault(node.get("concluded_by") or "undetermined", []).append(node)
-    lines = ["  who may mark work complete:"]
+    lines = []
+    for node in nodes:
+        executor = node.get("executor")
+        if executor:
+            lines.append(f"  executor for {node.get('address')}: {executor.get('persona')} ({executor.get('role')})")
+    lines.append("  who may mark work complete:")
     for authority in sorted(tally):
         lines.append(f"    {authority}: {len(tally[authority])} node(s)")
     unattended = tally.get("machine_evaluation") or []
@@ -992,8 +1044,38 @@ def policy_lines(policy):
         f"    repositories: {policy.get('repository_ids')}",
         f"    environment connections: {policy.get('environment_connection_ids')}",
         f"    limits: {policy.get('limits')}",
-        f"    expires: {policy.get('expires_at')}",
+        f"    expires: {expiry_text(policy.get('expires_at'))}",
     ]
+
+
+def expiry_text(expires_at):
+    """The expiry, with a past one named as past rather than printed as a timestamp.
+
+    A bare ISO timestamp does not tell a reader whether the authority they are about
+    to approve is still live — comparing it to now is work, and it is work done at
+    the one moment the reader is focused on something else. An expiry already behind
+    us is the case that matters: accepting it is refused by the server, and without
+    this the operator reads a plausible-looking date, approves, and gets a refusal
+    they have to decode.
+
+    An unparseable or absent value is passed through verbatim. Guessing at a
+    malformed expiry would be the one wrong thing to do here: a reader shown
+    "(already expired)" for a value this code simply failed to read has been told
+    something the server never said.
+    """
+    if not isinstance(expires_at, str):
+        return f"{expires_at}"
+    try:
+        moment = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return expires_at
+    if moment.tzinfo is None:
+        # Every expiry ADP writes is UTC; reading a naive one as local time would
+        # shift the comparison by the offset and could call a dead grant live.
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment <= datetime.now(tz=timezone.utc):
+        return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
+    return expires_at
 
 
 def registration_refusal(api, document):
@@ -1210,6 +1292,58 @@ def dispatch_text(flow_id, confirmed, summary):
     )
 
 
+def revise_draft(args, api):
+    """Preview or save one exact draft revision; never answer an execution gate."""
+    command = "flow draft " + args.draft_action
+    if args.expect_plan_version < 1 or not re.fullmatch(r"[0-9a-f]{64}", args.expect_plan_hash):
+        raise CliError("Use a positive --expect-plan-version and the current 64-character --expect-plan-hash.", "usage_error", 1)
+    if args.draft_action == "save" and not re.fullmatch(r"[0-9a-f]{64}", args.expect_proposal_hash):
+        raise CliError("Use the 64-character --expect-proposal-hash returned by draft preview.", "usage_error", 1)
+    body = {
+        "proposal": read_plan_file(args.file),
+        "expected_plan_version": args.expect_plan_version,
+        "expected_plan_hash": args.expect_plan_hash,
+        "reason": args.reason,
+    }
+    if args.draft_action == "save":
+        body["expected_proposal_hash"] = args.expect_proposal_hash
+        common.ensure_can_mutate("flows.draft.write", request=api.request)
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+    operation = "preview" if args.draft_action == "preview" else "revise"
+    try:
+        result = api.request("POST", f"{FLOWS}/{segment(args.flow_id)}/draft/{operation}", body)
+    except CliError as exc:
+        if exc.status_code == 404 and exc.code != "flow_not_found":
+            raise CliError(
+                "This gateway does not support registered draft revisions. Upgrade the gateway and CLI; no fallback was attempted.",
+                "draft_revision_unavailable",
+                4,
+            ) from None
+        if exc.status_code == 409:
+            raise CliError(
+                f"Draft revision refused ({exc.code}). Read the current flow and preview again. No revision was saved.", exc.code, 4
+            ) from None
+        raise
+    if result.get("execution_authorized") is not False or result.get("flow_id") != args.flow_id:
+        raise CliError(
+            "Unexpected draft revision response. Read the flow before retrying; no execution approval was requested.", "invalid_draft_response", 5
+        )
+    if args.draft_action == "preview":
+        next_action = (
+            f"Preview only: {len(result.get('added_nodes', []))} nodes added, {len(result.get('removed_nodes', []))} superseded. "
+            f"Review the effective proposal and policy. Save with --expect-proposal-hash {result.get('proposal_hash')}; "
+            "retain the same base plan version/hash and file. Saving does not approve execution."
+        )
+    else:
+        next_action = (
+            f"Draft revision {result.get('plan_version')} saved. "
+            "The gate remains unanswered and the pause setting is unchanged. No execution was approved."
+        )
+    return common.envelope("ready", command, result, next_action)
+
+
 def create_flow(args, api):
     """Dry-run a plan from disk, register it INERT, preview it, then accept it explicitly.
 
@@ -1376,13 +1510,14 @@ def register_preview_accept(api, document, *, verb, reason, assume_yes, expected
         "and the approval is recorded against your identity.",
         assume_yes,
     )
-    answer = api.request(
-        "POST",
-        f"{GATES}/{segment(gate_id)}/approve",
+    answer = request_gate_answer(
+        api,
+        gate_id,
+        approve=True,
         # The binding, server-enforced. Sent even under --yes: a script that
         # accepts whatever is live is the concurrent-edit hole, and the hash it
         # sends is the one this run previewed.
-        {"reason": reason, "expected_plan_hash": plan_hash},
+        body={"reason": reason, "expected_plan_hash": plan_hash},
     )
     detail["acceptance"] = {
         "gate_id": gate_id,
@@ -1668,6 +1803,8 @@ def start_flow(args, api):
         if args.issue:
             opening += f"\n\nStart from issue #{args.issue} in that repository."
 
+        if not any((args.outcome, args.repo, args.issue)):
+            common.ensure_can_mutate("flows.draft.write", request=api.request)
         request_id = args.request_id or uuid.uuid4().hex
         detail["request_id"] = request_id
         progress(f"Opening planning request {request_id}. If delivery is interrupted, retry with --request-id {request_id}.")
@@ -1687,6 +1824,8 @@ def start_flow(args, api):
             return common.envelope("pending", "flow start", detail, stop)
 
     if resuming and args.answer:
+        if not any((args.outcome, args.repo, args.issue)):
+            common.ensure_can_mutate("flows.draft.write", request=api.request)
         request_id = args.request_id or uuid.uuid4().hex
         detail["request_id"] = request_id
         progress(f"Sending answer {request_id}. Retry this answer with --request-id {request_id} if delivery is interrupted.")
@@ -1784,6 +1923,131 @@ def start_flow(args, api):
 # --- dispatch --------------------------------------------------------------
 
 
+def recovery_read(api, flow_id, node_id):
+    path = query("/orchestration/nodes/" + segment(node_id) + "/recovery", {"flow_id": flow_id})
+    value = api.request("GET", path)
+    if (
+        not isinstance(value, dict)
+        or value.get("contract") != "node-recovery-v1"
+        or value.get("flow_id") != flow_id
+        or value.get("node_id") != node_id
+        or not isinstance(value.get("revision"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", value["revision"])
+        or type(value.get("attempts")) is not int
+        or not isinstance(value.get("state"), str)
+        or not isinstance(value.get("kind"), str)
+        or not (value.get("bound_pull_request") is None or isinstance(value["bound_pull_request"], dict))
+    ):
+        raise CliError("Gateway lacks valid revision-bound node recovery readback. Upgrade it before recovery.", "invalid_response", 5)
+    return value
+
+
+def recover_node(args, api):
+    node_id = flow_id_argument(args.node_id)
+    flow_id = args.flow_id
+    before = recovery_read(api, flow_id, node_id)
+    if args.command == "node":
+        if not args.reason.strip() or len(args.reason) > 2000:
+            raise CliError("Supply a nonempty reason of at most 2000 characters.", "usage_error", 1)
+        body = {"reason": args.reason, "reconciled": args.reconciled, "expected_flow_id": flow_id}
+        path = "/orchestration/nodes/" + segment(node_id) + "/resume"
+        effect = "Make this engine node eligible again; dispatch and execution remain subject to engine admission."
+    else:
+        if before["kind"] != "story":
+            raise CliError("Only story nodes have recoverable implementation PRs.", "invalid_state", 4)
+        body = common.read_private_json(Path(args.request_file))
+        allowed = {"repo", "pr_number", "provider_repository_id", "provider_pr_node_id", "head_sha", "reason", "replaces_reason", "adopt_delivery"}
+        if not isinstance(body, dict) or set(body) - allowed:
+            raise CliError("Recovery request contains unsupported fields.", "usage_error", 1)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", str(body.get("repo", "")))
+            or type(body.get("pr_number")) is not int
+            or body["pr_number"] < 1
+            or not isinstance(body.get("reason"), str)
+            or not 10 <= len(body["reason"]) <= 2000
+            or not re.fullmatch(r"[a-fA-F0-9]{40,64}", str(body.get("head_sha", "")))
+        ):
+            raise CliError(
+                "Request requires exact repo, positive PR number, full reviewed head SHA and a reason (10–2000 characters).", "usage_error", 1
+            )
+        path = FLOWS + "/" + segment(flow_id) + "/nodes/" + segment(node_id) + "/pull-request-recovery"
+        effect = "Associate the reviewed PR with this story; canonical merge/check/review verification still applies."
+    command = "flow node resume" if args.command == "node" else "flow recover-pr"
+    plan = {"before": before, "request": body, "expected_revision": before["revision"], "effect": effect}
+    if args.dry_run or not args.yes:
+        return common.envelope("dry_run", command, plan, "Review this state, then pass --yes --expect-revision REV --operation-id UUID.")
+    if not args.expect_revision or not re.fullmatch(r"[a-f0-9]{64}", args.expect_revision) or not args.operation_id:
+        raise CliError("--yes requires the reviewed --expect-revision and a stable --operation-id UUID.", "usage_error", 1)
+    try:
+        operation_id = str(uuid.UUID(args.operation_id))
+    except ValueError:
+        raise CliError("--operation-id must be a UUID.", "usage_error", 1) from None
+    common.ensure_can_mutate("flows.recovery.write", request=api.request)
+    body["expected_revision"] = args.expect_revision
+    binding = {"scope": common.authenticated_scope(), "gateway": common.gateway_url(), "path": path, "body": body}
+    fingerprint = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    directory = common.private_directory(common.state_dir() / "flow-recovery")
+    target = directory / (operation_id + ".json")
+    with common.file_lock(target.with_suffix(".lock"), "This recovery operation is already running."):
+        if target.exists():
+            receipt = common.read_private_json(target)
+            if receipt.get("fingerprint") != fingerprint:
+                raise CliError("This operation ID belongs to different recovery inputs.", "stale_revision", 4)
+            return common.envelope(
+                "pending",
+                command,
+                {"operation_id": operation_id, "current": before, "acknowledgement": receipt.get("acknowledgement"), "replayed_without_write": True},
+                "No recovery resent. Use flow decisions/show to reconcile the canonical record.",
+            )
+        if before["revision"] != args.expect_revision:
+            raise CliError("Recovery state changed; review the node again before acting.", "stale_revision", 4)
+        if args.command == "node" and before["state"] not in {"failed", "halted", "rejected_at_gate", "awaiting_merge"}:
+            raise CliError("Only failed, halted, rejected or awaiting-merge nodes can be resumed.", "invalid_state", 4)
+        receipt = {"fingerprint": fingerprint, "before": before}
+        common.write_json(target, receipt)
+        try:
+            answer = api.request("POST", path, body)
+            if not isinstance(answer, dict) or answer.get("node_id") != node_id:
+                raise CliError("Recovery acknowledgement names no matching node.", "invalid_response", 5)
+            if args.command == "node":
+                valid = (
+                    answer.get("state") == "ready"
+                    and answer.get("from_state") == before["state"]
+                    and bool(answer.get("decision_id"))
+                    and answer.get("actor_kind") == "human"
+                )
+            else:
+                pr = answer.get("bound_pull_request")
+                valid = (
+                    isinstance(pr, dict)
+                    and pr.get("repo", "").lower() == body["repo"].lower()
+                    and pr.get("pr_number") == body["pr_number"]
+                    and str(pr.get("head_sha", "")).lower() == body["head_sha"].lower()
+                )
+            if not valid:
+                raise CliError("Malformed or mismatched recovery acknowledgement.", "invalid_response", 5)
+            receipt["acknowledgement"] = answer
+            common.write_json(target, receipt)
+            current = recovery_read(api, flow_id, node_id)
+        except (CliError, KeyboardInterrupt) as exc:
+            if "acknowledgement" not in receipt and isinstance(exc, CliError) and getattr(exc, "status_code", None) in {400, 401, 403, 404, 409, 422}:
+                receipt["refusal"] = {"code": exc.code, "http_status": exc.status_code}
+                common.write_json(target, receipt)
+                raise
+            return common.envelope(
+                "pending",
+                command,
+                {"operation_id": operation_id, "outcome": "unknown_or_refused"},
+                "No retry sent. Reconcile flow decisions/show with this operation's reviewed state.",
+            )
+        return common.envelope(
+            "configured",
+            command,
+            {"operation_id": operation_id, "acknowledgement": answer, "current": current},
+            "Recovery recorded; use flow watch to observe eligible continuation. This is not proof of dispatch or completion.",
+        )
+
+
 def parser():
     root = common.Parser(prog="adp flow", description="Follow and control AI-DLC delivery flows.")
     commands = root.add_subparsers(dest="command", required=True)
@@ -1835,6 +2099,19 @@ def parser():
     )
     create.add_argument("--json", action="store_true", help="Print machine-readable output")
 
+    draft = commands.add_parser("draft", help="Preview or save an existing unapproved draft without starting execution")
+    draft_actions = draft.add_subparsers(dest="draft_action", required=True)
+    for verb in ("preview", "save"):
+        edit = draft_actions.add_parser(verb, help=f"{verb.title()} a revision of the same inert flow")
+        edit.add_argument("flow_id", metavar="FLOW_ID")
+        edit.add_argument("--file", required=True, metavar="PLAN_JSON", help="Authored proposal; omit the server-inserted acceptance gate")
+        edit.add_argument("--expect-plan-version", required=True, type=int, metavar="N")
+        edit.add_argument("--expect-plan-hash", required=True, metavar="HASH")
+        if verb == "save":
+            edit.add_argument("--expect-proposal-hash", required=True, metavar="HASH", help="Effective proposal hash returned by draft preview")
+        edit.add_argument("--reason", help="Reason recorded with the draft revision")
+        edit.add_argument("--json", action="store_true", help="Print machine-readable output")
+
     listing = commands.add_parser("list", help="List the flows you can see")
     listing.add_argument("--status", choices=FLOW_STATUSES, help="Only flows with this status")
     listing.add_argument("--needs-me", action="store_true", help="Only flows waiting on a decision from you")
@@ -1879,12 +2156,32 @@ def parser():
             ),
         )
         answer.add_argument("--yes", action="store_true", help="State approval without a prompt, for scripts")
+    node = commands.add_parser("node", help="Recover an engine node; worker pause/resume lives under activity")
+    nodes = node.add_subparsers(dest="node_action", required=True)
+    resume = nodes.add_parser("resume")
+    resume.add_argument("node_id", metavar="NODE_ID")
+    resume.add_argument("--flow", dest="flow_id", required=True)
+    resume.add_argument("--reason", required=True)
+    resume.add_argument("--reconciled", action="store_true", help="Explicitly attest prior worker effects and credentials were reconciled")
+    recover = commands.add_parser("recover-pr", help="Bind an exact reviewed implementation PR through engine recovery")
+    recover.add_argument("flow_id", metavar="FLOW_ID")
+    recover.add_argument("--node", dest="node_id", required=True)
+    recover.add_argument("--request-file", required=True)
+    for recovery in (resume, recover):
+        recovery.add_argument("--expect-revision")
+        recovery.add_argument("--operation-id")
+        recovery.add_argument("--dry-run", action="store_true")
+        recovery.add_argument("--yes", action="store_true")
+        recovery.add_argument("--json", action="store_true")
     return root
 
 
 HANDLERS = {
+    "node": recover_node,
+    "recover-pr": recover_node,
     "start": start_flow,
     "create": create_flow,
+    "draft": revise_draft,
     "list": list_flows,
     "show": show_flow,
     "watch": watch_flow,
@@ -1896,6 +2193,15 @@ HANDLERS = {
 
 
 def run(args, api):
+    if args.command == "start" and args.resume is None and not any((args.outcome, args.repo, args.issue)):
+        return HANDLERS[args.command](args, api)
+    operation = None
+    if args.command in {"start", "create"}:
+        operation = "flows.draft.write"
+    elif args.command == "gate":
+        operation = "flows.approve.write"
+    if operation:
+        common.ensure_can_mutate(operation, request=api.request)
     return HANDLERS[args.command](args, api)
 
 

@@ -1,0 +1,24 @@
+{
+  "component": "arc-runner",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:6b7b01d0a8e852467ca6a48771550beb14ac09edf213cd3a11ad2bdca4c920eb",
+  "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner:security27-high-a7611fce1",
+  "amd64_manifest_digest": "sha256:edbdc1ab8a774a7bd4d143422e6a44474e2211ac77b82925a87c44138840fe41",
+  "source_commit": "a7611fce1e99825d862a06ea7b97b63ed52ab764",
+  "config_digest": "sha256:30f6e22b257cab87acf4ed84cba8de15dfe5fa1706b27bbeb86e34c2d94671dd",
+  "scan_receipt": "/workspaces/projects/security27-high-tools/arc-complete-scan/receipt.json",
+  "runtime_tests": "/workspaces/projects/security27-high-tools/runner-runtime-tests.json",
+  "node_alpine_acceptance": "/workspaces/projects/security27-high-tools/node-alpine-final.json",
+  "native_counts": {
+    "Medium": 352,
+    "High": 4,
+    "Negligible": 10,
+    "Low": 51,
+    "Unknown": 9
+  },
+  "reviewed_open_counts": {
+    "High": 0,
+    "Critical": 0
+  },
+  "applicability_review": "/workspaces/projects/security27-high-tools/arc-runner-tool-review.json",
+  "deployed": false
+}

@@ -1,0 +1,43 @@
+{
+  "scope": "exact candidate only; not live closure",
+  "config_digest": "sha256:ba576b12cc3ecde2726f4eb0f19acde50203658451c169f7c84333d95a73fb19",
+  "raw_receipt": {
+    "image": "security27/superplane-api:high-os",
+    "docker_root_descriptor": "sha256:f714b4c0a7d7961a8b8227fca228290322edb84ab52fb69c9c2e21cbf3125b0a",
+    "config_digest": "sha256:ba576b12cc3ecde2726f4eb0f19acde50203658451c169f7c84333d95a73fb19",
+    "time": "2026-09-27T20:47:16.277250+00:00",
+    "packages": 182,
+    "native_counts": {
+      "Negligible": 79,
+      "Critical": 16,
+      "High": 74,
+      "Medium": 69,
+      "Low": 10
+    },
+    "sbom_sha256": "9ec84e03b0700549d0f19d7838d80492284e80562fef5cab5375e5df66edecbb",
+    "grype_sha256": "71ac34d2d0f2a8e0040991fb6afd9f94e0f14aaf9f97bf7c91e9fede8231a874",
+    "archive_sha256": "4c96c7bccf4b724355bc0f3303ab4af89875974c17028aa975e5175e7bb35fd5"
+  },
+  "binary_observations": {
+    "tarfile": {
+      "sha256": "adf18eec412186452efada4deaa1d2b5185b9f24d75845caee0f5694cedea6b8",
+      "manifest": {
+        "before": "41a9f1930e5285455b4b0db2b9394247cce312c3fa1ef586a58e66c0100668d5",
+        "after": "adf18eec412186452efada4deaa1d2b5185b9f24d75845caee0f5694cedea6b8",
+        "upstream_commit": "b38be2e6cf9d989075ab73412c63e003ebad4ff3",
+        "cve": "CVE-2026-82049"
+      },
+      "regression": "{\"HS256\": \"passed\", \"ES256\": \"passed\", \"RS256\": \"passed\", \"invalid_tokens\": \"rejected\", \"tarfile\": \"adf18eec412186452efada4deaa1d2b5185b9f24d75845caee0f5694cedea6b8\"}\n"
+    }
+  },
+  "dispositions": [
+    {
+      "native_match_index": 108,
+      "id": "CVE-2026-82049",
+      "package": "python",
+      "severity": "High",
+      "status": "fixed-in-candidate",
+      "reason": "Exact tarfile source hash and hardlink/symlink extraction regression verify the upstream backport."
+    }
+  ]
+}

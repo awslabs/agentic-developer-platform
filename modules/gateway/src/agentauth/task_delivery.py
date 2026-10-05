@@ -7,9 +7,11 @@ or another assignment, and acknowledgement never grants it another task.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
@@ -39,16 +41,19 @@ def enabled(env) -> bool:
 
 
 class TaskDelivery:
-    def __init__(self, *, store, sqs, queue_url: str, clock=time.time):
+    def __init__(self, *, store, sqs, queue_url: str, clock=time.time, allow_task_api=False, allow_legacy=True, allow_shared_legacy=False):
         if not queue_url:
             raise TaskDeliveryError("unavailable")
         self.store, self.sqs, self.queue_url, self.clock = store, sqs, queue_url, clock
+        self.allow_task_api, self.allow_legacy = allow_task_api, allow_legacy
+        self.allow_shared_legacy = allow_shared_legacy
+        self.cancelled_tasks = {}
 
     def read(self, pod_uid: str) -> dict | None:
         raw = self.store._read(f"PODTASK#{pod_uid}", "DELIVERY")
         return {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()} if raw else None
 
-    def save(self, pod_uid: str, values: dict, previous: dict | None) -> dict:
+    def save(self, pod_uid: str, values: dict, previous: dict | None, *, extra_items=()) -> dict:
         item = {**values, "pk": f"PODTASK#{pod_uid}", "sk": "DELIVERY", "version": uuid.uuid4().hex}
         args = {
             "TableName": self.store.table,
@@ -58,7 +63,10 @@ class TaskDelivery:
         if previous is not None:
             args.update(ExpressionAttributeNames={"#version": "version"}, ExpressionAttributeValues={":version": {"S": previous["version"]}})
         try:
-            self.store.client.put_item(**args)
+            if extra_items:
+                self.store.client.transact_write_items(TransactItems=[{"Put": args}, *extra_items])
+            else:
+                self.store.client.put_item(**args)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 raise TaskDeliveryError("busy") from None
@@ -71,6 +79,55 @@ class TaskDelivery:
         if assignment.get("lease_until", 0) <= int(self.clock()) + _LEASE_MARGIN:
             raise TaskDeliveryError("lease_expired")
 
+    def _cancelled_before_start(self, body):
+        envelope = json.loads(body)
+        if isinstance(envelope, dict) and "kind" not in envelope and self.allow_legacy:
+            # Protected engine retries retain the exact envelope. A terminal
+            # execution cannot bootstrap again, so drain its redelivery through
+            # the same durable acknowledgement journal as stopped API tasks.
+            # Never infer completion from activity, age, or a missing record.
+            invocation, tenant = envelope.get("message_id"), envelope.get("tenant_id")
+            if not isinstance(invocation, str) or not invocation or not isinstance(tenant, str) or not tenant:
+                return False
+            digest = {"S": envelope_digest(envelope)}
+            pointer = self.store._read(f"INVOCATION#{invocation}", "DISPATCH")
+            if not pointer or pointer.get("tenant_id") != {"S": tenant} or pointer.get("envelope_digest") != digest:
+                return False
+            raw = self.store._read(f"TENANT#{tenant}", f"EXEC#{invocation}")
+            if (
+                not raw
+                or raw.get("tenant_id") != {"S": tenant}
+                or raw.get("invocation_id") != {"S": invocation}
+                or raw.get("envelope_digest") != digest
+            ):
+                return False
+            return raw.get("status") == {"S": "completed"} or (raw.get("status") == {"S": "cancelled"} and not raw.get("workload_binding"))
+        if not self.allow_task_api:
+            return False
+        if not isinstance(envelope, dict) or envelope.get("kind") != "adp.task":
+            return False
+        from src.tasks.records import dispatch_sort_key, task_work_partition
+        from src.tasks.store import TaskStore
+        from src.tasks.task_commands import TaskCommands
+
+        repository = TaskStore(
+            dynamodb_client=self.store.client, authority_table_name=self.store.table, clock=lambda: datetime.fromtimestamp(self.clock(), UTC)
+        )
+        task = repository.read_task(envelope.get("task_id", ""))
+        if not task or task.get("dispatch_id") != envelope.get("dispatch_id"):
+            return False
+        work = repository._get(task_work_partition(task["task_id"]), dispatch_sort_key(task["dispatch_id"]))
+        if not work or work.get("envelope") != envelope:
+            return False
+        if task.get("state") in {"completed", "failed", "cancelled"} and (
+            task.get("server_workload_terminated") is True or task.get("child_exit", {}).get("confirmed") is True
+        ):
+            return True  # Exact committed envelope; drain redelivery of stopped work.
+        cancelled = TaskCommands(repository).cancel_unstarted(task["task_id"])
+        if cancelled:
+            self.cancelled_tasks[task["task_id"]] = task
+        return cancelled
+
     def acquire(self, pod_uid: str) -> str | None:
         now = int(self.clock())
         previous = self.read(pod_uid)
@@ -79,6 +136,9 @@ class TaskDelivery:
         if previous:
             if previous["state"] in {"assigned", "heartbeating"}:
                 self._live(previous)
+                if self._cancelled_before_start(previous["body"]):
+                    self.maintain(pod_uid, acknowledge=True)
+                    return None
                 return previous["body"]
             if previous["state"] == "empty":
                 return None
@@ -108,25 +168,62 @@ class TaskDelivery:
             if not isinstance(body, str) or len(body.encode()) > MAX_MESSAGE_BYTES or not isinstance(receipt, str) or not receipt:
                 raise TaskDeliveryError("invalid_task")
             envelope = json.loads(body)
-            if not isinstance(envelope, dict) or not isinstance(envelope.get("message_id"), str) or not envelope["message_id"]:
+            if not isinstance(envelope, dict):
                 raise TaskDeliveryError("invalid_task")
+            shared_legacy = (
+                self.allow_shared_legacy
+                and "kind" not in envelope
+                and envelope.get("version") == "1.0"
+                and all(isinstance(envelope.get(name), str) and envelope[name] for name in ("channel", "tenant_id", "persona"))
+                and isinstance(envelope.get("source_ref"), dict)
+            )
+            journal_id = envelope.get("message_id")
+            if not isinstance(journal_id, str) or not journal_id:
+                if not shared_legacy or not isinstance(message.get("MessageId"), str):
+                    raise TaskDeliveryError("invalid_task")
+                journal_id = message["MessageId"]  # Queue journal only; never mints an ADP run grant.
             digest = envelope_digest(envelope)
-            pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
-            if not pending or pending.get("envelope_digest") != {"S": digest}:
-                raise TaskDeliveryError("invalid_task")
+            if envelope.get("kind") == "adp.task":
+                if not self.allow_task_api:
+                    raise TaskDeliveryError("invalid_task")
+                from src.tasks.store import TaskStore, TaskStoreError, WorkBindingError
+
+                if not self._cancelled_before_start(body):
+                    try:
+                        work = TaskStore(
+                            dynamodb_client=self.store.client,
+                            authority_table_name=self.store.table,
+                            clock=lambda: datetime.fromtimestamp(self.clock(), UTC),
+                        ).resolve_work(envelope.get("dispatch_id", ""), expected_kind="dispatch")
+                        if work.get("envelope") != envelope:
+                            raise TaskDeliveryError("invalid_task")
+                    except (TaskStoreError, WorkBindingError):
+                        raise TaskDeliveryError("invalid_task") from None
+            elif shared_legacy:
+                pass  # Same normal legacy body the old shared consumer already received.
+            else:
+                if "kind" in envelope or not self.allow_legacy:
+                    raise TaskDeliveryError("invalid_task")
+                pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
+                if not pending or pending.get("envelope_digest") != {"S": digest}:
+                    raise TaskDeliveryError("invalid_task")
             # Count from before receive: an underestimated visibility window is
             # safe; counting from a slow response could authorize an old receipt.
             assigned = {
                 "state": "assigned",
                 "body": body,
                 "receipt": receipt,
+                "sqs_message_id": message.get("MessageId"),
                 "queue_url": self.queue_url,
-                "invocation_id": envelope["message_id"],
+                "invocation_id": journal_id,
                 "envelope_digest": digest,
                 "lease_until": now + VISIBILITY_SECONDS,
             }
             self._live(assigned)
             self.save(pod_uid, assigned, reservation)
+            if self._cancelled_before_start(body):
+                self.maintain(pod_uid, acknowledge=True)
+                return None
             return body
         except AuthorityStoreError:
             # A failed response may hide a committed assignment. Do not release
@@ -171,7 +268,14 @@ class TaskDelivery:
         elif previous["state"] != "assigned":
             raise TaskDeliveryError("finished")
         reservation = self.save(
-            pod_uid, {**previous, "state": "acking" if acknowledge else "heartbeating", "operation_until": now + _OP_SECONDS}, previous
+            pod_uid,
+            {
+                **previous,
+                "state": "acking" if acknowledge else "heartbeating",
+                "operation_until": now + _OP_SECONDS,
+                **({"ack_attempts": int(previous.get("ack_attempts", 0)) + 1} if acknowledge else {}),
+            },
+            previous,
         )
         # The conditional write may wait. Never use an entry-time lease after it.
         self._live(reservation)
@@ -179,10 +283,28 @@ class TaskDelivery:
             raise TaskDeliveryError("busy")
         try:
             if acknowledge:
-                self.sqs.delete_message(QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"])
+                response = self.sqs.delete_message(QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"])
                 # Retain a tombstone without task body or receipt. No second task
                 # may be received by the same workload after acknowledgement.
-                self.save(pod_uid, {"state": "acknowledged", "invocation_id": previous["invocation_id"]}, reservation)
+                metadata = response.get("ResponseMetadata", {})
+                envelope = json.loads(previous["body"])
+                tombstone = {
+                    "state": "acknowledged",
+                    "invocation_id": previous["invocation_id"],
+                    "sqs_message_id": previous.get("sqs_message_id"),
+                    "receipt_handle_sha256": hashlib.sha256(previous["receipt"].encode()).hexdigest(),
+                    # Reservations count conservatively: a crash before the SDK
+                    # call can increase this count without a transport attempt.
+                    "ack_attempts": reservation["ack_attempts"],
+                    "acknowledged_at": int(self.clock()),
+                    "sqs_request_id": metadata.get("RequestId"),
+                    "sqs_http_status": metadata.get("HTTPStatusCode"),
+                    "sqs_retry_attempts": metadata.get("RetryAttempts"),
+                    "task_id": envelope.get("task_id") if envelope.get("kind") == "adp.task" else None,
+                    "envelope_digest": previous.get("envelope_digest"),
+                }
+                ack_item = self._stopped_task_ack_item(tombstone)
+                self.save(pod_uid, tombstone, reservation, extra_items=[ack_item] if ack_item else [])
             else:
                 self.sqs.change_message_visibility(
                     QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"], VisibilityTimeout=VISIBILITY_SECONDS
@@ -190,3 +312,45 @@ class TaskDelivery:
                 self.save(pod_uid, {**previous, "state": "assigned", "lease_until": now + VISIBILITY_SECONDS}, reservation)
         except (ClientError, BotoCoreError):
             raise TaskDeliveryError("unavailable") from None
+
+    def _stopped_task_ack_item(self, receipt):
+        if not receipt.get("task_id") or receipt.get("sqs_http_status") != 200 or not receipt.get("sqs_request_id"):
+            return
+        from src.tasks.records import task_partition
+        from src.tasks.store import TaskStore, _serialize
+
+        repository = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table)
+        task = repository.read_task(receipt["task_id"])
+        if (
+            not task
+            or task.get("state") not in {"failed", "cancelled", "completed"}
+            or not (task.get("server_workload_terminated") is True or task.get("child_exit", {}).get("confirmed") is True)
+        ):
+            return
+        work = repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
+        if work.get("envelope_digest") != receipt["envelope_digest"] or task["invocation_id"] != receipt["invocation_id"]:
+            raise TaskDeliveryError("wrong_assignment")
+        return {
+            "Update": {
+                "TableName": repository.table_name,
+                "Key": _serialize({"event_id": task_partition(task["task_id"]), "arrived_at": "META"}),
+                "UpdateExpression": "SET queue_ack_status = :confirmed, queue_ack_request_id = :request, #version = :next",
+                "ConditionExpression": (
+                    "invocation_id = :invocation AND runtime_attempt_id = :attempt AND #state = :state AND "
+                    "(server_workload_terminated = :true OR child_exit.confirmed = :true) AND #version = :version"
+                ),
+                "ExpressionAttributeNames": {"#version": "version", "#state": "state"},
+                "ExpressionAttributeValues": _serialize(
+                    {
+                        ":confirmed": "confirmed",
+                        ":request": receipt["sqs_request_id"],
+                        ":invocation": task["invocation_id"],
+                        ":attempt": task["runtime_attempt_id"],
+                        ":true": True,
+                        ":state": task["state"],
+                        ":version": int(task["version"]),
+                        ":next": int(task["version"]) + 1,
+                    }
+                ),
+            }
+        }

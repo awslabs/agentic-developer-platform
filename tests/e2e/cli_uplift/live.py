@@ -14,6 +14,7 @@ stage logic it is trying to exercise.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shlex
 import time
@@ -85,6 +86,10 @@ def _deployed_revision(aws, http, cfg):
 
     def resolve(record=None):
         note = record if record is not None else {}
+        if cfg.get("gateway_deployment") is not None:
+            from . import deployment_provenance
+
+            return deployment_provenance.resolve(aws, cfg, note)
         try:
             _, health = http.get(cfg["gateway_url"].rstrip("/") + "/health", expect=200)
         except ports_module.PortError:
@@ -233,8 +238,92 @@ def _run_worker(ssm, cfg, install):
     was never delivered.
     """
 
-    def run(instance_id, purpose, payload):
+    def run(instance_id, purpose, payload, *, manifest=None):
         bundle.require_purpose(purpose)
+        if purpose in {
+            "hosted_coding",
+            "hosted_chat",
+            "vault_lifecycle",
+            "hierarchy_lifecycle",
+            "knowledge_lifecycle",
+            "machine_lifecycle",
+            "budget_lifecycle",
+        }:
+            if manifest is None:
+                raise ports_module.PortError(
+                    "Owned diagnostics require a durable caller manifest before dispatch"
+                )
+            plan = payload.get("recovery_plan")
+            if not isinstance(plan, dict) or plan.get("evaluation_id") != payload.get(
+                "evaluation_id"
+            ):
+                raise ports_module.PortError(
+                    "Missing or mismatched diagnostic recovery plan"
+                )
+            if purpose == "hosted_coding":
+                from .remote.coding_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError(
+                        "Coding recovery inputs differ from the remote payload"
+                    )
+            elif purpose == "hosted_chat":
+                from .remote.chat_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError(
+                        "Chat recovery inputs differ from the remote payload"
+                    )
+            elif purpose == "vault_lifecycle":
+                from .remote.vault_lifecycle_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError(
+                        "Vault recovery inputs differ from the remote payload"
+                    )
+            if purpose == "hierarchy_lifecycle":
+                from .remote.hierarchy_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Hierarchy recovery plan mismatch")
+            if purpose == "knowledge_lifecycle":
+                from .remote.knowledge_lifecycle_plan import (
+                    recovery_plan,
+                    validate_dispatch_fixture,
+                )
+
+                validate_dispatch_fixture(payload.get("knowledge_lifecycle") or {})
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Knowledge recovery plan mismatch")
+            if purpose == "machine_lifecycle":
+                from .remote.machine_lifecycle_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Machine recovery plan mismatch")
+            if purpose == "budget_lifecycle":
+                from .remote.budget_lifecycle_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Budget recovery plan mismatch")
+            manifest.record_diagnostic(purpose, plan)
+        if purpose == "assistant_baseline":
+            if manifest is None:
+                raise ports_module.PortError(
+                    "Assistant baseline requires a durable manifest"
+                )
+            plan = {
+                key: payload.get(key)
+                for key in (
+                    "evaluation_id",
+                    "gateway_url",
+                    "websocket_url",
+                    "assistant_users",
+                )
+            }
+            intent_key = purpose + ":" + str(payload.get("evaluation_id"))
+            prior = intent_key in manifest.read().get("diagnostic_intents", {})
+            manifest.record_diagnostic(purpose, plan)
+            payload = {**payload, "prior_dispatch": prior}
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
         commands = [
@@ -506,7 +595,35 @@ def _journey(ssm, cfg, install, journeys=None):
             return None
 
         def drive(instance_id, ctx):
-            return worker(instance_id, purpose, _journey_payload(cfg, ctx))
+            payload = _journey_payload(cfg, ctx)
+            if purpose in {
+                "hosted_coding",
+                "hosted_chat",
+                "vault_lifecycle",
+                "hierarchy_lifecycle",
+                "knowledge_lifecycle",
+                "machine_lifecycle",
+                "budget_lifecycle",
+            }:
+                if purpose == "hosted_coding":
+                    from .remote.coding_plan import recovery_plan
+                elif purpose == "hosted_chat":
+                    from .remote.chat_plan import recovery_plan
+                elif purpose == "vault_lifecycle":
+                    from .remote.vault_lifecycle_plan import recovery_plan
+                elif purpose == "knowledge_lifecycle":
+                    from .remote.knowledge_lifecycle_plan import recovery_plan
+                elif purpose == "budget_lifecycle":
+                    from .remote.budget_lifecycle_plan import recovery_plan
+                elif purpose == "machine_lifecycle":
+                    from .remote.machine_lifecycle_plan import recovery_plan
+                else:
+                    from .remote.hierarchy_plan import recovery_plan
+                payload["recovery_plan"] = recovery_plan(payload)
+                return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
+            if purpose == "assistant_baseline":
+                return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
+            return worker(instance_id, purpose, payload)
 
         return drive
 
@@ -546,6 +663,11 @@ def _journey_payload(cfg, ctx):
         "expected_hashes": ctx.get("expected_hashes")
         or (ctx["preflight"] or {}).get("served_cli_hashes")
         or {},
+        "expected_revision": cfg["expected_revision"],
+        "expected_cli_version": ctx.get("expected_cli_version")
+        or ((ctx.get("preflight") or {}).get("expected_release") or {}).get(
+            "cli_version", ""
+        ),
         "cli_path": session.get("cli_path", ""),
         # A reference, not the tokens. install_auth keeps the real session material
         # in a private on-instance vault because the only channel out of the
@@ -607,6 +729,21 @@ def _journey_payload(cfg, ctx):
         # without them: checking only the CLI consumer would report a pass on a
         # response the UI cannot render, which is the whole property under test.
         "ui_contracts": ctx.get("ui_contracts") or {},
+        "capability_contrast": cfg.get("capability_contrast") or {},
+        "tenant_isolation": cfg.get("tenant_isolation") or {},
+        "usage_tenant": cfg.get("usage_tenant") or {},
+        "human_task_coding": cfg.get("human_task_coding") or {},
+        "human_task_chat": cfg.get("human_task_chat") or {},
+        "assistant_users": cfg.get("assistant_users") or {},
+        "websocket_url": cfg.get("websocket_url") or "",
+        "vault_lifecycle": cfg.get("vault_lifecycle") or {},
+        "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},
+        "knowledge_lifecycle": cfg.get("knowledge_lifecycle") or {},
+        "machine_lifecycle": cfg.get("machine_lifecycle") or {},
+        "budget_lifecycle": cfg.get("budget_lifecycle") or {},
+        # E18 receives references and bounded workload choices only. The admin
+        # password remains in Secrets Manager and is read on the instance.
+        "superplane": cfg.get("superplane") or {},
     }
 
 
@@ -629,6 +766,24 @@ def _github_available(cfg):
     return check
 
 
+def _capability_contrast_available(aws, cfg):
+    def check():
+        contrast = cfg.get("capability_contrast") or {}
+        if not contrast:
+            return False
+        try:
+            result = aws.call(
+                "secretsmanager",
+                "describe_secret",
+                SecretId=contrast["ordinary_fixture_name"],
+            )
+        except ports_module.PortError:
+            return False
+        return bool(result.get("ARN"))
+
+    return check
+
+
 def _hosted_available(cfg):
     def check():
         return bool(cfg.get("hosted_tasks_queue_url") and cfg.get("websocket_url"))
@@ -641,7 +796,7 @@ def _sessions(aws, cfg):
 
     R7: every deleter used to close over the platform session, so deleting the
     destination account's CloudFormation stack sent platform credentials at
-    `605440105851` — AccessDenied at best, and the stack left standing while the
+    `000000000102` — AccessDenied at best, and the stack left standing while the
     run reported a clean sweep. The account a resource lives in decides which
     session deletes it, and if no role can reach that account this raises rather
     than falling back to the session at hand.
@@ -789,6 +944,54 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
     def terminate(instance_id, *, account=None, region=None):
         scoped = session_for(account)
+        if instance_id.startswith("pending:"):
+            attempt = instance_id.removeprefix("pending:")
+            match = re.fullmatch(
+                r"(adp-e2e-[0-9]{8}-[0-9]{6}-[0-9a-f]{6})-a[0-9]+", attempt
+            )
+            if match is None:
+                raise ports_module.PortError(
+                    "Malformed pending evaluation instance identity"
+                )
+            expected = {
+                cleanup.OWNER_TAG: match[1],
+                "Name": "cli-uplift-eval-" + attempt,
+            }
+            request = {
+                "Filters": [
+                    {"Name": "tag:" + key, "Values": [value]}
+                    for key, value in expected.items()
+                ]
+            }
+            found = set()
+            cursors = set()
+            while True:
+                page = scoped.call("ec2", "describe_instances", **request)
+                for reservation in page.get("Reservations", []):
+                    for instance in reservation.get("Instances", []):
+                        tags = {
+                            tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])
+                        }
+                        actual = instance.get("InstanceId", "")
+                        if any(
+                            tags.get(key) != value for key, value in expected.items()
+                        ) or not re.fullmatch(r"i-[0-9a-f]+", actual):
+                            raise ports_module.PortError(
+                                "Pending instance recovery returned a foreign identity"
+                            )
+                        found.add(actual)
+                cursor = page.get("NextToken")
+                if not cursor:
+                    break
+                if cursor in cursors or len(cursors) >= 100:
+                    raise ports_module.PortError(
+                        "Pending instance recovery pagination incomplete"
+                    )
+                cursors.add(cursor)
+                request["NextToken"] = cursor
+            for actual in sorted(found):
+                terminate(actual, account=account, region=region)
+            return
         # An instance EC2 has already reclaimed answers InvalidInstanceID.NotFound
         # instead of terminating. That is the end state this deleter wants, so it
         # returns rather than polling a describe that can only raise.
@@ -1278,6 +1481,10 @@ def _deleters(aws, cfg, http=None, ssm=None):
             # delete for it. See `delete_destination` — the residual case is a
             # product gap and is reported as an outstanding resource, not swallowed.
             "bedrock_destination": delete_destination(http, session),
+            # Historical E18 evidence remains a real cleanup obligation. The
+            # admin session above is not the ordinary resource owner's session;
+            # never guess ownership or treat an unimplemented delete as success.
+            **{kind: unsupported(kind) for kind in cleanup.SUPERPLANE_KINDS},
             # The ADP account the run registered for its own E02 login. Deleted
             # after the two above, which authenticate as it — see `cleanup.ORDER`.
             "adp_user": delete_adp_user(http, session),
@@ -1318,6 +1525,7 @@ def wire(cfg, supplied=None, *, journeys=None):
         "admin_fixtures": _admin_fixtures(aws, cfg),
         "github_available": _github_available(cfg),
         "hosted_available": _hosted_available(cfg),
+        "capability_contrast_available": _capability_contrast_available(aws, cfg),
         "harness_auth_helper": _read_harness_helper,
         # `ssm` so the API deleters can resolve the session token off the instance
         # before the sweep terminates it. See `_vault_token`.

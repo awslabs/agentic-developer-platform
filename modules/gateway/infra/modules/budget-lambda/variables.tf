@@ -88,6 +88,16 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
+variable "psycopg2_layer_s3_key" {
+  description = "S3 key of the currently selected psycopg2 layer package"
+  type        = string
+}
+
+variable "psycopg2_layer_skip_destroy" {
+  description = "Retain old psycopg2 layer versions during upgrades and rollback"
+  type        = bool
+}
+
 # Optional: RDS resource ID for IAM auth policy
 variable "rds_resource_id" {
   description = "RDS instance resource ID (dbi-xxx format) for IAM auth. If empty, uses wildcard."

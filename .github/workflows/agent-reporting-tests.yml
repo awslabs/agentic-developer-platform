@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'modules/domain-apps/*/ci/**'
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/rules/personas/**'
@@ -19,7 +20,13 @@ on:
       - 'modules/agent-factory/webhook-ingress/lambda/github/**'
       - 'modules/agent-factory/webhook-ingress/lambda/common/**'
       - '.github/workflows/agent-reporting-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 
@@ -47,6 +54,7 @@ jobs:
       - name: Verify explanation capture, bounded publication and independent archival
         run: >-
           npm test -- --runInBand --runTestsByPath
+          src/codex-developer-reporting.test.ts
           src/reporting-text.test.ts
           src/components/checkRunStreamer.test.ts
           src/components/checkRunStreamer.token-rotation.test.ts

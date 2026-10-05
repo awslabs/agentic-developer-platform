@@ -95,9 +95,17 @@ export interface ConnectAwsFormProps {
   onPrepared?: () => void;
 }
 
-function connectErrorMessage(err: unknown, fallback: string): string {
-  const detail = (err as { detail?: string | { message?: string } })?.detail;
-  return (typeof detail === 'string' ? detail : detail?.message) || (err as { message?: string })?.message || fallback;
+interface ConnectError {
+  message: string;
+  hint?: string;
+}
+
+function connectErrorMessage(err: unknown, fallback: string): ConnectError {
+  const detail = (err as { detail?: string | { message?: string; hint?: string } })?.detail;
+  return {
+    message: (typeof detail === 'string' ? detail : detail?.message) || (err as { message?: string })?.message || fallback,
+    hint: typeof detail === 'object' && typeof detail?.hint === 'string' ? detail.hint : undefined,
+  };
 }
 
 export function ConnectAwsForm({
@@ -122,7 +130,7 @@ export function ConnectAwsForm({
   const [setup, setSetup] = useState<ConnectAwsSetup | null>(null);
   const [launchUrl, setLaunchUrl] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<ConnectAwsVerifyResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ConnectError | null>(null);
   const resumeHandle = initialConnection?.handle;
 
   useEffect(() => {
@@ -317,6 +325,9 @@ export function ConnectAwsForm({
             <p className="text-sm text-gray-700 mb-3">
               {onGetSetup ? `Once you or your AWS administrator has created the stack in account ${accountId}, verify it here. You do not need AWS permissions for this step.` : 'After the stack finishes creating in your AWS Console, click below to verify:'}
             </p>
+            <p className="text-sm text-gray-700 mb-3">
+              Ask your platform administrator to approve the role ARN for gateway access before verifying.
+            </p>
             <button
               onClick={handleVerify}
               disabled={isVerifying || isStarting}
@@ -347,7 +358,9 @@ export function ConnectAwsForm({
       {verifyResult && !verifyResult.verified && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4" data-testid={`${testIdPrefix}-verify-failed`}>
           <p className="text-sm text-yellow-800">
-            {verifyResult.reason || 'Verification failed. Please check the stack status and try again.'}
+            {verifyResult.reason === 'trust_verification_failed'
+              ? 'AWS connection verification failed. Check the role trust policy and platform approval, then try again.'
+              : verifyResult.reason || 'Verification failed. Please check the stack status and try again.'}
           </p>
           <button
             onClick={handleVerify}
@@ -360,8 +373,9 @@ export function ConnectAwsForm({
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-4" data-testid={`${testIdPrefix}-error`}>
-          <p className="text-sm text-red-800">{error}</p>
+        <div role="alert" className="bg-red-50 border border-red-200 rounded-md p-4" data-testid={`${testIdPrefix}-error`}>
+          <p className="text-sm text-red-800">{error.message}</p>
+          {error.hint && <p className="mt-2 text-sm text-red-800"><strong>Next step: </strong>{error.hint}</p>}
         </div>
       )}
     </div>

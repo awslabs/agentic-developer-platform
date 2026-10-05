@@ -1,4 +1,5 @@
 name: Eval — CLI Uplift (E2E on disposable EC2)
+run-name: ${{ format('ADP deployment {0}', inputs.adp_correlation) }}
 
 # Repeatable end-to-end evaluation of EPIC #5180 and its five stories
 # (#5185, #5181, #5182, #5183, #5184). Issue #5199.
@@ -29,11 +30,23 @@ name: Eval — CLI Uplift (E2E on disposable EC2)
 # never satisfy full acceptance however many cases pass. Closing #5199 needs two
 # fresh full runs against the same integrated deployed revision.
 #
-# See docs/runbooks/cli-uplift-evaluation.md for dispatch/status/resume/cleanup.
+# See docs/regression-testing/cli-uplift-evaluation.md for dispatch/status/resume/cleanup.
 
 on:
   workflow_dispatch:
     inputs:
+      adp_correlation:
+        description: 'Engine dispatch correlation'
+        type: string
+        default: ''
+      adp_source_revision:
+        description: 'Engine accepted source revision'
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: 'Engine accepted workflow revision'
+        type: string
+        default: ''
       environment:
         description: 'Target environment (selects the protected GitHub environment)'
         required: false
@@ -49,8 +62,13 @@ on:
         type: choice
         options: [start, resume, status, cleanup]
         default: start
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
-        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture.'
+        description: 'nightly selects install/login and CLI story read regressions; story-reads selects E20-E22 only; Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
         required: false
         type: string
         default: login
@@ -83,6 +101,11 @@ on:
       expected_revision:
         required: true
         type: string
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
         required: false
         type: string
@@ -98,8 +121,23 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
-      - 'docs/runbooks/cli-uplift-evaluation.md'
+      - 'tests/unit/test_cli_assistant_harness.py'
+      - 'tests/unit/test_cli_workflow_context.py'
+      - 'tests/unit/test_cli_tenant_scenarios.py'
+      - 'tests/unit/test_cli_usage_exports.py'
+      - 'tests/unit/test_superplane_executor_build.py'
+      - '.github/workflows/superplane-executor-build.yml'
+      - '.github/actions/trusted-build/action.yml'
+      - 'docs/regression-testing/cli-uplift/orchestrator-trust-policy.json'
+      - 'docs/regression-testing/cli-uplift-evaluation.md'
       - '.github/workflows/eval-cli-uplift.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -120,7 +158,7 @@ permissions:
 jobs:
   offline:
     name: Offline guards (no AWS, no gateway, no model calls)
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -139,13 +177,21 @@ jobs:
         # protected environment, never schedules itself and uploads only
         # sanitized artifacts. Without it those tests skip and the guarantees go
         # unenforced in the one place that enforces them.
-        run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6
+        run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6 boto3
+
+      - name: Install assistant isolation test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libseccomp2 openssl
+          python -c 'import ctypes; ctypes.CDLL("libseccomp.so.2")'
+          openssl version
 
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -159,7 +205,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket --allow-unix-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -170,23 +216,28 @@ jobs:
           python - <<'PY'
           from tests.e2e.cli_uplift import cases, config, report
 
-          matrix = cases.new_matrix(("full",))
-          for case_id in matrix:
-              cases.record(matrix, case_id, cases.PASSED)
-          document = report.build(
-              matrix=matrix,
-              suites=("full",),
-              config=config.load("tests/e2e/cli_uplift/config.example.json"),
-              evaluation_id="adp-e2e-20260915-000000-abcdef",
-              attempt_id="adp-e2e-20260915-000000-abcdef-a1",
-              cleanup_ok=True,
-              timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
-              correlation={},
-          )
-          errors = report.validate(document)
-          if errors:
-              raise SystemExit("report.schema.json drifted: " + "; ".join(errors))
-          print(f"schema matches builder across {len(document['cases'])} cases")
+          covered = set()
+          for suite in cases.SUITES:
+              matrix = cases.new_matrix((suite,))
+              for case_id in matrix:
+                  cases.record(matrix, case_id, cases.PASSED)
+              document = report.build(
+                  matrix=matrix,
+                  suites=(suite,),
+                  config=config.load("tests/e2e/cli_uplift/config.example.json"),
+                  evaluation_id="adp-e2e-20260915-000000-abcdef",
+                  attempt_id="adp-e2e-20260915-000000-abcdef-a1",
+                  cleanup_ok=True,
+                  timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
+                  correlation={},
+              )
+              errors = report.validate(document)
+              if errors:
+                  raise SystemExit(f"report.schema.json drifted for {suite}: " + "; ".join(errors))
+              covered.update(matrix)
+          if covered != set(cases.BY_ID):
+              raise SystemExit("Schema parity omitted supported cases")
+          print(f"schema matches builder across {len(cases.SUITES)} suites and {len(covered)} cases")
           PY
 
       - name: Assert the example config carries no secrets
@@ -205,10 +256,10 @@ jobs:
     # Never from a pull_request: this job assumes a real role and mutates dev.
     if: github.event_name != 'pull_request'
     needs: [offline]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 200
-    # Protected environment: required reviewers and the secret scope live here,
-    # so a dispatch cannot reach the destination account without approval.
+    # This environment must have main-only protection and an explicit OIDC
+    # role binding before rollout; selecting a name alone is not protection.
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
@@ -224,8 +275,8 @@ jobs:
       EVAL_OUT_DIR: /tmp/cli-uplift-eval/out
       EVAL_RUN_CONFIG: /tmp/cli-uplift-eval/run-config.json
       # The config overlay, read by `config.from_environment()`. Repository
-      # VARIABLES, not secrets: every value is an identifier (an account number, a
-      # role ARN, a bucket, a Secrets Manager secret NAME), never a credential.
+      # Target identities come from protected secrets below. Existing VARIABLES
+      # remain optional operator overrides, never credential values.
       # The recovery job declares the SAME block, which is what makes it able to
       # rebuild this run's config on its own runner (R5).
       CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
@@ -234,11 +285,19 @@ jobs:
       CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
       CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID: ${{ vars.CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID }}
+      CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE }}
       # #5413's three deployment bindings, as a JSON ARRAY of
       # {name, gateway_url, credential_secret_name} objects. Its own variable
       # rather than the scalar overlay because every other name here maps one
@@ -247,30 +306,34 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
-      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
-      # overlay by `config.from_environment()`. The repository variables are
-      # unset and the identity executing this evaluation gets HTTP 403 on the
-      # Actions variables API, so it cannot set them; every value in this file is
-      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
-      # refuses a credential-shaped key structurally. Because it is layered under
-      # the overlay, setting the real variables later silently takes precedence —
-      # this needs no revert to hand control back.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
+      # Public binding files contain fictional examples. Protected environment
+      # secrets supply reviewed live identities; individual variable overrides
+      # retain their existing precedence for operator configuration.
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
 
     steps:
       - name: Refuse an untrusted ref
         # The live path must only ever run code that has been reviewed on the
-        # default branch or a release tag. A dispatch against an arbitrary branch
+        # default branch. A dispatch against an arbitrary branch
         # would execute that branch's runner against the real account.
         run: |
           set -euo pipefail
-          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
-            echo "::error::Live evaluation refuses ref ${{ github.ref }}; dispatch from main or a tag."
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::This workflow requires reviewed main."
             exit 1
           fi
 
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify checked-out source is reviewed main history
+        run: git merge-base --is-ancestor HEAD "$GITHUB_SHA"
 
       # Must precede the harness-pin fetch below: that step parses the pin with
       # `python`, and the ARC runner image provides only `python3` until
@@ -303,6 +366,44 @@ jobs:
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
 
+      - name: Require private target configuration
+        run: |
+          set -euo pipefail
+          if [ -z "$CLI_UPLIFT_EVAL_BINDINGS_JSON" ] || [ -z "$CLI_UPLIFT_EVAL_GATEWAY_CATALOG" ]; then
+            echo "::error::Configure CLI_UPLIFT_EVAL_BINDINGS_JSON and CLI_UPLIFT_EVAL_GATEWAY_CATALOG in the protected GitHub environment. Public examples are not live targets."
+            exit 1
+          fi
+
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
+          role-skip-session-tagging: true
+          role-duration-seconds: 10800
+          role-session-name: cli-uplift-eval-${{ github.run_id }}
+
       - name: Pin the deployment for this EC2 suite
         id: revision
         if: inputs.resolve_revision
@@ -314,17 +415,11 @@ jobs:
         env:
           EVAL_SUITES: ${{ inputs.suites || 'login' }}
           EVAL_MODE: ${{ inputs.mode || 'start' }}
-          # Falls back to the purpose-scoped orchestrator role assumed from the
-          # ARC runner's own short-lived identity. Neither OIDC secret is set and
-          # no GitHub OIDC provider exists in the platform account, so the OIDC
-          # path cannot resolve; the runner already holds an authorized session in
-          # 879318057152 (the recovery job proved this by passing its account
-          # assertion with an empty role ARN). GitHub OIDC remains a supported
-          # means, not an acceptance goal — when its secret IS set it wins here.
-          # Still no static keys and no laptop profile: this is an assumed role
-          # scoped to tag-conditioned EC2 lifecycle, SSM to eval-tagged instances,
-          # PassRole of only the eval instance role, and this run's bucket.
-          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
+          # Explicit OIDC role only. No ambient runner authority, no role
+          # chaining, no hardcoded fallback ARN. The secret must be configured
+          # in the protected deployment environment; the fail-closed guard above
+          # the credential step refuses to proceed without it.
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
         run: |
           set -euo pipefail
           ARGS=("$EVAL_RUN_CONFIG")
@@ -342,59 +437,15 @@ jobs:
           git fetch --no-tags --depth 1 origin "$REVISION"
           git cat-file -e "$REVISION:modules/gateway/cli/install.sh"
 
-      - name: Configure AWS credentials (short-lived, scoped role)
-        # Short-lived assumed-role session only. There is no access-key path and
-        # no laptop profile: the issue is explicit that operator profiles are not
-        # available credentials.
-        #
-        # Two ways in, in this order of preference:
-        #  1. GitHub OIDC, when AWS_CLI_UPLIFT_EVAL_ROLE_ARN / AWS_E2E_ROLE_ARN is
-        #     set. Unchanged behaviour, and still the preferred path.
-        #  2. Otherwise role CHAINING from the ARC runner's own short-lived
-        #     identity into the purpose-scoped orchestrator role. Needed because
-        #     neither secret is set and the platform account has no GitHub OIDC
-        #     provider at all (only 4 EKS ones), so path 1 cannot resolve today.
-        #
-        # `role-duration-seconds` is 3600 on the chained path because STS caps a
-        # chained session at one hour and asking for more is a hard
-        # ValidationError. That is shorter than `max_run_minutes: 180`, so a FULL
-        # suite would outlive its credentials — acceptable for this login
-        # checkpoint, which is minutes long, and the reason path 1 stays
-        # preferred for the eventual full run.
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
-          aws-region: us-east-1
-          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
-          # The action tags the session by default, which needs `sts:TagSession`
-          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
-          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
-          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
-          # times with "not authorized to perform: sts:TagSession" (runs
-          # 35081336556, 35081819775) even though the target role's trust policy
-          # permits it — a boundary caps the principal regardless of trust.
-          #
-          # Skipping the tags is the correct fix: that boundary is a shared
-          # guardrail on a role many workflows use, and widening it to let this
-          # evaluation pass would weaken an unrelated security control. The tags
-          # are audit metadata only; nothing here authorizes on them, and the
-          # session is still a distinct short-lived identity named by
-          # `role-session-name` and the run ID.
-          role-skip-session-tagging: true
-          role-duration-seconds: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && '10800' || '3600' }}
-          role-session-name: cli-uplift-eval-${{ github.run_id }}
-
       - name: Publish when these credentials expire
         # The run has to know when its own AWS session dies, and this step is the
         # only place that can tell it: `role-duration-seconds` above is what was
-        # ASKED for, and on the chained path STS silently caps the answer at one
-        # hour. So the duration is read back from the session itself rather than
-        # assumed from the input.
+        # ASKED for, but STS may cap the actual grant. So the duration is read
+        # back from the session itself rather than assumed from the input.
         #
-        # Why it matters: `max_run_minutes` is 180. A chained one-hour session is
-        # therefore shorter than the run it is meant to cover, and before this the
-        # expiry surfaced as whichever AWS call happened to be in flight when the
-        # token died — an ExpiredToken attributed to an instance launch, or a
+        # Why it matters: if the session is shorter than `max_run_minutes: 180`,
+        # the expiry surfaced as whichever AWS call happened to be in flight when
+        # the token died — an ExpiredToken attributed to an instance launch, or a
         # cleanup that could not authenticate and so could not honestly report
         # what it had failed to delete. The runner now stops between stages with
         # `credentials_expired` and a named reason, while it still has enough
@@ -406,13 +457,11 @@ jobs:
           # The session's own view of its lifetime, via a role it can always read:
           # itself. `--duration-seconds` on get-session-token is not available to
           # an assumed-role principal, so the expiry comes from the credential
-          # file the action wrote, falling back to the conservative one-hour
-          # chained cap when it cannot be determined. Conservative is the right
-          # direction: guessing SHORTER than reality stops the run early and
-          # cleanly, guessing longer is what we are fixing.
+          # action environment, falling back conservatively to one hour when
+          # actual expiration is unavailable. Never infer a longer lifetime.
           EXPIRY="${AWS_CREDENTIAL_EXPIRATION:-}"
           if [ -z "$EXPIRY" ]; then
-            echo "No AWS_CREDENTIAL_EXPIRATION was exported; assuming the STS chained cap of 1h."
+            echo "No AWS_CREDENTIAL_EXPIRATION was exported; conservatively limiting this run to 1h."
             EXPIRY="$(python -c 'import datetime;print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=3600)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
           fi
           echo "Orchestrator credentials expire at $EXPIRY"
@@ -425,12 +474,28 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          EXPECTED="$(python -c 'import os; from tests.e2e.cli_uplift import config; print(config.from_environment(os.environ)["platform_account"])')"
           echo "Actions role account: $ACCOUNT"
           if [ "$ACCOUNT" != "$EXPECTED" ]; then
             echo "::error::Role resolved to $ACCOUNT, not the approved platform account $EXPECTED."
             exit 1
           fi
+
+      - name: Authenticate engine qualification context
+        if: inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_INPUTS: ${{ toJSON(inputs) }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python -m tests.e2e.cli_uplift.workflow_context
+
+      - name: Publish engine qualification context
+        if: inputs.adp_correlation != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-eval-cli-uplift.yml-${{ github.run_attempt }}
+          path: /tmp/adp-cli-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Run the evaluation
         id: run
@@ -534,6 +599,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Publish engine qualification result
+        if: always() && inputs.adp_correlation != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: e32-qualification-result
+          path: /tmp/cli-uplift-eval/out/report.json
+          if-no-files-found: error
+          retention-days: 30
+
   recover:
     name: Recovery sweep (this run, plus anything expired)
     # `always()` is not enough on its own — a cancelled run or a lost runner
@@ -548,7 +622,7 @@ jobs:
     # ref could still reach after the guarded job refused to run.
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [evaluate]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 20
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
@@ -572,11 +646,19 @@ jobs:
       CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
       CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID: ${{ vars.CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID }}
+      CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE }}
       # #5413's three deployment bindings, as a JSON ARRAY of
       # {name, gateway_url, credential_secret_name} objects. Its own variable
       # rather than the scalar overlay because every other name here maps one
@@ -585,16 +667,14 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
-      # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
-      # overlay by `config.from_environment()`. The repository variables are
-      # unset and the identity executing this evaluation gets HTTP 403 on the
-      # Actions variables API, so it cannot set them; every value in this file is
-      # a bucket/profile/secret NAME, never a credential, and `no_secrets()`
-      # refuses a credential-shaped key structurally. Because it is layered under
-      # the overlay, setting the real variables later silently takes precedence —
-      # this needs no revert to hand control back.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
+      # Public binding files contain fictional examples. Protected environment
+      # secrets supply reviewed live identities; individual variable overrides
+      # retain their existing precedence for operator configuration.
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
+      CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+      CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
     steps:
       - name: Refuse an untrusted ref
         # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
@@ -604,12 +684,15 @@ jobs:
         # to terminate) would come from that untrusted ref.
         run: |
           set -euo pipefail
-          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
-            echo "::error::Recovery sweep refuses ref ${{ github.ref }}; dispatch from main or a tag."
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::This workflow requires reviewed main."
             exit 1
           fi
 
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
@@ -622,33 +705,44 @@ jobs:
         # ImportError, which the step then swallowed into a warning.
         run: pip install boto3
 
-      - name: Configure AWS credentials (short-lived, scoped role)
-        # Same two-path resolution as the evaluate job, and it must stay
-        # identical: this job is the one that still runs after a cancellation, so
-        # if it resolved credentials differently it would lose exactly the
-        # termination rights the run depends on. Previously this step "succeeded"
-        # with an empty role ARN and silently kept the runner's own ambient
-        # identity — which worked, but meant the destructive sweep ran with far
-        # broader rights than the scoped role it was supposed to use.
+      - name: Require private target configuration
+        run: |
+          set -euo pipefail
+          if [ -z "$CLI_UPLIFT_EVAL_BINDINGS_JSON" ] || [ -z "$CLI_UPLIFT_EVAL_GATEWAY_CATALOG" ]; then
+            echo "::error::Configure CLI_UPLIFT_EVAL_BINDINGS_JSON and CLI_UPLIFT_EVAL_GATEWAY_CATALOG in the protected GitHub environment. Public examples are not live targets."
+            exit 1
+          fi
+
+      - name: Require an explicit OIDC role (fail closed)
+        # Same fail-closed guard as the evaluate job, and it must stay identical:
+        # this job is the one that still runs after a cancellation, so if it
+        # resolved credentials differently it would lose exactly the termination
+        # rights the run depends on. Previously this step "succeeded" with an
+        # empty role ARN and silently kept the runner's own ambient identity —
+        # which worked, but meant the destructive sweep ran with far broader
+        # rights than the scoped role it was supposed to use.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys. Identical
+        # resolution to the evaluate job so the recovery sweep holds exactly
+        # the same termination rights.
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
           aws-region: us-east-1
-          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
-          # The action tags the session by default, which needs `sts:TagSession`
-          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
-          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
-          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
-          # times with "not authorized to perform: sts:TagSession" (runs
-          # 35081336556, 35081819775) even though the target role's trust policy
-          # permits it — a boundary caps the principal regardless of trust.
-          #
-          # Skipping the tags is the correct fix: that boundary is a shared
-          # guardrail on a role many workflows use, and widening it to let this
-          # evaluation pass would weaken an unrelated security control. The tags
-          # are audit metadata only; nothing here authorizes on them, and the
-          # session is still a distinct short-lived identity named by
-          # `role-session-name` and the run ID.
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
           role-skip-session-tagging: true
           role-session-name: cli-uplift-recover-${{ github.run_id }}
 
@@ -660,7 +754,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          EXPECTED="$(python -c 'import os; from tests.e2e.cli_uplift import config; print(config.from_environment(os.environ)["platform_account"])')"
           echo "Recovery role account: $ACCOUNT"
           if [ "$ACCOUNT" != "$EXPECTED" ]; then
             echo "::error::Recovery role resolved to $ACCOUNT, not the approved platform account $EXPECTED."
@@ -803,7 +897,7 @@ jobs:
                 --state-dir "$EVAL_STATE_DIR" \
                 --evaluation-id "$EVALUATION_ID" \
                 --restore; then
-            echo "::error::State-based sweep for $EVALUATION_ID did not complete. Non-EC2 resources (IAM roles, instance profiles, CloudFormation stacks, secrets, Cognito users) may still exist in the platform or destination account. Sweep manually per docs/runbooks/cli-uplift-evaluation.md, then re-dispatch with mode=cleanup."
+            echo "::error::State-based sweep for $EVALUATION_ID did not complete. Non-EC2 resources (IAM roles, instance profiles, CloudFormation stacks, secrets, Cognito users) may still exist in the platform or destination account. Sweep manually per docs/regression-testing/cli-uplift-evaluation.md, then re-dispatch with mode=cleanup."
             exit 1
           fi
 

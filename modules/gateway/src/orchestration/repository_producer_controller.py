@@ -12,6 +12,7 @@ from .execution_state import ActionIntent, BlockCode, ExecutionIdentity, Outcome
 from .execution_store import load_execution
 from .models import OrchestrationAction
 from .repository_evaluation import authorize, receipt_model, record
+from .repository_evaluation_contract import harness_digest
 from .repository_evaluation_provider import require
 from .repository_producer import CLI_PRODUCER_KIND, PRODUCER_KIND, RepositoryScanProvider, digest, producer_kind, producer_state, workflow_ref
 from .review_cycle import CycleBlockedError, block
@@ -33,6 +34,7 @@ class RepositoryProducerController:
             state = await producer_state(session, context)
             node, plan, spec, accepted, admission, sources, binding = state
             if authorize_effect:
+                require(spec.runner.harness_sha256 == harness_digest(), "producer_effect_harness_changed")
                 authority = await authorize(session, node, plan, spec, binding, self.provider.evidence, exclude_current_evaluation=True)
                 require(authority == (accepted[0].id, admission["evaluation_policy_hash"]), "producer_authority_changed")
             key = OperationIdentity.from_context(context, producer_kind(spec), accepted[0].id, admission["source_snapshot_hash"]).key
@@ -122,6 +124,7 @@ class RepositoryProducerController:
                 evaluation_policy_hash=admission["evaluation_policy_hash"],
                 specification_hash=admission["specification_hash"],
                 harness_sha256=spec.runner.harness_sha256,
+                collector_harness_sha256=harness_digest(),
                 source_snapshot_hash=admission["source_snapshot_hash"],
                 observed_at=datetime.now(UTC),
                 pull_requests=pulls,
@@ -231,11 +234,12 @@ class RepositoryProducerController:
                 and receipt.evaluation_policy_hash == admission["evaluation_policy_hash"]
                 and receipt.specification_hash == admission["specification_hash"]
                 and receipt.harness_sha256 == spec.runner.harness_sha256
+                and receipt.collector_harness_sha256 == harness_digest()
                 and receipt.source_snapshot_hash == admission["source_snapshot_hash"],
                 "producer_receipt_changed",
             )
         passed = receipt is not None and receipt.mandatory_passed
-        target = NodeState.PASSED if passed else NodeState.FAILED
+        target = (NodeState.AWAITING_GATE if spec.acceptance_mode == "human" else NodeState.PASSED) if passed else NodeState.FAILED
         require(
             transition(node.state, target, actor_kind=ActorKind.SERVICE, reason="Authenticated evaluation workflow outcome").allowed,
             "producer_transition_refused",
@@ -253,7 +257,7 @@ class RepositoryProducerController:
             terminal_evidence=snapshot["run"]["url"],
         )
         require(released.disposition in {Disposition.ADMITTED, Disposition.DUPLICATE}, "producer_claim_release_refused")
-        if passed:
+        if passed and spec.acceptance_mode == "machine":
             from .tick import release_satisfied_successors
 
             await release_satisfied_successors(session, node)
@@ -285,6 +289,7 @@ async def producer_effect_policy(session, record, effect):
 
     identity = ExecutionIdentity(record.org_id, record.node_id, record.cycle, record.accepted_plan_version, record.claim_id, record.claim_generation)
     state = await producer_state(session, RunnerContext(identity, record, datetime.now(UTC)))
+    require(state[2].runner.harness_sha256 == harness_digest(), "producer_effect_harness_changed")
     require(
         effect.intent.kind == producer_kind(state[2])
         and effect.intent.detail["acceptance_decision_id"] == state[3][0].id

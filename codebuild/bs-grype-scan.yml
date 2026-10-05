@@ -2,14 +2,17 @@ version: 0.2
 
 env:
   variables:
-    GRYPE_VERSION: "0.80.2"  # default; can be overridden at start-build time
+    SYFT_VERSION: "1.52.0"
+    GRYPE_VERSION: "0.119.0"  # default; can be overridden at start-build time
 
 phases:
   install:
     commands:
       - python3 -m pip install --quiet PyYAML==6.0.3
       - curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
+      - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
       - grype version
+      - syft version
   pre_build:
     commands:
       - |

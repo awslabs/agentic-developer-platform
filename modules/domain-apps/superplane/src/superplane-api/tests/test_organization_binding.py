@@ -53,6 +53,7 @@ async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(clien
     from app.main import app
     from app.models.workspace import Workspace
     from app.models.workspace_grant import WorkspaceGrantRecord
+    from app.current_identity import CurrentIdentity
     from superplane_auth.policy import DomainTokenPolicy
 
     org, workspace = uuid.uuid4(), uuid.uuid4()
@@ -67,7 +68,26 @@ async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(clien
     monkeypatch.setattr(auth, "verify_access_token", lambda token: claims)
     monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(allowed_client_ids=["adp-client"], expected_issuer="https://issuer.example"))
     headers = {"Authorization": "Bearer signed-token", "X-Org-Id": "spoofed"}
+    from app.config import settings
+
+    monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
+    monkeypatch.setattr(settings, "current_identity_enforced", False)
+    # Upgrade compatibility: the existing signed-token/live-grant path still works.
     assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 200
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+
+    class Memberships:
+        enabled = True
+
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(subject, principal_type, adp_org_id, "membership-1", True, self.enabled)
+    reader = Memberships()
+    monkeypatch.setattr(app.state, "current_identity_reader", reader, raising=False)
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 200
+    reader.enabled = False
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+    reader.enabled = True
     assert (await client.get(f"/workspaces/{uuid.uuid4()}", headers=headers)).status_code == 403
     claims["custom:org_id"] = str(org)
     assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403

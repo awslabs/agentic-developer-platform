@@ -1,5 +1,9 @@
 # Managed workspace infrastructure
 
+The [authoritative Superplane design](../../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 VPC, EKS and IAM for **one** Superplane tenant workspace.
 Issue [#5532](https://github.com/aws-e/adp/issues/5532) (w6-09), EPIC A #4910, requirements row A3.
 
@@ -496,7 +500,11 @@ VPC CNI `v1.22.4-eksbuild.3` uses a dedicated IRSA role restricted to this clust
 OIDC provider, STS audience and `kube-system/aws-node` service account. The addon
 is established before node creation. AWS DescribeAddonVersions was checked on
 2026-09-20 for Kubernetes 1.31–1.35 in all five supported regions. The node role
-retains the AWS-managed EKS worker discovery policy.
+retains the AWS-managed EKS worker discovery policy. The addon explicitly enables
+NetworkPolicy enforcement; its default leaves the running network-policy agent
+disabled. Bootstrap must still verify real allowed and denied traffic before
+reporting network isolation. A running sidecar or the configured flag alone does
+not prove that enforcement is working.
 
 New nodes carry `superplane.aws-e/bootstrap=pending:NoSchedule`. Infrastructure
 creation does not establish tenant readiness. Bootstrap (#5533) must configure
@@ -514,3 +522,43 @@ before/after side. Destructive authorization includes these complete relationshi
 lists. An unknown create reference needs typed authenticated configuration; an
 existing target must resolve on its own side. Supplied networking is accepted only
 against the authenticated supplied VPC/subnet inputs.
+
+Owned networking also creates a private STS interface endpoint and permits TCP
+443 only from this cluster's EKS-managed node security group. The endpoint and
+rule precede node-group creation because VPC CNI needs STS for its IRSA role while
+EKS waits for nodes. Supplied networking reads one existing interface endpoint
+with private DNS and one security group; that endpoint remains outside workspace
+ownership. Its operator must provide the node ingress that bootstrap verifies.
+The handover publishes the exact endpoint, VPC and security group identities.
+
+The reviewed estimate includes private endpoint hours per Availability Zone.
+When Terraform leaves subnet IDs unknown, all resulting owned subnets provide a
+conservative AZ ceiling. Endpoint data processing remains explicitly excluded
+from the fixed-cost estimate. Management-to-workspace API routing is an external
+prerequisite; this module does not implicitly create peering or transit routes.
+
+
+## Hybrid network ranges
+
+Set `hybrid_networks` in the reviewed workspace variables to configure the EKS
+remote node/pod ranges and an explicit service range:
+
+```hcl
+hybrid_networks = {
+  node_cidr    = "10.100.0.0/24"
+  pod_cidr     = "10.101.0.0/16"
+  service_cidr = "172.20.0.0/16"
+}
+```
+
+The ranges must be canonical RFC1918 IPv4, disjoint from each other and every
+primary/secondary workspace VPC range. Node/pod ranges allow /16 through /28;
+service ranges allow /16 through /24. The default is disabled and leaves native
+workspace configuration unchanged. Changing an existing cluster's service CIDR
+can require replacement; the saved-plan review must handle that explicitly.
+
+This is the EKS-side prerequisite for the SkyPilot/WireGuard flow. It does not
+create a tunnel, permit HYBRID_LINUX access, deliver SSM activation material,
+install Cilium, or make a remote GPU node ready. Those remain separate integration
+work. No private connectivity or mixed-provider execution is claimed from this
+Terraform setting alone.

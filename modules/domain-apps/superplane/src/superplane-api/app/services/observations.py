@@ -49,13 +49,6 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.config import settings
-from app.models.cluster import Cluster
-from app.models.event import Event
-from app.models.observation import ObservationReceipt
-from app.models.workspace import Workspace
-
 from superplane_contracts import (
     AuthResult,
     CheckStatus,
@@ -65,6 +58,12 @@ from superplane_contracts import (
     authorize_submit,
     verify_submission,
 )
+
+from app.config import settings
+from app.models.cluster import Cluster
+from app.models.event import Event
+from app.models.observation import ObservationReceipt
+from app.models.workspace import Workspace
 
 # Refusal reasons owned by the receiver. Deliberately as uninformative as the
 # contract's own: they name the requirement that failed without confirming
@@ -344,7 +343,8 @@ async def record_observation(
 
     observation = result.observation
     submitter = result.submitter
-    assert submitter is not None  # guaranteed by an authenticated AuthResult
+    if submitter is None:
+        raise ObservationRefused("unauthenticated", status_code=401)
 
     try:
         cluster_id = uuid.UUID(observation.subject.cluster_id)

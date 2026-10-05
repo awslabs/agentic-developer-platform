@@ -9,7 +9,7 @@ from sqlalchemy import select
 from src.orchestration.execution_runner import _identity
 from src.orchestration.execution_state import ActionIntent, Observation, ObservedOutcome
 from src.orchestration.execution_store import prepare_action, record_observation
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationDecision, OrchestrationFlow, OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationFlow, OrchestrationWorkClaim
 from tests.migrations.conftest_postgres import pg_server, pg_url  # noqa: F401
 from tests.orchestration.test_execution_runner_postgres import execution, pg_engine, pg_session_factory  # noqa: F401
 
@@ -20,9 +20,7 @@ spec.loader.exec_module(native)
 
 
 @pytest.fixture
-async def scoped(pg_engine, pg_session_factory, execution, monkeypatch):  # noqa: F811
-    async with pg_engine.begin() as connection:
-        await connection.run_sync(OrchestrationDecision.__table__.create)
+async def scoped(pg_session_factory, execution, monkeypatch):  # noqa: F811
     async with pg_session_factory() as session:
         flow = await session.get(OrchestrationFlow, execution.flow_id)
         flow.slug = "q-contract-0123456789"

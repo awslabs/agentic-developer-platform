@@ -495,17 +495,19 @@ async def test_t3d_dept_admin_cannot_read_the_whole_org(session, seeded):
     assert_denied_without_metadata(response)
 
 
-async def test_t3e_dept_admin_with_no_department_claim_is_denied(session, seeded):
-    """A ``dept_admin`` scoped to no department reads nothing.
-
-    The falsy-skip failure applied to the CALLER's side of the comparison. If a
-    blank ``department_id`` defaulted to "unrestricted", an unscoped dept_admin
-    would become the most privileged role on this router.
-    """
-    async with client_for(session, context_for(DEPT_ADMIN_SUB, department_id="")) as client:
-        response = await client.get(f"/budget/scope/department/{DEPT_A}?period_type=monthly")
-
-    assert_denied_without_metadata(response)
+async def test_t3e_department_authority_comes_from_workspace_not_claim(session, seeded):
+    """Missing or forged department claims cannot move the stored admin scope."""
+    async with client_for(session, context_for(DEPT_ADMIN_SUB, department_id=DEPT_B)) as client:
+        own = await client.get(f"/budget/scope/department/{DEPT_A}?period_type=monthly")
+        other = await client.get(f"/budget/scope/department/{DEPT_B}?period_type=monthly")
+    assert own.status_code == 200
+    assert_denied_without_metadata(other)
+    admin = await session.get(User, DEPT_ADMIN_CANONICAL)
+    admin.team_id = ""
+    await session.commit()
+    async with client_for(session, context_for(DEPT_ADMIN_SUB, department_id=DEPT_A)) as client:
+        missing = await client.get(f"/budget/scope/department/{DEPT_A}?period_type=monthly")
+    assert_denied_without_metadata(missing)
 
 
 # ===========================================================================
@@ -1051,14 +1053,14 @@ async def test_t7q_canonical_id_lookup_outage_is_503_not_zero_runs(session, seed
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        async def scalar(self, statement, *args, **kwargs):
+        async def execute(self, statement, *args, **kwargs):
             # Keyed on the SELECTED column, not the WHERE clause: ownership
             # resolution filters on the same two columns but selects `users.org_id`,
             # so a substring match would fail the earlier query instead and test a
             # branch that is already covered by T7m.
-            if str(statement).startswith("SELECT users.id"):
+            if str(statement).startswith("SELECT users.id") and COLLEAGUE_SUB in statement.compile().params.values():
                 raise OperationalError("SELECT users.id", {}, Exception("db down"))
-            return await self._inner.scalar(statement, *args, **kwargs)
+            return await self._inner.execute(statement, *args, **kwargs)
 
     app = build_app(session, context_for(ORG_ADMIN_SUB))
 
@@ -1075,25 +1077,14 @@ async def test_t7q_canonical_id_lookup_outage_is_503_not_zero_runs(session, seed
     assert "not a report of zero runs" in response.json()["detail"]
 
 
-async def test_t7n_user_target_given_as_canonical_id_is_unknown_not_zero_runs(session, seeded):
-    """A ``user`` target addressed by canonical id has no ledger-keyed partition.
-
-    Ownership resolution accepts either namespace, but the lineage lookup keys on
-    ``cognito_sub`` — so a caller who passes the canonical ``users.id`` to the
-    ``user`` route authorises fine and then resolves to nothing. The honest answer
-    is ``unknown``; an empty list would assert "ran nothing" about a user who may
-    have run plenty under their ``root_user`` line.
-    """
-    activity = FakeActivityService([invocation("inv-4401-not-read")])
+async def test_t7n_user_target_given_as_canonical_id_resolves_workspace_lineage(session, seeded):
+    """The canonical id and Cognito sub address the same authorized workspace user."""
+    activity = FakeActivityService([invocation("inv-4401-canonical")])
     async with client_with_lineage(session, context_for(ORG_ADMIN_SUB), activity) as client:
         response = await client.get(f"/budget/scope/user/{COLLEAGUE_CANONICAL}/runs?period_type=monthly")
-
     assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["items"] == []
-    assert body["subtotal"]["status"] == "unknown"
-    assert body["subtotal"]["reason"] == "lineage_unavailable"
-    assert activity.requested_user_ids == []
+    assert len(response.json()["items"]) == 1
+    assert activity.requested_user_ids == [COLLEAGUE_CANONICAL]
 
 
 async def test_t7o_root_user_target_queries_lineage_with_the_id_as_given(session, seeded):
@@ -1364,3 +1355,104 @@ def test_managed_scope_router_is_registered_in_the_app():
         "/budget/scope/{entity_type}/{entity_id}/runs",
     }
     assert not any(path.startswith("/api") for path in paths)
+
+
+@pytest.mark.parametrize("kind", ["user", "root_user"])
+async def test_a12_legacy_budget_denies_other_people_preserves_owner_and_org_totals(session, seeded, kind):
+    from src.budget.routes import router as legacy_router
+
+    app = build_app(session, context_for(MEMBER_SUB))
+    app.include_router(legacy_router)
+    own = MEMBER_SUB if kind == "user" else MEMBER_CANONICAL
+    other = COLLEAGUE_SUB if kind == "user" else COLLEAGUE_CANONICAL
+    foreign = FOREIGN_SUB if kind == "user" else FOREIGN_CANONICAL
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for target in (other, foreign):
+            for path in (
+                f"entity/{kind}/{target}",
+                f"summary/{kind}/{target}",
+                f"usage/{kind}/{target}?period_type=monthly",
+                f"status/{kind}/{target}?period_type=monthly",
+            ):
+                denied = await client.get(f"/budgets/{path}")
+                assert_denied_without_metadata(denied, forbidden_values=(target, str(COLLEAGUE_SPEND), str(FOREIGN_SPEND)))
+        allowed = await client.get(f"/budgets/summary/{kind}/{own}")
+        assert allowed.status_code == 200, allowed.text
+        overview = await client.get("/budgets/organization/overview")
+        assert overview.status_code == 200, overview.text
+        assert "total_spend_current_month" in overview.json()
+        assert COLLEAGUE_SUB not in overview.text
+        assert FOREIGN_SUB not in overview.text
+        alerts = await client.get("/budgets/organization/alerts?threshold_percent=0")
+        assert alerts.status_code == 200, alerts.text
+        assert COLLEAGUE_SUB not in alerts.text
+        assert FOREIGN_SUB not in alerts.text
+
+
+async def test_a12_legacy_budget_id_uses_stored_target_and_admin_stays_in_tenant(session, seeded):
+    from sqlalchemy import select
+
+    from src.budget.routes import router as legacy_router
+
+    budget = await session.scalar(select(BudgetConfig).where(BudgetConfig.entity_id == COLLEAGUE_SUB))
+    assert budget is not None
+    for subject, expected in ((MEMBER_SUB, 403), (ORG_ADMIN_SUB, 200)):
+        app = build_app(session, context_for(subject))
+        app.include_router(legacy_router)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(f"/budgets/{budget.id}")
+            assert response.status_code == expected, response.text
+            foreign = await client.get(f"/budgets/summary/user/{FOREIGN_SUB}")
+            assert foreign.status_code == 403, foreign.text
+            assert str(FOREIGN_SPEND) not in foreign.text
+
+
+@pytest.mark.parametrize("subject,allowed", [(MEMBER_SUB, False), (DEPT_ADMIN_SUB, False), (ORG_ADMIN_SUB, True)])
+async def test_a12_tenant_activity_requires_explicit_cross_user_authority(session, seeded, subject, allowed):
+    from unittest.mock import MagicMock
+
+    from fastapi.responses import JSONResponse
+
+    from src.activity.routes import router as activity_router
+    from src.activity.service import ActivityService
+    from src.shared.exceptions import BedrockGatewayError
+
+    app = build_app(session, context_for(subject))
+    app.include_router(activity_router)
+
+    @app.exception_handler(BedrockGatewayError)
+    async def handle_error(request, exc):
+        return JSONResponse(status_code=exc.status_code, content={"detail": "denied"})
+
+    activity = MagicMock(spec=ActivityService)
+    activity.query_by_tenant.return_value = InvocationListResponse(items=[], count=0)
+    app.dependency_overrides[get_activity_service] = lambda: activity
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        result = await client.get("/admin/agent-invocations")
+        assert result.status_code == (200 if allowed else 403), result.text
+        if not allowed:
+            activity.query_by_tenant.assert_not_called()
+        foreign = await client.get(f"/admin/agent-invocations?tenant_id={OTHER_ORG_ID}")
+        assert foreign.status_code == 403, foreign.text
+        for suffix in ("some-run", "some-run/transcript", "chain/some-chain"):
+            if allowed:
+                continue
+            response = await client.get(f"/admin/agent-invocations/{suffix}")
+            assert response.status_code == 403, response.text
+        activity.get_invocation.assert_not_called()
+        activity.get_chain.assert_not_called()
+
+
+async def test_a12_viewer_cannot_read_colleague_budget(session, seeded):
+    from sqlalchemy import select
+
+    from src.budget.routes import router as legacy_router
+
+    membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == MEMBER_CANONICAL))
+    membership.role = "viewer"
+    await session.commit()
+    app = build_app(session, context_for(MEMBER_SUB))
+    app.include_router(legacy_router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/budgets/summary/user/{COLLEAGUE_SUB}")
+    assert_denied_without_metadata(response)

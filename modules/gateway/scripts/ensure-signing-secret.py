@@ -2,7 +2,7 @@
 """Read or atomically create a signing secret; never rotate an existing value.
 
 Uses the deployment's existing AWS CLI credentials and prints only the value for
-capture by the caller. Secret input travels on stdin, never in process arguments.
+capture by the caller. Secret input travels in a private temporary file, never in process arguments.
 """
 
 import argparse
@@ -11,6 +11,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 
 
 class SecretBootstrapError(RuntimeError):
@@ -20,29 +21,34 @@ class SecretBootstrapError(RuntimeError):
 
 
 def request(action, region, payload):
-    result = subprocess.run(
-        [
-            "aws",
-            "secretsmanager",
-            action,
-            "--region",
-            region,
-            "--output",
-            "json",
-            "--no-cli-pager",
-            "--cli-input-json",
-            "file:///dev/stdin",
-            "--cli-connect-timeout",
-            "10",
-            "--cli-read-timeout",
-            "30",
-        ],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
+    # The runner's AWS CLI rejects file:///dev/stdin as invalid JSON. A
+    # mode-0600 file works across CLI versions and keeps keys out of argv.
+    # NamedTemporaryFile also removes it on command failure or timeout.
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload_file:
+        json.dump(payload, payload_file)
+        payload_file.flush()
+        result = subprocess.run(
+            [
+                "aws",
+                "secretsmanager",
+                action,
+                "--region",
+                region,
+                "--output",
+                "json",
+                "--no-cli-pager",
+                "--cli-input-json",
+                "file://" + payload_file.name,
+                "--cli-connect-timeout",
+                "10",
+                "--cli-read-timeout",
+                "30",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
     if result.returncode:
         match = re.search(r"\(([A-Za-z][A-Za-z0-9]+)\) when calling", result.stderr)
         raise SecretBootstrapError(action, match.group(1) if match else "CommandFailed")

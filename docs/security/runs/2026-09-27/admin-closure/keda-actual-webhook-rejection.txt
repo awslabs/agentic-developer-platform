@@ -1,0 +1,1 @@
+Error from server (Forbidden): error when creating "STDIN": admission webhook "vscaledobject.kb.io" denied the request: scaledobject name "security-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" is 73 characters long; must be no more than 63 characters because it is used as the "scaledobject.keda.sh/name" label value

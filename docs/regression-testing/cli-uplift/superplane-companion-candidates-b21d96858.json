@@ -1,0 +1,50 @@
+{
+  "source_revision": "b21d968586747748f3b605247a33fad328d4697a",
+  "status": "verified build candidates; not deployed",
+  "components": {
+    "controller": {
+      "build_id": "adp-dev-superplane-controller:ee971855-4674-4e97-a502-3afe6237719d",
+      "build_status": "SUCCEEDED",
+      "source_revision": "b21d968586747748f3b605247a33fad328d4697a",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-superplane-controller/b21d968586747748f3b605247a33fad328d4697a-1790391826-3500444.zip",
+      "archive_sha256": "ecbbd8d58d08cb38791cd1f40ef3be34916d381acd046871b2ad5ddba22a61ac",
+      "repository": "adp-superplane-controller",
+      "digest": "sha256:e93f90b95e2c8ebbf039ee76b79c3b677cb89d0031999906d8ea7dcb2cbf87d2",
+      "config_digest": "sha256:e795a1404dfc74d5c3b88328f20e2b569802f2058457e6616773704c98917d98",
+      "labels": {
+        "com.adp.superplane.origin.repository": "https://github.com/aws-innovate/AISuperPlane",
+        "com.adp.superplane.origin.revision": "5d543c952493f0765133b92e93301b0b24d028ee",
+        "org.opencontainers.image.revision": "b21d968586747748f3b605247a33fad328d4697a",
+        "org.opencontainers.image.source": "modules/domain-apps/superplane/src/superplane-controller"
+      },
+      "architecture": "amd64",
+      "os": "linux"
+    },
+    "monitor": {
+      "build_id": "adp-dev-superplane-monitor:8efe54ca-23d4-4420-9b18-124e593435ae",
+      "build_status": "SUCCEEDED",
+      "source_revision": "b21d968586747748f3b605247a33fad328d4697a",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-superplane-monitor/b21d968586747748f3b605247a33fad328d4697a-1790391827-3500486.zip",
+      "archive_sha256": "ecbbd8d58d08cb38791cd1f40ef3be34916d381acd046871b2ad5ddba22a61ac",
+      "repository": "adp-superplane-platform-monitor",
+      "digest": "sha256:2451bdc62521c70d5fab2fab451111a0ccee61b52933e1b3412802a7553e102b",
+      "config_digest": "sha256:2303045ae59abfccd4686fde9aba0b555ed9140cb61cf3003003b22e41be1e2d",
+      "labels": {
+        "com.adp.superplane.origin.repository": "https://github.com/aws-innovate/AISuperPlane",
+        "com.adp.superplane.origin.revision": "5d543c952493f0765133b92e93301b0b24d028ee",
+        "org.opencontainers.image.revision": "b21d968586747748f3b605247a33fad328d4697a",
+        "org.opencontainers.image.source": "modules/domain-apps/superplane/src/superplane-platform-monitor"
+      },
+      "architecture": "amd64",
+      "os": "linux"
+    }
+  },
+  "deployment_performed": false,
+  "release_lock_promoted": false,
+  "remaining_upgrade_inputs": [
+    "read-only deployment ownership and authentication metadata",
+    "network-policy enforcement evidence",
+    "approved backup selection and migration/backup/restore ownership",
+    "fresh installer plan and verified online preflight"
+  ]
+}

@@ -1,0 +1,164 @@
+{
+  "generated_at": "2026-09-27T11:01:06.288565+00:00",
+  "scope": "observed active EKS image digests; pending/runtime/launcher gaps remain unknown",
+  "inventory_summary": {
+    "inventory": "/workspaces/projects/security27/live-refresh-20260927T105050Z",
+    "inventory_resource_receipt_sha256": "a2c0f7c0f7811fe6b9f8cc322e4d1c8695f7cf13530e46e92e4fff1f471c4572",
+    "generated_at": "2026-09-27T10:50:54.060207+00:00",
+    "pods": 151,
+    "container_spec_rows": 261,
+    "active_pod_container_rows": 260,
+    "unique_observed_digests": 32,
+    "active_pod_digests": 32,
+    "historical_only_digests": 0,
+    "desired_template_rows": 35,
+    "gap_counts": {
+      "missing_runtime_digest": 9,
+      "owner_chain_incomplete": 34,
+      "desired_template_without_observed_digest": 7
+    },
+    "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+    "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+  },
+  "observed_digests": 32,
+  "unscanned_observed_digests": [],
+  "active_unique_open": {
+    "Critical": 56,
+    "High": 359
+  },
+  "baseline_active_unique_open": {
+    "Critical": 59,
+    "High": 389
+  },
+  "active_open_occurrences": 2613,
+  "baseline_active_open_occurrences": 3231,
+  "retired_baseline_platform_references": [
+    "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9d8c57fee4e7abef273584cbd20d3ee3f132757a9d52fd8d5d366858f4c78f59",
+    "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:d0b87ac11e6f5e320fae321a1230554468422a7dfb8573dccc2ae13a6dcce799",
+    "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d",
+    "ghcr.io/asyncfuncai/deepwiki-open@sha256:1f24e9aba56305f3104bf9e7f19d12ed93817db77a025d7f38d7829a9ecfaf4c"
+  ],
+  "current_new_images": {
+    "arc-runner": {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
+      "native_counts": {
+        "Medium": 397,
+        "High": 105,
+        "Negligible": 10,
+        "Low": 71,
+        "Unknown": 11
+      },
+      "config_digest": "sha256:72dcc8f1a3cb8147fe4999bb291bfd53f50f0361c10fa79831e7494d92c547f8"
+    },
+    "chat": {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
+      "native_counts": {
+        "Medium": 2
+      },
+      "config_digest": "sha256:e3b0f14ae733ad098f33d4462bfe5c8b9a7c40003311e12cd12518107113d4cd"
+    },
+    "gateway": {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
+      "native_counts": {
+        "High": 50,
+        "Medium": 54,
+        "Negligible": 44,
+        "Low": 9
+      },
+      "config_digest": "sha256:d7c0e62d43c4ccb72b06ff3a3200726108e316eb829a78cd3516257b00c1fc32"
+    },
+    "context-mcp": {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:1bc2c110f13d75cec6e2be4f4c498b955c169d55781378d086b9d5738778955c",
+      "native_counts": {
+        "High": 50,
+        "Medium": 54,
+        "Negligible": 44,
+        "Low": 9
+      },
+      "config_digest": "sha256:3ba7471c0d81279a602db39ab88babb6fbb07c114e17ae4a71980cc87f94cd5c"
+    },
+    "litellm": {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:167084ca9cbc0457758481310b3e297f83a0734c2359769c9eeb8de633da657a",
+      "native_counts": {
+        "High": 50,
+        "Medium": 54,
+        "Negligible": 44,
+        "Low": 9
+      },
+      "config_digest": "sha256:c8e870d7e9a5380dfb37ca50bdf734fb8d9b7c7eb27252d26b48b29853e0d8cb"
+    }
+  },
+  "rebound_zlib_unaffected_occurrences": [
+    {
+      "occurrence_id": "gateway:1",
+      "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
+      "config_digest": "sha256:d7c0e62d43c4ccb72b06ff3a3200726108e316eb829a78cd3516257b00c1fc32",
+      "scope": "active",
+      "canonical_id": "CVE-2026-85091",
+      "native_id": "CVE-2026-85091",
+      "severity": "High",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "status": "vendor-unaffected",
+      "raw_match_index": 1,
+      "raw_scan_sha256": "56ff94d1a404d85dbb6b9cce4a1547d67c89485e35a6fb2ee7b5e12f3f41b02f",
+      "binary_evidence": {
+        "binary": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+        "sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+      },
+      "evidence_pr": 6532
+    },
+    {
+      "occurrence_id": "context-mcp:1",
+      "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:1bc2c110f13d75cec6e2be4f4c498b955c169d55781378d086b9d5738778955c",
+      "config_digest": "sha256:3ba7471c0d81279a602db39ab88babb6fbb07c114e17ae4a71980cc87f94cd5c",
+      "scope": "active",
+      "canonical_id": "CVE-2026-85091",
+      "native_id": "CVE-2026-85091",
+      "severity": "High",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "status": "vendor-unaffected",
+      "raw_match_index": 1,
+      "raw_scan_sha256": "b439d7420c8d6cd9378357617989b2d3ad3a824613bb2c2ccb22aeec248aff91",
+      "binary_evidence": {
+        "binary": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+        "sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+      },
+      "evidence_pr": 6532
+    },
+    {
+      "occurrence_id": "litellm:1",
+      "platform_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:167084ca9cbc0457758481310b3e297f83a0734c2359769c9eeb8de633da657a",
+      "config_digest": "sha256:c8e870d7e9a5380dfb37ca50bdf734fb8d9b7c7eb27252d26b48b29853e0d8cb",
+      "scope": "active",
+      "canonical_id": "CVE-2026-85091",
+      "native_id": "CVE-2026-85091",
+      "severity": "High",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "status": "vendor-unaffected",
+      "raw_match_index": 1,
+      "raw_scan_sha256": "64f014090022e361ad6096eb781568ad946908535d4f5ec7a94bdb527809a547",
+      "binary_evidence": {
+        "binary": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+        "sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+      },
+      "evidence_pr": 6532
+    }
+  ],
+  "frozen_baseline_preserved": true,
+  "unresolved_advisory_bundles": 0,
+  "original_all_scope_baseline": {
+    "Critical": 64,
+    "High": 425,
+    "open_occurrences": 4123
+  },
+  "conservative_open_unique": {
+    "Critical": 59,
+    "High": 377
+  },
+  "conservative_open_occurrences": 2861,
+  "carried_forward_unverified_occurrences": 248,
+  "carried_forward_reason": "DeepWiki remains desired but has no verified current runtime imageID; previous findings remain open"
+}

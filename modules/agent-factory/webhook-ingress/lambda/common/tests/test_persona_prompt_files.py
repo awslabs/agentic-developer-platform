@@ -75,6 +75,16 @@ def _staged_persona_files() -> dict[str, Path]:
     for root in [_CORE_PERSONA_ROOT, *_domain_persona_dirs()]:
         for path in sorted(root.glob("*.md")):
             staged[path.stem] = path  # later roots overwrite, as in staging
+    # Shared SDK definitions point to the maintained canonical persona source.
+    import json
+    for role in ("architect", "product", "pm", "intent-refinement"):
+        definition = (
+            _REPO_ROOT / f"modules/agent-factory/codex-harness/personas/{role}.json"
+        )
+        assert json.loads(definition.read_text())["key"] == f"gpt-{role}"
+        source = _CORE_PERSONA_ROOT / f"{role}.md"
+        assert source.is_file()
+        staged[f"agent-codex-{role}"] = source
     return staged
 
 
@@ -181,7 +191,7 @@ def test_domain_persona_files_do_not_collide_with_each_other() -> None:
     )
 
 
-def test_only_token_safe_codex_reviewer_extends_another_mention() -> None:
+def test_only_token_safe_codex_personas_extend_another_mention() -> None:
     """Overlapping names stay exceptional and pinned to token-aware routing."""
     mentions = sorted(MENTION_TO_PERSONA)
     overlaps = [
@@ -190,7 +200,14 @@ def test_only_token_safe_codex_reviewer_extends_another_mention() -> None:
         for inner in mentions
         if inner != outer and inner in outer
     ]
-    assert overlaps == [("@agent-codex-reviewer", "@agent-codex")]
+    assert overlaps == [
+        ("@agent-codex-architect", "@agent-codex"),
+        ("@agent-codex-developer", "@agent-codex"),
+        ("@agent-codex-intent-refinement", "@agent-codex"),
+        ("@agent-codex-pm", "@agent-codex"),
+        ("@agent-codex-product", "@agent-codex"),
+        ("@agent-codex-reviewer", "@agent-codex"),
+    ]
     assert MENTION_TO_PERSONA["@agent-codex-reviewer"] == "agent-codex-reviewer"
     assert MENTION_TO_PERSONA["@agent-codex"] == "codex"
 

@@ -1,0 +1,52 @@
+{
+  "agent-task-investigator": {
+    "revision": "task-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":16,\"messages\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"system\":\"Reply briefly.\"}",
+    "digest": "46e891f50d92e8e113b6017ae643bc668d748eb5dd50fea815613e78ae7b20ae"
+  },
+  "agent-task-cyber": {
+    "revision": "task-cyber-sdk-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  },
+  "agent-task-claude-developer": {
+    "revision": "task-coding-sdk-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  },
+  "agent-task-codex-developer": {
+    "revision": "task-codex-responses-compat-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  },
+  "agent-task-gpt-intent-refinement": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-developer": {
+    "revision": "task-codex-sdk-serial-tools-v3",
+    "body": "{\"input\":\"Call task_probe with value OK.\",\"max_output_tokens\":128,\"parallel_tool_calls\":false,\"reasoning\":{\"effort\":\"medium\"},\"tools\":[{\"description\":\"Authorized ADP tools.\",\"name\":\"mcp__adp\",\"tools\":[{\"description\":\"Return probe evidence.\",\"name\":\"task_probe\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"strict\":false,\"type\":\"function\"}],\"type\":\"namespace\"}]}",
+    "digest": "cd32df8e1b174afa890ee5c95a94ef8db03301af336acdf1cd27f5bfd1c2246d",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-architect": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-product": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-pm": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  }
+}

@@ -32,6 +32,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -81,8 +82,8 @@ def proxy_port() -> int:
 
 
 @pytest.fixture
-def stub_tools(tmp_path: Path) -> Path:
-    """A PATH dir holding fake `codex` and `claude` that record argv + env.
+def stub_tools(tmp_path: Path, adp_home: Path) -> Path:
+    """A PATH dir holding fake `codex`, `claude` and `hermes` that record argv + env.
 
     Recording rather than mocking is deliberate: the launcher `exec`s the tool, so
     the only trustworthy evidence of what it did (and of whether it ran at all) is
@@ -90,7 +91,7 @@ def stub_tools(tmp_path: Path) -> Path:
     """
     bin_dir = tmp_path / "stub-tools"
     bin_dir.mkdir()
-    for tool in ("codex", "claude"):
+    for tool in ("codex", "claude", "hermes"):
         script = bin_dir / tool
         script.write_text(
             "#!/usr/bin/env bash\n"
@@ -99,6 +100,62 @@ def stub_tools(tmp_path: Path) -> Path:
             'printf "dummy=%s\\n" "${ADP_GATEWAY_DUMMY-<unset>}" >> "${STUB_INVOCATION_LOG}"\n'
         )
         script.chmod(0o755)
+    # Hermes owns YAML parsing in its own Python environment. Model its public
+    # config get/set contract separately from the system python3 used by ADP.
+    hermes = bin_dir / "hermes"
+    hermes.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, sys
+from pathlib import Path
+import yaml
+
+path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
+data = yaml.safe_load(path.read_text()) if path.exists() else {}
+data = data or {}
+if not isinstance(data, dict):
+    raise SystemExit("Hermes config must be a mapping")
+args = sys.argv[1:]
+if args[:2] == ["config", "set"]:
+    section, key = args[2].split(".", 1)
+    data.setdefault(section, {})[key] = args[3]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    raise SystemExit(0)
+model = data.get("model", {})
+model = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in model.items()}
+if args[:2] == ["config", "get"]:
+    assert args[2:] == ["model", "--json", "--raw"]
+    print(json.dumps(model))
+    raise SystemExit(0)
+with open(os.environ["STUB_INVOCATION_LOG"], "a") as log:
+    log.write("hermes\\nargv=" + " ".join(args) + "\\ndummy=" + os.environ.get("ADP_GATEWAY_DUMMY", "<unset>") + "\\n")
+if os.environ.get("STUB_HERMES_REQUEST"):
+    import urllib.request
+    request = urllib.request.Request(
+        model["base_url"] + "/chat/completions",
+        data=json.dumps({"model": model["default"], "messages": [{"role": "user", "content": "launcher probe"}]}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ[model["key_env"]]},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        print(response.read().decode())
+"""
+    )
+    config = adp_home / ".hermes" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "provider": "custom",
+                    "base_url": "${ADP_HERMES_BASE_URL}",
+                    "api_key": "${ADP_GATEWAY_DUMMY}",
+                    "key_env": "ADP_GATEWAY_DUMMY",
+                    "api_mode": "chat_completions",
+                    "default": "sonnet45",
+                }
+            }
+        )
+    )
     return bin_dir
 
 
@@ -116,7 +173,7 @@ class Invocations:
 
     @property
     def tools(self) -> list[str]:
-        return [line for line in self._lines if line in ("codex", "claude")]
+        return [line for line in self._lines if line in ("codex", "claude", "hermes")]
 
     @property
     def argv(self) -> list[str]:
@@ -216,7 +273,7 @@ def _seed_dead_session(home: Path) -> None:
 class TestCodexStartsProxy:
     """The whole point: one command, one terminal, proxy handled for you."""
 
-    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    @pytest.mark.parametrize("tool", ["codex", "claude", "hermes"])
     def test_launch_without_arguments_works_on_system_bash(self, launch, adp_home, tool) -> None:
         # macOS /bin/bash is 3.2, whose nounset rejects empty array expansions.
         # Recording tools keep this a launcher test, with no live model calls.
@@ -462,7 +519,7 @@ class TestCodexReusesProxy:
 class TestSessionPreflight:
     """A dead session must stop the launch, not surface as a 401 mid-session."""
 
-    @pytest.mark.parametrize("verb", ["codex", "claude"])
+    @pytest.mark.parametrize("verb", ["codex", "claude", "hermes"])
     def test_no_session_prints_login_hint_and_does_not_launch(self, launch, verb: str) -> None:
         result = launch([verb])
 
@@ -470,7 +527,7 @@ class TestSessionPreflight:
         assert LOGIN_HINT in result.stderr
         assert not launch.record.tools, f"{verb} was launched despite having no session"
 
-    @pytest.mark.parametrize("verb", ["codex", "claude"])
+    @pytest.mark.parametrize("verb", ["codex", "claude", "hermes"])
     def test_dead_session_prints_login_hint_and_does_not_launch(self, launch, adp_home: Path, verb: str) -> None:
         """Expired access token AND an unreachable refresh — genuinely signed out."""
         _seed_dead_session(adp_home)
@@ -562,6 +619,98 @@ class TestClaudeLauncher:
 
 
 # --------------------------------------------------------------------------
+# adp hermes — the Codex model applied to a config-driven tool
+# --------------------------------------------------------------------------
+
+
+class TestHermesLauncher:
+    """Validate Hermes' config, then pin its endpoint and capability at launch."""
+
+    def test_launches_hermes_with_passthrough_args(self, launch, adp_home: Path) -> None:
+        _seed_valid_session(adp_home)
+
+        result = launch(["hermes", "--oneshot", "explain this directory"])
+
+        assert result.returncode == 0, result.stderr
+        assert launch.record.tools == ["hermes"]
+        assert launch.record.argv == ["--oneshot explain this directory"]
+
+    def test_starts_the_proxy_and_sets_the_capability(self, launch, adp_home: Path) -> None:
+        """Like Codex, Hermes authenticates to the proxy with ADP_GATEWAY_DUMMY."""
+        _seed_valid_session(adp_home)
+
+        launch(["hermes"])
+
+        published = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())["capability"]
+        assert launch.record.dummy_env == [published]
+        assert _port_is_open(launch.port), "hermes launched without a listening proxy"
+
+    def test_reuses_a_proxy_codex_already_started(self, launch, adp_home: Path) -> None:
+        """The cross-tool reuse the user asked for: Codex's proxy serves Hermes too."""
+        _seed_valid_session(adp_home)
+
+        first = launch(["codex"])
+        assert first.returncode == 0, first.stderr
+        pid_after_first = launch.pidfile.read_text().strip()
+        starts_after_first = len(_listening_lines(launch.proxy_log))
+
+        second = launch(["hermes"])
+
+        assert second.returncode == 0, second.stderr
+        assert launch.record.tools == ["codex", "hermes"], "both tools must run"
+        assert "already running" in second.stderr, "hermes should reuse, not restart, the proxy"
+        # No second proxy: same pid, same single listen banner.
+        assert launch.pidfile.read_text().strip() == pid_after_first
+        assert len(_listening_lines(launch.proxy_log)) == starts_after_first == 1
+        # And the capability Hermes received is the one the shared proxy published.
+        published = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())["capability"]
+        assert launch.record.dummy_env[-1] == published
+
+    def test_setup_writes_config_and_does_not_launch(self, launch, adp_home: Path) -> None:
+        _seed_valid_session(adp_home)
+        config = adp_home / ".hermes" / "config.yaml"
+        config.unlink()
+
+        result = launch(["hermes", "setup"])
+
+        assert result.returncode == 0, result.stderr
+        assert config.exists()
+        assert not launch.record.tools, "setup must configure, not launch"
+        assert not _port_is_open(launch.port), "setup must not start the proxy"
+
+    def test_setup_points_at_the_proxy_port_with_env_referenced_key(self, launch, adp_home: Path) -> None:
+        """Neither a deployment's port nor its rotating capability is persisted."""
+        _seed_valid_session(adp_home)
+
+        launch(["hermes", "setup"])
+
+        config = (adp_home / ".hermes" / "config.yaml").read_text()
+        assert "${ADP_HERMES_BASE_URL}" in config
+        assert str(launch.port) not in config
+        assert "provider: custom" in config
+        assert "${ADP_GATEWAY_DUMMY}" in config
+
+    def test_setup_preserves_unrelated_config(self, launch, adp_home: Path) -> None:
+        """Hermes' config is large and user-owned; setup replaces only what ADP owns
+        (provider/base_url/api_key/default) and keeps everything else."""
+        _seed_valid_session(adp_home)
+        config = adp_home / ".hermes" / "config.yaml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text("database:\n  journal_mode: wal\nmodel:\n  default: my-model\n  temperature: 0.3\n")
+
+        launch(["hermes", "setup"])
+
+        merged = config.read_text()
+        assert "journal_mode: wal" in merged, "unrelated top-level section was dropped"
+        assert "temperature: 0.3" in merged, "unrelated model key was dropped"
+        assert "provider: custom" in merged
+        # `default` is ADP-owned (a stock Hermes default would be model_not_allowed
+        # against the gateway), so setup overrides it rather than preserving mine.
+        assert "default: my-model" not in merged
+        assert "default: sonnet45" in merged
+
+
+# --------------------------------------------------------------------------
 # Verb routing — the setup subcommands must survive
 # --------------------------------------------------------------------------
 
@@ -597,7 +746,7 @@ class TestVerbRouting:
         config = (adp_home / ".codex" / "config.toml").read_text()
         assert f"http://127.0.0.1:{launch.port}/openai/v1" in config
 
-    @pytest.mark.parametrize("verb", ["codex", "claude"])
+    @pytest.mark.parametrize("verb", ["codex", "claude", "hermes"])
     def test_double_dash_escapes_a_literal_setup_arg(self, launch, adp_home: Path, verb: str) -> None:
         """`adp codex -- setup` must reach the tool, not our config writer."""
         _seed_valid_session(adp_home)
@@ -610,6 +759,13 @@ class TestVerbRouting:
             assert launch.record.argv[0].endswith(" setup")
         else:
             assert launch.record.argv == ["setup"]
+
+    def test_usage_documents_the_hermes_launcher(self, launch) -> None:
+        result = launch(["help"])
+
+        assert result.returncode == 0
+        assert "hermes setup" in result.stdout
+        assert "hermes [args...]" in result.stdout
 
     def test_usage_documents_the_launchers_and_the_asymmetry(self, launch) -> None:
         """The Claude/Codex difference is documented, not hidden (issue's own words)."""

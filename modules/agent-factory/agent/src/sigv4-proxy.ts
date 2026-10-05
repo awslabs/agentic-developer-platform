@@ -23,6 +23,7 @@ import { Hash } from '@smithy/hash-node';
 import { workerAwsCredentialProvider, workerIdentityHeaders, readIdentityToken, gatewaySigningRegion } from './lib/runIdentity';
 import { handleKnowledgeBridge } from './lib/knowledgeBridge';
 import { proxyPort } from './lib/proxyPort';
+import { responsesOutputDefault, withResponsesOutputBound } from './lib/responsesOutputBound';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -35,6 +36,7 @@ const PORT      = parseInt(get('--port', proxyPort()), 10);
 const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
+const RESPONSES_OUTPUT_DEFAULT = responsesOutputDefault();
 
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
@@ -74,7 +76,12 @@ const server = http.createServer(async (req, res) => {
   // Collect body
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  const body = Buffer.concat(chunks);
+  const originalBody = Buffer.concat(chunks);
+  // Codex can omit this optional provider field. Send a real output bound so
+  // the engine can quote/reserve cost before forwarding; sign these final bytes.
+  const body = method === 'POST' && !req.headers['content-encoding']
+    ? withResponsesOutputBound(req.url || '/', originalBody, RESPONSES_OUTPUT_DEFAULT)
+    : originalBody;
 
   // Clean headers — strip old auth
   const headers: Record<string, string> = { host: targetUrl.host };
@@ -82,6 +89,11 @@ const server = http.createServer(async (req, res) => {
     if (!STRIP.has(k.toLowerCase()) && typeof v === 'string') {
       headers[k.toLowerCase()] = v;
     }
+  }
+
+  if (body !== originalBody) {
+    delete headers['transfer-encoding'];
+    headers['content-length'] = String(body.length);
   }
 
   // Inject tenant identity header (Phase 2, issue #747)

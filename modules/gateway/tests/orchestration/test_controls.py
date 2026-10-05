@@ -34,9 +34,12 @@ asserted for **equality**. A permission absent from that set is evaluated
 *globally*, which for approval authority means cross-org gate approval. Equality
 means the next permission added without a deliberate scoping decision fails CI.
 
-And **R-O3f**: the per-run pause/steer/abort seam answers 501. A control that
+And **R-O3f**: the per-run pause/steer/abort seam refuses any verb the deployment
+has not implemented, with a 501 rather than a silent success. A control that
 appears to pause a run without doing so is worse than no control, because an
-operator who believes a run is paused stops watching it.
+operator who believes a run is paused stops watching it. As of #3965 all four
+verbs are implemented, so the 501 case here is driven by a stubbed service — the
+rung still has to exist for the verb added next.
 
 Session and app fixtures mirror `test_read_api.py`, including its two pysqlite
 hooks.
@@ -622,6 +625,7 @@ class TestAC17OrgScopedPermissionRegistration:
                 Permission.RATELIMIT_READ,
                 Permission.RATELIMIT_UPDATE,
                 Permission.USAGE_READ,
+                Permission.ACTIVITY_READ_ALL,
                 Permission.LOGS_READ,
                 Permission.LOGS_EXPORT,
                 Permission.USER_READ,
@@ -828,10 +832,10 @@ class TestRO3fDeclaredSeam:
         service.authorize_command.assert_called_once()
 
     def test_only_implemented_verbs_are_advertised_as_supported(self):
-        """Pause/resume have signed transport; steer/abort remain unavailable."""
+        """All four verbs now have transport; steer got its queue in #3965."""
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "steer", "abort"})
 
     @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
     def test_all_four_verbs_are_routed(self, app_with_router, action):
@@ -1775,3 +1779,40 @@ class TestLegacyLaneAdoptionThroughResume:
         claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
         assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, receipt.generation, "legacy-run")
         assert self._blocks(await decisions_for(session, flow.id))[-1][1]["block_code"] == "authority_unverifiable"
+
+
+@pytest.mark.parametrize("change", ["unchanged", "attempt", "flow", "foreign"])
+async def test_cli_resume_fences_exact_reviewed_node(app_with_router, session, change):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, kind="eval", state="failed")
+    await session.commit()
+    with client_for(app_with_router) as client:
+        before = client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": flow.id})
+        assert before.status_code == 200
+        body = {"reason": "Retry after repair", "expected_revision": before.json()["revision"], "expected_flow_id": flow.id}
+        if change == "attempt":
+            node.attempts += 1
+            await session.commit()
+        if change == "flow":
+            body["expected_flow_id"] = "other-flow"
+        if change == "foreign":
+            node.org_id = ORG_B
+            await session.commit()
+        response = client.post(resume_route(node.id), json=body)
+    assert response.status_code == {"unchanged": 200, "attempt": 409, "flow": 404, "foreign": 404}[change]
+    if change == "unchanged":
+        assert response.json()["state"] == "ready"
+        with client_for(app_with_router) as client:
+            assert client.post(resume_route(node.id), json=body).status_code == 409
+    else:
+        assert await state_of(session, node.id) == "failed"
+
+
+async def test_cli_recovery_read_rejects_missing_permission_and_foreign_flow(app_with_router, session):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow)
+    await session.commit()
+    with client_for(app_with_router, permitted=False) as client:
+        assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": flow.id}).status_code == 403
+    with client_for(app_with_router) as client:
+        assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": "foreign"}).status_code == 404

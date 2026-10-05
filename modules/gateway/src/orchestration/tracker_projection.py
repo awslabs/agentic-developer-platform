@@ -614,6 +614,8 @@ def _row_status(node: OrchestrationNode, binding: object | None) -> str:
     verification status. So a bound-but-unaccepted story reads as awaiting
     verification, and the PR column carries the pull request for the reader to check.
     """
+    if node.state == NodeState.WAIVED.value:
+        return "↷ waived by owner approval (not evaluated)"
     display = _display_of(node.state)
     if display is None:
         return "❔ unknown"

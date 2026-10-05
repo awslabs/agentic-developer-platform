@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -29,6 +29,7 @@ from src.auth.approval_middleware import ApprovalEnforcementMiddleware
 from src.shared.config import Settings
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.models.base import Base
+from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, Team, User
 from src.shared.schemas.auth import TokenContext
 
@@ -100,6 +101,7 @@ async def session_factory():
                 cognito_sub=APPROVED_SUB,
             )
         )
+        session.add(TenantMembership(user_id="db-user-1", tenant_id="org-acme", role="member", is_active=True, joined_via="onboarding_approval"))
         await session.commit()
 
     yield factory
@@ -158,6 +160,14 @@ class _Harness:
                 return json.loads(msg["body"])
         raise AssertionError("no response body was sent")
 
+    @property
+    def headers(self) -> dict[str, str]:
+        """Response headers, lowercased — #5666 (A11) asserts Retry-After."""
+        for msg in self.sent:
+            if msg["type"] == "http.response.start":
+                return {k.decode().lower(): v.decode() for k, v in msg.get("headers", [])}
+        return {}
+
 
 def _with_session_factory(factory):
     """Build a middleware whose DB session comes from the given factory."""
@@ -192,10 +202,34 @@ class TestFlagOff:
         assert h.admitted, "flag off must admit an un-approved human"
         assert h.status == 200
 
-    async def test_flag_defaults_to_false(self, monkeypatch):
-        """Shipping default must be off — this is what makes merge safe."""
+    async def test_flag_defaults_to_enforcing(self, monkeypatch):
+        """#5666 (A11): the shipping default is now ON.
+
+        This test previously asserted ``is False`` with the rationale "this is what
+        makes merge safe". Merge-safe and deploy-safe are different properties: a
+        default of off meant the only SERVER-SIDE proof of approval on the paid
+        paths was inert in every environment that had not been hand-flipped, so the
+        documented protection was not the shipped behaviour. A security control
+        whose default is off is a control nobody has.
+        """
         monkeypatch.delenv("BG_ENFORCE_ORG_ASSIGNMENT", raising=False)
-        assert Settings().enforce_org_assignment is False
+        assert Settings().enforce_org_assignment is True
+
+    async def test_configmap_ships_enforcement_on(self):
+        """The Python default is not what runs in the cluster — the ConfigMap is.
+
+        Both must agree, or flipping only the dataclass default leaves the deployed
+        pods with the old permissive value and the fix is cosmetic.
+        """
+        from pathlib import Path
+
+        configmap = Path(__file__).resolve().parents[2] / "k8s" / "configmap.yaml"
+        text = configmap.read_text()
+        assert 'BG_ENFORCE_ORG_ASSIGNMENT: "true"' in text, (
+            "k8s/configmap.yaml must ship approval enforcement ON; a 'false' here disables the gate "
+            "in the cluster no matter what the Settings default says"
+        )
+        assert 'BG_APPROVAL_FAIL_OPEN: "false"' in text, "the fail-open break-glass must ship disabled"
 
     async def test_flag_is_configurable_from_the_environment(self, monkeypatch):
         """The documented rollback (env flip + pod recycle) must actually work."""
@@ -232,19 +266,11 @@ class TestApprovalGate:
         assert h.admitted, "an approved user with an org-less token must be admitted via the DB fallback"
         assert h.status == 200
 
-    async def test_populated_claim_is_allowed_without_any_db_query(self):
-        """Hot path stays DB-free when the token already carries an org."""
-        session_getter = MagicMock(side_effect=AssertionError("the DB must not be touched on the claim fast path"))
-
-        def _factory(app):
-            mw = ApprovalEnforcementMiddleware(app)
-            mw._get_session = session_getter  # type: ignore[method-assign]
-            return mw
-
-        h = _Harness(_factory)
+    async def test_populated_claim_requires_current_membership(self, session_factory):
+        h = _Harness(_with_session_factory(session_factory))
         await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id="org-acme"))
-        assert h.admitted
-        session_getter.assert_not_called()
+        assert not h.admitted
+        assert h.status == 409
 
     async def test_whitespace_only_claim_falls_through_to_the_db(self, session_factory):
         """A claim of spaces is not an org assignment."""
@@ -265,12 +291,19 @@ class TestExemptions:
         assert h.admitted, "a platform admin must never be gated"
         assert h.status == 200
 
-    async def test_service_account_is_allowed(self, session_factory):
-        """Agent exemption: hosted agents authenticate via IAM as account_type=service."""
+    async def test_service_account_requires_registered_authority(self, session_factory):
         h = _Harness(_with_session_factory(session_factory))
-        await h.run(_ctx(user_id="agent-client-id", org_id="", account_type="service"))
-        assert h.admitted, "hosted agents must be unaffected by the approval gate"
-        assert h.status == 200
+        await h.run(_ctx(user_id="agent-client-id", org_id="org-acme", account_type="service"))
+        assert not h.admitted
+        assert h.status == 409
+
+    async def test_registered_iam_agent_is_allowed(self, session_factory):
+        context = _ctx(user_id="registered-agent", org_id="org-acme", account_type="service")
+        context.auth_source = "iam"
+        context.agent_registry_id = "registry-row-id"
+        h = _Harness(_with_session_factory(session_factory))
+        await h.run(context)
+        assert h.admitted
 
     async def test_unstamped_account_type_is_treated_as_human(self, session_factory):
         """Fail-safe direction: an unstamped caller is gated, not waved through.
@@ -348,30 +381,102 @@ class TestPassthrough:
             assert h.admitted, f"{path} is not gated by this middleware (documented scope boundary)"
 
 
-class TestFailOpen:
-    async def test_db_error_admits_the_request(self, session_factory):
-        """Fail OPEN, deliberately diverging from #4075's fail-closed budget policy.
+class TestFailClosed:
+    """#5666 (A11): an indeterminate approval lookup must DENY, not admit.
 
-        Approval failing closed would turn a transient DB blip into a total
-        inference outage for every user (the #3984 class of incident). The
-        residual risk — an un-approved user spends during a DB outage — is
-        bounded and still capped by budget/rate limits.
-        """
+    This class previously asserted the opposite. The fail-open reasoning was not
+    wrong about the outage risk it named — it was wrong about the remedy. Admitting
+    unproven callers means the one fault an attacker can most easily induce
+    (database pressure) is also the fault that disables the gate on the paid paths:
+    "cannot prove approved" was being treated as "approved".
+
+    The #4075 budget precedent is applied instead — separate the POLICY answer from
+    the AVAILABILITY answer, so failing closed does not require a terminal error:
+    409 for proven-not-approved, retryable 503 for indeterminate. The outage the old
+    comment feared is further bounded by the exemption ORDER: admins, agents and
+    humans with a populated org claim never reach the DB read at all.
+    """
+
+    async def test_db_error_denies_the_request(self, session_factory):
+        """The core inversion of this finding."""
         exc = OperationalError("SELECT 1", {}, Exception("PAM authentication failed"))
         h = _Harness(_with_failing_session(exc))
         with patch("src.auth.approval_middleware.ApprovalEnforcementMiddleware._emit_metric") as emit:
             await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
-        assert h.admitted, "a failed approval check must not down inference"
-        assert h.status == 200
-        emit.assert_called_once_with("ApprovalCheckFailedFailOpen")
+        assert not h.admitted, (
+            "an indeterminate approval check must NOT reach the paid provider — a DB fault is the "
+            "easiest condition to induce, so admitting on it makes the gate optional"
+        )
+        assert h.status == 503
+        emit.assert_any_call("ApprovalCheckFailedFailClosed")
 
-    async def test_db_error_logs_a_greppable_warning(self, session_factory, caplog):
-        """An operator must be able to find fail-open events in CloudWatch."""
+    async def test_indeterminate_is_503_not_409(self, session_factory):
+        """The two denials must be distinguishable by clients AND by operators.
+
+        A 409 would tell this caller to go find an admin (wrong — they may be
+        approved) and would spike the entitlement-denial rate on a dashboard during
+        a database incident, sending someone to hunt a phantom approvals bug.
+        """
+        h = _Harness(_with_failing_session(OperationalError("SELECT 1", {}, Exception("boom"))))
+        with patch.object(ApprovalEnforcementMiddleware, "_emit_metric"):
+            await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
+        assert h.status == 503
+        assert h.json_body == {
+            "detail": {
+                "error": "approval_check_unavailable",
+                "message": "Unable to verify your access approval right now. Please retry shortly.",
+            }
+        }
+        assert h.json_body["detail"]["error"] != "user_not_assigned_to_org"
+
+    async def test_503_is_retryable(self, session_factory):
+        """Retry-After is what lets clients recover without operator action."""
+        h = _Harness(_with_failing_session(OperationalError("SELECT 1", {}, Exception("boom"))))
+        with patch.object(ApprovalEnforcementMiddleware, "_emit_metric"):
+            await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
+        assert h.headers.get("retry-after") == "2"
+
+    async def test_db_error_logs_a_greppable_error(self, session_factory, caplog):
+        """An operator must be able to find fail-closed denials in CloudWatch."""
         exc = OperationalError("SELECT 1", {}, Exception("boom"))
         h = _Harness(_with_failing_session(exc))
         with caplog.at_level("WARNING"), patch.object(ApprovalEnforcementMiddleware, "_emit_metric"):
             await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
-        assert "approval_check_failed_fail_open" in caplog.text
+        assert "approval_check_failed_fail_closed" in caplog.text
+
+    async def test_outage_preserves_recovery_but_does_not_trust_org_claims(self, session_factory):
+        exc = OperationalError("SELECT 1", {}, Exception("db is down"))
+        for ctx, status in (
+            (_ctx(user_id="sub-admin", org_id="", is_admin=True), 200),
+            (_ctx(user_id="sub-agent", org_id="org-acme", account_type="service"), 409),
+            (_ctx(user_id=APPROVED_SUB, org_id="org-acme"), 503),
+        ):
+            h = _Harness(_with_failing_session(exc))
+            with patch.object(ApprovalEnforcementMiddleware, "_emit_metric"):
+                await h.run(ctx)
+            assert h.status == status
+
+    async def test_break_glass_restores_admission_explicitly(self, session_factory, monkeypatch):
+        """An operator can still choose availability — consciously, and visibly."""
+        monkeypatch.setenv("BG_APPROVAL_FAIL_OPEN", "true")
+        exc = OperationalError("SELECT 1", {}, Exception("boom"))
+        h = _Harness(_with_failing_session(exc))
+        with patch("src.auth.approval_middleware.ApprovalEnforcementMiddleware._emit_metric") as emit:
+            await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
+        assert h.admitted, "BG_APPROVAL_FAIL_OPEN=true must restore the pre-#5666 behaviour"
+        emit.assert_any_call("ApprovalCheckFailedFailOpen")
+
+    async def test_break_glass_defaults_off(self, monkeypatch):
+        monkeypatch.delenv("BG_APPROVAL_FAIL_OPEN", raising=False)
+        assert Settings().approval_fail_open is False, "the break-glass must be opt-in"
+
+    async def test_break_glass_is_loudly_logged_while_active(self, session_factory, monkeypatch, caplog):
+        """It must be impossible to leave this on unnoticed."""
+        monkeypatch.setenv("BG_APPROVAL_FAIL_OPEN", "true")
+        h = _Harness(_with_failing_session(OperationalError("SELECT 1", {}, Exception("boom"))))
+        with caplog.at_level("WARNING"), patch.object(ApprovalEnforcementMiddleware, "_emit_metric"):
+            await h.run(_ctx(user_id=UNAPPROVED_SUB, org_id=""))
+        assert "BG_APPROVAL_FAIL_OPEN=true" in caplog.text
 
     async def test_metric_failure_never_breaks_a_request(self, session_factory):
         """Metrics are best-effort — a CloudWatch outage must not 500 the gate."""
@@ -606,7 +711,7 @@ def _unapproved_caller_middleware():
     """
 
     class _Wrapper(ApprovalEnforcementMiddleware):
-        async def _db_has_org(self, user_id: str) -> bool:
+        async def _db_has_org(self, user_id: str, *, context=None) -> bool:
             return False
 
         async def __call__(self, scope, receive, send):
@@ -615,3 +720,34 @@ def _unapproved_caller_middleware():
             await super().__call__(scope, receive, send)
 
     return _Wrapper
+
+
+async def test_selected_second_membership_is_current_even_when_not_active(session_factory):
+    async with session_factory() as session:
+        session.add(Organization(id="org-second", name="Second"))
+        session.add(TenantMembership(user_id="db-user-1", tenant_id="org-second", role="member", is_active=False, joined_via="onboarding_approval"))
+        await session.commit()
+    h = _Harness(_with_session_factory(session_factory))
+    await h.run(_ctx(user_id=APPROVED_SUB, org_id="org-second"))
+    assert h.status == 200
+
+
+async def test_multiple_memberships_without_selected_tenant_are_policy_denial(session_factory):
+    async with session_factory() as session:
+        session.add(Organization(id="org-second", name="Second"))
+        session.add(TenantMembership(user_id="db-user-1", tenant_id="org-second", role="member", is_active=False, joined_via="onboarding_approval"))
+        await session.commit()
+    h = _Harness(_with_session_factory(session_factory))
+    await h.run(_ctx(user_id=APPROVED_SUB))
+    assert h.status == 409
+
+
+async def test_deleted_membership_cannot_be_replaced_by_stale_org_claim(session_factory):
+    from sqlalchemy import delete
+
+    async with session_factory() as session:
+        await session.execute(delete(TenantMembership).where(TenantMembership.user_id == "db-user-1"))
+        await session.commit()
+    h = _Harness(_with_session_factory(session_factory))
+    await h.run(_ctx(user_id=APPROVED_SUB, org_id="org-acme"))
+    assert h.status == 409

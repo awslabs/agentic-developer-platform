@@ -105,6 +105,7 @@ class ExecutionRPCServer:
         provider_call,
         authenticate: Callable[[str], Awaitable[ExecutionGrant]],
         max_connections=16,
+        after_step=None,
     ):
         if not all(callable(c) for c in (connect, provider_call, authenticate)):
             raise ContractViolation(
@@ -117,6 +118,9 @@ class ExecutionRPCServer:
             provider_call,
             authenticate,
         )
+        if after_step is not None and not callable(after_step):
+            raise ContractViolation("Trusted after-step bookkeeping must be callable")
+        self._after_step = after_step
         self._slots = asyncio.Semaphore(max_connections)
 
     async def dispatch(self, request):
@@ -160,6 +164,33 @@ class ExecutionRPCServer:
         return _wire(result.lease if isinstance(result, OperationExecutor) else result)
 
     async def execute_step(self, grant, runtime, step_id):
+        # Use the same session lock as provider dispatch and recovery. Keep it
+        # through domain bookkeeping: a second RPC or recovery owner must not
+        # settle the operation while its inventory is still being reconciled.
+        async with self._connect() as dispatch:
+            key = f"harness-provider-dispatch:{grant.lease.operation_id}"
+            if not await dispatch.fetchval(
+                "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", key
+            ):
+                raise ProviderCallRefused("Provider dispatch already in flight")
+
+            @asynccontextmanager
+            async def bound_connection():
+                yield dispatch
+
+            runtime = OperationExecutor(
+                grant.lease,
+                connect=bound_connection,
+                provider_call=self._provider_call,
+            )
+            try:
+                return await self._execute_step(grant, runtime, step_id)
+            finally:
+                await dispatch.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key
+                )
+
+    async def _execute_step(self, grant, runtime, step_id):
         async with self._connect() as connection, connection.transaction():
             if not await lock_lease(connection, grant.lease):
                 raise ProviderCallRefused("Execution lease is no longer live")
@@ -188,14 +219,32 @@ class ExecutionRPCServer:
             ):
                 raise ProviderCallRefused("Existing step requires recovery")
         if existing is None:
-            result = await runtime.execute_provider(
-                idempotency_key=step_key(record, step),
-                provider=step.provider,
-                operation_kind=step.operation_kind,
-                target=step.target,
-            )
+            try:
+                result = await runtime.execute_provider(
+                    idempotency_key=step_key(record, step),
+                    provider=step.provider,
+                    operation_kind=step.operation_kind,
+                    target=step.target,
+                )
+            except CancellationPending as exc:
+                # Cancellation during I/O still leaves committed effects that
+                # the owning domain must account for. Cancellation before any
+                # effect can already have closed the lease with proven absence.
+                async with self._connect() as connection, connection.transaction():
+                    live = await lock_lease(connection, grant.lease)
+                if live and self._after_step is not None:
+                    await self._after_step(grant, (exc.call, exc.disposition))
+                raise
         else:
             result = (existing, disposition_for(existing))
+        # Trusted domain bookkeeping observes the committed provider result before
+        # final settlement closes the lease. Inventory needs the completed plan AND
+        # a live fence to enumerate/seal/attest it; running this after settlement
+        # makes that sequence impossible. The hook is service configuration, never
+        # a worker method or request field. It cannot change the result. If it fails,
+        # durable provider evidence remains and the lease is not closed here.
+        if self._after_step is not None:
+            await self._after_step(grant, result)
         # Completion belongs to the trusted service and requires every admitted
         # descriptor's provider observation. The worker has no raw reporting method.
         async with self._connect() as connection, connection.transaction():

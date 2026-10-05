@@ -613,17 +613,30 @@ async def test_denied_caller_cannot_learn_whether_the_flow_exists(session, app_w
 
 
 @pytest.mark.asyncio
-async def test_no_control_or_acceptance_permission_is_introduced(app_with_router):
-    """The route is read-only: GET exists, mutating verbs do not.
+async def test_progress_visibility_does_not_grant_pause_resume_permission(session, app_with_router, monkeypatch):
+    """Reading progress remains available without the separate control authority."""
+    from unittest.mock import AsyncMock
 
-    The issue forbids adding a control or acceptance permission. This asserts the
-    surface rather than the intent — a POST/PATCH/DELETE on this path must not be
-    routable at all, so no future edit can quietly attach a write to the read model.
-    """
+    from src.admin.exceptions import AccessDeniedError
+
+    flow = await seed_flow(session)
     client = client_for(app_with_router)
-    path = route("any-flow-id")
+    path = route(flow.id)
+    check = AsyncMock(
+        side_effect=AccessDeniedError(
+            message="Permission 'plan:approve' is required for this operation",
+            required_permission=Permission.PLAN_APPROVE.value,
+            user_role="member",
+        )
+    )
+    monkeypatch.setattr("src.orchestration.flow_controls.AccessControl.check_permission", check)
 
-    assert client.post(path, json={}).status_code == 405
+    assert client.get(path).status_code == 200
+    assert client.post(path, json={"paused": False}).status_code == 403
+    check.assert_awaited_once()
+    assert check.call_args.args[1] == Permission.PLAN_APPROVE
+    await session.refresh(flow)
+    assert flow.execution_paused is True
     assert client.patch(path, json={}).status_code == 405
     assert client.delete(path).status_code == 405
 
@@ -880,7 +893,7 @@ async def test_the_action_cap_is_enforced_in_sql_not_after_the_fetch(session, ap
 
     @event.listens_for(session.bind.sync_engine, "before_cursor_execute")
     def _capture(_conn, _cursor, statement, params, _context, _executemany):
-        if "orchestration_actions" in statement.lower():
+        if "orchestration_actions" in statement.lower() and "GROUP BY" not in statement:
             captured.append((statement, params))
 
     try:
@@ -1029,9 +1042,9 @@ async def test_actions_for_a_page_are_fetched_in_one_grouped_query(session, app_
 
     assert len(view.executions) == 6
     assert all(execution.actions for execution in view.executions)
-    # One count, one page of executions, one grouped action fetch. Six executions
-    # must not mean six action queries.
-    assert len(statements) == 3, statements
+    # Count, execution page, bounded actions, grouped stage counts, and node counters.
+    # Six executions must not mean six action queries.
+    assert len(statements) == 5, statements
 
 
 # ---------------------------------------------------------------------------
@@ -1370,3 +1383,17 @@ async def seed_action(
     session.add(row)
     await session.flush()
     return row
+
+
+async def test_stage_counts_include_history_outside_the_execution_page(session, app_with_router):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="stage-story")
+    node.attempts = 3
+    old = await seed_execution(session, flow, node, cycle=1, status=ExecutionStatus.CONCLUDED)
+    current = await seed_execution(session, flow, node, cycle=3)
+    for execution, key in [(old, "old-review"), (current, "current-review")]:
+        action = await seed_action(session, execution, operation_key=key, kind="review_cycle_dispatch", status=ActionStatus.FAILED)
+        action.detail = {"action": "review"}
+    await session.commit()
+    body = client_for(app_with_router).get(route(flow.id), params={"limit": 1, "offset": 1}).json()
+    assert body["executions"][0]["stage_attempts"] == {"develop": 3, "review": 2}

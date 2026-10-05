@@ -253,15 +253,17 @@ def _require_complete_authorization(
     mismatches = []
     if authorization.workspace_id != lease_workspace:
         mismatches.append(f"authorized workspace {authorization.workspace_id!r} is not the operation's workspace {lease_workspace!r}")
-    if authorization.organization_id != lease_organization:
-        mismatches.append(f"authorized organization {authorization.organization_id!r} is not the operation's organization {lease_organization!r}")
+    operation_org = authorization.operation_org_id or authorization.organization_id
+    if operation_org != lease_organization:
+        mismatches.append(f"authorized operation organization {operation_org!r} is not the operation's organization {lease_organization!r}")
     # The request is compared against the lease too. `ensure_valid` already compared the
     # request to the authorization, so this closes the remaining triangle: a request, an
     # authorization and a lease that all agree.
     if request.workspace_id != lease_workspace:
         mismatches.append(f"the request's workspace {request.workspace_id!r} is not the operation's workspace {lease_workspace!r}")
-    if request.organization_id != lease_organization:
-        mismatches.append(f"the request's organization {request.organization_id!r} is not the operation's organization {lease_organization!r}")
+    # ensure_valid separately compares the AWS Organization in the request to
+    # the trusted provider authorization. Never compare an AWS o-... identifier
+    # to a domain UUID or relabel the admitted lease to make that comparison pass.
     if mismatches:
         raise CreationRefused(
             "the supplied authorization does not belong to this operation: "

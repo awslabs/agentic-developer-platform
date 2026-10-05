@@ -189,3 +189,54 @@ async def test_revision_is_strict(session, prepared, revision):
     async with client(session) as http:
         response = await http.put(PATH, json={**BODY, "expected_revision": revision})
     assert response.status_code == 422
+
+
+async def test_cli_default_preview_and_replay_preserve_one_change(session, prepared):
+    body = {**BODY, "operation_id": "2e018eef-43dd-4de1-b57c-e83cfef16088"}
+    async with client(session) as http:
+        preview = await http.get(PATH + "/preview", params={"canonical_model_id": MODEL})
+        assert preview.status_code == 200 and preview.json()["ready"] is True
+        assert preview.json()["current"]["revision"] == 1
+        assert preview.json()["evidence"]["provider_request_id"] == "real-provider-receipt-fixture"
+        first = await http.put(PATH, json=body)
+        assert first.status_code == 200, first.text
+        assert (await http.put(PATH, json=body)).json() == first.json()
+        assert (await http.put(PATH, json={**body, "reason": "different request"})).status_code == 409
+    changes = list(await session.scalars(select(AuditLog).where(AuditLog.event_type == "persona_model_default_changed")))
+    assert len(changes) == 1
+
+
+async def test_cli_default_preview_unproven_does_not_write(session, prepared):
+    async with client(session) as http:
+        result = await http.get(PATH + "/preview", params={"canonical_model_id": "unrecognized"})
+        assert result.status_code == 200
+        assert result.json()["ready"] is False and result.json()["reason"] == "unknown_model"
+    row = await session.get(PersonaModelPolicySetting, CLASS)
+    assert row.revision == 1
+
+
+async def test_missing_codex_contract_refuses_without_changing_default(session, prepared):
+    session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="codex-sdk",
+            revision=1,
+            posture_revision=1,
+            enforcement_posture="report_only",
+        )
+    )
+    await session.commit()
+    path = "/admin/persona-models/default/codex-sdk"
+    body = {**BODY, "canonical_model_id": "openai.gpt-6-sol"}
+    async with client(session) as http:
+        preview = await http.get(path + "/preview", params={"canonical_model_id": body["canonical_model_id"]})
+        assert preview.status_code == 200
+        assert preview.json()["ready"] is False
+        assert preview.json()["reason"] == "probe_contract_unavailable"
+        response = await http.put(path, json=body)
+        assert response.status_code == 422
+        assert response.json()["detail"]["reason"] == "probe_contract_unavailable"
+    row = await session.get(PersonaModelPolicySetting, "codex-sdk")
+    assert row.active_default_model_id is None
+    assert row.revision == 1
+    audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "persona_model_default_rejected"))
+    assert audit.details["reason"] == "probe_contract_unavailable"

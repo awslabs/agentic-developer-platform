@@ -12,9 +12,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
 from case_capture import collect_case, validate_options
 from case_contract import MAX_RESPONSE_BYTES
-from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
 from denylist import DenylistResult, scrub_url_credentials
 
 logger = logging.getLogger(__name__)
@@ -181,22 +181,136 @@ def analyze_destination(request: dict[str, Any], playwright) -> dict[str, Any]:
 
 class BrowserBrokerHandler(BaseHTTPRequestHandler):
     server_version = "URLAnalysisBrowserBroker/1"
+    _manager_lock = threading.Lock()
 
     def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if payload.get("retry_after_seconds"):
+            self.send_header("Retry-After", str(payload["retry_after_seconds"]))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info("browser broker caller disconnected before response delivery")
+            return False
 
     def do_GET(self) -> None:
-        if self.path == "/healthz":
-            self._write_json(HTTPStatus.OK, {"status": "ok"})
+        if self.path in {"/healthz", "/readyz"}:
+            manager = getattr(self.server, "investigation_manager", None)
+            capacity = (
+                manager.capacity()
+                if manager
+                else {"accepting_starts": True, "active_sessions": 0}
+            )
+            status = (
+                HTTPStatus.OK
+                if self.path == "/healthz" or capacity["accepting_starts"]
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self._write_json(
+                status,
+                {"status": "ok" if status == HTTPStatus.OK else "busy", **capacity},
+            )
             return
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
+    def do_investigation(self) -> None:
+        from investigation_browser import InvestigationError, InvestigationManager
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_REQUEST_BYTES:
+                raise ValueError("Invalid request size")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("An object is required")
+            with self._manager_lock:
+                if not hasattr(self.server, "investigation_manager"):
+                    self.server.investigation_manager = InvestigationManager()
+                manager = self.server.investigation_manager
+            operation = self.path.rsplit("/", 1)[-1]
+            if operation == "start":
+                result = manager.start(payload)
+            elif operation == "close":
+                if set(payload) != {"session_token"}:
+                    raise ValueError("Only the browser lease is accepted for close")
+                result = manager.request({**payload, "action": "close"})
+            else:
+                result = manager.request(payload)
+            response = {"status": "ok", "analysis": result}
+            if len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+                token = result.get("session_token") or payload.get("session_token")
+                if token:
+                    manager.request({"session_token": token, "action": "close"})
+                raise InvestigationError("Investigation response budget exceeded")
+            raw_token = result.get("session_token") or payload.get("session_token")
+            if operation == "start" and os.environ.get("URL_ANALYSIS_SESSION_OWNER"):
+                result["session_token"] = (
+                    os.environ["URL_ANALYSIS_SESSION_OWNER"] + "~" + raw_token
+                )
+            if not self._write_json(HTTPStatus.OK, response) and raw_token:
+                manager.cancel(raw_token)
+        except DestinationRefused as error:
+            self._write_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": "destination_refused",
+                    "reason": error.reason,
+                    "reason_code": error.reason_code,
+                    "browser_start_unattempted": error.browser_start_unattempted,
+                },
+            )
+        except InvestigationError as error:
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if error.code in {"capacity_busy", "action_pending"}
+                else (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if error.code.endswith("timeout")
+                    else (
+                        HTTPStatus.BAD_GATEWAY
+                        if error.code == "worker_failed"
+                        else HTTPStatus.BAD_REQUEST
+                    )
+                )
+            )
+            self._write_json(
+                status,
+                {
+                    "error": error.code,
+                    "message": str(error)[:500],
+                    "retry_after_seconds": error.retry_after,
+                    "cleanup": error.cleanup,
+                    "browser_start_unattempted": error.browser_start_unattempted,
+                },
+            )
+        except (ValueError, TypeError) as error:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_investigation", "message": str(error)[:500]},
+            )
+        except Exception as error:
+            logger.error("investigation failed error_type=%s", type(error).__name__)
+            self._write_json(
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "error": "analysis_failed",
+                    "message": "Investigation failed; retain earlier evidence and close the lease",
+                },
+            )
+
     def do_POST(self) -> None:
+        if self.path in {
+            "/v1/investigation/start",
+            "/v1/investigation/step",
+            "/v1/investigation/close",
+        }:
+            self.do_investigation()
+            return
         if self.path not in {"/v1/analyze", "/v1/capture"}:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
@@ -278,6 +392,7 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    os.environ["URL_ANALYSIS_BROWSER_MODE"] = "broker"
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     host = os.environ.get("URL_ANALYSIS_BROKER_HOST", "0.0.0.0")
     port = int(os.environ.get("URL_ANALYSIS_BROKER_PORT", "8765"))
@@ -293,6 +408,8 @@ def main() -> None:
     try:
         server.serve_forever()
     finally:
+        if hasattr(server, "investigation_manager"):
+            server.investigation_manager.close_all()
         server.server_close()
 
 

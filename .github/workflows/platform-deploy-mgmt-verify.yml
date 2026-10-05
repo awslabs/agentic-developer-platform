@@ -37,13 +37,29 @@ env:
 
 jobs:
   verify:
+    if: github.ref == 'refs/heads/main'
     name: Phase Verification
     runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -71,35 +87,4 @@ jobs:
           DEPLOY_ID: ${{ inputs.deploy_id }}
           PYTHONPATH: ${{ github.workspace }}/modules/platform-deploy-mgmt
 
-      # Phase 2-9 stubs — filled in by sub-issues B, C, D, E, F, G
-      - name: Phase 2 verification
-        if: false  # implemented in sub-issue B
-        run: echo "stub — Phase 2 not yet implemented"
-
-      - name: Phase 3 verification
-        if: false  # implemented in sub-issue B
-        run: echo "stub — Phase 3 not yet implemented"
-
-      - name: Phase 4 verification
-        if: false  # implemented in sub-issue C
-        run: echo "stub — Phase 4 not yet implemented"
-
-      - name: Phase 5 verification
-        if: false  # implemented in sub-issue C
-        run: echo "stub — Phase 5 not yet implemented"
-
-      - name: Phase 6 verification
-        if: false  # implemented in sub-issue C
-        run: echo "stub — Phase 6 not yet implemented"
-
-      - name: Phase 7 verification
-        if: false  # implemented in sub-issue D
-        run: echo "stub — Phase 7 not yet implemented"
-
-      - name: Phase 8 verification
-        if: false  # implemented in sub-issue D
-        run: echo "stub — Phase 8 not yet implemented"
-
-      - name: Phase 9 verification
-        if: false  # implemented in sub-issue D
-        run: echo "stub — Phase 9 not yet implemented"
+      # Phases 2-9 remain unimplemented; this workflow verifies Phase 1 only.

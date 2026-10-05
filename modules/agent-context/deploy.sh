@@ -50,6 +50,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Resolve prerequisites before any AWS/Kubernetes mutation, but only for modes
+# that actually initialize this module's Terraform state.
+if [ "$SKIP_TERRAFORM" = false ] && [ -d "${SCRIPT_DIR}/terraform" ] && \
+   { [ "$PERSONAL_CONTEXT_ONLY" != true ] || [ "${GRAPHRAG_ENABLED:-false}" = true ]; }; then
+  ENVIRONMENT="${ENVIRONMENT:-dev}"
+  AC_BACKEND_CONFIG="${SCRIPT_DIR}/../../environments/${ENVIRONMENT}/modules/agent-context-backend.tfvars"
+  if [ ! -f "$AC_BACKEND_CONFIG" ]; then
+    echo "ERROR: Backend config not found: $AC_BACKEND_CONFIG" >&2
+    echo "State locking requires the environment backend config before deployment." >&2
+    exit 1
+  fi
+fi
+
 echo "============================================"
 echo "Agent Context Intelligence Platform Deploy"
 echo "============================================"
@@ -155,6 +168,9 @@ export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
 export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
 export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
 export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
+# Refuse to replace working configuration with an absent ACL datastore.
+resolve_acl_config
+
 template_file "${SCRIPT_DIR}/manifests/agent-context-configmap.yaml" | kubectl apply -f -
 echo "  ConfigMap agent-context-config deployed"
 
@@ -198,29 +214,8 @@ echo ""
 echo "Deploying Context MCP Server (Door)..."
 source "${SCRIPT_DIR}/scripts/_common.sh"
 
-# Bridge the gateway internal API key into this namespace (#4073 finding #8).
-#
-# The Door authenticates every caller with this shared secret; context-mcp.yaml
-# mounts it as DOOR_API_KEY. agent-context-deploy.yml does the same bridge for
-# CI-driven deploys, but deploy.sh created no secrets at all, so a self-managed
-# deploy would leave DOOR_API_KEY unset and the Door would 503 every verb.
-# Same SM secret and same K8s secret name the ScaledJob status-callback uses.
-echo "  Bridging gateway internal-api-key -> agent-context-gateway-callback..."
-DOOR_INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
-  --secret-id "adp/${ENVIRONMENT:-dev}/gateway/internal-api-key" \
-  --query SecretString --output text 2>/dev/null || echo "")
-if [ -n "${DOOR_INTERNAL_API_KEY}" ] && [ "${DOOR_INTERNAL_API_KEY}" != "None" ]; then
-  kubectl create secret generic agent-context-gateway-callback \
-    -n "${NAMESPACE}" \
-    --from-literal=internal-api-key="${DOOR_INTERNAL_API_KEY}" \
-    --dry-run=client -o yaml | kubectl apply -f -
-  echo "    Secret agent-context-gateway-callback applied (Door auth + status callback)"
-else
-  echo "    WARNING: adp/${ENVIRONMENT:-dev}/gateway/internal-api-key not found."
-  echo "    The Door will reject every verb with 503 (fail-closed, see door/auth.py)."
-  echo "    Deploy the gateway first (gateway-deploy.yml creates this secret), then re-run."
-fi
-unset DOOR_INTERNAL_API_KEY
+DOOR_VERIFICATION_KEYS_SHA256=$(python3 "${SCRIPT_DIR}/scripts/ensure-door-identity.py" --namespace "${NAMESPACE}")
+export DOOR_VERIFICATION_KEYS_SHA256
 
 # Resolve image: use ECR-built image if available, else default from config.env
 if [ -z "${CONTEXT_MCP_IMAGE:-}" ] || [ "${CONTEXT_MCP_IMAGE}" = "python:3.11-slim" ]; then
@@ -237,6 +232,10 @@ if [ -z "${CONTEXT_MCP_IMAGE:-}" ] || [ "${CONTEXT_MCP_IMAGE}" = "python:3.11-sl
     echo "  Run the images-build workflow first to build the context-mcp image."
   fi
 fi
+python3 "${SCRIPT_DIR}/scripts/ensure-zoekt-auth.py" --namespace "${NAMESPACE}"
+export ZOEKT_IMAGE
+# Keep the private backend and its authenticated Door client on the same protocol.
+template_file "${SCRIPT_DIR}/manifests/zoekt.yaml" | kubectl apply -f -
 export CONTEXT_MCP_IMAGE NAMESPACE SERVICE_ACCOUNT
 template_file "${SCRIPT_DIR}/manifests/context-mcp.yaml" | kubectl apply -f -
 echo "  Context MCP Server deployed (image: ${CONTEXT_MCP_IMAGE})"
@@ -280,13 +279,14 @@ fi
 # Deploy Terraform infrastructure (SQS + DynamoDB + optional GraphRAG)
 # In personal-context-only mode, only deploy GraphRAG (Neptune) if its flag is on;
 # skip SQS and ingestion-related infra.
+
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   if [ "${GRAPHRAG_ENABLED:-false}" = "true" ] && [ -d "${SCRIPT_DIR}/terraform" ]; then
     echo ""
     echo "Deploying Terraform infrastructure (Neptune only, personal-context-only mode)..."
     cd "${SCRIPT_DIR}/terraform"
     if [ "$SKIP_TERRAFORM" = false ]; then
-    terraform init -upgrade
+    terraform init -upgrade -backend-config="$AC_BACKEND_CONFIG" -input=false
     TF_VARS="-var=graphrag_enabled=true"
     terraform apply -auto-approve ${TF_VARS} || {
       echo "WARNING: Terraform deployment failed."
@@ -306,7 +306,7 @@ else
   if [ -d "${SCRIPT_DIR}/terraform" ]; then
     cd "${SCRIPT_DIR}/terraform"
     if [ "$SKIP_TERRAFORM" = false ]; then
-    terraform init -upgrade
+    terraform init -upgrade -backend-config="$AC_BACKEND_CONFIG" -input=false
 
     TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
     terraform apply -auto-approve ${TF_VARS} || {

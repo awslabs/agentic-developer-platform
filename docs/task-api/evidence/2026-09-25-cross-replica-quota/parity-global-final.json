@@ -1,0 +1,10 @@
+{
+  "at": "2026-09-25T06:13:29.984965+00:00",
+  "gateway_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+  "engine_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+  "engine_update_status": "Successful",
+  "gateway_source": "a16a2a851d17998b8cd51dfa47b77275251229cc",
+  "desired_replicas": 9,
+  "ready_replicas": 9,
+  "updated_replicas": 9
+}

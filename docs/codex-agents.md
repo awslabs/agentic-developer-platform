@@ -129,7 +129,7 @@ is the single source of truth.
   `agent-worker-scoped-permissions` policy — not the role's `AdministratorAccess`
   attachment — authorizes the mantle path. Evidence gathered from inside the
   agent-worker pod (identity
-  `arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/…`):
+  `arn:aws:sts::000000000101:assumed-role/adp-dev-agent-scaledjob-role/…`):
 
   - **Live invoke succeeded.** `run-codex.sh write "…"` returned **exit 0** with
     `model: openai.gpt-5.5`, `provider: amazon-bedrock`, `approval: never`,

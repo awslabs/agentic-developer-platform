@@ -1,5 +1,13 @@
 [
   [
+    "GET",
+    "/workspaces/{workspace_id}/deployment-profiles"
+  ],
+  [
+    "GET",
+    "/capabilities"
+  ],
+  [
     "POST",
     "/workspaces"
   ],
@@ -54,6 +62,54 @@
   [
     "GET",
     "/events"
+  ],
+  [
+    "POST",
+    "/workspaces/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/adopt"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/lifecycle-proposals"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue"
+  ],
+  [
+    "GET",
+    "/operations/{operation_id}"
+  ],
+  [
+    "GET",
+    "/operations/by-idempotency/{idempotency_key}"
+  ],
+  [
+    "POST",
+    "/operation-approvals"
+  ],
+  [
+    "GET",
+    "/operation-approvals/{approval_id}"
+  ],
+  [
+    "POST",
+    "/operation-approvals/{approval_id}/decision"
   ],
   [
     "GET",
@@ -198,5 +254,81 @@
   [
     "PATCH",
     "/api/v1/research/proposals/{proposal_id}/reject"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/deployments/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-profiles"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview"
+  ],
+  [
+    "DELETE",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/cancellation"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/observation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/accounting"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/result"
+  ],
+  [
+    "GET",
+    "/api/v1/research/cli-support"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/lifecycle"
+  ],
+  [
+    "GET",
+    "/events/workspaces/{workspace_id}"
   ]
 ]

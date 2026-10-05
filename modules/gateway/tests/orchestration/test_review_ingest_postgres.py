@@ -61,6 +61,7 @@ from src.orchestration.models import (
     ClaimState,
     OrchestrationAcceptedPlan,
     OrchestrationAction,
+    OrchestrationDecision,
     OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
@@ -125,6 +126,7 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
         await conn.run_sync(OrchestrationFlow.__table__.create)
         await conn.run_sync(OrchestrationAcceptedPlan.__table__.create)
         await conn.run_sync(OrchestrationNode.__table__.create)
+        await conn.run_sync(OrchestrationDecision.__table__.create)
         await conn.run_sync(OrchestrationWorkClaim.__table__.create)
         await conn.run_sync(OrchestrationExecution.__table__.create)
         await conn.run_sync(OrchestrationAction.__table__.create)

@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -15,6 +16,79 @@ def change(address, kind, before, after, actions=("delete", "create")):
 class PlanPolicyTests(unittest.TestCase):
     def evaluate(self, resource, module="gateway"):
         return policy.evaluate({"resource_changes": [resource]}, module, "123456789012")
+
+    def factory_plan(self, retirement):
+        runner = "adp-dev-agent-factory-runner-role"
+        arn = "arn:aws:iam::123456789012:role/" + runner
+        role = {"name": runner, "arn": arn,
+                "permissions_boundary": "arn:aws:iam::123456789012:policy/adp-dev-agent-runner-boundary"}
+        return {"variables": {"environment": {"value": "dev"},
+                              "aws_region": {"value": "us-east-1"},
+                              "runner_role_name": {"value": runner}},
+                "resource_changes": [retirement,
+                    change("module.runner_iam.aws_iam_role.runner", "aws_iam_role", role, role, ("no-op",))]}
+
+    def test_factory_runner_eks_edit_retirement_is_exact(self):
+        runner = "adp-dev-agent-factory-runner-role"
+        before = {"cluster_name": "adp-dev-eks-cluster",
+                  "principal_arn": "arn:aws:iam::123456789012:role/" + runner,
+                  "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy",
+                  "access_scope": [{"type": "namespace", "namespaces": ["adp-agents", "arc-runners"]}]}
+        retired = change("aws_eks_access_policy_association.runner_edit",
+                         "aws_eks_access_policy_association", before, None, ("delete",))
+        plan = self.factory_plan(retired)
+        self.assertEqual(policy.evaluate(plan, "agent-factory", "123456789012")["routine"], [retired["address"]])
+        for field, value in (("policy_arn", "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"),
+                             ("cluster_name", "other")):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"][0]["change"]["before"][field] = value
+            self.assertEqual(policy.evaluate(bad, "agent-factory", "123456789012")["blocked"], [retired["address"]])
+
+    def test_factory_intake_inline_retirement_requires_attached_superset(self):
+        gateway = "adp-dev-role-gateway-service"
+        name = "adp-dev-policy-gateway-intake"
+        sessions = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-gateway-sessions"
+        old = [
+            {"Sid": "IntakeSessionsRead", "Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:Query"],
+             "Resource": [sessions, sessions + "/index/*"]},
+            {"Sid": "IntakeDraftRead", "Effect": "Allow", "Action": ["dynamodb:GetItem"],
+             "Resource": ["arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-chat-context"]},
+            {"Sid": "IntakeTablesKMSDecrypt", "Effect": "Allow", "Action": ["kms:Decrypt", "kms:DescribeKey"],
+             "Resource": ["arn:aws:kms:us-east-1:123456789012:key/271615d4-2e8f-4b9d-af44-33427bf8e38d"]},
+            {"Sid": "IntakeDispatchInvoke", "Effect": "Allow", "Action": ["lambda:InvokeFunction"],
+             "Resource": ["arn:aws:lambda:us-east-1:123456789012:function:adp-dev-agent-gateway-ingest"]},
+        ]
+        hosted = {"Sid": "HostedTaskChatSessionsWrite", "Effect": "Allow", "Action": ["dynamodb:PutItem"],
+                  "Resource": [sessions], "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["chat-*"]}}}
+        replacement = copy.deepcopy(old)
+        replacement.insert(1, hosted)
+        replacement[3]["Action"].append("kms:GenerateDataKey")
+        doc = lambda statements: json.dumps({"Version": "2012-10-17", "Statement": statements})
+        retired = change("aws_iam_role_policy.gateway_intake_access[0]", "aws_iam_role_policy",
+                         {"role": gateway, "name": name, "id": gateway + ":" + name, "policy": doc(old)},
+                         None, ("delete",))
+        plan = self.factory_plan(retired)
+        arn = "arn:aws:iam::123456789012:policy/" + name
+        managed = {"name": name, "arn": arn, "policy": doc(replacement)}
+        attached = {"role": gateway, "policy_arn": arn}
+        plan["resource_changes"].extend([
+            change("aws_iam_policy.gateway_intake_access[0]", "aws_iam_policy", managed, managed, ("no-op",)),
+            change("aws_iam_role_policy_attachment.gateway_intake_access[0]", "aws_iam_role_policy_attachment",
+                   attached, attached, ("no-op",)),
+        ])
+        self.assertEqual(policy.evaluate(plan, "agent-factory", "123456789012")["routine"], [retired["address"]])
+        for key in ("attachment missing", "policy still creating", "permission removed"):
+            bad = copy.deepcopy(plan)
+            if key == "attachment missing":
+                bad["resource_changes"].pop()
+            elif key == "policy still creating":
+                bad["resource_changes"][2]["change"]["actions"] = ["create"]
+            else:
+                new_doc = json.loads(bad["resource_changes"][2]["change"]["before"]["policy"])
+                new_doc["Statement"][0]["Action"] = ["dynamodb:GetItem"]
+                bad["resource_changes"][2]["change"]["before"]["policy"] = json.dumps(new_doc)
+            with self.subTest(key=key):
+                self.assertEqual(policy.evaluate(bad, "agent-factory", "123456789012")["blocked"], [retired["address"]])
 
     def test_api_revision_is_routine_only_with_same_api_and_create_before_delete(self):
         r = change("module.api_gateway[0].aws_api_gateway_deployment.main", "aws_api_gateway_deployment",
@@ -88,6 +162,35 @@ class PlanPolicyTests(unittest.TestCase):
         r["address"] = "null_resource.unreviewed"
         self.assertTrue(self.evaluate(r, "webhook-ingress")["blocked"])
 
+    def test_nodepool_manifest_replacement_keeps_live_pool(self):
+        old = {"cluster_name": "adp-dev-eks-cluster", "cluster_region": "us-east-1",
+               "manifest_sha": "a" * 64}
+        resource = change("null_resource.aggressive_packer_nodepool", "null_resource",
+                          {"triggers": old}, {"triggers": dict(old, manifest_sha="b" * 64)})
+        self.assertEqual(self.evaluate(resource, "platform")["routine"], [resource["address"]])
+        mutations = {
+            "unexpected order": lambda r: r["change"].update(actions=["create", "delete"]),
+            "different cluster": lambda r: r["change"]["after"]["triggers"].update(cluster_name="adp-prod-eks-cluster"),
+            "different region": lambda r: r["change"]["after"]["triggers"].update(cluster_region="us-west-2"),
+            "unknown trigger": lambda r: r["change"]["after"]["triggers"].update(extra="value"),
+            "invalid digest": lambda r: r["change"]["after"]["triggers"].update(manifest_sha="unknown"),
+            "wrong kind": lambda r: r.update(type="aws_eks_nodegroup"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                bad = copy.deepcopy(resource)
+                mutate(bad)
+                self.assertEqual(self.evaluate(bad, "platform")["blocked"], [bad["address"]])
+
+    def test_security_retirements_still_require_plan_review(self):
+        for address, kind in (
+            ("module.codebuild.aws_iam_role.codebuild", "aws_iam_role"),
+            ("module.eks.aws_eks_access_entry.admins[\"arn:aws:iam::123456789012:role/adp-dev-agent-runner-role\"]", "aws_eks_access_entry"),
+        ):
+            with self.subTest(address=address):
+                resource = change(address, kind, {"id": "existing"}, None, ("delete",))
+                self.assertEqual(self.evaluate(resource, "platform")["blocked"], [address])
+
     def test_scaledjob_delete_first_and_unknown_target_remain_blocked(self):
         old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}
         r = change("null_resource.keda_scaledjob", "null_resource", {"triggers": old},
@@ -103,9 +206,9 @@ class PlanPolicyTests(unittest.TestCase):
     def gitlab_migration(self):
         arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/gitlab-webhook-secret-aB1234"
         secret = {"arn": arn, "name": "adp/dev/gitlab-webhook-secret"}
-        return {"resource_changes": [
+        return {"variables": {"environment": {"value": "dev"}}, "resource_changes": [
             change("aws_secretsmanager_secret_version.gitlab_webhook_secret[0]",
-                   "aws_secretsmanager_secret_version", {"arn": arn, "secret_id": arn, "secret_string": "unchanged"}, None, ("forget",)),
+                   "aws_secretsmanager_secret_version", {"arn": arn, "secret_id": arn, "version_id": "terraform-example", "secret_string": "unchanged"}, None, ("forget",)),
             change("aws_secretsmanager_secret.gitlab_webhook_secret[0]", "aws_secretsmanager_secret",
                    secret, dict(secret), ("no-op",))]}
 
@@ -113,6 +216,148 @@ class PlanPolicyTests(unittest.TestCase):
         plan = self.gitlab_migration()
         self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012"),
                          {"routine": [plan["resource_changes"][0]["address"]], "blocked": [], "protected": []})
+
+    def test_operator_version_forget_allows_only_retained_secret_metadata(self):
+        for key, suffix in (
+            ("github_app_id", "github-app/adp-agent-platform-id"),
+            ("github_app_key", "github-app/adp-agent-platform-key"),
+            ("marker_signing_key", "webhook-ingress/marker-signing-key"),
+            ("webhook_secret", "webhook-ingress/github-webhook-secret"),
+        ):
+            with self.subTest(key=key):
+                name = "adp/dev/" + suffix
+                arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:" + name + "-aB1234"
+                old = {"arn": arn, "name": name, "kms_key_id": "existing", "recovery_window_in_days": 7}
+                new = dict(old, recovery_window_in_days=30)
+                plan = {"variables": {"environment": {"value": "dev"}}, "resource_changes": [
+                    change("aws_secretsmanager_secret_version." + key, "aws_secretsmanager_secret_version",
+                           {"arn": arn, "secret_id": arn, "version_id": "terraform-example", "secret_string": "private"}, None, ("forget",)),
+                    change("aws_secretsmanager_secret." + key, "aws_secretsmanager_secret", old, new, ("update",)),
+                ]}
+                self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012")["routine"],
+                                 [plan["resource_changes"][0]["address"]])
+                for mutation in (
+                    lambda p: p["resource_changes"][1]["change"]["after"].update(kms_key_id="different"),
+                    lambda p: p["resource_changes"][0]["change"].update(actions=["delete"]),
+                    lambda p: p["variables"]["environment"].update(value="prod"),
+                    lambda p: p["resource_changes"][0]["change"]["before"].pop("version_id"),
+                ):
+                    bad = copy.deepcopy(plan)
+                    mutation(bad)
+                    self.assertIn(bad["resource_changes"][0]["address"],
+                                  policy.evaluate(bad, "webhook-ingress", "123456789012")["protected"])
+
+    def test_worker_gateway_rollout_marker_requires_disabled_authority_and_same_target(self):
+        old = {"configuration": "a" * 64, "marker_version": "disabled", "rollout_script": "b" * 64}
+        resource = change("terraform_data.worker_gateway_rollout[0]", "terraform_data",
+                          {"triggers_replace": old},
+                          {"triggers_replace": dict(old, configuration="c" * 64)}, ("create", "delete"))
+        variables = {k: {"value": v} for k, v in {
+            "agent_authority_enabled": False, "environment": "dev", "eks_cluster_name": "adp-dev-eks-cluster",
+            "gateway_namespace": "adp-gateway", "aws_region": "us-east-1"}.items()}
+        plan = {"variables": variables, "resource_changes": [resource]}
+        self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012")["routine"],
+                         [resource["address"]])
+        for mutation in (
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+            lambda p: p["variables"]["eks_cluster_name"].update(value="other"),
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(marker_version="changed"),
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(configuration="a" * 64),
+            lambda p: p["resource_changes"][0]["change"].update(actions=["delete", "create"]),
+        ):
+            bad = copy.deepcopy(plan)
+            mutation(bad)
+            self.assertIn(
+                resource["address"],
+                policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"],
+            )
+
+    def test_tainted_worker_rollout_recovery_retires_only_its_deposed_marker(self):
+        address = "terraform_data.worker_gateway_rollout[0]"
+        old = {
+            "configuration": "a" * 64,
+            "marker_version": "disabled",
+            "rollout_script": "b" * 64,
+        }
+        current = change(
+            address,
+            "terraform_data",
+            {"triggers_replace": old},
+            {"triggers_replace": dict(old)},
+            ("create", "delete"),
+        )
+        current["action_reason"] = "replace_because_tainted"
+        deposed = change(
+            address,
+            "terraform_data",
+            {"triggers_replace": dict(old, configuration="c" * 64)},
+            None,
+            ("delete",),
+        )
+        deposed["deposed"] = "c5aef7d6"
+        variables = {
+            k: {"value": v}
+            for k, v in {
+                "agent_authority_enabled": False,
+                "environment": "dev",
+                "eks_cluster_name": "adp-dev-eks-cluster",
+                "gateway_namespace": "adp-gateway",
+                "aws_region": "us-east-1",
+            }.items()
+        }
+        plan = {"variables": variables, "resource_changes": [current, deposed]}
+        self.assertEqual(
+            policy.evaluate(plan, "webhook-ingress", "123456789012"),
+            {"routine": [address, address], "blocked": [], "protected": []},
+        )
+        # A second timeout can leave another deposed state-only marker. The
+        # reviewed #6729 timeout script also changes the marker's file hash.
+        recovery = copy.deepcopy(plan)
+        previous, extended = policy.WORKER_ROLLOUT_TIMEOUT_MIGRATION
+        recovery["resource_changes"][0]["change"]["before"]["triggers_replace"]["rollout_script"] = previous
+        recovery["resource_changes"][0]["change"]["after"]["triggers_replace"]["rollout_script"] = extended
+        recovery["resource_changes"][1]["change"]["before"]["triggers_replace"]["rollout_script"] = previous
+        second = copy.deepcopy(recovery["resource_changes"][1])
+        second["deposed"] = "93fe14da"
+        second["change"]["before"]["triggers_replace"]["configuration"] = "e" * 64
+        recovery["resource_changes"].append(second)
+        self.assertEqual(
+            policy.evaluate(recovery, "webhook-ingress", "123456789012"),
+            {"routine": [address] * 3, "blocked": [], "protected": []},
+        )
+        for mutate in (
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(rollout_script="f" * 64),
+            lambda p: p["resource_changes"][2]["change"]["before"]["triggers_replace"].update(rollout_script="f" * 64),
+            lambda p: p["resource_changes"][2].update(deposed="invalid"),
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+        ):
+            bad = copy.deepcopy(recovery)
+            mutate(bad)
+            self.assertTrue(policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"])
+        for mutate in (
+            lambda p: p["resource_changes"][0].pop("action_reason"),
+            lambda p: p["resource_changes"][0]["change"]["after"][
+                "triggers_replace"
+            ].update(configuration="d" * 64),
+            lambda p: p["resource_changes"][1].update(deposed="unknown"),
+            lambda p: p["resource_changes"][1]["change"]["before"][
+                "triggers_replace"
+            ].update(rollout_script="d" * 64),
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+        ):
+            bad = copy.deepcopy(plan)
+            mutate(bad)
+            self.assertTrue(
+                policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"]
+            )
+        self.assertIn(
+            address,
+            policy.evaluate(
+                {"variables": variables, "resource_changes": [deposed]},
+                "webhook-ingress",
+                "123456789012",
+            )["blocked"],
+        )
 
     def test_gitlab_exception_never_accepts_other_credential_changes(self):
         mutations = {

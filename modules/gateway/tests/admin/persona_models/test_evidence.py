@@ -45,7 +45,7 @@ class TestEvidenceLookup:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-opus-5",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256=shape_sha,
         )
         assert result is None
@@ -67,7 +67,7 @@ class TestEvidenceLookup:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256=shape_sha,
         )
         assert result is not None
@@ -92,7 +92,7 @@ class TestEvidenceLookup:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-opus-4-7",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256=shape_sha,
         )
         assert result is not None
@@ -118,7 +118,7 @@ class TestEvidenceLookup:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256=shape_sha,
         )
         assert result is None
@@ -128,7 +128,7 @@ class TestEvidenceLookup:
         """AC-05: Changing harness revision yields a different evidence key."""
         evidence = make_evidence(
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
         )
         session.add(evidence)
         await session.commit()
@@ -161,7 +161,7 @@ class TestEvidenceLookup:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256="b" * 64,
         )
         assert result is None
@@ -177,7 +177,7 @@ class TestEvidenceStaleness:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256="a" * 64,
             outcome="proven",
             provider_request_id="req-1",
@@ -195,7 +195,7 @@ class TestEvidenceStaleness:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256="a" * 64,
             outcome="proven",
             provider_request_id="req-1",
@@ -212,7 +212,7 @@ class TestEvidenceStaleness:
             region=DEST_REGION,
             canonical_model_id="global.anthropic.claude-sonnet-4-6",
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             request_shape_sha256="a" * 64,
             outcome="proven",
             provider_request_id="req-1",
@@ -323,7 +323,7 @@ class TestRequestShapeSha256:
     def test_reads_sdk_generated_digest(self):
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
         b = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
-        assert a == b == "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b"
+        assert a == b == "114b5d665c28ea4b8c8a9cb3d5387cb9186d50aa948b3c1fe4784df39820996f"
 
     def test_sdk_body_digest_can_differ_by_model(self):
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")

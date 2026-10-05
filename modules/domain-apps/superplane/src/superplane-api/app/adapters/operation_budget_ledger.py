@@ -167,6 +167,9 @@ class OperationBudgetLedger:
         reservation_id = _reservation_id(job_id, attempt_id)
 
         async with self._session() as connection:
+            # Serialize the aggregate check and insert across distinct attempts.
+            # A row lock cannot protect the first reservation in a workspace.
+            await self._lock_workspace(connection, org_id, workspace_id)
             existing = await self._fetch_locked(connection, job_id, attempt_id)
 
             if existing is None:
@@ -266,6 +269,16 @@ class OperationBudgetLedger:
                     "no budget reservation exists for this attempt to confirm"
                 )
 
+            if existing["reservation_id"] != reservation.reservation_id:
+                raise BudgetDenied("reservation identity does not match this attempt")
+            stored = (
+                existing["max_resource_units"],
+                existing["max_runtime_seconds"],
+                existing["max_cost_micros"],
+            )
+            if any(value > held for value, held in zip(approved, stored, strict=True)):
+                raise BudgetDenied("confirmation exceeds the reserved envelope")
+
             if existing["state"] == STATE_CONFIRMED:
                 stored = (
                     existing["max_resource_units"],
@@ -323,6 +336,17 @@ class OperationBudgetLedger:
         """
         await self._settle(reservation, STATE_RETAINED, reason)
 
+    async def deliver_settlement(self, **receipt: Any) -> str:
+        """Accept one authoritative closed-claim receipt and its budget effect.
+
+        The receipt and reservation update commit together. A lost acknowledgement
+        may safely be redelivered after this process or its connections restart.
+        """
+        from app.adapters.operation_settlement import accept_settlement
+
+        async with self._session() as connection:
+            return await accept_settlement(connection, **receipt)
+
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
@@ -344,6 +368,8 @@ class OperationBudgetLedger:
                 raise BudgetDenied(
                     "no budget reservation exists for this attempt to settle"
                 )
+            if existing["reservation_id"] != reservation.reservation_id:
+                raise BudgetDenied("reservation identity does not match this attempt")
             if existing["state"] == state:
                 return
             if existing["state"] == STATE_RETAINED and state == STATE_RELEASED:
@@ -397,9 +423,11 @@ class OperationBudgetLedger:
             connection,
             f"SELECT COALESCE(SUM(max_cost_micros), 0) AS cost, "
             f"COALESCE(SUM(max_resource_units), 0) AS units FROM {_TABLE} "
-            f"WHERE workspace_id=$1 AND state IN ({placeholders})",
+            f"WHERE workspace_id=$1 AND state IN ({placeholders}) "
+            f"AND org_id=${2 + len(COMMITTED_STATES)}",
             workspace_id,
             *COMMITTED_STATES,
+            org_id,
         )
         held_cost = int(row["cost"]) if row else 0
         held_units = int(row["units"]) if row else 0
@@ -421,6 +449,16 @@ class OperationBudgetLedger:
             raise BudgetDenied(
                 "this operation would exceed the workspace's configured resource budget"
             )
+
+    async def _lock_workspace(
+        self, connection: Any, org_id: str, workspace_id: str
+    ) -> None:
+        key = "superplane-budget:" + org_id + ":" + workspace_id
+        await self._execute(
+            connection,
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            key,
+        )
 
     async def _insert(
         self,

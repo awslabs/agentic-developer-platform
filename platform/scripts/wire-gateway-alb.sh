@@ -65,6 +65,7 @@ EDGE_INGRESS_STACK="adp-gateway/bedrockgateway"
 INTERNAL_INGRESS_STACK="adp-gateway/bedrockgateway-internal"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "$SCRIPT_DIR/alb-security-groups.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: write a key=value pair to $GITHUB_OUTPUT if running in Actions
@@ -236,16 +237,10 @@ fi
 # Step 3: Discover ALB security groups (always, even on cache hit)
 # ---------------------------------------------------------------------------
 # The api_gateway module needs these for VPC Link v2 egress rules + reciprocal
-# ingress rule on each ALB SG. Rendered as a Terraform list literal via shell
-# tr+sed to avoid a jq runtime dependency.
+# ingress rule on each ALB SG. A discovered ALB must have a nonempty SG list.
 ALB_SG_IDS="[]"
 if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-  ALB_SG_LIST=$(aws elbv2 describe-load-balancers \
-    --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
-    --query 'LoadBalancers[0].SecurityGroups' --output text 2>/dev/null || echo "")
-  if [ -n "$ALB_SG_LIST" ]; then
-    ALB_SG_IDS="[$(echo "$ALB_SG_LIST" | tr '[:space:]' ',' | sed 's/,$//' | sed 's/\([^,][^,]*\)/"\1"/g')]"
-  fi
+  ALB_SG_IDS=$(read_alb_security_groups "$ALB_ARN") || exit 1
   aws ssm put-parameter \
     --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" \
     --value "$ALB_SG_IDS" --type String --overwrite \
@@ -276,12 +271,7 @@ if [ -n "$INTERNAL_PLANE_ALB_ARN" ] && [ "$INTERNAL_PLANE_ALB_ARN" != "None" ]; 
     --load-balancer-arns "$INTERNAL_PLANE_ALB_ARN" --region "$AWS_REGION" \
     --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
 
-  INTERNAL_SG_LIST=$(aws elbv2 describe-load-balancers \
-    --load-balancer-arns "$INTERNAL_PLANE_ALB_ARN" --region "$AWS_REGION" \
-    --query 'LoadBalancers[0].SecurityGroups' --output text 2>/dev/null || echo "")
-  if [ -n "$INTERNAL_SG_LIST" ]; then
-    INTERNAL_PLANE_ALB_SG_IDS="[$(echo "$INTERNAL_SG_LIST" | tr '[:space:]' ',' | sed 's/,$//' | sed 's/\([^,][^,]*\)/"\1"/g')]"
-  fi
+  INTERNAL_PLANE_ALB_SG_IDS=$(read_alb_security_groups "$INTERNAL_PLANE_ALB_ARN") || exit 1
 
   # Guard against the catastrophic case: if the internal-plane ALB were ever
   # discovered as the SAME load balancer as the edge ALB, the separation this

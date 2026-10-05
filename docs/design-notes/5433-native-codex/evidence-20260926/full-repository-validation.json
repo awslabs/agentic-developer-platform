@@ -1,0 +1,20 @@
+{
+  "sourceRevision": "3c8292a4942ba5685cf68d13bdaa70ccb376e1e5",
+  "tree": "786190ca1fe9ce4bce3325620cf480e019626391",
+  "compressedArchiveBytes": 25380933,
+  "fileCount": 7550,
+  "allFileContentDigest": "53770d7c0dde46358bb8f28dbb796a17b12e73f14e55521fd35ebf9e86306c5b",
+  "validation": {
+    "check": "full_source_identity",
+    "commit": "319b06ffc933837dee6a1154afe20b7b23bf63ad",
+    "archiveSha256": "50a7eecb6c4aa7c0fda6e0a8a241205b29c212c6ad2120fec8353ea7467a6163",
+    "specificationDigest": "ac42f6e9f28ff557da534b4b2ecf81aea6064d576696f9aac51826cb213b90cc",
+    "environmentDigest": "4d3fe0534a68519942d7bbb0acf50e9969980b678ee22107953f9f93244021db",
+    "status": "passed",
+    "exitCode": 0,
+    "reason": "completed",
+    "durationSeconds": 0.8,
+    "output": "full-source-verified\n",
+    "tree": "786190ca1fe9ce4bce3325620cf480e019626391"
+  }
+}

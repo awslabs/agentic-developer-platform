@@ -15,6 +15,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -27,6 +28,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.audit_operation import callback_actor, callback_target_org, mark_admin_effects
 from src.auth.magic_link import (
     NonceAlreadyConsumedError,
     NonceNotFoundError,
@@ -39,7 +41,7 @@ from src.shared.models.vault import MagicLinkNonce
 
 from .bot_identity import seed_bot_identity
 from .github_app_provider import get_github_app_provider
-from .github_client import GitHubAppClient
+from .github_client import GitHubAppClient, github_account_id
 from .schemas import (
     AppStatusResponse,
     ConnectionsListResponse,
@@ -58,6 +60,12 @@ logger = logging.getLogger(__name__)
 _PROVIDER_GITHUB_INSTALL = "github_install"
 _PROVIDER_GITHUB_APP_REGISTER = "github_app_register"
 _NONCE_TTL_SECONDS = 900  # 15 minutes
+
+# Roles that may replace the deployment's SHARED GitHub App / webhook / sign-in
+# secrets (#5664). Mirrors the claim values `auth_service` maps to `is_admin`, but
+# read from the database: the setup callback is a browser redirect with no token,
+# so there is no claim available to trust.
+_PLATFORM_ADMIN_ROLES: frozenset[str] = frozenset({"platform_admin", "admin"})
 
 # Terraform seeds secrets with this literal placeholder at deploy time
 # (modules/agent-factory/webhook-ingress/infra/secrets.tf:39,54).
@@ -90,10 +98,13 @@ def _is_placeholder(value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _EXPECTED_APP_PERMISSIONS: dict[str, str] = {
+    "members": "read",
     "contents": "write",
     "issues": "write",
     "pull_requests": "write",
     "checks": "write",
+    "actions": "write",
+    "workflows": "write",
     "metadata": "read",
 }
 
@@ -263,10 +274,138 @@ def _get_github_app_credentials() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+async def _resolve_setup_initiator(*, subject: str, org_id: str, username: str, db: AsyncSession, platform: bool = False) -> Any:
+    """Resolve signed claims without substituting a different claimed workspace.
+
+    Platform setup uses the canonical login's global role. Installation setup
+    uses the selected organization, which can be represented by a foreign-home User
+    plus a tenant membership. The selected tenant is therefore stored separately.
+    """
+    from sqlalchemy.exc import MultipleResultsFound
+
+    from src.shared.identity.workspaces import login_user, workspace_user
+
+    if not subject:
+        raise SetupAuthorityError("A signed-in human identity is required")
+    try:
+        login = await login_user(db, subject)
+        if login is None:
+            raise SetupAuthorityError("The signed-in user is not registered")
+        await db.refresh(login)
+        if login.cognito_sub and login.cognito_sub != subject:
+            raise SetupAuthorityError("The subject does not own this login")
+        if login.is_shadow or login.user_kind != "human":
+            raise SetupAuthorityError("A signed-in human identity is required")
+        user = login if platform or not org_id else await workspace_user(db, subject, org_id, username=username)
+        if user is None:
+            raise SetupAuthorityError("The signed-in user has no access to the selected organization")
+        await db.refresh(user)
+        if user.cognito_sub and user.cognito_sub != subject:
+            raise SetupAuthorityError("The subject does not own the selected organization identity")
+        if user.is_shadow or user.user_kind != "human":
+            raise SetupAuthorityError("A signed-in human identity is required")
+        if platform and (user.role or "") not in _PLATFORM_ADMIN_ROLES:
+            raise SetupAuthorityError("Setup link initiator is not a platform administrator")
+        return user
+    except (MultipleResultsFound, ValueError) as exc:
+        raise SetupAuthorityError("The signed-in identity is ambiguous; resolve the account binding before setup") from exc
+
+
+def _setup_context(*, kind: str, org_id: str = "", username: str = "", owner_type: str = "", owner: str = "") -> str:
+    context = json.dumps({"v": 1, "kind": kind, "org": org_id, "username": username, "owner_type": owner_type, "owner": owner}, separators=(",", ":"))
+    if len(context) > 512:
+        raise SetupAuthorityError("Setup identity context is too long")
+    return context
+
+
+def _read_setup_context(nonce: MagicLinkNonce, kind: str) -> dict[str, Any]:
+    try:
+        context = json.loads(nonce.channel_context or "null")
+    except (TypeError, ValueError) as exc:
+        raise SetupAuthorityError("Setup link has no supported identity binding; start a new setup flow") from exc
+    if (
+        not isinstance(context, dict)
+        or context.get("v") != 1
+        or context.get("kind") != kind
+        or any(not isinstance(context.get(key), str) for key in ("org", "username", "owner_type", "owner"))
+        or (kind == "install" and not context["org"])
+    ):
+        raise SetupAuthorityError("Setup link has no supported identity binding; start a new setup flow")
+    return context
+
+
+async def _assert_install_setup_authority(nonce: MagicLinkNonce, db: AsyncSession) -> tuple[Any, str]:
+    context = _read_setup_context(nonce, "install")
+    user = await _resolve_setup_initiator(subject=nonce.provider_user_id, org_id=context["org"], username=context["username"], db=db)
+    if not nonce.target_user_id or user.id != nonce.target_user_id:
+        raise SetupAuthorityError("The setup link's initiating identity no longer matches")
+    return user, context["org"]
+
+
+async def _assert_installation_control(
+    *, installation_id: int, account: dict, user_id: str, org_id: str, db: AsyncSession, github_client: GitHubAppClient
+) -> str:
+    """Prove control of the provider account before granting installation rights."""
+    from sqlalchemy import select
+
+    from src.shared.identity.verification import PROVEN_METHODS
+    from src.shared.models.vault import UserIdentity
+
+    identities = await db.scalars(
+        select(UserIdentity.provider_user_id).where(
+            UserIdentity.user_id == user_id,
+            UserIdentity.org_id == org_id,
+            UserIdentity.provider == "github",
+            UserIdentity.verification_method.in_(PROVEN_METHODS),
+        )
+    )
+    proven_ids = {identifier for value in identities if (identifier := github_account_id(value))}
+    if not proven_ids:
+        raise SetupAuthorityError("Link a verified GitHub account in the selected organization before connecting an installation")
+    account_id = github_account_id(account.get("id"))
+    if account.get("type") == "User":
+        if account_id in proven_ids:
+            return account_id
+        raise SetupAuthorityError("This personal GitHub installation does not belong to your verified GitHub account")
+    if account.get("type") != "Organization" or not account_id:
+        raise SetupAuthorityError("GitHub did not return a supported installation account")
+    try:
+        for github_user_id in sorted(proven_ids):
+            if await github_client.has_org_admin_membership(
+                installation_id=installation_id, org_id=account_id, org_login=account["login"], user_id=github_user_id
+            ):
+                # Membership calls can take time. Revoked canonical identity
+                # proof must not survive that wait merely because it was read first.
+                still_proven = await db.scalar(
+                    select(UserIdentity.id)
+                    .where(
+                        UserIdentity.user_id == user_id,
+                        UserIdentity.org_id == org_id,
+                        UserIdentity.provider == "github",
+                        UserIdentity.provider_user_id == github_user_id,
+                        UserIdentity.verification_method.in_(PROVEN_METHODS),
+                    )
+                    .limit(1)
+                )
+                if still_proven:
+                    return github_user_id
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitHub organization control could not be verified. "
+                "Check that the App installation has accepted Organization members: read permission, then retry."
+            ),
+        ) from exc
+    raise SetupAuthorityError("A verified GitHub account with current active administrator membership in this organization is required")
+
+
 async def install_start(
     *,
     cognito_sub: str,
-    user_id: str,
+    user_id: str | None = None,
+    org_id: str = "",
+    cognito_username: str = "",
     db: AsyncSession,
 ) -> InstallStartResponse:
     """Generate a state nonce and return the GitHub App install URL.
@@ -276,6 +415,14 @@ async def install_start(
         user_id:     The internal users.id for the caller.
         db:          Database session.
     """
+    initiator = await _resolve_setup_initiator(subject=cognito_sub, org_id=org_id, username=cognito_username, db=db)
+    if user_id is not None and user_id != initiator.id:
+        raise SetupAuthorityError("The supplied user does not match the signed-in identity")
+    user_id = initiator.id
+    selected_org = org_id or initiator.org_id
+    if not selected_org:
+        raise SetupAuthorityError("Select an authorized organization before connecting an installation")
+    app_slug = _get_github_app_slug()
     jti = str(uuid.uuid4())
     now = datetime.now(UTC)
     expires_at = now + timedelta(seconds=_NONCE_TTL_SECONDS)
@@ -284,13 +431,12 @@ async def install_start(
         jti=jti,
         provider=_PROVIDER_GITHUB_INSTALL,
         provider_user_id=cognito_sub,
-        channel_context=None,
+        channel_context=_setup_context(kind="install", org_id=selected_org, username=cognito_username),
         target_user_id=user_id,
         expires_at=expires_at,
         db=db,
     )
 
-    app_slug = _get_github_app_slug()
     install_url = f"https://github.com/apps/{app_slug}/installations/new?state={jti}"
 
     logger.info(
@@ -321,13 +467,11 @@ async def install_callback(
     the operator's browser here as a plain GET with no Authorization header, so
     there is no token to read. The nonce was minted by install-start for a
     specific signed-in user (`target_user_id`), is single-use, and expires in 15
-    minutes — so it is the authenticator here. We resolve the caller's user_id
-    from the nonce and their org_id from the `users` table.
+    minutes — so it is the authenticator here. The nonce binds the canonical
+    user and selected organization independently; both are revalidated before mutation.
 
-    Issue #2952: When `state` is empty/missing (public-App install initiated from
-    GitHub by a non-ADP user), bypass nonce validation entirely. Resolve the org
-    exclusively from the installation metadata via GitHub API. Create the tenant
-    shell (upsert only, no user attachment). Return a generic success page.
+    Without state, ask the operator to select an ADP organization and restart
+    the connection. A public GitHub callback cannot authorize ADP attachment.
 
     Returns a dict with keys:
         success          — bool
@@ -344,11 +488,8 @@ async def install_callback(
     """
     from sqlalchemy import select, update
 
-    from src.shared.models.organization import Organization, User
-
-    # Issue #2952: No-nonce path for public-App installs initiated from GitHub
-    # by a non-ADP user. Safe because it only creates resources keyed by the
-    # GitHub-verified installation ID and grants no session or access.
+    # GitHub-initiated installs have no ADP organization selection. Direct
+    # the operator back to the authenticated flow without creating resources.
     if not state:
         # Issue #4016: log the dispatch itself. Without this, a no-nonce install
         # was indistinguishable in the logs from a nonce install, so an operator
@@ -358,6 +499,7 @@ async def install_callback(
             installation_id,
             setup_action or "(none)",
         )
+        mark_admin_effects()
         return await _handle_no_nonce_install(
             installation_id=installation_id,
             db=db,
@@ -391,214 +533,129 @@ async def install_callback(
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(f"State token already used: {state}")
 
-    # 2. Resolve the caller's org from the nonce (the nonce IS the authenticator
-    #    — see the docstring). target_user_id is the internal users.id set at
-    #    install-start; provider_user_id is the cognito_sub. The install attaches
-    #    to this user's own org (org + personal installs alike).
-    user_row = None
-    if nonce.target_user_id:
-        user_row = await db.get(User, nonce.target_user_id)
-    if user_row is None and nonce.provider_user_id:
-        user_row = (await db.execute(select(User).where(User.cognito_sub == nonce.provider_user_id))).scalar_one_or_none()
-    if user_row is None:
-        logger.warning("GitHub install-callback: no users row for nonce jti=%s", state)
-        raise TargetUserMismatchError("Could not resolve the user this install link was issued for")
-    caller_org_id = user_row.org_id
-
-    # 3. Atomically consume the nonce (WHERE consumed_at IS NULL prevents races)
-    consume_stmt = (
-        update(MagicLinkNonce)
-        .where(MagicLinkNonce.jti == state, MagicLinkNonce.consumed_at.is_(None))
-        .values(consumed_at=now)
-        .returning(MagicLinkNonce.jti)
-    )
-    consume_result = await db.execute(consume_stmt)
-    consumed_jti = consume_result.scalar_one_or_none()
-    if consumed_jti is None:
-        # Another concurrent request consumed it first
-        raise NonceAlreadyConsumedError(f"State token already used (concurrent): {state}")
-    await db.commit()
-
-    logger.info("GitHub install-callback nonce consumed jti=%s installation_id=%d", state, installation_id)
-
-    # 4. Fetch installation metadata from GitHub
-    app_id, private_key = _get_github_app_credentials()
-    if github_client is None and app_id and private_key:
-        github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
-
-    account_login = "unknown"
-    account_type = "Organization"
-    github_org_id: int | None = None
-    repository_selection = "selected"
-    repositories: list[str] = []
+    # The nonce binds the signed subject, canonical user and selected organization.
+    # It is a single-use capability; a second browser JWT is neither needed nor
+    # available on GitHub's redirect. Recheck the binding again after provider I/O.
+    try:
+        user_row, caller_org_id = await _assert_install_setup_authority(nonce, db)
+        callback_actor(user_row, caller_org_id)
+    except SetupAuthorityError as exc:
+        raise TargetUserMismatchError(str(exc)) from exc
 
     if github_client is None:
-        # Issue #4016: without a client the account login/type stay at their
-        # "unknown"/"Organization" defaults, github_org_id stays None, and the
-        # org-resolution block below is skipped entirely — the install silently
-        # lands on the caller's own tenant. That was previously unlogged.
-        logger.error(
-            "event=install_callback_no_github_client installation_id=%d "
-            "outcome=metadata_unavailable detail=app_credentials_missing_install_attaches_to_caller_tenant",
-            installation_id,
+        app_id, private_key = _get_github_app_credentials()
+        if app_id and private_key:
+            github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+    if github_client is None:
+        logger.error("event=install_callback_no_github_client installation_id=%d outcome=not_attached", installation_id)
+        raise HTTPException(status_code=503, detail="GitHub App credentials are not configured; installation was not attached")
+    try:
+        meta = await github_client.get_installation(installation_id)
+        account = meta.get("account", {})
+        account_id = github_account_id(account.get("id"))
+        if (
+            github_account_id(meta.get("id")) != str(installation_id)
+            or not account_id
+            or account.get("type") not in {"User", "Organization"}
+            or not isinstance(account.get("login"), str)
+            or not account["login"]
+            or meta.get("suspended_at")
+        ):
+            raise ValueError("GitHub installation metadata is incomplete, mismatched or suspended")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="GitHub installation metadata could not be verified; nothing was attached") from exc
+
+    account_login = account["login"]
+    account_type = account["type"]
+    github_org_id = int(account_id)
+    repository_selection = meta.get("repository_selection", "selected")
+    repositories = []
+    try:
+        repositories = await github_client.list_installation_repository_names(installation_id)
+    except Exception as exc:
+        logger.warning("Could not fetch repositories for installation %d: %s", installation_id, exc)
+
+    proven_github_id = await _assert_installation_control(
+        installation_id=installation_id,
+        account=account,
+        user_id=user_row.id,
+        org_id=caller_org_id,
+        db=db,
+        github_client=github_client,
+    )
+    state_consumed = False
+
+    async def consume_for_mutation(target_org_id: str) -> None:
+        nonlocal state_consumed
+        if state_consumed:
+            return
+        from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+        from src.shared.identity.verification import PROVEN_METHODS
+        from src.shared.models.vault import ChannelTenantMap, UserIdentity
+
+        # Refuse existing account/installation ownership conflicts before using
+        # the capability. The attach writer retains its own guard as well.
+        existing = await db.scalar(
+            select(ChannelTenantMap).where(
+                ChannelTenantMap.provider == "github",
+                ChannelTenantMap.provider_scope_id == account_id,
+            )
         )
+        if existing is not None and existing.org_id != target_org_id:
+            raise PermissionError(f"GitHub account '{account_login}' is already connected to another ADP tenant")
+        owner, owner_state = await resolve_installation_owner(installation_id, db=db)
+        if owner_state not in {OwnerState.RESOLVED, OwnerState.NOT_FOUND}:
+            raise PermissionError("This installation has an ambiguous or unverified existing tenant claim; reconcile it before setup")
+        if owner is not None and owner.tenant_id != target_org_id:
+            raise PermissionError("This GitHub installation is already connected to another ADP tenant")
 
-    if github_client is not None:
         try:
-            meta = await github_client.get_installation(installation_id)
-            account = meta.get("account", {})
-            account_login = account.get("login", "unknown")
-            account_type = account.get("type", "Organization")
-            github_org_id = account.get("id")
-            repository_selection = meta.get("repository_selection", "selected")
-            _cache_set(installation_id, meta)
-        except Exception as exc:
-            logger.warning("Could not fetch GitHub installation metadata: %s", exc)
-        # Fetch the actual repo names (informational; never fail the install for it).
-        try:
-            repositories = await github_client.list_installation_repository_names(installation_id)
-        except Exception as exc:
-            logger.warning("Could not fetch repositories for installation %d: %s", installation_id, exc)
+            await _assert_install_setup_authority(nonce, db)
+        except SetupAuthorityError as exc:
+            raise TargetUserMismatchError(str(exc)) from exc
+        current_proof = await db.scalar(
+            select(UserIdentity.id)
+            .where(
+                UserIdentity.user_id == user_row.id,
+                UserIdentity.org_id == caller_org_id,
+                UserIdentity.provider == "github",
+                UserIdentity.provider_user_id == proven_github_id,
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
+            )
+            .limit(1)
+        )
+        if not current_proof:
+            raise SetupAuthorityError("The initiating GitHub identity is no longer proven")
+        now = datetime.now(UTC)
+        if expires_at <= now:
+            raise TokenExpiredError("State token expired while verifying GitHub control; start a new install")
+        consume_stmt = (
+            update(MagicLinkNonce)
+            .where(
+                MagicLinkNonce.jti == state,
+                MagicLinkNonce.provider == _PROVIDER_GITHUB_INSTALL,
+                MagicLinkNonce.consumed_at.is_(None),
+                MagicLinkNonce.expires_at > now,
+            )
+            .values(consumed_at=now)
+            .returning(MagicLinkNonce.jti)
+            .execution_options(synchronize_session="fetch")
+        )
+        callback_target_org(target_org_id)
+        mark_admin_effects()
+        consumed_jti = (await db.execute(consume_stmt)).scalar_one_or_none()
+        if consumed_jti is None:
+            raise NonceAlreadyConsumedError("State token was used or expired during verification")
+        await db.commit()
+        _cache_set(installation_id, meta)
+        logger.info("GitHub install-callback nonce consumed jti=%s installation_id=%d", state, installation_id)
+        state_consumed = True
 
-    # 5. Issue #2952: Resolve the target tenant for org installs.
-    #    For account_type == "Organization", look up by github_org_id first;
-    #    if found, route the install to that org's tenant instead of caller's.
-    #    For unknown orgs (public-App installs), upsert the tenant shell.
-    #    Personal installs and pre-existing behavior preserved via caller_org_id.
-    #
-    #    Issue #4072 (#5, CRITICAL) — why this block needs an authorization gate:
-    #    this endpoint is unauthenticated by design (GitHub redirects a browser
-    #    here), so the nonce validated above is the ONLY authenticator, and it
-    #    binds the CALLER. The target tenant, by contrast, was re-derived from
-    #    caller-supplied data: installation_id → GitHub account → github_org_id →
-    #    matching organizations row. That made "which tenant do I take over?" a
-    #    request parameter. Everything downstream of this block — the routing row,
-    #    the org_admin membership (#4006), the auto-switch (#3072), the tenant
-    #    secret seed (#2085), the identity-index row (#2950) — then landed in the
-    #    victim's tenant. _attach_org_installation's own cross-tenant guard could
-    #    not catch it: it compares against `caller_org_id`, which by then has
-    #    already been overwritten with the victim's tenant id.
-    #
-    #    Decision D1 option (b) keeps #2952's routing — a real GitHub org install
-    #    SHOULD land in the org's shared workspace so co-workers share it — but
-    #    makes it conditional on the caller having STANDING in that tenant. See
-    #    _caller_has_standing_in_tenant.
+    # ADP organization selection is bound into the nonce. GitHub ownership is
+    # provider metadata, never an instruction to create or switch organizations.
     resolved_org_id = caller_org_id
 
-    if account_type == "Organization" and github_org_id is not None:
-        # Try to find existing org by github_org_id
-        org_by_github_id = (await db.execute(select(Organization).where(Organization.github_org_id == str(github_org_id)))).scalar_one_or_none()
-
-        if org_by_github_id is not None:
-            # Issue #4072 (#5): the gate. An install may only be routed INTO a
-            # pre-existing tenant by someone who already belongs to it.
-            if not await _caller_has_standing_in_tenant(
-                user_id=user_row.id,
-                caller_org_id=caller_org_id,
-                target_tenant_id=org_by_github_id.id,
-                db=db,
-            ):
-                logger.warning(
-                    "event=install_callback_cross_tenant_denied installation_id=%d account=%s github_org_id=%s "
-                    "caller_user=%s caller_tenant=%s target_tenant=%s reason=no_membership_in_target_tenant",
-                    installation_id,
-                    account_login,
-                    github_org_id,
-                    user_row.id,
-                    caller_org_id,
-                    org_by_github_id.id,
-                )
-                # PermissionError is the established cross-tenant signal on this
-                # path — the route already renders it as `tenant_conflict`
-                # (connections/routes.py) rather than a 500. Raised BEFORE any
-                # write, so nothing is bound, granted, seeded, or switched.
-                raise PermissionError(
-                    f"GitHub organization '{account_login}' is already connected to another ADP workspace that you are not a member of. "
-                    "Ask an administrator of that workspace to invite you, then re-run the install."
-                )
-
-            resolved_org_id = org_by_github_id.id
-            logger.info(
-                "install-callback: resolved org by github_org_id=%s → tenant=%s",
-                github_org_id,
-                resolved_org_id,
-            )
-        elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
-            # Issue #2952 (Rev 4 C): Install-time tenant upsert for unknown orgs.
-            # On a public App, orgs install without ever registering.
-            # Issue #2724: this branch is reached only after nonce validation
-            # above (the nonce IS the authenticator), so an authenticated ADP
-            # user deliberately drove this install → register_flow (trusted).
-            #
-            # Issue #4072 (#5): second door into a pre-existing tenant.
-            # _upsert_org_tenant_shell is idempotent BY SLUG, so it returns an
-            # existing tenant whenever the account login slugifies onto one. That
-            # is the same re-point as the branch above reached by a different
-            # route, so it needs the same standing gate — otherwise the gate is
-            # bypassable by choosing an account whose login collides with the
-            # victim tenant's id. A shell this install actually CREATES has no
-            # victim, so #2952 first-installer onboarding is unaffected.
-            preexisting_shell = await db.get(Organization, _slugify_org_id(account_login))
-            if preexisting_shell is not None and not await _caller_has_standing_in_tenant(
-                user_id=user_row.id,
-                caller_org_id=caller_org_id,
-                target_tenant_id=preexisting_shell.id,
-                db=db,
-            ):
-                logger.warning(
-                    "event=install_callback_cross_tenant_denied installation_id=%d account=%s github_org_id=%s "
-                    "caller_user=%s caller_tenant=%s target_tenant=%s reason=slug_collides_with_foreign_tenant",
-                    installation_id,
-                    account_login,
-                    github_org_id,
-                    user_row.id,
-                    caller_org_id,
-                    preexisting_shell.id,
-                )
-                raise PermissionError(
-                    f"GitHub organization '{account_login}' maps to an existing ADP workspace that you are not a member of. "
-                    "Ask an administrator of that workspace to invite you, then re-run the install."
-                )
-
-            upserted_id = await _upsert_org_tenant_shell(
-                owner_login=account_login,
-                github_org_id=str(github_org_id),
-                github_app_id="",
-                db=db,
-                created_via="register_flow",
-            )
-            if upserted_id:
-                resolved_org_id = upserted_id
-                logger.info(
-                    "install-callback: upserted org-tenant shell for unknown org %s → tenant=%s",
-                    account_login,
-                    resolved_org_id,
-                )
-            else:
-                # Issue #4016: the upsert returned nothing, so the install falls
-                # back to the caller's own tenant instead of the org's. Silent
-                # before; it is the wrong-tenant-routing failure mode.
-                logger.error(
-                    "event=install_callback_upsert_failed installation_id=%d account=%s github_org_id=%s "
-                    "outcome=install_attached_to_caller_tenant fallback_tenant=%s",
-                    installation_id,
-                    account_login,
-                    github_org_id,
-                    resolved_org_id,
-                )
-        else:
-            # Issue #4016: unknown org and auto-create is off — the install
-            # attaches to the caller's personal tenant, not the org's. Operators
-            # read this as "installed for my org"; it is not.
-            logger.warning(
-                "event=install_callback_org_not_onboarded installation_id=%d account=%s github_org_id=%s "
-                "reason=org_tenant_auto_create_disabled outcome=install_attached_to_caller_tenant fallback_tenant=%s",
-                installation_id,
-                account_login,
-                github_org_id,
-                resolved_org_id,
-            )
-
+    await consume_for_mutation(resolved_org_id)
     await _attach_org_installation(
         installation_id=installation_id,
         github_org_id=github_org_id,
@@ -623,40 +680,20 @@ async def install_callback(
         installation_id,
         resolved_org_id,
     )
+    from src.admin.installations.guards import assert_installation_claimable_by, lock_installation_organization
+
+    await lock_installation_organization(db, resolved_org_id)
+    await assert_installation_claimable_by(resolved_org_id, installation_id, db=db)
     await seed_tenant_github_app_secret(resolved_org_id, installation_id)
 
     # Issue #3072: Track the previously-active tenant for redirect params.
     switched_from: str | None = None
 
     if account_type == "Organization":
-        # Issue #719: Populate organizations.github_installation_ids so that
-        # future users from this org are matched to this tenant automatically.
+        # Keep the selected organization's installation inventory in sync.
         await _append_installation_id_to_org(
             installation_id=installation_id,
             caller_org_id=resolved_org_id,
-            db=db,
-        )
-
-        # Issue #3035: Create a tenant_membership for the installing user.
-        # The nonce IS the authenticator — user_row was resolved from it above.
-        # Only org installs get memberships; personal installs stay on the
-        # personal/adp-default path.
-        await _create_installer_membership(
-            user_row=user_row,
-            tenant_id=resolved_org_id,
-            github_org_login=account_login,
-            db=db,
-        )
-
-        # Issue #3072: Auto-switch the installer's active tenant to the
-        # newly-installed org so they land IN the workspace. Reuses the
-        # same atomic deactivate-all/activate-one pattern from switch_tenant
-        # endpoint (#3071). Skips silently if the org is already active
-        # (reinstall case). Nonce-path only, org installs only — guards
-        # already enforced by the enclosing if-block + user_row presence.
-        switched_from = await _auto_switch_active_tenant(
-            user_id=user_row.id,
-            target_tenant_id=resolved_org_id,
             db=db,
         )
 
@@ -756,11 +793,89 @@ async def _caller_has_standing_in_tenant(
             .where(
                 TenantMembership.user_id == user_id,
                 TenantMembership.tenant_id == target_tenant_id,
+                TenantMembership.revoked_at.is_(None),
             )
             .limit(1)
         )
     ).scalar_one_or_none()
     return membership is not None
+
+
+class SetupAuthorityError(Exception):
+    """The principal completing a platform-App setup flow lacks authority.
+
+    Distinct from the nonce errors: the state token was structurally fine, but the
+    person it was issued to may not replace the deployment's shared credentials.
+    """
+
+
+async def _assert_platform_setup_authority(
+    *,
+    nonce: MagicLinkNonce,
+    db: AsyncSession,
+) -> Any:
+    """Re-derive platform-admin authority for a browser-redirect setup callback.
+
+    Issue #5664 (A10, f-32c4047a-643a-45cc-821a-e45ca5586239). ``register_app_callback``
+    writes the deployment's shared GitHub App credentials, the webhook signing
+    secret and the GitHub sign-in secret — a replacement that is destructive for
+    every tenant at once and hands control of the trusted inbound path to whoever
+    triggers it. Its only check was possession of a 15-minute state token.
+
+    Why the authority check lives HERE and not as a route dependency: GitHub
+    redirects the operator's browser to the callback as a plain GET with no
+    Authorization header, so ``get_current_user`` cannot run — adding it would make
+    legitimate setup impossible to complete, which is the "gate on the wrong half
+    of the flow" failure mode. The start endpoint IS platform-admin gated and
+    records its initiator on the nonce, so authority is re-derived from that
+    recorded initiator instead:
+
+    * the initiator must still resolve to a real user row, and
+    * that user must still hold platform-admin authority **in the database** — not
+      via a token claim, because there is no token here to claim anything.
+
+    Re-checking at completion (rather than trusting the start-time check) is what
+    makes a revoked admin's in-flight link stop working.
+
+    Returns the initiating user row on success; raises SetupAuthorityError
+    otherwise. The caller must run this BEFORE consuming the nonce and before any
+    secret write, so a refusal leaves no trace and stays retryable.
+    """
+    from src.shared.models.organization import User
+
+    # The nonce records BOTH forms of the initiator: target_user_id is users.id,
+    # provider_user_id is the cognito_sub. Require the users.id form — the
+    # cognito_sub fallback is the same "credential names its own subject" pattern
+    # this issue removes from the installation path.
+    if not nonce.target_user_id:
+        raise SetupAuthorityError("Setup link carries no initiator")
+
+    initiator = await db.get(User, nonce.target_user_id, populate_existing=True)
+    if initiator is None:
+        raise SetupAuthorityError("Setup link initiator no longer exists")
+
+    context = _read_setup_context(nonce, "platform")
+    current = await _resolve_setup_initiator(subject=nonce.provider_user_id, org_id="", username=context["username"], db=db, platform=True)
+    if current.id != initiator.id:
+        raise SetupAuthorityError("The setup link's initiating identity no longer matches")
+
+    # Platform-admin authority, server-side. `users.role` is the authority for
+    # platform admin: `bootstrap_admin.py` and the admin user-update path are its
+    # only writers, and `auth_service` derives the `is_admin` claim from exactly
+    # these values (auth_service.py:301-306). So this is the same authority the
+    # start endpoint enforced via the claim, re-read from the database at
+    # completion time — which is what makes a revoked admin's in-flight link stop
+    # working.
+    #
+    # Deliberately NOT falling back to `tenant_memberships.role`: that column only
+    # ever carries "member" or "org_admin", and an org admin is a TENANT-level
+    # role. Replacing the shared App/webhook/sign-in secrets is platform-level and
+    # affects every tenant, so accepting org_admin here would re-open the
+    # escalation one rung lower.
+    if (initiator.role or "") not in _PLATFORM_ADMIN_ROLES:
+        raise SetupAuthorityError("Setup link initiator is not a platform administrator")
+
+    return initiator
 
 
 def _promotion_allowed_for_provenance(created_via: str | None) -> tuple[bool, str]:
@@ -819,294 +934,24 @@ async def _handle_no_nonce_install(
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
 ) -> dict[str, Any]:
-    """Handle a public-App install with no state/nonce (non-ADP user path).
+    """A GitHub redirect alone cannot choose or create an ADP organization."""
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
 
-    Issue #2952 (Rev 4 C): When state is empty or missing on the install
-    callback (public-App install initiated from GitHub by a non-ADP user),
-    bypass nonce validation entirely. Resolve the org exclusively from the
-    installation metadata via GitHub API. Create the tenant shell (upsert
-    only, no user attachment, no caller_org_id). Return a generic success.
-
-    This path grants no session and no access to anyone, and only creates
-    resources keyed by the GitHub-verified installation ID. It is NOT, however,
-    authenticated as an ADP caller — so any org shell it creates is stamped
-    ``created_via="install_autocreate"`` (Issue #2724). Downstream trust
-    decisions must key on that provenance rather than on the row's existence.
-
-    Issue #2724 (slice B, review finding): this handler is itself such a
-    downstream decision, and it is the FIRST one — it runs on the attacker's
-    browser redirect, before any webhook exists. So it applies the gate to its
-    own two promoting side effects (per-tenant App credentials, routable
-    identity-index row) rather than leaving them to the webhook Lambda, which on
-    this path is never involved at all. See ``_promotion_allowed_for_provenance``.
-    """
-    from sqlalchemy import select
-
-    from src.shared.models.organization import CREATED_VIA_INSTALL_AUTOCREATE, Organization
-
-    # Fetch installation metadata from GitHub
-    app_id, private_key = _get_github_app_credentials()
-    if github_client is None and app_id and private_key:
-        github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
-
-    account_login = "unknown"
-    account_type = "Organization"
-    github_org_id: int | None = None
-    repository_selection = "selected"
-    repositories: list[str] = []
-
-    if github_client is not None:
-        try:
-            meta = await github_client.get_installation(installation_id)
-            account = meta.get("account", {})
-            account_login = account.get("login", "unknown")
-            account_type = account.get("type", "Organization")
-            github_org_id = account.get("id")
-            repository_selection = meta.get("repository_selection", "selected")
-            _cache_set(installation_id, meta)
-        except Exception as exc:
-            logger.warning("no-nonce install: could not fetch metadata: %s", exc)
-        try:
-            repositories = await github_client.list_installation_repository_names(installation_id)
-        except Exception as exc:
-            logger.warning("no-nonce install: could not fetch repos for %d: %s", installation_id, exc)
-
-    # For org installs, resolve or upsert the org tenant
-    resolved_org_id: str | None = None
-    # Provenance of the row that actually resolved above — NOT of this request.
-    # An operator-onboarded org taking a public-App install is still `operator`;
-    # only a row this unauthenticated path had to create itself is untrusted.
-    # None means "no row resolved", which never reaches a promotion decision.
-    resolved_created_via: str | None = None
-
-    if account_type == "Organization" and github_org_id is not None:
-        # Try to find existing org by github_org_id
-        org_by_github_id = (await db.execute(select(Organization).where(Organization.github_org_id == str(github_org_id)))).scalar_one_or_none()
-
-        if org_by_github_id is not None:
-            resolved_org_id = org_by_github_id.id
-            resolved_created_via = org_by_github_id.created_via
-            logger.info(
-                "event=no_nonce_install_org_resolved installation_id=%d account=%s github_org_id=%s tenant=%s created_via=%s",
-                installation_id,
-                account_login,
-                github_org_id,
-                resolved_org_id,
-                resolved_created_via,
-            )
-        elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
-            # Upsert the tenant shell for this unknown org.
-            #
-            # Issue #2724: THIS is the untrusted door. Nothing authenticated the
-            # caller — no nonce, no session — so the row is a self-created shell
-            # and is stamped install_autocreate. The webhook auto-register gate
-            # refuses to treat it as a known tenant unless the deployment has
-            # explicitly opted into open onboarding via ORG_TENANT_AUTO_CREATE
-            # on the webhook Lambda too.
-            resolved_org_id = await _upsert_org_tenant_shell(
-                owner_login=account_login,
-                github_org_id=str(github_org_id),
-                github_app_id="",
-                db=db,
-                created_via=CREATED_VIA_INSTALL_AUTOCREATE,
-            )
-            if resolved_org_id:
-                resolved_created_via = CREATED_VIA_INSTALL_AUTOCREATE
-                logger.info(
-                    "event=no_nonce_install_org_upserted installation_id=%d account=%s github_org_id=%s tenant=%s created_via=%s",
-                    installation_id,
-                    account_login,
-                    github_org_id,
-                    resolved_org_id,
-                    CREATED_VIA_INSTALL_AUTOCREATE,
-                )
-            else:
-                logger.error(
-                    "event=no_nonce_install_upsert_failed installation_id=%d account=%s github_org_id=%s "
-                    "outcome=nothing_persisted detail=org_tenant_shell_upsert_returned_no_id",
-                    installation_id,
-                    account_login,
-                    github_org_id,
-                )
-        else:
-            logger.warning(
-                "event=no_nonce_install_unresolved installation_id=%d account=%s github_org_id=%s "
-                "reason=org_tenant_auto_create_disabled outcome=nothing_persisted",
-                installation_id,
-                account_login,
-                github_org_id,
-            )
-    else:
-        logger.warning(
-            "event=no_nonce_install_unresolved installation_id=%d account=%s account_type=%s github_org_id=%s "
-            "reason=not_an_org_install_or_no_github_org_id outcome=nothing_persisted",
-            installation_id,
-            account_login,
-            account_type,
-            github_org_id,
-        )
-
-    # Default: nothing resolved means nothing was promoted, so the outcome
-    # report below reads "failed" rather than dereferencing an unset flag.
-    promote = False
-
-    # Issue #4016 (🔴-3): the guard is `is not None`, not truthiness. An empty
-    # string org id is a resolution bug, not "no org" — the old truthy test
-    # silently skipped every write for it and still reported success.
-    if resolved_org_id is not None and resolved_org_id != "":
-        # Attach the install to the resolved org tenant
-        await _attach_org_installation(
-            installation_id=installation_id,
-            github_org_id=github_org_id,
-            github_org_login=account_login,
-            caller_org_id=resolved_org_id,
-            db=db,
-            account_type=account_type,
-            repository_selection=repository_selection,
-            repositories=repositories,
-        )
-
-        # Issue #2724 (slice B): the two side effects below PROMOTE the org from
-        # "a row exists" to "a tenant the platform vouches for" — they hand it
-        # the platform App's private key and a routable webhook identity. Neither
-        # may fire for a shell this unauthenticated path created itself.
-        promote, deny_reason = _promotion_allowed_for_provenance(resolved_created_via)
-
-        if promote:
-            # Seed per-tenant secret
-            from .tenant_secret import seed_tenant_github_app_secret
-
-            logger.info(
-                "event=no_nonce_install_seed_secret installation_id=%d tenant=%s created_via=%s",
-                installation_id,
-                resolved_org_id,
-                resolved_created_via,
-            )
-            await seed_tenant_github_app_secret(resolved_org_id, installation_id)
-        else:
-            logger.warning(
-                "no-nonce install: NOT promoting org=%s (installation_id=%d, created_via=%s, reason=%s) — "
-                "no per-tenant GitHub App secret, no identity-index row. Onboard the org via an operator "
-                "or the authenticated install flow, or set ORG_TENANT_AUTO_CREATE=true on the webhook "
-                "Lambda for a deliberately-open deployment.",
-                resolved_org_id,
-                installation_id,
-                resolved_created_via,
-                deny_reason,
-            )
-
-        if account_type == "Organization":
-            # Deliberately NOT gated: this populates the very column
-            # resolve-installation answers from, which is how the webhook gate
-            # learns the provenance. Withholding it would make the gate see an
-            # authoritative not_found instead — denying for the wrong reason, and
-            # breaking open-onboarding deployments that legitimately allow this.
-            await _append_installation_id_to_org(
-                installation_id=installation_id,
-                caller_org_id=resolved_org_id,
-                db=db,
-            )
-
-        # DDB write uses the resolved org tenant
-        if promote:
-            logger.info(
-                "event=no_nonce_install_identity_index installation_id=%d tenant=%s",
-                installation_id,
-                resolved_org_id,
-            )
-            await _write_installation_identity_index(
-                installation_id=installation_id,
-                org_id=resolved_org_id,
-            )
-
-            # Same best-effort bot-identity seed as the nonce path (install_callback) —
-            # see its call site for why this matters.
-            app_slug = get_github_app_provider().get_slug()
-            if app_slug:
-                await seed_bot_identity(
-                    installation_id=installation_id,
-                    org_id=resolved_org_id,
-                    app_slug=app_slug,
-                    github_client=github_client,
-                    db=db,
-                )
-
-    # -----------------------------------------------------------------------
-    # Issue #4016 (🔴-3): report the OUTCOME, not the fact that we ran.
-    #
-    # This used to return success=True unconditionally — including when nothing
-    # at all had been persisted (no org resolved, or resolution produced a
-    # promotion denial). The operator saw "Installation complete", the install
-    # existed on GitHub, and the platform knew nothing about it. That asymmetry
-    # with the nonce path (which raises on every failure) is the bug.
-    # -----------------------------------------------------------------------
-    persisted = resolved_org_id is not None and resolved_org_id != ""
-
-    if not persisted:
-        logger.error(
-            "event=no_nonce_install_failed installation_id=%d account=%s account_type=%s outcome=nothing_persisted error_code=org_not_resolved",
-            installation_id,
-            account_login,
-            account_type,
-        )
-        return {
-            "success": False,
-            "installation_id": installation_id,
-            "account_login": account_login,
-            "account_type": account_type,
-            "error_code": "org_not_resolved",
-            "error_message": (
-                "The GitHub App was installed, but this deployment could not match it to an ADP "
-                "workspace, so nothing was recorded. An operator must onboard the organisation "
-                "before the installation will do anything."
-            ),
-            "no_nonce": True,
-        }
-
-    if not promote:
-        logger.warning(
-            "event=no_nonce_install_partial installation_id=%d account=%s tenant=%s created_via=%s "
-            "outcome=recorded_but_not_promoted error_code=promotion_denied",
-            installation_id,
-            account_login,
-            resolved_org_id,
-            resolved_created_via,
-        )
-        # NOTE the deliberate difference from the branch above: success stays
-        # True. #2724 contracts a promotion refusal as a SUCCESSFUL install that
-        # is intentionally not vouched for — the row was written and the UI
-        # works. Flipping it to False would turn that designed security posture
-        # into an install failure. What #4016 adds is `partial`, so the page can
-        # stop claiming the installation is finished when it is not.
-        return {
-            "success": True,
-            "installation_id": installation_id,
-            "account_login": account_login,
-            "account_type": account_type,
-            "error_code": "promotion_denied",
-            "error_message": (
-                "The installation was recorded, but this deployment does not vouch for the "
-                "organisation, so no credentials or webhook routing were provisioned. Webhooks "
-                "for this installation will be rejected until an operator onboards it."
-            ),
-            "no_nonce": True,
-            "partial": True,
-        }
-
-    logger.info(
-        "event=no_nonce_install_complete installation_id=%d account=%s tenant=%s outcome=success",
-        installation_id,
-        account_login,
-        resolved_org_id,
-    )
-
+    _, state = await resolve_installation_owner(installation_id, db=db)
+    if state is OwnerState.REVOKED:
+        raise PermissionError("Installation was revoked. Explicit operator restoration is required.")
+    logger.info("event=no_nonce_install_selection_required installation_id=%d outcome=nothing_persisted", installation_id)
     return {
-        "success": True,
+        "success": False,
         "installation_id": installation_id,
-        "account_login": account_login,
-        "account_type": account_type,
-        "error_code": None,
-        "error_message": None,
+        "account_login": "",
+        "account_type": "",
+        "error_code": "organization_selection_required",
+        "error_message": (
+            "Sign in to ADP, select the organization that should use this installation, "
+            "and complete the connection in Settings → Connections. "
+            "Installing the App on GitHub does not create an ADP organization or grant ADP membership."
+        ),
         "no_nonce": True,
     }
 
@@ -1157,7 +1002,12 @@ async def _attach_org_installation(
     """
     from sqlalchemy import select
 
+    from src.admin.installations.guards import assert_installation_claimable_by, lock_installation_organization
     from src.shared.models.vault import ChannelTenantMap
+
+    if await lock_installation_organization(db, caller_org_id) is None:
+        raise ValueError(f"Organization {caller_org_id} not found")
+    await assert_installation_claimable_by(caller_org_id, installation_id, db=db)
 
     repos = repositories or []
 
@@ -1168,13 +1018,16 @@ async def _attach_org_installation(
         scope_id = github_org_login
 
     def _meta() -> dict[str, Any]:
-        return _build_install_metadata(
+        metadata = _build_install_metadata(
             installation_id=installation_id,
             account_login=github_org_login,
             account_type=account_type,
             repository_selection=repository_selection,
             repositories=repos,
         )
+        if github_org_id is not None:
+            metadata["account_id"] = str(github_org_id)
+        return metadata
 
     stmt = select(ChannelTenantMap).where(
         ChannelTenantMap.provider == "github",
@@ -1243,9 +1096,9 @@ async def _append_installation_id_to_org(
     onboarding handler can match future users from the same GitHub org.
     Idempotent — does not double-append.
     """
-    from src.shared.models.organization import Organization
+    from src.admin.installations.guards import assert_installation_claimable_by, lock_installation_organization
 
-    org = await db.get(Organization, caller_org_id)
+    org = await lock_installation_organization(db, caller_org_id)
     if org is None:
         logger.warning(
             "Cannot append installation_id=%d: org %s not found",
@@ -1254,6 +1107,7 @@ async def _append_installation_id_to_org(
         )
         return
 
+    await assert_installation_claimable_by(caller_org_id, installation_id, db=db)
     install_id_str = str(installation_id)
     current_ids = org.github_installation_ids or []
     if install_id_str not in current_ids:
@@ -1384,6 +1238,7 @@ async def _auto_switch_active_tenant(
     target_stmt = select(TenantMembership).where(
         TenantMembership.user_id == user_id,
         TenantMembership.tenant_id == target_tenant_id,
+        TenantMembership.revoked_at.is_(None),
     )
     target_membership = (await db.execute(target_stmt)).scalar_one_or_none()
     if target_membership is None:
@@ -1426,6 +1281,7 @@ async def _auto_switch_active_tenant(
         .where(
             TenantMembership.user_id == user_id,
             TenantMembership.tenant_id == target_tenant_id,
+            TenantMembership.revoked_at.is_(None),
         )
         .values(is_active=True)
     )
@@ -1776,6 +1632,15 @@ def _resolve_expected_webhook_url() -> str:
         return webhook_url
 
     return _read_ssm_string(f"/adp/{_get_environment()}/webhook-ingress/endpoint")
+
+
+def _resolve_dashboard_base_url() -> str:
+    """Resolve the public dashboard URL from config or the deployed distribution."""
+    configured = (get_settings().gateway_base_url or "").strip().rstrip("/")
+    if configured:
+        return configured
+    domain = _read_ssm_string(f"/adp/{_get_environment()}/gateway/cloudfront-domain").strip().rstrip("/")
+    return f"https://{domain}" if domain and "://" not in domain and "/" not in domain else ""
 
 
 def _resolve_expected_oauth_callback_url() -> str:
@@ -2542,6 +2407,40 @@ async def list_connections(
             logger.info("verification: platform checks unavailable: %s", exc)
             platform_verification = PlatformVerification()
 
+    from src.shared.models.vault import InstallationRevocation
+
+    revocations = list(
+        (
+            await db.scalars(
+                select(InstallationRevocation).where(
+                    InstallationRevocation.org_id.in_(tenant_ids_to_query),
+                    InstallationRevocation.restored_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    revoked_ids = {int(record.installation_id) for record in revocations}
+    connections = [connection for connection in connections if connection.installation_id not in revoked_ids]
+    for record in revocations:
+        pending = record.cleanup_pending or (record.provider_uninstall_requested and not record.provider_revoked)
+        authorized = caller_is_admin or (caller_pg_user_id and caller_pg_user_id in record.authorized_user_ids)
+        if pending and authorized:
+            connections.append(
+                GitHubConnectionItem(
+                    provider="github",
+                    installation_id=int(record.installation_id),
+                    account_login=f"Installation {record.installation_id}",
+                    account_type="Organization",
+                    repository_selection="selected",
+                    repository_count=0,
+                    configure_url="",
+                    can_manage=True,
+                    revocation_pending=True,
+                    tenant_id=record.org_id,
+                    is_active_tenant=record.org_id == caller_org_id,
+                )
+            )
+
     return ConnectionsListResponse(
         connections=connections,
         platform_verification=platform_verification,
@@ -2587,99 +2486,29 @@ async def delete_connection(
     caller_user_id: str | None = None,
     caller_is_admin: bool = True,
 ) -> DeleteConnectionResponse:
-    """Revoke a GitHub App installation and remove the tenant mapping.
+    """Revoke local authority durably and resume any pending provider/index work."""
+    from src.admin.installations.revocation import revoke_installation
 
-    Steps:
-    1. Verify the caller's ADP tenant owns this installation (via ChannelTenantMap).
-    2. Verify the caller is authorized (workspace admin OR the installer).
-    3. Call GitHub API DELETE /app/installations/{id}.
-    4. Remove the ChannelTenantMap row.
-
-    Issue #3073: Non-admin callers are allowed if their Postgres user ID matches
-    the connection's installed_by_user_id. This lets the installer manage their
-    own connection without role elevation.
-
-    Raises:
-        PermissionError — installation not owned by caller's tenant, or caller
-                          lacks permission (not admin and not installer)
-        ValueError      — installation not found
-    """
-    from sqlalchemy import delete as sa_delete
-    from sqlalchemy import select
-
-    from src.shared.models.vault import ChannelTenantMap
-
-    # 1. Verify ownership — find the ChannelTenantMap row for this org that matches
-    #    the installation. Since ChannelTenantMap stores GitHub org ID (or login) not
-    #    installation_id, we fetch metadata from GitHub first to get the org ID.
-    app_id, private_key = _get_github_app_credentials()
-    if github_client is None and app_id and private_key:
-        github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
-
-    github_scope_id: str | None = None
-    if github_client is not None:
+    if github_client is None:
         try:
-            meta = await github_client.get_installation(installation_id)
-            account = meta.get("account", {})
-            org_id_github = account.get("id")
-            login = account.get("login", "")
-            github_scope_id = str(org_id_github) if org_id_github else login
-        except Exception as exc:
-            logger.warning("Could not fetch installation metadata for delete: %s", exc)
-
-    if github_scope_id is None:
-        raise ValueError(f"Installation {installation_id} not found or GitHub API unavailable")
-
-    stmt = select(ChannelTenantMap).where(
-        ChannelTenantMap.provider == "github",
-        ChannelTenantMap.provider_scope_id == github_scope_id,
+            app_id, private_key = _get_github_app_credentials()
+            if app_id and private_key:
+                github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+        except Exception:
+            logger.exception("Provider credentials unavailable; local revocation will still proceed")
+    result = await revoke_installation(
+        installation_id=installation_id,
+        org_id=caller_org_id,
+        db=db,
+        user_id=caller_user_id,
+        is_admin=caller_is_admin,
+        uninstall=True,
+        github_client=github_client,
     )
-    result = await db.execute(stmt)
-    mapping = result.scalar_one_or_none()
-
-    if mapping is None:
-        raise ValueError(f"Installation {installation_id} is not connected to any ADP tenant")
-
-    if mapping.org_id != caller_org_id:
-        raise PermissionError(f"Installation {installation_id} belongs to a different ADP tenant")
-
-    # Issue #3073: Authorization — workspace admin OR the installer who created
-    # this connection. The tenant ownership check above is a hard precondition
-    # (unchanged); this is AND-ed on top.
-    if not caller_is_admin:
-        is_installer = caller_user_id is not None and mapping.installed_by_user_id is not None and caller_user_id == mapping.installed_by_user_id
-        if not is_installer:
-            raise PermissionError(
-                f"You do not have permission to disconnect installation {installation_id}. "
-                "Only workspace admins or the user who installed it can disconnect."
-            )
-
-    # 2. Revoke on GitHub
-    if github_client is not None:
-        try:
-            await github_client.delete_installation(installation_id)
-        except Exception as exc:
-            logger.warning("GitHub installation delete API call failed: %s", exc)
-            # Continue — we still clean up locally to avoid orphan state
-
-    # 3. Remove local mapping
-    del_stmt = sa_delete(ChannelTenantMap).where(
-        ChannelTenantMap.provider == "github",
-        ChannelTenantMap.provider_scope_id == github_scope_id,
-        ChannelTenantMap.org_id == caller_org_id,
-    )
-    await db.execute(del_stmt)
-    await db.commit()
-
     _cache_invalidate(installation_id)
-
-    logger.info(
-        "GitHub installation %d disconnected from tenant %s",
-        installation_id,
-        caller_org_id,
-    )
-
-    return DeleteConnectionResponse(deleted=True, installation_id=installation_id)
+    _repo_cache_invalidate(installation_id)
+    _invalidate_verification_cache()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2816,7 +2645,8 @@ async def register_app_start(
     app_name: str | None = None,
     visibility: str = "private",
     cognito_sub: str,
-    user_id: str,
+    user_id: str | None = None,
+    cognito_username: str = "",
     db: AsyncSession,
 ) -> RegisterAppStartResponse:
     """Generate a manifest and state nonce for the GitHub App manifest conversion flow.
@@ -2836,6 +2666,10 @@ async def register_app_start(
         user_id:    Caller's internal user ID (for nonce).
         db:         Database session.
     """
+    initiator = await _resolve_setup_initiator(subject=cognito_sub, org_id="", username=cognito_username, db=db, platform=True)
+    if user_id is not None and user_id != initiator.id:
+        raise SetupAuthorityError("The supplied user does not match the signed-in platform administrator")
+    user_id = initiator.id
     # Check for already-registered App
     existing = _check_existing_app_secret()
     if existing is not None:
@@ -2905,8 +2739,9 @@ async def register_app_start(
         )
 
     # Build callback URL — the gateway endpoint that handles the code exchange
-    settings = get_settings()
-    base_url = settings.gateway_base_url or ""
+    base_url = _resolve_dashboard_base_url()
+    if not base_url:
+        raise HTTPException(status_code=422, detail="Dashboard URL is not configured")
     callback_url = f"{base_url}/api/admin/connections/github/app/register-callback"
 
     # Issue #2823: Post-install redirect. GitHub sends the browser here after an
@@ -2953,7 +2788,7 @@ async def register_app_start(
         jti=jti,
         provider=_PROVIDER_GITHUB_APP_REGISTER,
         provider_user_id=cognito_sub,
-        channel_context=None,
+        channel_context=_setup_context(kind="platform", username=cognito_username, owner_type=owner_type, owner=org or ""),
         target_user_id=user_id,
         expires_at=expires_at,
         db=db,
@@ -3021,21 +2856,34 @@ async def register_app_callback(
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(f"State token already used: {state}")
 
-    # Atomically consume (prevents races)
-    consume_stmt = (
-        update(MagicLinkNonce)
-        .where(MagicLinkNonce.jti == state, MagicLinkNonce.consumed_at.is_(None))
-        .values(consumed_at=now)
-        .returning(MagicLinkNonce.jti)
-    )
-    consume_result = await db.execute(consume_stmt)
-    consumed_jti = consume_result.scalar_one_or_none()
-    if consumed_jti is None:
-        raise NonceAlreadyConsumedError(f"State token already used (concurrent): {state}")
-    await db.commit()
+    # 1a. Authority (#5664). Possession of the state token proves only that SOME
+    # request started this flow; it is not authority to replace the deployment's
+    # shared credentials. Re-derive platform-admin standing from the recorded
+    # initiator, BEFORE the nonce is consumed, so a refusal burns nothing and the
+    # legitimate admin can still complete the flow.
+    initiator = await _assert_platform_setup_authority(nonce=nonce, db=db)
+    callback_actor(initiator, initiator.org_id)
+    callback_target_org("platform")
 
-    logger.info("register-app-callback: nonce consumed jti=%s", state)
+    # 1b. Overwrite guard (#5664). `_check_existing_app_secret` previously ran only
+    # in register-app-START — a different, earlier request — so by the time this
+    # callback wrote secrets the guard had long since passed and was never
+    # re-evaluated. `_store_app_credentials` then does create_secret -> on
+    # ResourceExistsException -> put_secret_value, an unconditional overwrite of
+    # live App credentials, the webhook signing secret and the OAuth secret. Check
+    # again here, before any write, so a second registration cannot silently
+    # replace a working App and break every tenant's connection.
+    existing_app = _check_existing_app_secret()
+    if existing_app is not None:
+        logger.warning(
+            "register-app-callback: refusing to overwrite already-registered App id=%s jti=%s",
+            existing_app[0],
+            state,
+        )
+        raise SetupAuthorityError("A GitHub App is already registered for this deployment. Disconnect the existing App before registering a new one.")
 
+    # Exchanging the one-use provider code is already an external effect.
+    mark_admin_effects()
     # 2. Exchange code for App credentials via GitHub API
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
@@ -3072,6 +2920,44 @@ async def register_app_callback(
             detail="GitHub returned incomplete App credentials.",
         )
 
+    context = _read_setup_context(nonce, "platform")
+    owner = data.get("owner", {})
+    expected_owner_type = {"user": "User", "org": "Organization"}.get(context["owner_type"])
+    if (
+        not expected_owner_type
+        or owner.get("type") != expected_owner_type
+        or not github_account_id(owner.get("id"))
+        or (context["owner_type"] == "org" and str(owner.get("login", "")).casefold() != context["owner"].casefold())
+    ):
+        raise SetupAuthorityError("The GitHub App owner does not match the registration target; start a new setup flow")
+
+    # Recheck after the provider exchange: role/subject revocation or expiry
+    # during that call must not reach shared credential writes.
+    if _check_existing_app_secret() is not None:
+        raise SetupAuthorityError("A GitHub App was registered while this setup flow was pending")
+    await _assert_platform_setup_authority(nonce=nonce, db=db)
+    now = datetime.now(UTC)
+    if expires_at <= now:
+        raise TokenExpiredError("Setup link expired while GitHub was responding; start a new setup flow")
+    consumed_jti = (
+        await db.execute(
+            update(MagicLinkNonce)
+            .where(
+                MagicLinkNonce.jti == state,
+                MagicLinkNonce.provider == _PROVIDER_GITHUB_APP_REGISTER,
+                MagicLinkNonce.consumed_at.is_(None),
+                MagicLinkNonce.expires_at > now,
+            )
+            .values(consumed_at=now)
+            .returning(MagicLinkNonce.jti)
+            .execution_options(synchronize_session="fetch")
+        )
+    ).scalar_one_or_none()
+    if consumed_jti is None:
+        raise NonceAlreadyConsumedError("Setup link was used or expired during provider verification")
+    await db.commit()
+    logger.info("register-app-callback: nonce consumed jti=%s", state)
+
     # 3. Store credentials in Secrets Manager at the shared paths.
     # Issue #2708: the OAuth write-through result tells us whether "Sign in with
     # GitHub" is actually wired. The broker derives its client_id/callback at
@@ -3104,31 +2990,8 @@ async def register_app_callback(
         login_enabled,
     )
 
-    # Issue #2952 (Rule 1): If the App was registered against a GitHub org,
-    # upsert an org-tenant shell (Organization + Tenant + Department + Team)
-    # so members can later auto-join it. Feature-flagged by ORG_TENANT_AUTO_CREATE.
-    owner = data.get("owner", {})
-    if owner.get("type") == "Organization" and os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
-        owner_login = owner.get("login", "")
-        owner_id = str(owner.get("id", ""))
-        if owner_login:
-            # Issue #2724: register-app-callback also runs behind a consumed
-            # nonce (see the docstring above), so this is a deliberate,
-            # authenticated registration → register_flow (trusted).
-            await _upsert_org_tenant_shell(
-                owner_login=owner_login,
-                github_org_id=owner_id,
-                github_app_id=app_id,
-                db=db,
-                created_via="register_flow",
-            )
-
-    # Issue #2952 (D9): Chained onboarding redirect — send the admin directly
-    # to GitHub's install page so they can pick repos immediately.
-    if app_slug:
-        return f"https://github.com/apps/{app_slug}/installations/new"
-
-    # Fallback: return to connections page (should not happen with a valid slug).
+    # App ownership and ADP organization selection are separate steps. Return
+    # to Connections so the operator selects the target before install-start.
     if login_enabled:
         return "/settings/connections?github_app=registered"
     return "/settings/connections?github_app=registered&login_enabled=false"
@@ -3766,6 +3629,24 @@ async def is_github_login_enabled() -> bool:
 
     _LOGIN_ENABLED_CACHE = (now + _LOGIN_ENABLED_TTL_SECONDS, value)
     return value
+
+
+async def get_app_setup_guide() -> dict[str, Any]:
+    """Use the same URLs and permission contract as manifest creation."""
+    import asyncio
+
+    def resolve() -> dict[str, Any]:
+        base_url = _resolve_dashboard_base_url()
+        return {
+            "homepage_url": base_url,
+            "callback_url": _resolve_expected_oauth_callback_url(),
+            "setup_url": f"{base_url}/api/admin/connections/github/install-callback" if base_url else "",
+            "webhook_url": _resolve_expected_webhook_url(),
+            "permissions": dict(_EXPECTED_APP_PERMISSIONS),
+            "events": list(_EXPECTED_APP_EVENTS),
+        }
+
+    return await asyncio.to_thread(resolve)
 
 
 async def get_app_status() -> AppStatusResponse:

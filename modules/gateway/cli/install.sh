@@ -38,11 +38,11 @@ set -eu
 VERSION="2.0.0"
 DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 
-# The three files that must land side by side.
+# The files that must land side by side.
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py adp-flow.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py"
 
 # The auth store this install writes its gateway URL into.
 #
@@ -245,16 +245,29 @@ cleanup_staged() {
     done
 }
 
-# Reject a "download" that isn't actually one of our scripts. A misrouted request
+# Reject a "download" that isn't actually one of our artifacts. A misrouted request
 # (e.g. the gateway URL missing its /api prefix) can come back as the SPA's
 # index.html with a 200, which curl -f happily accepts — installing that as `adp`
-# is the partial/broken install we are guarding against. Every file we ship
-# starts with a shebang, so anything that doesn't is bogus.
+# is the partial/broken install we are guarding against. Scripts require a
+# shebang; the checked command manifest requires its versioned JSON shape.
 validate_staged() {
     name="$1"; tmp="$2"
     if [ ! -s "${tmp}" ]; then
         log_error "Downloaded ${name} is empty — refusing to install a broken copy."
         exit 1
+    fi
+    if [ "${name}" = "command-manifest.json" ]; then
+        if ! jq -e '
+            type == "object"
+            and ((.schema_version | type) == "string")
+            and ((.schema_version | length) > 0)
+            and ((.commands | type) == "array")
+            and ((.commands | length) > 0)
+        ' "${tmp}" >/dev/null 2>&1; then
+            log_error "Downloaded ${name} is not a valid command manifest. Nothing was installed."
+            exit 1
+        fi
+        return 0
     fi
     first_line=$(head -n 1 "${tmp}" 2>/dev/null || true)
     case "${first_line}" in

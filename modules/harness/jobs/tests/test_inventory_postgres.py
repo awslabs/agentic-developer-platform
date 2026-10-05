@@ -115,7 +115,7 @@ from harness_jobs.execution import (
     observe,
     record_intent,
 )
-from harness_jobs.execution_plan import step_key
+from harness_jobs.execution_plan import PlanProgress, confirmed_plan_progress, step_key
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.identity import ContractViolation, OperationRefused, ResolvedPrincipal
 from harness_jobs.inventory import (
@@ -237,12 +237,19 @@ async def leased(
     return admitted.record, lease
 
 
-async def complete_the_plan(pool, record, lease, provider_ref="cluster-abc"):
+async def complete_the_plan(
+    pool, record, lease, provider_ref="cluster-abc", detail=None
+):
     """Drive the single planned step to a succeeded call, as a worker would.
 
     Through the real `record_intent`/`observe` rather than by INSERTing a row: the
     completeness rule reads what those functions write, and a hand-written row would let
     this suite agree with itself about a shape the production path never produces.
+
+    `detail` is the provider's optional free text, which `_outcome_detail` stores in the
+    same column as the enum. It defaults to None because most tests do not care, but a
+    real provider usually supplies it, and every completeness rule here reads that
+    column -- see the `..._even_with_a_provider_explanation` test below.
     """
     steps = json.loads(record.admitted_request().parameters["execution_steps"])
     from harness_jobs.execution_plan import ExecutionStep
@@ -262,6 +269,7 @@ async def complete_the_plan(pool, record, lease, provider_ref="cluster-abc"):
             lease,
             idempotency_key=key,
             outcome=CallOutcome.SUCCEEDED,
+            detail=detail,
             provider_ref=provider_ref,
         )
     return key
@@ -1567,6 +1575,146 @@ async def test_an_omitted_child_resource_is_never_released(pool):
     assert assessment.exposure is CostExposure.UNRESOLVED
     assert assessment.may_mark_released is False
     assert assessment.unresolved_resources == (ALLOCATION,)
+
+
+async def test_an_omitted_child_is_never_released_even_with_a_provider_explanation(
+    pool,
+):
+    """F1. A provider's free text must not decide whether its call is accounted for.
+
+    Exactly `test_an_omitted_child_resource_is_never_released`, with one difference:
+    the provider returned a `detail` string alongside SUCCEEDED, as a real one does.
+    That text is stored in the same column as the enum (`execution._outcome_detail`,
+    as `"succeeded: created the cluster"`), so any completeness rule comparing that
+    column to `"succeeded"` by equality stops matching when a provider is helpful.
+
+    Three readers branch on that column, and they did not agree on how to read it.
+    `allocation.creating_calls_unaccounted_for` split the enum off the prefix;
+    `execution_plan.confirmed_plan_progress` and `inventory._creation_complete`
+    compared the raw string. What makes that worth a test rather than a tidy-up is
+    the direction each one fails in:
+
+    * `confirmed_plan_progress` read a finished plan as UNKNOWN -- fail-closed, but
+      terminally: see `test_a_finished_plan_is_complete_whatever_the_provider_said`.
+    * `_creation_complete`'s clause (3) stopped noticing that a succeeded call's
+      provider reference is absent from membership -- **fail-open**, toward releasing
+      a hold on an allocation with an unenumerated billable resource.
+
+    Clause (3) failing open changed no outcome, and that is worth recording precisely
+    rather than overclaiming: clause (6) asks the same question allocation-wide
+    through `allocation`, which read the column correctly, so the refusal survived.
+    Established by breaking each reader separately against this file: reverting
+    `inventory` alone fails nothing here, and reverting `allocation` too makes the
+    seal succeed. So clause (3) is currently shadowed by clause (6) -- the
+    defence-in-depth `_creation_complete`'s docstring claims for (6), working as
+    described, with the consequence that the seal rested on a single reader and no
+    test could tell.
+
+    `inventory`'s fix is therefore consistency rather than an observable behaviour
+    change, and is deliberately not claimed as covered: no test in this suite
+    distinguishes it. What IS covered is that the seal no longer depends on exactly
+    one of three call sites reading the column correctly, so the decoder is shared
+    (`store.stored_outcome`) instead of restated per reader.
+
+    The assertions are those of the no-detail case, unchanged, because the answer must
+    not depend on the detail text at all.
+    """
+    record, lease = await leased(pool)
+    service = authority(pool, lease)
+    observations = {"cluster-1": absent("cluster-1")}
+    async with pool.acquire() as connection:
+        await service.enumerate_resources(
+            connection, lease, resources=(resource("cluster-1"),)
+        )
+    await complete_the_plan(
+        pool,
+        record,
+        lease,
+        provider_ref="cluster-1-handle",
+        detail="created the cluster",
+    )
+    async with pool.acquire() as connection:
+        with pytest.raises(OperationRefused):
+            await service.seal_allocation(connection, lease)
+        with pytest.raises(OperationRefused):
+            await _publish(service, connection, lease, observations=observations)
+
+    assessment = await service.assess_cleanup(
+        executor_id=lease.holder,
+        workspace_id=lease.workspace_id,
+        allocation_id=ALLOCATION,
+        operation_authority="authority-token",
+        observations=observations,
+    )
+    assert assessment.state is not ReleaseState.RELEASED
+    assert assessment.exposure is CostExposure.UNRESOLVED
+    assert assessment.may_mark_released is False
+    assert assessment.unresolved_resources == (ALLOCATION,)
+
+
+@pytest.mark.parametrize("detail", [None, "created the cluster"])
+async def test_a_finished_plan_is_complete_whatever_the_provider_said(pool, detail):
+    """A plan's completeness is the enum's business, not the free text's.
+
+    The positive half of the rule above, and why the fail-closed direction was not
+    merely cosmetic: with a detail string present, `confirmed_plan_progress` returned
+    UNKNOWN for a plan whose every step had succeeded. Nothing downstream recovers
+    from that -- `leases.acquire` refuses a non-PREFIX history as requiring recovery,
+    and `_creation_complete` requires COMPLETE -- so an operation that did everything
+    right could never be sealed, and the provider's choice to be helpful decided it.
+    """
+    record, lease = await leased(pool)
+    await complete_the_plan(pool, record, lease, detail=detail)
+    async with pool.acquire() as connection:
+        assert (
+            await confirmed_plan_progress(connection, record.operation_id)
+            is PlanProgress.COMPLETE
+        )
+
+
+@pytest.mark.parametrize("detail", [None, "created the cluster"])
+async def test_a_call_handle_missing_from_membership_refuses_the_seal(pool, detail):
+    """A created handle that membership never mentions must block the seal.
+
+    The existing F1 tests reach a refusal through clause (4) -- no provider enumeration
+    was recorded at all -- so they pass whatever clause (3) does. This one gives the
+    provider its enumeration AND makes it agree with membership, so (4) and (5) are
+    satisfied, and the only thing wrong is that the succeeded call's own `provider_ref`
+    names something membership omits. That is the narrowest form of the gap and, as
+    `_creation_complete` says, the one an agreeing enumeration hides most convincingly.
+
+    Parametrized over the detail text because that is what silently disabled the check:
+    the `detail=None` case passed throughout, which is why the suite stayed green.
+
+    The refusal this asserts currently comes from clause (6) (`allocation`), not clause
+    (3) -- see the note in
+    `test_an_omitted_child_is_never_released_even_with_a_provider_explanation`.
+    That is deliberate: this test pins the *guarantee* (a created handle outside
+    membership cannot be sealed over) at the public boundary, not the internal clause
+    that happens to enforce it, so it stays honest if the clauses are reorganized.
+    """
+    record, lease = await leased(pool)
+    service = authority(pool, lease)
+    members = (resource("cluster-1"),)
+    async with pool.acquire() as connection:
+        await service.enumerate_resources(connection, lease, resources=members)
+    # Succeeded, and the handle it reports is NOT in membership.
+    await complete_the_plan(
+        pool, record, lease, provider_ref="unenumerated-disk", detail=detail
+    )
+    async with pool.acquire() as connection:
+        attempt = await service.begin_provider_enumeration(
+            connection, lease, provider="aws"
+        )
+        await service.record_provider_enumeration(
+            connection,
+            lease,
+            attempt=attempt,
+            provider="aws",
+            provider_references=frozenset({handle_for("cluster-1")}),
+        )
+        with pytest.raises(OperationRefused):
+            await service.seal_allocation(connection, lease)
 
 
 async def test_enumerating_the_omitted_child_restores_completeness(pool):

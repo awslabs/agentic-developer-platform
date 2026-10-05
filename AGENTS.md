@@ -1,5 +1,15 @@
 # Agent Instructions — ADP (Agentic Developer Platform)
 
+## Public documentation
+
+This is an open-source repository. Follow [docs/PUBLISHING.md](docs/PUBLISHING.md):
+never publish real AWS account IDs, deployment URLs, customer/environment
+identities, resource IDs, operator profiles, or private evidence in documentation.
+Use fictional examples and private configuration. Run
+`python3 scripts/check-public-docs.py` before publishing documentation changes.
+
+## Deployment
+
 To deploy ADP, read and follow the canonical agent-deploy guide:
 
 **[`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)**
@@ -18,9 +28,10 @@ The essentials, so you don't start down the wrong path:
   path (UI flow: Settings → Connections → "Set up GitHub App"; or CLI fallback
   `register-github-app.sh`). Any "Phase 0 / setup-org / 3 org-owned apps"
   instruction is the superseded legacy ARC track — do not run it.
-- **`deploy-all.sh` chains Phases 1–7** (steps 1–10/11: infra, gateway, ALB wire,
-  frontend, broker, first-admin bootstrap, agent-factory, webhook stack) — only
-  the GitHub App wiring (Phase 8/9) remains manual, per the bullet above.
+- **The full launcher chains core deployment stages**, including broker,
+  first-admin bootstrap, webhook, separate agent factory and final frontend
+  publication. Follow the canonical guide for ordering and scope. GitHub App
+  browser wiring comes after deployment.
 
 This file is intentionally a redirect so the deploy procedure has one source of
 truth and never drifts across the agent-entry files.

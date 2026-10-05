@@ -25,11 +25,16 @@ from app.routers import health
 from app.routers.accounts import router as accounts_router
 from app.routers.auth import router as auth_router
 from app.routers.controller_management import router as controller_management_router
+from app.routers.bootstrap_observation import router as bootstrap_observation_router
+from app.routers.controller_recovery import router as controller_recovery_router
 from app.routers.cost import router as cost_router
 from app.routers.events import router as events_router
 from app.routers.heartbeat import router as heartbeat_router
 from app.routers.installation import router as installation_router
 from app.routers.internal import router as internal_router
+from app.routers.operation_approvals import router as operation_approvals_router
+from app.routers.onboarding import router as onboarding_router
+from app.routers.retirement import router as retirement_router
 from app.routers.orgs import router as orgs_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
@@ -126,6 +131,7 @@ async def lifespan(app: FastAPI):
     # Before the installation gate: the gate probes installed adapters (see the
     # docstring above).
     composition = compose_vault_client()
+    app.state.trust_composition = composition
 
     # Connect what composition built but deliberately did not open (issue #5535).
     # `compose()` is synchronous and must run where there is no event loop and no
@@ -148,22 +154,29 @@ async def lifespan(app: FastAPI):
         from app.installation import database_check
 
         if getattr(app.state, "domain_policy", None) is None:
-            raise RuntimeError("Management service requires strict domain authorization")
+            raise RuntimeError(
+                "Management service requires strict domain authorization"
+            )
         try:
             observed = await database_check(verify_role_default=True)
         except Exception:
             raise RuntimeError("Management database boundary check failed") from None
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-        config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
+        config.set_main_option(
+            "script_location", str(Path(__file__).resolve().parents[1] / "alembic")
+        )
         if [observed["revision"]] != ScriptDirectory.from_config(config).get_heads():
             raise RuntimeError("Management database schema does not match the image")
-        logger.info("Starting authenticated management service; workspace execution unavailable")
+        logger.info(
+            "Starting authenticated management service; workspace execution unavailable"
+        )
         # `finally`, not a straight-line close, and on this branch too: management
         # mode still composed whatever the deployment configured, so its transports
         # are still this lifespan's to release. An early `return` that skipped the
         # close would leak a connection pool per restart in exactly the mode a
         # control-plane-first installation runs in.
         try:
+            composition.start_dispatcher()
             yield
         finally:
             await composition.aclose()
@@ -177,8 +190,11 @@ async def lifespan(app: FastAPI):
             # and requiring it to refuse an unauthorized probe rather than by testing
             # that the name is bound. Same refusal, better evidenced.
             if not all((await capabilities_async()).values()):
-                raise RuntimeError("Production Superplane trust adapters are not composed in this image")
+                raise RuntimeError(
+                    "Production Superplane trust adapters are not composed in this image"
+                )
         logger.info("Starting VaultSyncReconciler background task")
+        composition.start_dispatcher()
         await vault_sync_reconciler.start()
         logger.info("Starting WorkspaceReconciler background task")
         await workspace_reconciler.start()
@@ -208,7 +224,10 @@ app = FastAPI(
     # invisible and ships reachable). See app/domain_guard.py for why this cannot
     # be a Starlette middleware: middleware runs before routing, so it cannot
     # identify the route it is protecting.
-    dependencies=[Depends(enforce_domain_authorization), Depends(enforce_management_surface)],
+    dependencies=[
+        Depends(enforce_domain_authorization),
+        Depends(enforce_management_surface),
+    ],
 )
 
 # The token policy is built once, at import, and held on app.state. Building it
@@ -218,6 +237,8 @@ app = FastAPI(
 # serving while admitting every app client in the user pool.
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
+app.include_router(bootstrap_observation_router)
+app.include_router(controller_recovery_router)
 
 # Validate the browser origin allowlist at import, before serving requests.
 # Preserve the existing credentialed CORS contract for explicitly reviewed origins;
@@ -230,9 +251,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Audit logging middleware (logs mutating API calls to events table)
-app.add_middleware(AuditMiddleware)
-
 # Quota enforcement middleware (adds headers + logging for quota 429s)
 app.add_middleware(QuotaEnforcementMiddleware)
 
@@ -242,6 +260,23 @@ app.add_middleware(
     requests_per_minute=settings.rate_limit_per_minute,
     window_seconds=60,
 )
+
+# Audit logging middleware. Issue #5673 (A17).
+#
+# ADDED LAST ON PURPOSE, AND THE ORDER IS THE FIX. `add_middleware` PREPENDS, so the
+# middleware added last is the OUTERMOST one and wraps every middleware added before it.
+#
+# This block used to sit above the two below, which made the rate limiter outermost and
+# the audit middleware inner. The rate limiter answers a 429 by returning a response
+# WITHOUT calling the rest of the stack, so those rejections never reached the audit layer
+# at all: a caller could stay entirely out of the audit trail by tripping the rate limit,
+# which is precisely the traffic pattern most worth recording. Outermost means a
+# short-circuit rejection from any inner middleware is still recorded.
+#
+# Verified by `tests/test_audit_middleware.py::TestMiddlewareOrdering`, which asserts the
+# position structurally so a future edit that moves this call fails a test rather than
+# silently reopening the hole.
+app.add_middleware(AuditMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
@@ -296,6 +331,9 @@ async def _scrubbed_validation_error(
 
 
 # Routers
+app.include_router(operation_approvals_router)
+app.include_router(onboarding_router)
+app.include_router(retirement_router)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)

@@ -1,0 +1,80 @@
+{
+  "issue": 6108,
+  "selector": {
+    "selector": "bandit|bandit-results.sarif|run=0|ri=758",
+    "original_disposition_candidates": [],
+    "review_scope": "bandit:modules/domain-apps/superplane/src/superplane-api/app/auth.py",
+    "filename": null,
+    "files": [
+      "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
+    ],
+    "rule": "B310",
+    "line": 187,
+    "severity": "MEDIUM",
+    "disposition": "pending-source-review",
+    "owner_issue": 6108
+  },
+  "disposition": "fixed-source-runtime-open",
+  "residual_owner": 6108,
+  "source_base_commit": "30b21fe4ee44f1e97e5b20aa539e187e706cbf3d",
+  "source_file": "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
+  "source_sha256": "205f87b373ab4539ae33756336f151af58ac1948a8725961d11f7316f96e75d7",
+  "fixture_file": "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
+  "validation": {
+    "auth_suite_passed": 144,
+    "new_fixture_passed": 30,
+    "baseline_fixture_failed": 25,
+    "baseline_fixture_passed": 5,
+    "rsa_signature_verification": "Native HTTP cases use real ephemeral RSA keypairs and signed access tokens without verification/fetch mocks; configuration-negative cases use provider-dispatch sentinels.",
+    "redirect_matrix": {
+      "origins": [
+        "same-origin",
+        "cross-origin"
+      ],
+      "statuses": [
+        301,
+        302,
+        303,
+        307,
+        308
+      ],
+      "destination_requests": 0,
+      "cache_after_denial": "unloaded",
+      "recovery": "same cache fetches restored direct endpoint successfully"
+    },
+    "other_boundaries": [
+      "different RSA signer rejected",
+      "direct cached key reuse",
+      "503 endpoint denial",
+      "non-JSON, null keys and non-object JWKS denial",
+      "recovery after malformed response"
+    ],
+    "test_isolation": "ephemeral127.0.0.1servers, explicit NO_PROXY/no_proxy, synthetic generated keys, run-isolated-cli-test.py clears operator configuration",
+    "ruff": "passed",
+    "forbidden_url_provider_call_zero_cases": 15
+  },
+  "scans": {
+    "before": {
+      "findings_count": 1,
+      "errors": [],
+      "raw_result_sha256": "3cea8f8106e1abf569c5f248a20796afa45b8c93ffe0089366b818414c6b1984",
+      "local_raw_result": "/tmp/security6108-jwks-before-bandit.json",
+      "findings": [
+        {
+          "rule": "B310",
+          "severity": "MEDIUM",
+          "line": 187
+        }
+      ]
+    },
+    "after": {
+      "findings_count": 0,
+      "errors": [],
+      "raw_result_sha256": "efc5ad238bea0543d18d0558c57016e95e978fb91792326b5cc430fc9d441b43",
+      "local_raw_result": "/tmp/security6108-jwks-after-bandit.json",
+      "findings": []
+    }
+  },
+  "remaining_acceptance": "Rebuild/deploy Superplane API through authorized path and verify actual configured JWKS authentication. Source fixtures do not prove serving image/runtime state. Configured HTTP remains supported for development; its unencrypted transport risk is separate and no HTTPS-only claim is made. All1470originalselectors remain;911source observations pending. Key-cache lifetime is outside this change.",
+  "control": "HTTP(S)-only parsed URL, hostname required, invalid ports, credentials, fragments, ASCII controls (C0 and DEL) and whitespace and backslashes refused before provider dispatch. Per-request opener refuses redirects before signing keys can be read or installed."
+}

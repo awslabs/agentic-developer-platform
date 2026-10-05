@@ -1,0 +1,17 @@
+{
+  "at": "2026-09-25T04:36:13.933411+00:00",
+  "task_id": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15",
+  "artifact_id": "art_3990339d-a466-466a-a2d1-d83e70612050",
+  "scope": {
+    "canonical_principal": "bb18d4e3-03ac-4823-9bc4-632424afa158",
+    "tenant": "aws-e"
+  },
+  "binding_state": "bound",
+  "recorded_sha256": "f2396494fc842ee9dec5f5365b5eae35a64d8f4e7efddc99e0c6c4f9dea2a529",
+  "actual_sha256": "f2396494fc842ee9dec5f5365b5eae35a64d8f4e7efddc99e0c6c4f9dea2a529",
+  "recorded_bytes": 287,
+  "actual_bytes": 287,
+  "s3_version_id": "null",
+  "content_type": "text/plain",
+  "etag": "\"f3af1cb16145b7f82bccbe1b63a6e0e1\""
+}

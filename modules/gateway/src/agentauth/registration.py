@@ -357,7 +357,15 @@ class AgentRegistrationService:
         ]
         parent_grant = raw.get("parent_grant_id", {}).get("S")
         reservation = raw.get("dispatch_reservation_id", {}).get("S")
-        if bool(parent_grant) != bool(reservation):
+        # Engine continuations carry parent delegation, but are admitted by the
+        # durable review-cycle action rather than an agent dispatch reservation.
+        continuation = raw.get("orchestration_continuation_receipt", {}).get("S")
+        if parent_grant and not reservation and continuation:
+            execution_update["ConditionExpression"] += (
+                " AND orchestration_continuation_receipt = :continuation AND attribute_not_exists(dispatch_reservation_id)"
+            )
+            execution_update["ExpressionAttributeValues"][":continuation"] = {"S": continuation}
+        elif bool(parent_grant) != bool(reservation):
             raise AuthorityStoreError("dispatch reservation metadata is incomplete")
         if parent_grant and reservation:
             now = _iso(self._now())

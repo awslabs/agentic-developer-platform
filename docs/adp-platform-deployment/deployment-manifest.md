@@ -113,23 +113,26 @@ Deploy: `modules/agent-factory/scripts/deploy-gateway.sh`
 ## Superplane Domain App
 
 Module: `modules/domain-apps/superplane/`
-Deploy: `platform/scripts/deploy-all.sh` — Step 12/12, gated by `SUPERPLANE_ENABLED=true` (default **false**) or `--superplane-only`
+Deploy: `modules/domain-apps/superplane/deploy.sh` or the module's dispatch-only workflows. The basic `platform/scripts/deploy-all.sh` does not apply Superplane.
 Undeploy: `platform/scripts/undeploy.sh` — **first** phase in `PHASE_ORDER` (`phase_superplane` in `undeploy-phases.sh`); `.github/workflows/undeploy.yml` Phase 1/6
 Legacy `platform/scripts/deploy-all.sh --destroy` also calls `phase_superplane` first and stops if it fails.
 
 Deploys **last** and is destroyed **first**: a domain app sits on top of the platform, the
 gateway and the agent runtime, so teardown must remove it before its dependencies go.
 
-Registered in both the deploy and undeploy paths deliberately. `modules/domain-apps/cyber/`
-is absent from `deploy-all.sh` entirely, which is why its resources survive teardown —
-that is the failure mode this registration exists not to repeat.
+Superplane has its own installation path and state. Cyber's sandbox
+has its own deployment script and state; the base `deploy-all.sh` does not run it.
+The hosted Cyber integration has its own Terraform root and state; webhook
+Terraform reads its worker outputs only with `enabled_domain_integrations = ["cyber"]`.
+Cyber and Superplane image build jobs live in their app Terraform states and
+are omitted from a basic platform apply.
 
 | Resource | AWS Service | Validation Command | Expected |
 |----------|------------|-------------------|----------|
 | Feature gate (off by default) | Gateway API | `curl -s https://<cf-domain>/api/features -H "Authorization: Bearer <token>" \| python3 -c 'import json,sys; print(json.load(sys.stdin)["features"]["superplane"])'` | `False` unless `FEATURE_SUPERPLANE_ENABLED=true` |
 | Undeploy phase registered | Shell | `bash -c 'source platform/scripts/undeploy-phases.sh && declare -F phase_superplane'` | `phase_superplane` listed |
 | Undeploy phase ordering | Shell | `grep -n 'PHASE_ORDER=' platform/scripts/undeploy.sh` | `superplane` first, before `agent_context` |
-| Terraform state (once U3 lands infra) | S3 | `aws s3api head-object --bucket adp-terraform-state-<account> --key <env>/modules/superplane/terraform.tfstate` | Object exists only after a gated deploy |
+| Terraform state | S3 | `aws s3api head-object --bucket adp-terraform-state-<account> --key <env>/modules/superplane/terraform.tfstate` | Object exists only after module deployment |
 
 **While the gate is off** there are no AWS resources to validate — the module is a skeleton
 plus a default-off flag, so an operator running these checks on a default deployment should
@@ -164,10 +167,10 @@ The deploy-all.sh script and the agent both read/write this file to track progre
   },
   "outputs": {
     "eks_cluster": "adp-dev-eks-cluster",
-    "cloudfront_domain": "d1234.cloudfront.net",
+    "cloudfront_domain": "gateway-7.example.com",
     "cognito_user_pool_id": "us-east-1_abc123",
     "ecr_registry": "123456789012.dkr.ecr.us-east-1.amazonaws.com",
-    "gateway_ws_endpoint": "wss://abc123.execute-api.us-east-1.amazonaws.com/prod"
+    "gateway_ws_endpoint": "wss://abc123.gateway-14.example.com/prod"
   },
   "validation": {
     "eks_cluster": "ACTIVE",
@@ -212,6 +215,9 @@ Infrastructure changes are deployed via GitHub Actions workflows that run on ARC
 1. Open a PR that touches a module's infra path. The plan workflow runs and posts a comment on the PR with the plan output.
 2. Review the plan. Merge the PR. **Merging does NOT auto-apply.**
 3. When ready to deploy, the operator triggers the apply workflow manually: Actions → `<module> Infra Apply` → Run workflow → main.
+   Gateway Infra Apply requires `reviewed_source_sha`: the exact reviewed main
+   commit (40 lowercase hex characters). It must match the run and checkout;
+   if main advances before dispatch, review the new commit and dispatch again.
 4. Apply is gated by `environment: production` (requires reviewer approval in GitHub) AND by the `destructive-apply-approved` label gate: if resources would be destroyed, the source PR must have the label.
 
 **Why manual apply:** separates "reviewed" from "deployed" — prevents Friday-evening surprise applies on merge, lets operators batch multiple merged PRs into one apply, and matches the project's "carefully consider reversibility and blast radius" rule. For routine non-destructive changes this is one extra click; for anything risky, it's the right default.

@@ -18,7 +18,7 @@
  * cannot flash these buttons into existence.
  *
  * **3. Nothing here asserts who the actor is.** The request body carries only an
- * optional reason. `actor_kind` is derived server-side from the authenticated
+ * optional reason and reviewed revision hash. `actor_kind` is derived server-side from the authenticated
  * session and the request model forbids extra fields — so there is deliberately
  * no code path in this component, and none available to it, that could claim
  * human attribution for a service caller.
@@ -30,11 +30,11 @@
  */
 
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useFeatures } from '@/hooks/useFeatures';
 import { Permission } from '@/types';
-import { approveGate, rejectGate, resumeNode } from '@/services/orchestration';
+import { approveGate, rejectGate, resumeNode, getGatePlanPreview } from '@/services/orchestration';
 import type { GraphNode, GateDecisionResult, ResumeResult } from '@/types/orchestration';
 import { Alert, Button, Spinner } from '@/components/ui';
 
@@ -46,6 +46,12 @@ export interface GateControlsProps {
 
 /** Which control set a node's state earns, or null for "none of them". */
 type ControlMode = 'gate' | 'resume';
+
+function refusalMessage(error: unknown): string {
+  const value = error as { message?: string; detail?: string | { message?: string } } | undefined;
+  return (typeof value?.detail === 'string' ? value.detail : value?.detail?.message)
+    || value?.message || 'The decision was refused. Reload the graph to see its current state.';
+}
 
 function controlModeFor(node: GraphNode): ControlMode | null {
   if ((node.kind === 'gate' || node.kind === 'eval') && node.state === 'awaiting_gate') return 'gate';
@@ -64,6 +70,18 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   const [feedback, setFeedback] = useState('');
 
   const mode = controlModeFor(node);
+  const preview = useQuery({
+    queryKey: ['orchestration', 'gate-plan-preview', flowId, node.id],
+    queryFn: () => getGatePlanPreview(flowId, node.id),
+    enabled: Boolean(features.orchestration_engine && hasPermission(Permission.PLAN_APPROVE) && mode === 'gate'),
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const reviewed = preview.data;
+  const nodeInPlan = reviewed?.plan_document.nodes.some(item =>
+    item.address.split('/').slice(1).join('/') === `${node.epic_ref}/${node.wave_ref}/${node.node_ref}`);
 
   // The two result shapes differ (a resume always produces a decision id; a gate
   // answer may not), so the union is declared rather than inferred from whichever
@@ -71,8 +89,12 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   const mutation = useMutation<GateDecisionResult | ResumeResult, Error, 'approve' | 'reject' | 'resume'>({
     mutationFn: (action) => {
       const trimmed = reason.trim() || undefined;
-      if (action === 'approve') return approveGate(node.id, trimmed);
-      if (action === 'reject') return rejectGate(node.id, trimmed);
+      if (action !== 'resume' && (!reviewed || !nodeInPlan || preview.isError)) {
+        throw new Error('Load and review the current plan before deciding.');
+      }
+      if (action === 'approve' && reviewed?.execution?.ready === false) throw new Error('The next step is not executable. Resolve the listed configuration problems first.');
+      if (action === 'approve') return approveGate(node.id, trimmed, reviewed!.plan_hash, reviewed!.execution);
+      if (action === 'reject') return rejectGate(node.id, trimmed, reviewed!.plan_hash);
       return resumeNode(node.id, trimmed);
     },
     onSuccess: (result, action) => {
@@ -89,6 +111,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             : 'Retry requested. The engine will check this work again.');
       queryClient.invalidateQueries({ queryKey: ['orchestration', 'flow-graph', flowId] });
       queryClient.invalidateQueries({ queryKey: ['orchestration', 'flows'] });
+      queryClient.invalidateQueries({ queryKey: ['orchestration', 'gate-plan-preview', flowId, node.id] });
     },
   });
 
@@ -99,9 +122,41 @@ export function GateControls({ node, flowId }: GateControlsProps) {
   if (mode === null) return feedback ? <p role="status" className="mt-2 text-sm">{feedback}</p> : null;
 
   const busy = mutation.isPending;
+  const decisionDisabled = busy || preview.isFetching || preview.isError || !reviewed || !nodeInPlan;
 
   return (
     <div className="mt-2 space-y-2" data-testid={`gate-controls-${node.node_ref}`}>
+      {mode === 'gate' && <div className="space-y-2 rounded border p-3 text-sm">
+        {preview.isPending && <p>Loading the plan for review…</p>}
+        {reviewed && <>
+          <p className="font-medium">Review plan version {reviewed.version}: {reviewed.plan_document.title}</p>
+          <ul className="list-disc pl-5">{reviewed.plan_document.nodes.map(item =>
+            <li key={item.address}>{item.title} ({item.kind})</li>)}</ul>
+          <p>{reviewed.plan_document.proposed_execution_policy ? 'Proposed execution authority — not yet granted'
+            : reviewed.plan_document.execution_policy ? 'Recorded execution-policy bounds' : 'This plan has no execution-policy bounds.'}</p>
+          {(reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy) &&
+            <details><summary>Review execution permissions and limits</summary><p>Spend limits apply only when budget enforcement is enabled.</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(
+              reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy, null, 2)}</pre></details>}
+          {reviewed.execution?.required && <div className="space-y-2">
+            <p className="font-medium">Approving starts the following evaluation</p>
+            {reviewed.execution.runs.map(run => <div key={run.node_id}>
+              <p>{run.title}: {run.workflow}</p>
+              <p>Account {run.target.account_id}, {run.target.region}, environment {run.target.resource_id}.</p>
+              <p>Evidence: {run.criteria.join(', ')}. Final acceptance remains human.</p>
+            </div>)}
+            {reviewed.execution.window_request && <div><p>Approval also renews the expired execution window:</p><pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.execution.window_request, null, 2)}</pre></div>}
+            {reviewed.execution.problems.map(problem => <Alert key={problem} variant="error" title="Next step needs configuration">{problem}</Alert>)}
+          </div>}
+          <details><summary>Full plan and dependencies</summary>
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.plan_document, null, 2)}</pre>
+          </details>
+          <p className="break-all text-xs">Decision applies to revision {reviewed.plan_hash}.</p>
+          {!nodeInPlan && <p>This gate is absent from the current plan. Reload the graph.</p>}
+        </>}
+        {preview.isError && <Alert variant="error" title="Plan preview unavailable">{refusalMessage(preview.error)}</Alert>}
+        <Button size="sm" variant="secondary" disabled={busy || preview.isFetching}
+          onClick={() => { mutation.reset(); void preview.refetch(); }}>Reload plan preview</Button>
+      </div>}
       {feedback && <p role="status" className="text-sm">{feedback}</p>}
       {mode === 'gate' && (
         <p className="text-xs text-gray-600 dark:text-gray-400">
@@ -134,7 +189,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             <Button
               size="sm"
               variant="primary"
-              disabled={busy}
+              disabled={decisionDisabled || reviewed?.execution?.ready === false}
               onClick={() => mutation.mutate('approve')}
               data-testid="gate-approve"
             >
@@ -146,7 +201,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             <Button
               size="sm"
               variant="secondary"
-              disabled={busy || !reason.trim()}
+              disabled={decisionDisabled || !reason.trim()}
               onClick={() => mutation.mutate('reject')}
               data-testid="gate-reject"
             >
@@ -172,8 +227,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
 
       {mutation.isError && (
         <Alert variant="error" title="That decision was not recorded">
-          {mutation.error?.message ||
-            'The decision was refused. Reload the graph to see its current state.'}
+          {refusalMessage(mutation.error)}
         </Alert>
       )}
     </div>

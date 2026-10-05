@@ -29,6 +29,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # purpose -> (module, extra payload the orchestrator does not have to supply)
 PURPOSES = {
+    "assistant_baseline": ("assistant_baseline", {}),
+    "hosted_coding": ("hosted_coding", {}),
+    "hierarchy_lifecycle": ("hierarchy_lifecycle", {}),
+    "knowledge_lifecycle": ("knowledge_lifecycle", {}),
+    "machine_lifecycle": ("machine_lifecycle", {}),
+    "budget_lifecycle": ("budget_lifecycle", {}),
+    "vault_lifecycle": ("vault_lifecycle", {}),
+    "hosted_chat": ("hosted_chat", {}),
+    "story_capabilities": ("story_reads", {"mode": "capabilities"}),
+    "story_usage": ("story_reads", {"mode": "usage"}),
+    "story_budget": ("story_reads", {"mode": "budget"}),
+    "story_ratelimit": ("story_reads", {"mode": "ratelimit"}),
+    "story_person_budget": ("story_reads", {"mode": "person_budget"}),
+    "story_model_policy": ("story_reads", {"mode": "model_policy"}),
+    "story_bedrock_lifecycle": ("story_reads", {"mode": "bedrock_lifecycle"}),
+    "story_recovery": ("story_reads", {"mode": "recovery"}),
+    "story_platform": ("story_reads", {"mode": "platform"}),
+    "story_superplane_lifecycle": ("story_reads", {"mode": "superplane_lifecycle"}),
+    "story_activity": ("story_reads", {"mode": "activity"}),
+    "story_research": ("story_research", {}),
+    "story_chat": ("story_reads", {"mode": "chat"}),
+    "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
+    "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
+    "story_hierarchy": ("story_reads", {"mode": "hierarchy"}),
+    "story_vault": ("story_reads", {"mode": "vault"}),
+    "story_github_maintenance": ("story_reads", {"mode": "github_maintenance"}),
+    "story_access": ("story_reads", {"mode": "access"}),
+    "story_machine": ("story_reads", {"mode": "machine"}),
+    "story_knowledge": ("story_reads", {"mode": "knowledge"}),
+    "story_gitlab": ("story_reads", {"mode": "gitlab"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
     "install_auth": ("install_auth", {}),
     # E04/E05 — `adp aws connect`, provisioned and handoff variants.
@@ -50,8 +80,16 @@ PURPOSES = {
     # switch, a refresh and one logout leave the other two correctly routed.
     "multi_deployment_concurrency": ("multi_deployment", {"mode": "overlap"}),
     "multi_deployment_lifecycle": ("multi_deployment", {"mode": "lifecycle"}),
+    # E19 — served capability contrast and read-only diagnostics.
+    "capability_contrast": ("capability_contrast", {}),
+    # E18 (#5637) — real Superplane workspace, deployment and two-store
+    # credential lifecycle through the served CLI.
+    "superplane_domain": ("superplane_domain", {}),
     # Diagnostic checkpoint only; deliberately not mapped to an acceptance case.
     "multi_deployment_sessions": ("multi_deployment_sessions", {}),
+    "usage_readback": ("usage_readback", {}),
+    # #5629 terminal diagnostic only; not proof of active-run acceptance.
+    "agent_terminal_controls": ("agent_terminal_controls", {}),
 }
 
 

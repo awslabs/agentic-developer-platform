@@ -48,6 +48,8 @@ _BROKER_RESULT = (_BROKERED_TOKEN, _BROKERED_APP_ID, "2099-01-01T00:00:00Z")
 
 
 def _prepare(monkeypatch, tmp_path, entrypoint, *, mediated: str | None):
+    # Runtime execution is stubbed here; process-group deadlines use real-process tests.
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: entrypoint.subprocess.run(command, **options))
     monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())
@@ -166,6 +168,11 @@ def _run_main(mock_receive_msg, mock_broker, mock_run_cmd, mock_create_cr, mock_
     mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), receipt)
     mock_broker.return_value = _BROKER_RESULT
     mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+    # Clean implementation commit; git log still reports unpushed work.
+    mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+        stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+        returncode=0,
+    )
     mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
     mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
     main()

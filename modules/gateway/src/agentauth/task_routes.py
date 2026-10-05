@@ -8,9 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
+from src.agentauth.routes import AgentRuntime, require_agent_transport
 from src.agentauth.run_services import OwnRunRequest
 from src.agentauth.store import AuthorityStoreError
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_delivery import TaskDelivery, TaskDeliveryError, enabled
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
 
@@ -19,11 +20,16 @@ router = APIRouter(prefix="/internal/v1/agent/task", tags=["agent-authority"], d
 
 def task_delivery(runtime: AgentRuntime = Depends(get_agent_runtime)) -> TaskDelivery:
     env = os.environ if runtime.env is None else runtime.env
-    if not enabled(env) or not env.get("ADP_RUN_TASK_QUEUE_URL"):
+    task_api_enabled = env.get("ADP_TASK_API_WORKER_ENABLED", "false").lower() == "true"
+    queue_url = (env.get("ADP_TASK_API_QUEUE_URL") if task_api_enabled else None) or env.get("ADP_RUN_TASK_QUEUE_URL")
+    if not (enabled(env) or task_api_enabled) or not queue_url:
         raise HTTPException(503, "task service unavailable")
     return TaskDelivery(
         store=runtime.store,
-        queue_url=env["ADP_RUN_TASK_QUEUE_URL"],
+        allow_task_api=task_api_enabled,
+        allow_shared_legacy=task_api_enabled,
+        allow_legacy=enabled(env),
+        queue_url=queue_url,
         sqs=boto3.client(
             "sqs",
             region_name=env.get("AWS_REGION", "us-east-1"),
@@ -39,6 +45,20 @@ async def own_task(request: Request, runtime: AgentRuntime, delivery: TaskDelive
         if action == "acquire":
             body = await run_in_threadpool(delivery.acquire, pod.uid)
             result = {"body": body}
+            if delivery.cancelled_tasks:
+                from types import SimpleNamespace
+
+                from src.tasks.command_routes import settle_admission_headroom
+                from src.tasks.store import TaskStore
+
+                repository = TaskStore(dynamodb_client=runtime.store.client, authority_table_name=runtime.store.table)
+                for task in delivery.cancelled_tasks.values():
+                    await settle_admission_headroom(
+                        repository,
+                        SimpleNamespace(
+                            task_id=task["task_id"], invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None
+                        ),
+                    )
         else:
             await run_in_threadpool(delivery.maintain, pod.uid, acknowledge=action == "ack")
             result = {"accepted": True}

@@ -45,6 +45,15 @@ TEST_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123:secret:handler-prov"
 VICTIM = "victim-human-id"
 CHANNEL = "github:repo=org/repo,issue=1"
 
+# Issue #5663 (A09): lineage authority is now also bound to the job's own
+# tenant/installation/repo. These #4128 marker-verification tests are not about that
+# predicate, so the stubbed chain row and the job context are kept CONSISTENT —
+# otherwise every case here would pass for the new reason rather than the one it
+# documents. The predicate itself is asserted in test_handler_lineage_context_5663.py.
+TENANT = "org"
+REPO = "org/repo"
+INSTALLATION = "4242"
+
 
 @pytest.fixture(autouse=True)
 def _clean():
@@ -54,9 +63,15 @@ def _clean():
 
 
 class _Identity:
-    def __init__(self, user_kind="bot", user_id="bot-sender"):
+    def __init__(self, user_kind="bot", user_id="bot-sender", tenant_id=TENANT):
         self.user_kind = user_kind
         self.user_id = user_id
+        self.tenant_id = tenant_id  # Issue #5663: server-resolved tenant of the job
+
+
+def _payload() -> dict:
+    """Signature-verified payload fields the A09 job context is derived from."""
+    return {"repository": {"full_name": REPO}, "installation": {"id": INSTALLATION}}
 
 
 def _sign(key, correlation_id, root_human_id, is_human_rooted, invocation_id, chain_depth):
@@ -118,6 +133,37 @@ def _mock_sm(secret_value: str) -> MagicMock:
     return client
 
 
+def _chain_row(
+    correlation_id: str,
+    *,
+    root_human_id: str | None = "real-human",
+    is_human_rooted: bool | None = True,
+    chain_depth: int | None = 2,
+    event_id: str = "evt-chain",
+) -> dict:
+    """A server-written ``webhook-events`` row, in this job's own tenant/repo.
+
+    Issue #5663 (A09): the MARKER paths (Rules 2 and 4) now resolve their human
+    authority from this row too, not from the marker's claim — a valid marker
+    signature is not an authority boundary, because the signed input names no tenant
+    and the signing key is fleet-wide. So the marker-only and cross-channel cases
+    below must stub a row for the marker's OWN correlation_id, exactly as #4129
+    already required for the pointer paths. Same reasoning as ``_chain_from``: keep
+    the row consistent with the job context so each test still fails for the reason
+    it documents.
+    """
+    return {
+        "event_id": event_id,
+        "correlation_id": correlation_id,
+        "root_human_id": root_human_id,
+        "is_human_rooted": is_human_rooted,
+        "chain_depth": chain_depth,
+        "tenant_id": TENANT,
+        "installation_id": INSTALLATION,
+        "repo": REPO,
+    }
+
+
 def _chain_from(pointer: dict | None) -> dict | None:
     """The server-written webhook-events row a legitimate pointer corresponds to.
 
@@ -135,26 +181,55 @@ def _chain_from(pointer: dict | None) -> dict | None:
         "root_human_id": pointer.get("root_human_id"),
         "is_human_rooted": pointer.get("is_human_rooted"),
         "chain_depth": pointer.get("chain_depth"),
+        # Issue #5663: matches ``_payload()`` / ``_Identity`` — see the note above.
+        "tenant_id": TENANT,
+        "installation_id": INSTALLATION,
+        "repo": REPO,
     }
 
 
-def _run(pointer, marker_text, *, secret=REAL_KEY, marker_trusted=False, chain="from-pointer"):
+def _run(
+    pointer,
+    marker_text,
+    *,
+    secret=REAL_KEY,
+    marker_trusted=False,
+    chain="from-pointer",
+    marker_chain=None,
+):
     """Invoke determine_correlation with a stubbed pointer store + signing key.
 
     Args:
-        chain: The server-written chain row ``_resolve_chain_record`` returns.
+        chain: The server-written chain row for the POINTER's correlation_id.
             Defaults to one mirroring ``pointer`` (see :func:`_chain_from`).
+        marker_chain: Issue #5663 — the row for the MARKER's correlation_id, when
+            that differs from the pointer's. ``None`` means "the webhook has no
+            record of the chain the marker names", which is the realistic shape for
+            a fabricated marker and now correctly confers no human authority.
+
+    The lookup is keyed BY CORRELATION ID rather than returning one row for every
+    call. That precision matters here: with a single fixed row, a test asserting a
+    cross-channel hop into ``corr-OTHER`` would be silently answered with
+    ``corr-POINTER``'s row and pass without exercising the hop at all.
     """
     store = MagicMock()
     store.read_pointer.return_value = pointer
-    chain_record = _chain_from(pointer) if chain == "from-pointer" else chain
+    pointer_chain = _chain_from(pointer) if chain == "from-pointer" else chain
+
+    rows: dict[str, dict] = {}
+    for row in (pointer_chain, marker_chain):
+        if row:
+            rows[str(row.get("correlation_id") or "")] = row
 
     with patch.dict(os.environ, {"MARKER_SIGNING_KEY_SECRET_ARN": TEST_SECRET_ARN}):
         with patch("common.secrets._get_client", return_value=_mock_sm(secret)):
             with patch("handler._get_correlation_store", return_value=store):
-                with patch("handler._resolve_chain_record", return_value=chain_record):
+                with patch(
+                    "handler._resolve_chain_record",
+                    side_effect=lambda cid: rows.get(str(cid or "")),
+                ):
                     return determine_correlation(
-                        {},
+                        _payload(),
                         _Identity(),
                         CHANNEL,
                         marker_text=marker_text,
@@ -247,10 +322,18 @@ class TestPath2CrossChannelHop:
         marker = _marker_text(
             correlation_id="corr-OTHER", root_human_id=VICTIM, is_human_rooted="true", key=None
         )
-        ctx = _run(pointer, marker)
+        # #5663: a real server-written row for corr-OTHER, rooted at a DIFFERENT human
+        # than the marker names. Pre-#5663 this test passed because the marker was
+        # unsigned; it now passes for the stronger reason that the marker's claim is
+        # not consulted at all. Supplying the row is what makes that visible — without
+        # it the assertion would be satisfied by the no-chain fail-closed path instead.
+        marker_chain = _chain_row("corr-OTHER", root_human_id="real-human")
+        ctx = _run(pointer, marker, marker_chain=marker_chain)
 
         assert ctx["correlation_id"] == "corr-OTHER"  # lineage continues
-        assert ctx["is_human_rooted"] is False, "unsigned marker claimed human authority"
+        assert ctx["is_human_rooted"] is True  # ...from the SERVER row, not the marker
+        assert ctx["root_human_id"] == "real-human"
+        assert ctx["root_human_id"] != VICTIM, "unsigned marker claimed human authority"
 
     def test_placeholder_key_does_not_bless_a_cross_channel_claim(self):
         """Signed with the public placeholder → indeterminate, not verified."""
@@ -261,8 +344,17 @@ class TestPath2CrossChannelHop:
             is_human_rooted="true",
             key=PLACEHOLDER,
         )
-        ctx = _run(pointer, marker, secret=PLACEHOLDER)
-        assert ctx["is_human_rooted"] is False
+        # #5663: as above — the row for corr-OTHER exists and names a different human,
+        # so the assertion is about WHOSE authority is carried, not merely about the
+        # absence of any.
+        ctx = _run(
+            pointer,
+            marker,
+            secret=PLACEHOLDER,
+            marker_chain=_chain_row("corr-OTHER", root_human_id="real-human"),
+        )
+        assert ctx["root_human_id"] == "real-human"
+        assert ctx["root_human_id"] != VICTIM
 
     def test_validly_signed_cross_channel_hop_still_works(self):
         """Regression: a legitimate signed cross-channel hop is preserved."""
@@ -273,7 +365,9 @@ class TestPath2CrossChannelHop:
             is_human_rooted="true",
             key=REAL_KEY,
         )
-        ctx = _run(pointer, marker)
+        ctx = _run(
+            pointer, marker, marker_chain=_chain_row("corr-OTHER", root_human_id="real-human")
+        )
         assert ctx["correlation_id"] == "corr-OTHER"
         assert ctx["root_human_id"] == "real-human"
         assert ctx["is_human_rooted"] is True
@@ -326,11 +420,37 @@ class TestPath4MarkerOnly:
         assert ctx["is_human_rooted"] is False
 
     def test_signed_marker_only_keeps_authority(self):
+        """A legitimate marker-only hop still inherits its human — via the chain row.
+
+        #5663: the authority now comes from the server-written row for the marker's
+        correlation_id rather than from the signed marker itself, so this regression
+        case must stub that row. The marker still selects WHICH chain; it no longer
+        states whose authority the chain carries.
+        """
         marker = _marker_text(correlation_id="corr-S", root_human_id="real-human", key=REAL_KEY)
-        ctx = _run(None, marker)
+        ctx = _run(None, marker, marker_chain=_chain_row("corr-S", root_human_id="real-human"))
         assert ctx["correlation_id"] == "corr-S"
         assert ctx["is_human_rooted"] is True
         assert ctx["root_human_id"] == "real-human"
+
+    def test_a_signed_marker_naming_another_tenants_human_gets_nothing(self):
+        """#5663: the escalation a valid signature used to walk straight through.
+
+        The signing key is one fleet-wide secret and the signed input names no
+        tenant, so a worker in ANY tenant can mint a valid signature over ANY human's
+        id. Authority must therefore come from the chain row and be refused when that
+        row belongs to another tenant.
+        """
+        marker = _marker_text(correlation_id="corr-X", root_human_id=VICTIM, key=REAL_KEY)
+        foreign = _chain_row("corr-X", root_human_id=VICTIM)
+        foreign["tenant_id"] = "another-tenant"
+        foreign["repo"] = "another-tenant/secrets"
+        ctx = _run(None, marker, marker_chain=foreign)
+
+        assert ctx["is_human_rooted"] is False
+        assert ctx["root_human_id"] != VICTIM
+        # Lineage still connects — the refusal narrows authority, it does not fragment.
+        assert ctx["correlation_id"] == "corr-X"
 
 
 # =============================================================================

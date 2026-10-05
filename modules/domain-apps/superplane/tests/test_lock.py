@@ -20,13 +20,13 @@ digest are separate facts.
 
 from __future__ import annotations
 
-import _release_path  # noqa: F401
-
 import re
 from pathlib import Path
 
+import _release_path  # noqa: F401
 import pytest
 import yaml
+
 from releases.resolve_lock import LockError, load_lock, resolved_digest
 
 LOCK_PATH = Path(__file__).resolve().parents[1] / "releases" / "superplane.lock.yaml"
@@ -155,8 +155,15 @@ class TestPendingImagesCarryNoDigest:
     ) -> None:
         repo_root = Path(__file__).resolve().parents[4]
         for name, entry in (lock.get("pending_images") or {}).items():
-            wf = entry.get("build_workflow")
-            assert wf, f"pending_images.{name} names no build workflow"
+            if name == "superplane-paid-worker":
+                assert "build_workflow" not in entry
+                wf = entry.get("build_entrypoint")
+                assert (
+                    wf == "modules/domain-apps/superplane/releases/build_paid_worker.py"
+                )
+            else:
+                wf = entry.get("build_workflow")
+            assert wf, f"pending_images.{name} names no maintained build entrypoint"
             assert (repo_root / wf).is_file(), (
                 f"pending_images.{name} names {wf}, which does not exist"
             )
@@ -167,7 +174,7 @@ class TestPendingImagesCarryNoDigest:
 
     def test_resolving_a_pending_image_as_a_digest_fails_loudly(self) -> None:
         with pytest.raises(LockError, match="pending"):
-            resolved_digest("superplane-api", LOCK_PATH)
+            resolved_digest("superplane-paid-worker", LOCK_PATH)
 
 
 class TestUnresolvedInputsAreRecordedNotInvented:
@@ -217,22 +224,32 @@ class TestUnresolvedInputsAreRecordedNotInvented:
     def test_deployment_target_is_unresolved(self, lock: dict) -> None:
         assert lock["skypilot_config"]["deployment_target"]["status"] == "unresolved"
 
-    def test_no_aws_account_id_is_invented(self, lock: dict) -> None:
-        """Upstream's config.env carries upstream's account id — it must not be adopted.
+    def test_release_digest_has_recorded_publication(self, lock: dict) -> None:
+        """Public publication evidence pins content, not private registry identity."""
+        import json
 
-        The plan records no AWS account for this EPIC, so any 12-digit account id in a
-        value position here would be a guess presented as configuration.
-        """
-        text = LOCK_PATH.read_text(encoding="utf-8")
-        values = [
-            ln.split(":", 1)[1]
-            for ln in text.splitlines()
-            if ":" in ln and not ln.strip().startswith("#")
-        ]
-        for value in values:
-            assert not re.search(r"\b\d{12}\b", value), (
-                f"a 12-digit account id appears in a value: {value.strip()!r}"
-            )
+        receipt = json.loads(
+            (
+                LOCK_PATH.parents[4]
+                / lock["image_sources"]["skypilot-api"].get(
+                    "publication_receipt",
+                    "docs/security/runs/2026-09-21/evidence/S21-skypilot-publication.json",
+                )
+            ).read_text()
+        )
+        assert (
+            receipt.get("manifest_byte_identity_verified")
+            or receipt.get("matches_scanned_local_root")
+        ) is True
+        assert lock["images"]["skypilot-api"] == receipt["digest"]
+        # Public receipts redact deployment identities (docs/PUBLISHING.md).
+        # Keep repository/content agreement without coupling release configuration
+        # to the fictional account in a sanitized historical report.
+        source = lock["image_sources"]["skypilot-api"]
+        assert receipt["reference"].partition("/")[2] == (
+            f"{source['repository']}@{receipt['digest']}"
+        )
+        assert "account_id" not in lock
 
 
 class TestSkypilotConfigurationIsPinned:

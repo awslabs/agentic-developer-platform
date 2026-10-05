@@ -38,7 +38,9 @@ class ServiceAccountService:
         """Initialize the service account service."""
         pass
 
-    async def create_service_account(self, create_data: ServiceAccountCreate, org_id: str, db: AsyncSession) -> ServiceAccountResponse:
+    async def create_service_account(
+        self, create_data: ServiceAccountCreate, org_id: str, db: AsyncSession, *, service_account_id: str | None = None
+    ) -> ServiceAccountResponse:
         """
         Create a new service account.
 
@@ -74,6 +76,8 @@ class ServiceAccountService:
                 iam_role_arn=create_data.iam_role_arn,
             )
 
+            if service_account_id is not None:
+                service_account.id = service_account_id
             db.add(service_account)
             await db.commit()
             await db.refresh(service_account)

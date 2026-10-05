@@ -526,14 +526,25 @@ def broker_harness(store, kubernetes, monkeypatch):
         Item={
             "event_id": {"S": "run-a"},
             "arrived_at": {"S": envelope["arrived_at"]},
-            "authorized_user_id": {"S": "user-a"},
+            "authorized_user_id": {"S": "human"},
         },
     )
     runtime = AgentRuntime(store=store, workloads=kubernetes[0], env=ENV)
     lease = runtime.bootstrap(BootstrapRequest(invocation_id="run-a", envelope_digest=envelope_digest(envelope)), "pod-token")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: SimpleNamespace(webhook_events_table="broker-events"))
-    identity = SimpleNamespace(scope="internal", user_id="shared-worker", credential_scopes=["credential:raw-read", "credential:materialize"])
+    identity = SimpleNamespace(
+        scope="internal",
+        user_id="shared-worker",
+        credential_scopes=[
+            "credential:list",
+            "credential:proxy",
+            "credential:assume-role",
+            "credential:task-session",
+            "credential:raw-read",
+            "credential:materialize",
+        ],
+    )
 
     # Issue #5653 (A01): this fixture's premise is a REAL agent worker whose
     # X-Caller-Identity was written by API Gateway from a verified SigV4 signature
@@ -594,7 +605,7 @@ def broker_harness(store, kubernetes, monkeypatch):
 )
 def test_broker_requires_same_verified_worker_and_permits_own_run(broker_harness, kubernetes, path):
     client, headers, effects, _ = broker_harness
-    body = {"invocation_id": "run-a", "user_id": "user-a", "installation_id": 123, "repo_owner": "org", "repo_name": "repo"}
+    body = {"invocation_id": "run-a", "user_id": "human", "installation_id": 123, "repo_owner": "org", "repo_name": "repo"}
     url = "/internal/v1/" + path
     assert client.post(url, json=body, headers=headers).status_code == 200
     assert effects == ["mint"]
@@ -623,7 +634,7 @@ def test_broker_cannot_select_other_users_in_legacy_shadow_mode(broker_harness, 
 def test_vault_metadata_requires_bound_user_and_invocation(broker_harness):
     client, headers, effects, _ = broker_harness
     path = "/internal/v1/user-credentials"
-    query = {"invocation_id": "run-a", "user_id": "user-a"}
+    query = {"invocation_id": "run-a", "user_id": "human"}
     assert client.get(path, params=query, headers=headers).status_code == 200
     for change in ({"user_id": "user-b"}, {"invocation_id": "run-b"}):
         assert client.get(path, params={**query, **change}, headers=headers).status_code == 404
@@ -637,9 +648,9 @@ def test_vault_scope_header_cannot_grant_missing_registry_capability(broker_harn
     identity.credential_scopes = []
     assert (
         client.post(
-            "/internal/v1/" + path, json={"invocation_id": "run-a", "user_id": "user-a"}, headers={**headers, "X-Agent-Scopes": scope}
+            "/internal/v1/" + path, json={"invocation_id": "run-a", "user_id": "human"}, headers={**headers, "X-Agent-Scopes": scope}
         ).status_code
-        == 404
+        == 403
     )
     assert effects == []
 
@@ -652,7 +663,7 @@ def test_broker_repo_and_installation_cannot_expand(broker_harness):
     assert effects == []
 
 
-def test_broker_no_shared_key_fallback_and_platform_deploy_stays_supported(broker_harness):
+def test_platform_deploy_requires_its_own_verified_run(broker_harness):
     client, headers, effects, identity = broker_harness
     url = "/internal/v1/credential-assume-role"
     assert client.post(url, json={}, headers={"X-Internal-Api-Key": "shared-secret"}).status_code == 403
@@ -663,8 +674,10 @@ def test_broker_no_shared_key_fallback_and_platform_deploy_stays_supported(broke
             json={},
             headers={"X-Caller-Identity": "deploy-role", "X-Adp-Edge-Provenance": "bootstrap-edge-provenance"},
         ).status_code
-        == 200
+        == 404
     )
+    assert effects == []
+    assert client.post(url, json={"invocation_id": "run-a", "user_id": "human"}, headers=headers).status_code == 200
     assert effects == ["mint"]
 
 
@@ -677,9 +690,7 @@ def test_broker_cancellation_prevents_further_credentials(broker_harness, store)
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":s": {"S": "cancelled"}},
     )
-    assert (
-        client.post("/internal/v1/credential-assume-role", json={"invocation_id": "run-a", "user_id": "user-a"}, headers=headers).status_code == 404
-    )
+    assert client.post("/internal/v1/credential-assume-role", json={"invocation_id": "run-a", "user_id": "human"}, headers=headers).status_code == 404
     assert effects == []
 
 
@@ -696,7 +707,9 @@ def test_authority_child_github_mint_uses_protected_assignment_not_missing_legac
     app = FastAPI()
     app.include_router(internal_routes.router)
     app.dependency_overrides[get_db] = lambda: db
-    monkeypatch.setattr(internal_routes, "resolve_installation_binding", MagicMock(side_effect=AssertionError("legacy lookup must not be reached")))
+    monkeypatch.setattr(
+        "src.internal.credential_binding._get_dynamodb_table", MagicMock(side_effect=AssertionError("legacy lookup must not be reached"))
+    )
     ownership = AsyncMock()
     monkeypatch.setattr(internal_routes, "assert_installation_owned_by", ownership)
     monkeypatch.setattr(internal_routes, "resolve_tenant_app_credentials", AsyncMock(return_value=("app", "private-test-key")))
@@ -715,3 +728,46 @@ def test_authority_child_github_mint_uses_protected_assignment_not_missing_legac
     assert response.status_code == 200, response.text
     ownership.assert_awaited_once_with("tenant", 123, db=db)
     assert mint.await_args.kwargs["repositories"] == ["repo"]
+
+
+def test_recorded_user_cannot_replace_the_signed_grant_human(broker_harness, store):
+    client, headers, effects, _ = broker_harness
+    store.client.update_item(
+        TableName="broker-events",
+        Key={"event_id": {"S": "run-a"}, "arrived_at": {"S": "2026-09-13T09:00:00Z"}},
+        UpdateExpression="SET authorized_user_id = :user",
+        ExpressionAttributeValues={":user": {"S": "foreign-human"}},
+    )
+    response = client.post("/internal/v1/credential-assume-role", json={"invocation_id": "run-a", "user_id": "foreign-human"}, headers=headers)
+    assert response.status_code == 404
+    assert effects == []
+
+
+def test_initial_review_snapshot_refusal_is_durable_and_never_issues_credentials(store, kubernetes, monkeypatch):
+    from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+    envelope, _ = provision(store)
+    raw = store._read("TENANT#tenant", "EXEC#run-a")
+    raw["orchestration_continuation_receipt"] = {"S": "committed-review-dispatch"}
+    store.client.put_item(TableName=store.table, Item=raw)
+    table = "bootstrap-events"
+    store.client.create_table(
+        TableName=table,
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    key = {"event_id": {"S": "run-a"}, "arrived_at": {"S": envelope["arrived_at"]}}
+    store.client.put_item(TableName=table, Item={**key, "tenant_id": {"S": "tenant"}, "status": {"S": "queued"}})
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", table)
+    client, _ = http_client(store, kubernetes, monkeypatch, posture="enforcing")
+    body = {"invocation_id": "run-a", "envelope_digest": envelope_digest(envelope), "model_policy_contract": 1}
+    headers = {"X-Caller-Identity": "registered-worker-transport", WORKLOAD_HEADER: "pod-token"}
+    response = client.post("/internal/v1/agent/bootstrap", json=body, headers=headers)
+    assert response.status_code == 409
+    assert "credential" not in response.json()
+    assert is_bootstrap_failure(store._read("TENANT#tenant", "EXEC#run-a"))
+    event = store.client.get_item(TableName=table, Key=key)["Item"]
+    assert event["status"] == {"S": "failed"}
+    assert "snapshot missing" in event["error_message"]["S"]
+    assert client.post("/internal/v1/agent/bootstrap", json=body, headers=headers).status_code == 404

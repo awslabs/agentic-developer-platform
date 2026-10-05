@@ -187,7 +187,7 @@ async def _make_org(session: AsyncSession, *, org_id: str = ORG_A, installations
 
 
 async def _make_flow(session: AsyncSession, *, org_id: str = ORG_A, slug: str = "flow-1") -> OrchestrationFlow:
-    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="Demo flow")
+    flow = OrchestrationFlow(execution_paused=False, org_id=org_id, slug=slug, title="Demo flow")
     session.add(flow)
     await session.flush()
     return flow
@@ -2031,13 +2031,13 @@ async def test_governed_dispatch_refuses_when_claims_are_disabled(session, monke
 class TestSavedPersonaMapping:
     @pytest.mark.parametrize("unavailable", [False, True])
     async def test_selection_precedes_state_change_and_uses_approver(self, session, monkeypatch, unavailable):
-        from src.admin.persona_models import dispatch_selection
+        from src.agentauth import launch_configuration as dispatch_selection
 
         monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
         _flow, node, _decision = await _ready_story(session)
 
-        async def select(db, *, org_id, user_id, persona):
+        async def select(db, *, org_id, user_id, persona, direct_model=None):
             assert user_id == APPROVER
             assert org_id == ORG_A
             assert persona == "developer"
@@ -2060,8 +2060,9 @@ class TestSavedPersonaMapping:
             assert sqs.envelope()["model_resolved"] == "saved-model"
 
 
-async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch):
+async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch, protected_engine):
     from unittest.mock import AsyncMock
+    from uuid import uuid4
 
     from src.orchestration.pr_bindings import PullRequestIdentity, register_binding, resolve_registration_target
 
@@ -2071,16 +2072,48 @@ async def test_retry_dispatch_carries_provider_verified_pr_before_publish(sessio
     pr = PullRequestIdentity(12345, "PR_existing", REPO, 777, "a" * 40)
     target = await resolve_registration_target(session, run_id=first.pending[0].envelope["message_id"])
     original, _ = await register_binding(session, target=target, pr=pr, actor_id="worker", actor_kind=ActorKind.SERVICE)
+    from src.orchestration.developer_recovery import ACTOR, KIND, recovery_id
+
+    db_recovery = {
+        "previous_run_id": first.pending[0].envelope["message_id"],
+        "previous_attempt": 1,
+        "failure_decision_id": str(uuid4()),
+        "preserve_existing_work": True,
+    }
+    session.add(
+        OrchestrationDecision(
+            id=recovery_id(node.id, 1),
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=KIND,
+            actor_id=ACTOR,
+            actor_role="engine",
+            actor_kind="service",
+            reason=json.dumps(db_recovery),
+        )
+    )
     node.state = "ready"
     await session.flush()
     refreshed = PullRequestIdentity(12345, "PR_existing", REPO, 777, "b" * 40)
     monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", AsyncMock(return_value=refreshed))
     report = await run_dispatch_pass(session, _config())
     assert report.dispatched == 1 and report.success
+    assert report.pending[0].envelope["orchestration"]["developer_recovery"] == db_recovery
     assert node.attempts == 2
     assert original.attempt == 2 and original.head_sha == "b" * 40 and original.revision == 2
     assert report.pending[0].envelope["bound_pull_request"]["pr_number"] == 777
     assert report.pending[0].envelope["bound_pull_request"]["provider_pr_node_id"] == "PR_existing"
+    await session.commit()
+    # Lost queue acknowledgement after provisioning must replay the complete
+    # carried-forward assignment, including the PR pointer and its new revision.
+    store, writer = protected_engine
+    writer.provision(report.pending[0])
+    replay = await run_dispatch_pass(session, _config())
+    assert replay.publish_failed == 0
+    assert len(replay.pending) == 1
+    assert replay.pending[0].envelope == report.pending[0].envelope
+    assert node.attempts == 2
 
 
 async def test_unverifiable_retry_pr_does_not_consume_attempt_or_publish(session, monkeypatch):
@@ -2100,3 +2133,97 @@ async def test_unverifiable_retry_pr_does_not_consume_attempt_or_publish(session
     assert report.dispatched == 0 and not report.pending
     assert node.state == "ready" and node.attempts == 1
     assert report.policy_block_reasons == {"repair_binding_unverifiable": 1}
+
+
+async def test_paused_flows_do_not_consume_dispatch_capacity_or_attempts(session):
+    await _make_org(session)
+    paused = await _make_flow(session, slug="paused")
+    paused.execution_paused = True
+    await _make_approval(session, paused)
+    waiting = await _make_node(session, paused, node_ref="waiting", issue_ref="4196")
+    enabled = await _make_flow(session, slug="enabled")
+    await _make_approval(session, enabled)
+    ready = await _make_node(session, enabled, node_ref="ready", issue_ref="4197")
+    result = await run_dispatch_pass(session, _config(max_dispatches_per_tick=1))
+    assert result.dispatched == 1
+    assert result.pending[0].node_id == ready.id
+    await session.refresh(waiting)
+    assert (waiting.state, waiting.attempts) == ("ready", 0)
+
+
+@pytest.mark.parametrize(
+    "selected,accepted", [("agent-codex-developer", True), ("developer", True), ("agent-codex-developer", False), ("developer", False)]
+)
+async def test_dispatch_uses_accepted_story_persona(session, selected, accepted):
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    flow, node, approval = await _ready_story(session)
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=1,
+            plan_hash="a" * 64,
+            accepted_by_decision_id=approval.id if accepted else None,
+            plan_document={
+                "nodes": [
+                    {
+                        "address": f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}",
+                        "kind": "story",
+                        "executor": {"kind": "agent", "role": "develop", "persona": selected},
+                    }
+                ]
+            },
+        )
+    )
+    await session.flush()
+    report = await run_dispatch_pass(session, _config())
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs)
+    if accepted:
+        assert len(sqs.calls) == 1
+        assert sqs.envelope()["persona"] == selected
+        assert sqs.envelope()["intent"]["persona"] == selected
+    else:
+        assert not sqs.calls
+        assert await _state_of(session, node.id) == NodeState.READY.value
+
+
+@pytest.mark.parametrize("persona,reviewer", [("developer", "reviewer"), ("agent-codex-developer", "agent-codex-reviewer")])
+@pytest.mark.parametrize("handoff", [False, True])
+async def test_protected_developer_authority_preserves_handoff_and_reviewer_scope(session, protected_engine, persona, reviewer, handoff):
+    from datetime import UTC, datetime
+
+    from src.agentauth.grants import AgentAction
+
+    store, writer = protected_engine
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    pending = report.pending[0]
+    pending.envelope["persona"] = persona
+    pending.envelope["handoff_required"] = handoff
+    envelope = writer.provision(pending)
+    grant = store.live_grant(invocation_id=envelope["message_id"], tenant_id=ORG_A, attempt=1, now=datetime.now(UTC))
+    assert (AgentAction.DISPATCH in grant.allowed_actions) is (not handoff)
+    row = store._read(f"TENANT#{ORG_A}", f"GRANT#{grant.principal}")
+    if handoff:
+        assert "dispatch_personas" not in row
+    else:
+        assert row["dispatch_personas"] == {"SS": [reviewer]}
+
+
+@pytest.mark.parametrize("persona", ["agent-codex-architect", "operations", "unknown-persona"])
+async def test_protected_story_authority_refuses_unsupported_personas(session, protected_engine, persona):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+
+    store, writer = protected_engine
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    await session.commit()
+    pending = report.pending[0]
+    pending.envelope["persona"] = persona
+    with pytest.raises(BootstrapRefusedError, match="unsupported engine persona"):
+        writer.provision(pending)
+    assert store.client.scan(TableName="authority", Select="COUNT")["Count"] == 0
+    assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0

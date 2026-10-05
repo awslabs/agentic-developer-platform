@@ -527,11 +527,23 @@ async def _run() -> TickReport:
             # Give existing review/repair work first use of released capacity;
             # otherwise new development can starve a completed PR at limit one.
             await session.commit()
+            from .review_recovery import recover_stalled_stories
+
+            try:
+                recovered = await recover_stalled_stories(factory)
+                logger.info("orchestration stalled-review recovery: recovered=%d", recovered)
+            except Exception:
+                logger.exception("orchestration stalled-review recovery: pass failed; prior controls remain committed")
+                report.errors += 1
             try:
                 execution_runner_report = await run_execution_runner(factory)
             except Exception:
                 logger.exception("orchestration execution runner: pass failed; prior controls and observations are committed")
                 execution_runner_report = RunnerReport(enabled=True, errors=1)
+            from .developer_recovery import recover_failed_developers
+
+            recovered_developers = await recover_failed_developers(session)
+            logger.info("orchestration developer recovery: scheduled=%d", recovered_developers)
             dispatch_report = await run_dispatch_pass(session)
             # Last, so the rendered snapshot reflects every transition this
             # invocation made — including the dispatch just above, which is the

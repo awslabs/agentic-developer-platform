@@ -1,0 +1,9 @@
+2026-09-25T05:10:22.031046335Z 2026-09-25 05:10:22,030 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=f0fe004d-86fa-42ee-b12a-b5c53b314f26 event_type=progress.updated emitted_at=2026-09-25T05:10:22.030+00:00
+2026-09-25T05:10:29.268418629Z 2026-09-25 05:10:29,268 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=32ab85ab-0da7-4d72-8445-62328629099c event_type=progress.updated emitted_at=2026-09-25T05:10:29.268+00:00
+2026-09-25T05:10:30.294871739Z 2026-09-25 05:10:30,294 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=a98264a0-5f3b-4645-bb3c-6033c9fc79a6 event_type=progress.updated emitted_at=2026-09-25T05:10:30.294+00:00
+2026-09-25T05:10:30.713003381Z 2026-09-25 05:10:30,712 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=25cb0b25-1ea3-40a1-8286-a20302e69fce event_type=input.required emitted_at=2026-09-25T05:10:30.712+00:00
+2026-09-25T05:10:42.506308710Z 2026-09-25 05:10:42,506 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=07667132-3fd6-4f00-b8f6-2552a4274edf event_type=progress.updated emitted_at=2026-09-25T05:10:42.506+00:00
+2026-09-25T05:10:43.126017273Z 2026-09-25 05:10:43,125 INFO Task child closed input before durable report acknowledgement
+2026-09-25T05:10:43.126202598Z 2026-09-25 05:10:43,126 INFO Task report emission task_id=tsk_866578d0-a044-420a-9d76-ff4869432f33 report_id=ee1c6016-4bb7-4bc5-9898-80d21e2a6a1b event_type=progress.updated emitted_at=2026-09-25T05:10:43.126+00:00
+2026-09-25T05:10:44.498638998Z 2026-09-25 05:10:44,498 INFO Heartbeat stopped (total extensions=0)
+2026-09-25T05:10:44.918883245Z 2026-09-25 05:10:44,918 INFO Heartbeat stopped (total extensions=0)

@@ -567,3 +567,44 @@ class TestAPolicylessPlanIsReportedAsUnbounded:
         # `human_decisions` may legitimately be empty, so assert the key's presence
         # rather than a truthy value: what matters is that retained gates are stated.
         assert "human_decisions" in summary
+
+
+def test_preview_shows_model_authored_epic_and_wave_text(app_with_router, autonomy_default_unset):
+    from src.orchestration.proposal import EpicMetadata, WaveMetadata
+
+    proposal = gateless_proposal()
+    _, epic, wave, _ = proposal.nodes[0].address.split("/")
+    proposal = proposal.model_copy(
+        update={
+            "epic_metadata": [EpicMetadata(epic_ref=epic, title="External tasks", description="Services need tasks without GitHub.")],
+            "wave_metadata": [WaveMetadata(epic_ref=epic, wave_ref=wave, title="Task contracts", description="Freeze and verify the contract.")],
+        }
+    )
+    response = preview(app_with_router, proposal)
+    assert response.status_code == 200, response.text
+    assert response.json()["epic_metadata"][0]["title"] == "External tasks"
+    assert response.json()["waves"][0]["description"] == "Freeze and verify the contract."
+
+
+def test_preview_exposes_executor_and_binds_it_to_plan_hash(app_with_router, autonomy_default_unset):
+    from src.orchestration.executor_assignment import ExecutorAssignment
+
+    proposal = gateless_proposal()
+    original = preview(app_with_router, proposal).json()
+    story = next(node for node in proposal.nodes if node.kind == "story")
+    story.executor = ExecutorAssignment(kind="agent", role="develop", persona="agent-codex-developer")
+    response = preview(app_with_router, proposal)
+    assert response.status_code == 200
+    body = response.json()
+    selected = next(node for node in body["nodes"] if node["address"] == story.address)
+    assert selected["executor"] == {"schema_version": 1, "kind": "agent", "role": "develop", "persona": "agent-codex-developer"}
+    assert body["plan_hash"] != original["plan_hash"]
+
+
+def test_preview_rejects_unsupported_executor_before_registration(app_with_router, autonomy_default_unset):
+    proposal = gateless_proposal().model_dump(mode="json")
+    story = next(node for node in proposal["nodes"] if node["kind"] == "story")
+    story["executor"] = {"kind": "agent", "role": "develop", "persona": "operations"}
+    with client_for(app_with_router, permitted=True) as client:
+        response = client.post(ROUTE, json=proposal)
+    assert response.status_code == 422

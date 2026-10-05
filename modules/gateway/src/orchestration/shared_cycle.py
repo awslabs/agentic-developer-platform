@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from sqlalchemy import select
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .dispatch_pass import DispatchPassConfig, _build_envelope, _get_sqs_client, attempt_run_id
 from .execution_policy import Action
@@ -82,7 +83,9 @@ async def validate_current_report_assignment(session, row):
     if claim.active_run_id != row.run_id:
         raise RunReportError("execution_assignment_superseded")
     plan, _ = await shared_marker(session, org_id=row.org_id, flow_id=row.flow_id)
-    if plan.version != identity.accepted_plan_version:
+    from .plan_lineage import ancestor_plan
+
+    if await ancestor_plan(session, plan, identity.accepted_plan_version, node_id=identity.node_id) is None:
         raise RunReportError("execution_assignment_superseded")
     operation = (metadata.get("review_cycle_input") or {}).get("operation_key")
     if operation:
@@ -169,7 +172,7 @@ async def registration_target_for_report(session, row):
     receipt = await session.get(OrchestrationDecision, receipt_id(operation)) if operation else None
     saved = json.loads(receipt.reason) if receipt else {}
     if (
-        row.persona not in {"developer", "agent-codex-reviewer"}
+        row.persona not in (DEVELOPER_PERSONAS | {"agent-codex-reviewer"})
         or receipt is None
         or receipt.org_id != row.org_id
         or receipt.flow_id != row.flow_id
@@ -471,6 +474,13 @@ class SharedCycleServices(ReviewCycleServices):
                 return envelope
             raw, _, inputs, principal, _ = await self.authorize(session, context, node, binding, detail["active_run_id"], effect.action, reserve=True)
             allow_story_repairs = effect.action is Action.REPAIR
+            allow_review_evidence = effect.action is Action.REVIEW
+            if effect.action is Action.REPAIR:
+                try:
+                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REVIEW, reserve=False)
+                    allow_review_evidence = True
+                except CycleBlockedError:
+                    pass
             if effect.action is Action.REVIEW:
                 try:
                     await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR, reserve=False)
@@ -511,7 +521,7 @@ class SharedCycleServices(ReviewCycleServices):
             )
             envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
             envelope["action"] = effect.action.value
-            envelope["pr_binding_required"] = effect.action is Action.REPAIR
+            envelope["pr_binding_required"] = effect.action is Action.REPAIR and not allow_review_evidence
             envelope["bound_pull_request"] = {
                 "repo": binding.repo,
                 "pr_number": binding.pr_number,
@@ -526,8 +536,10 @@ class SharedCycleServices(ReviewCycleServices):
             }
             envelope["review_cycle_input"].update(
                 allow_story_repairs=allow_story_repairs,
+                reviewer_owned_delivery=allow_review_evidence,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
+                recovery=detail.get("recovery"),
                 operation_key=action.operation_key,
             )
             envelope["execution_continuation"] = {
@@ -536,7 +548,7 @@ class SharedCycleServices(ReviewCycleServices):
                 "claim_id": context.identity.claim_id,
                 "claim_generation": context.identity.claim_generation,
             }
-            if effect.action is Action.REVIEW:
+            if allow_review_evidence:
                 envelope["review_expect"] = {
                     **envelope["execution_continuation"],
                     "org_id": node.org_id,

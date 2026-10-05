@@ -1,0 +1,118 @@
+{
+  "collected_at": "2026-09-27T14:45:03.488789+00:00",
+  "pods": [
+    {
+      "pod": "cloudwatch-agent-5bgb7",
+      "node": "i-0000000000000000f",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-6sdxz",
+      "node": "i-0000000000000000d",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-bnfpc",
+      "node": "i-0000000000000001f",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-ds4c2",
+      "node": "i-00000000000000031",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-ksdcs",
+      "node": "i-00000000000000015",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-njjxt",
+      "node": "i-00000000000000002",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "cloudwatch-agent-wvzrc",
+      "node": "i-0000000000000000c",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-4mc45",
+      "node": "i-0000000000000001f",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-9kbvc",
+      "node": "i-00000000000000015",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-hwdbd",
+      "node": "i-00000000000000002",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-rv57b",
+      "node": "i-00000000000000031",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-srf4r",
+      "node": "i-0000000000000000c",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-tln7q",
+      "node": "i-0000000000000000d",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    },
+    {
+      "pod": "fluent-bit-vqk4f",
+      "node": "i-0000000000000000f",
+      "ready": true,
+      "role_arns": [
+        "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+      ]
+    }
+  ],
+  "possible_log_loss": true
+}

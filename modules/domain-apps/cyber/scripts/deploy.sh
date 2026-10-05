@@ -39,7 +39,13 @@ terraform init \
   -backend-config="dynamodb_table=adp-terraform-locks" \
   -input=false
 
-terraform apply -var-file=terraform.tfvars -auto-approve
+# The checked-in tfvars contains a literal ACCOUNT_ID placeholder. Always bind
+# the app stack to the selected profile rather than inheriting that example.
+terraform apply -var-file=terraform.tfvars \
+  -var="account_id=${ACCOUNT_ID}" \
+  -var="environment=${ENVIRONMENT}" \
+  -var="aws_region=${AWS_REGION}" \
+  -auto-approve
 
 # Capture outputs
 CLUSTER_NAME=$(terraform output -raw cyber_cluster_name)
@@ -54,6 +60,9 @@ echo "Triage queue:  ${TRIAGE_QUEUE_URL}"
 echo "Static queue:  ${STATIC_QUEUE_URL}"
 echo "Results table: ${RESULTS_TABLE}"
 echo ""
+
+# Cyber owns the optional gateway broker configuration and its IAM grant.
+bash "${SCRIPT_DIR}/configure-gateway.sh"
 
 # ---------------------------------------------------------------------------
 # Step 2: Configure kubectl for the cyber cluster

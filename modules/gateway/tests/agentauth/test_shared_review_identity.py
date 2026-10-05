@@ -58,6 +58,53 @@ async def test_authenticated_review_gets_read_only_code_and_formal_review_permis
     assert req.state.agent_github_permissions == {"contents": "read", "pull_requests": "write", "metadata": "read"}
 
 
+async def test_binding_carries_the_repository_verified_against_the_report_row(review_identity):
+    """Issue #5663 (A09): the verified repository must survive into the binding.
+
+    The token route refuses a mint whose binding records no repository, because
+    absent server-side evidence must not authorize a caller-named repository. This
+    function already proves the repository — it compares repo_owner/repo_name to
+    ``row.repo`` above — so dropping it from ``InstallationBinding`` turned a fully
+    authenticated review assignment into an apparently unbound one, and a legitimate
+    shared-review mint was refused with ``repo_binding_failed`` while every other
+    check on it passed.
+
+    Asserting the value (not merely that it is set) is what makes this a binding
+    rather than a placeholder: it must equal the report row's own repository.
+    """
+    req = request(review_identity)
+    await verify_shared_review_worker(req)
+
+    binding = req.state.agent_installation_binding
+    assert binding.repo == review_identity.binding.repo
+    assert binding.tenant_id == review_identity.node.org_id
+
+    # And the route's own check accepts it, which is the property that was broken.
+    from src.internal.routes import _assert_token_repo_binding
+
+    _assert_token_repo_binding(binding, review_identity.binding.repo)
+
+
+async def test_a_review_binding_is_still_refused_for_a_different_repository(review_identity):
+    """The restored repository is a real constraint, not a rubber stamp.
+
+    A binding that carried some placeholder would satisfy the test above and still
+    authorize any repository; this pins that the token route's comparison refuses a
+    repository other than the one the report row named.
+    """
+    from fastapi import HTTPException as _HTTPException
+
+    from src.internal.routes import _assert_token_repo_binding
+
+    req = request(review_identity)
+    await verify_shared_review_worker(req)
+
+    owner = review_identity.binding.repo.split("/")[0]
+    with pytest.raises(_HTTPException) as exc:
+        _assert_token_repo_binding(req.state.agent_installation_binding, f"{owner}/secrets")
+    assert exc.value.detail["error"] == "repo_binding_mismatch"
+
+
 @pytest.mark.parametrize(
     "field,value", [("invocation_id", "other"), ("installation_id", 999), ("repo_owner", "foreign"), ("repo_name", "other"), ("identity", "default")]
 )
@@ -84,6 +131,15 @@ async def test_stale_or_unstarted_report_cannot_mint_reviewer_identity(review_id
 
 async def test_repair_action_cannot_assume_review_identity(review_identity):
     ctx = review_identity
+    # A legacy review can hand off a separate repair. The repair still cannot
+    # mint the formal review identity, even when it owns subsequent delivery.
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationRunReport, ctx.calls[-1]["message_id"])
+        row.dispatch_metadata = {
+            **row.dispatch_metadata,
+            "review_cycle_input": {**row.dispatch_metadata["review_cycle_input"], "reviewer_owned_delivery": False},
+        }
+        await db.commit()
     await review(ctx, findings=[{"summary": "fix", "finding_id": "F1", "evidence_refs": []}])
     assert (await tick(ctx)).effects_succeeded == 1
     assert ctx.calls[-1]["review_cycle_input"]["action"] == "repair"

@@ -9,9 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
+from src.agentauth.task_repository_policy import TaskRepositoryBinding
 from src.shared.models.persona_models import ALIAS_SOURCES
 
 # The registrable alias vocabulary is DERIVED from the model's ALIAS_SOURCES, which
@@ -39,11 +41,13 @@ class PreferenceEntry(BaseModel):
     availability_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
+    default_model_id: str | None = None
     effective_model_id: str | None = None
     effective_is_candidate: bool
     source: Literal["principal-mapping", "system-default"]
     status: Literal["configured", "not-configured", "unavailable", "disallowed", "stale"] = "not-configured"
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -77,6 +81,7 @@ class PreferenceDetailResponse(BaseModel):
     source: Literal["principal-mapping", "system-default"]
     status: str
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -112,6 +117,8 @@ class PersonaModelCostEntryResponse(BaseModel):
 
 class PersonaCostResponse(BaseModel):
     """Tenant- and owner-scoped usage-ledger cost report."""
+
+    tenant_id: str
 
     principal_kind: Literal["human", "service_account"]
     principal_id: str
@@ -223,6 +230,7 @@ class ConflictResponse(BaseModel):
     default_model_id: str | None = None
     default_source: str
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
 
 # ── Registration models ─────────────────────────────────────────────────────
@@ -234,6 +242,7 @@ class RegisterServicePrincipalRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     alias_source: AliasSource
     alias_id: str = Field(min_length=1, max_length=255)
+    operation_id: UUID | None = None
 
 
 class RegisterServicePrincipalResponse(BaseModel):
@@ -251,12 +260,14 @@ class LinkAliasRequest(BaseModel):
 
     alias_source: AliasSource
     alias_id: str = Field(min_length=1, max_length=255)
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class StatusTransitionRequest(BaseModel):
     """Body for ``PATCH /service-principals/{canonical_id}/status``."""
 
     status: Literal["active", "suspended", "retired"]
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class StatusTransitionResponse(BaseModel):
@@ -276,3 +287,58 @@ class AliasResponse(BaseModel):
     canonical_service_principal_id: str
     is_active: bool
     registered_by: str
+
+
+class TaskPolicyLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_duration_minutes: int = Field(ge=1, le=360, strict=True)
+    max_turns: int = Field(ge=1, le=1000)
+    codex_max_turns: int | None = Field(default=None, ge=1, le=1000)
+    max_output_tokens_per_turn: int = Field(ge=1, le=10000)
+    max_usd_per_task: Decimal = Field(gt=0, allow_inf_nan=False)
+
+    @model_serializer(mode="wrap")
+    def omit_unused_codex_limit(self, handler):
+        value = handler(self)
+        if self.codex_max_turns is None:
+            value.pop("codex_max_turns", None)
+        return value
+
+    @field_validator("max_duration_minutes", mode="before")
+    @classmethod
+    def integer_duration(cls, value):
+        # DynamoDB returns integral numbers as Decimal; JSON inputs remain strict.
+        if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+            return int(value)
+        return value
+
+
+class TaskPolicyPutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0)
+    status: Literal["active", "disabled"]
+    allowed_personas: list[str] = Field(min_length=1, max_length=16)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=64)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict, max_length=32)
+    task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
+    model_policy_version: str = Field(min_length=1, max_length=128)
+    model_policy_versions: dict[str, str] = Field(default_factory=dict, max_length=16)
+    limits: TaskPolicyLimits
+
+
+class TaskPolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"] = "1.0"
+    tenant_id: str
+    canonical_principal_id: str
+    version: int
+    status: Literal["active", "disabled"]
+    allowed_personas: list[str]
+    allowed_tools: list[str] = Field(default_factory=list)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict)
+    task_scopes: list[str]
+    model_policy_version: str
+    model_policy_versions: dict[str, str] = Field(default_factory=dict)
+    limits: TaskPolicyLimits
+    updated_at: datetime
+    updated_by: str

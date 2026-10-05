@@ -25,7 +25,7 @@ def context(env, read):
         raise ValueError("deployment cluster identity differs from configuration")
     names = ["account_id", "customer_account_id", "customer_aws_label", "customer_user_id", "environment"]
     if workflow.endswith("run-gateway-migrations.yml"):
-        names.append("expected_image")
+        names.extend(("expected_image", "expected_image_tag", "expected_image_digest"))
     return {
         "schema_version": 1,
         "repository_id": int(env["CONTEXT_REPOSITORY_ID"]),

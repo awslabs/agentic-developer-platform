@@ -26,7 +26,17 @@ from src.agentauth.policy import AgentAuthorizationService, PolicyError
 logger = logging.getLogger("bedrockgateway.agentauth.dispatch")
 
 AgentPersona = Literal[
-    "developer", "reviewer", "operations", "aidlc", "architect", "pm", "product", "codex", "malware-analysis-agent", "pt-superpower"
+    "developer",
+    "reviewer",
+    "operations",
+    "aidlc",
+    "architect",
+    "pm",
+    "product",
+    "codex",
+    "malware-analysis-agent",
+    "pt-superpower",
+    "agent-codex-developer",
 ]
 
 # Issue #5365: mirrors the trusted webhook writer
@@ -39,7 +49,7 @@ FAN_OUT_CAPABILITY = "root_coordinator_repository_fan_out"
 FAN_OUT_REPOSITORY_FIELD = "dispatch_repository_scope"
 # Personas the platform will record as a coordinator. Not a persona the caller
 # names: this is compared against the persona on the server-written EXEC row.
-COORDINATOR_PERSONAS = frozenset({"operations", "aidlc"})
+COORDINATOR_PERSONAS = frozenset({"operations", "aidlc", "agent-codex-pm"})
 
 
 def _root_coordinator_fan_out(*, grant, raw_grant: dict, parent: dict, target_repo: str, graph_cleared: bool) -> bool:
@@ -227,8 +237,12 @@ class DispatchService:
             envelope = self._envelope(body, caller, grant, invocation, installation, depth, now)
             from src.orchestration.work_admission import enabled as work_claims_enabled
 
+            repository_id = int(parent.get("provider_repository_id", {}).get("N", "0"))
+            if body.persona == "agent-codex-developer" and repository_id <= 0:
+                raise BootstrapRefusedError("Codex dispatch requires immutable repository identity")
+            if repository_id > 0:
+                envelope["source_ref"]["provider_repository_id"] = repository_id
             if work_claims_enabled():
-                repository_id = int(parent.get("provider_repository_id", {}).get("N", "0"))
                 if repository_id <= 0:
                     raise BootstrapRefusedError("parent dispatch has no immutable repository identity")
                 envelope["source_ref"]["provider_repository_id"] = repository_id
@@ -287,7 +301,7 @@ class DispatchService:
         coordinates = (parent.authority.kind == AUTHORITY_SERVICE_POLICY and body.persona in {"operations", "aidlc", "codex"}) or bool(
             graph and graph.wave_coordinator
         )
-        if body.persona == "developer" or coordinates:
+        if body.persona in {"developer", "agent-codex-developer"} or coordinates:
             actions.add(AgentAction.DISPATCH)
         if not actions <= parent.delegable_actions:
             raise BootstrapRefusedError("child privileges exceed delegation")
@@ -374,8 +388,8 @@ class DispatchService:
                 execution["wave_coordinator"] = {"BOOL": True}
         child_item["work_item_issue"] = execution["issue_number"]
         child_item["max_total_dispatches"] = {"N": "1"}
-        if envelope["persona"] == "developer":
-            child_item["dispatch_personas"] = {"SS": ["reviewer"]}
+        if envelope["persona"] in {"developer", "agent-codex-developer"}:
+            child_item["dispatch_personas"] = {"SS": ["agent-codex-reviewer" if envelope["persona"] == "agent-codex-developer" else "reviewer"]}
         if command.get("wave_coordinator") == {"BOOL": True}:
             ceiling = min(16, int(raw_grant.get("max_child_dispatches", raw_grant["max_total_dispatches"])["N"]))
             if ceiling < 1:

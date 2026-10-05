@@ -158,6 +158,24 @@ def _row(table, session_id: str) -> dict:
     return table.get_item(Key={"session_id": session_id}).get("Item") or {}
 
 
+def _create_session(handler, claims: dict, connection_id: str = "conn-attacker") -> str:
+    """Start a conversation the way production does and return its id.
+
+    #5615: a session exists only because `create-session` issued it. Tests that
+    need an owned session for the caller's OWN identity go through this route
+    rather than writing a row directly, so what they exercise is the real
+    creation path. `_seed_victim_session` still writes directly — it stands in
+    for somebody ELSE's pre-existing conversation.
+    """
+    result = handler.lambda_handler(
+        _ws_event({"action": "create-session", "request_id": "req-cs"},
+                  claims, connection_id),
+        None,
+    )
+    assert result["statusCode"] == 200, result["body"]
+    return json.loads(result["body"])["session_id"]
+
+
 # ---------------------------------------------------------------------------
 # 1. The message path
 # ---------------------------------------------------------------------------
@@ -595,11 +613,33 @@ class TestUploadOwnership:
         assert aws["artifacts"].scan()["Items"] == []
 
     def test_upload_before_the_first_message_is_allowed(self, aws):
-        """A session that does not exist yet is not somebody else's.
+        """Uploads legitimately precede the opening message, and still do.
 
-        Uploads legitimately precede the opening message; refusing here would
-        break attaching a file to a brand-new conversation.
+        This route used to CREATE the session it was asked about, which is how
+        that case was served. #5615 removed that, because it was also a second
+        way to name a conversation and so bypassed the server-issued-only
+        contract. The case itself is preserved: the row now exists from
+        `create-session`, which the browser calls before it can offer the drop
+        zone at all, so a file can still be attached before any message is sent.
         """
+        handler = _import_handler()
+        handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
+        session_id = _create_session(handler, ATTACKER, "conn-attacker")
+
+        with patch.object(handler.s3_client, "generate_presigned_url",
+                          return_value="https://s3.example.com/presigned"):
+            result = handler.lambda_handler(_ws_event({
+                "action": "upload-token", "session_id": session_id,
+                "filename": "notes.txt",
+            }, ATTACKER), None)
+
+        assert result["statusCode"] == 200
+        assert _row(aws["sessions"], session_id)["owner_principal"] == _principal(ATTACKER)
+        # No message has been sent on it yet — the upload really is first.
+        assert _row(aws["sessions"], session_id)["messages"] == []
+
+    def test_a_session_the_server_never_issued_is_refused(self, aws):
+        """#5615: naming an id is not a request to create it, on any route."""
         handler = _import_handler()
         handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
 
@@ -610,9 +650,8 @@ class TestUploadOwnership:
                 "filename": "notes.txt",
             }, ATTACKER), None)
 
-        assert result["statusCode"] == 200
-        row = _row(aws["sessions"], "sess-brand-new")
-        assert row["owner_principal"] == _principal(ATTACKER)
+        assert result["statusCode"] == 404
+        assert not _row(aws["sessions"], "sess-brand-new")
 
 
 # ---------------------------------------------------------------------------
@@ -621,26 +660,28 @@ class TestUploadOwnership:
 
 class TestUploadKeyIsServerDerived:
     @staticmethod
-    def _reserve(handler) -> None:
-        handler._reserve_upload_session("sess-own", "conn-attacker", {
-            "tenant_id": ATTACKER["custom:org_id"],
-            "org_id": ATTACKER["custom:org_id"],
-            "team_id": ATTACKER["custom:team_id"],
-            "user_id": ATTACKER["sub"],
-        })
+    def _own_session(handler) -> str:
+        """The uploader's own conversation, created the way production does.
 
-    def _complete(self, handler, body_extra: dict) -> dict:
+        #5615: `upload-token` no longer creates the row it is asked about, so
+        these tests start the conversation through `create-session` and use the
+        id the server issues. The id is therefore random per test, which is why
+        it is threaded through the helpers below rather than hard-coded.
+        """
+        return _create_session(handler, ATTACKER)
+
+    def _complete(self, handler, session_id: str, body_extra: dict) -> dict:
         body = {
-            "action": "upload-complete", "session_id": "sess-own",
+            "action": "upload-complete", "session_id": session_id,
             "task_id": "task-1", "filename": "notes.txt", "checksum": "cafe1234",
         }
         body.update(body_extra)
         return handler.lambda_handler(_ws_event(body, ATTACKER), None)
 
-    def _catalogue_row(self, aws) -> dict:
+    def _catalogue_row(self, aws, session_id: str) -> dict:
         rows = aws["artifacts"].query(
             KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": "session#sess-own"},
+            ExpressionAttributeValues={":pk": f"session#{session_id}"},
         )["Items"]
         assert len(rows) == 1
         return rows[0]
@@ -654,38 +695,40 @@ class TestUploadKeyIsServerDerived:
         """
         handler = _import_handler()
         handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
-        self._reserve(handler)
+        session_id = self._own_session(handler)
 
         forged = f"o/org-victim/t/team-v/u/{VICTIM['sub']}/s/{VICTIM_SESSION}/t/in/secret.pdf"
-        result = self._complete(handler, {"s3_key": forged})
+        result = self._complete(handler, session_id, {"s3_key": forged})
 
         assert result["statusCode"] == 200
-        assert self._catalogue_row(aws)["s3Key"] != forged
+        assert self._catalogue_row(aws, session_id)["s3Key"] != forged
 
     def test_stored_key_is_under_the_uploaders_own_prefix(self, aws):
         handler = _import_handler()
         handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
-        self._reserve(handler)
+        session_id = self._own_session(handler)
 
-        self._complete(handler, {
+        self._complete(handler, session_id, {
             "s3_key": f"o/org-victim/t/team-v/u/{VICTIM['sub']}/s/{VICTIM_SESSION}/t/in/x.pdf",
         })
 
-        stored = self._catalogue_row(aws)["s3Key"]
+        stored = self._catalogue_row(aws, session_id)["s3Key"]
         assert stored == (
-            f"o/org-attacker/t/team-a/u/{ATTACKER['sub']}/s/sess-own/task-1/in/notes.txt"
+            f"o/org-attacker/t/team-a/u/{ATTACKER['sub']}"
+            f"/s/{session_id}/task-1/in/notes.txt"
         )
 
     @pytest.mark.parametrize("poison_kind", ["foreign_key", "missing_owner"])
     def test_checksum_match_does_not_reuse_an_unverified_catalogue_row(self, aws, poison_kind):
         handler = _import_handler()
         handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
-        self._reserve(handler)
+        session_id = self._own_session(handler)
         derived_key = (
-            f"o/org-attacker/t/team-a/u/{ATTACKER['sub']}/s/sess-own/task-1/in/notes.txt"
+            f"o/org-attacker/t/team-a/u/{ATTACKER['sub']}"
+            f"/s/{session_id}/task-1/in/notes.txt"
         )
         poisoned = {
-            "PK": "session#sess-own",
+            "PK": f"session#{session_id}",
             "SK": "art#2026-01-01T00:00:00.000Z#art_poisoned",
             "id": "art_poisoned",
             "checksum": "cafe1234",
@@ -703,7 +746,7 @@ class TestUploadKeyIsServerDerived:
             })
         aws["artifacts"].put_item(Item=poisoned)
 
-        result = self._complete(handler, {})
+        result = self._complete(handler, session_id, {})
 
         body = json.loads(result["body"])
         assert result["statusCode"] == 200
@@ -711,7 +754,7 @@ class TestUploadKeyIsServerDerived:
         assert body["artifact_id"] != "art_poisoned"
         rows = aws["artifacts"].query(
             KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": "session#sess-own"},
+            ExpressionAttributeValues={":pk": f"session#{session_id}"},
         )["Items"]
         created = next(row for row in rows if row["id"] == body["artifact_id"])
         assert created["s3Key"] == derived_key
@@ -721,17 +764,18 @@ class TestUploadKeyIsServerDerived:
         """Both halves must agree or the catalogue points at a nonexistent object."""
         handler = _import_handler()
         handler._persist_connection_claims("conn-attacker", {"claims": ATTACKER})
+        session_id = self._own_session(handler)
 
         with patch.object(handler.s3_client, "generate_presigned_url",
                           return_value="https://s3.example.com/p"):
             token = handler.lambda_handler(_ws_event({
-                "action": "upload-token", "session_id": "sess-own",
+                "action": "upload-token", "session_id": session_id,
                 "task_id": "task-1", "filename": "notes.txt",
             }, ATTACKER), None)
 
         issued = json.loads(token["body"])["s3_key"]
-        self._complete(handler, {})
-        assert self._catalogue_row(aws)["s3Key"] == issued
+        self._complete(handler, session_id, {})
+        assert self._catalogue_row(aws, session_id)["s3Key"] == issued
 
     def test_incomplete_identity_cannot_write_an_unqualified_key(self, aws):
         """No org/team means no expressible owner prefix, so refuse.
@@ -767,3 +811,10 @@ class TestUploadKeyIsServerDerived:
                 claims["custom:org_id"], claims["custom:team_id"], claims["sub"],
                 "sess-own", "task-1", "notes.txt",
             )
+
+
+def test_task_chat_sessions_cannot_reenter_legacy_ingest(aws):
+    handler = _import_handler()
+    item = {"owner_principal": _principal(VICTIM), "chat_task_persona": "agent-task-investigator"}
+    with pytest.raises(handler.SessionOwnershipError):
+        handler._assert_session_item_owner(item, _principal(VICTIM), "chat-owned")

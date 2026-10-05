@@ -1,10 +1,28 @@
 name: Agent Factory Infra Plan
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'modules/agent-factory/infra/**'
       - 'environments/dev/modules/agent-factory-backend.tfvars'
+      # This workflow itself, and the build script the plan now depends on.
+      # Without these, a PR that changes how the plan runs cannot exercise the
+      # plan — which is how two bugs survived here (a missing build step and a
+      # missing `set -o pipefail` that masked it). Every other workflow in this
+      # repo already lists itself; this one was the outlier. The build script is
+      # listed for the same reason: it produces the bundle chat-agent-infra.tf
+      # reads at plan time, so breaking it breaks the plan, and the plan must be
+      # able to say so.
+      - '.github/workflows/agent-factory-infra-plan.yml'
+      - 'platform/scripts/build-agent-factory-lambdas.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -18,37 +36,60 @@ env:
 
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch')
     name: Terraform Plan
+    environment: adp-deploy-dev
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       pull-requests: write
 
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Build actual Lambda inputs before planning
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
+
+      # Build the Lambda bundles BEFORE planning. chat-agent-infra.tf reads
+      # .build/session-sweeper/index.js through `file()`, which Terraform
+      # evaluates at plan time — so without this step the plan cannot even build
+      # its graph and dies with "Invalid function argument ... no file exists at
+      # ./.build/session-sweeper/index.js". agent-factory-infra-apply.yml has
+      # always run this; the plan workflow never did, which is the entire reason
+      # the plan has been failing. Keep the two in step: anything the apply needs
+      # in order to evaluate the configuration, the plan needs too, or the plan
+      # stops predicting what the apply will do.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build factory Lambda packages
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -70,6 +111,16 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
+          # pipefail is load-bearing, not boilerplate. `terraform plan | tee`
+          # makes tee the last command in the pipeline, and `set -e` only inspects
+          # the last command's status — so without pipefail a FAILING plan exits 0
+          # and this step reports success. That is how the "Invalid function
+          # argument" failure above went unnoticed: five consecutive runs across
+          # different branches all errored and all reported green, so every
+          # agent-factory Terraform change was merging with no plan validation at
+          # all. agent-factory-infra-apply.yml already sets this; the plan
+          # workflow did not.
+          set -o pipefail
           terraform plan -var-file="terraform.tfvars" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
@@ -123,3 +174,25 @@ jobs:
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.plan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
+
+  validate-pr-config:
+    name: Terraform PR Configuration
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Build actual Lambda inputs before validation
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
+      - name: Validate without state or deployment credentials
+        working-directory: modules/agent-factory/infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate -no-color

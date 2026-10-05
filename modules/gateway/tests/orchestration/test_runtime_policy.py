@@ -68,6 +68,21 @@ def test_codex_continuation_uses_engine_action_not_persona_inference(action):
     assert runtime_action(execution, SimpleNamespace(kind="story", attempts=1)) is None
 
 
+def test_reviewer_repairs_require_trusted_continuation_capability():
+    execution = {
+        "persona": {"S": "agent-codex-reviewer"},
+        "orchestration_continuation_receipt": {"S": "committed"},
+        "orchestration_continuation_action": {"S": "review"},
+        "orchestration_review_repairs": {"BOOL": True},
+    }
+    node = SimpleNamespace(kind="story", attempts=1)
+    assert runtime_action(execution, node) is Action.REVIEW
+    execution["orchestration_review_repairs"] = {"S": "true"}
+    assert runtime_action(execution, node) is Action.REVIEW
+    execution["review_cycle_input"] = {"allow_story_repairs": True}
+    assert runtime_action(execution, node) is Action.REVIEW
+
+
 async def _assignment(session, *, policy, node_kwargs=None, execution_extra=None):
     """One running, protected assignment: flow + accepted policy + node + grant.
 
@@ -139,6 +154,25 @@ async def test_current_assignment_can_obtain_repository_scoped_credential(sessio
 )
 async def test_unscopable_brokers_refuse_policy_flow(session, assignment, path):
     assert (await check(session, assignment, path)).reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
+
+
+@pytest.mark.parametrize("repair_allowed", [True, False])
+async def test_review_repair_credentials_obey_current_policy(session, assignment, repair_allowed):
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    actions = ["develop", "review", "merge"] + (["repair"] if repair_allowed else [])
+    plan.plan_document = {**plan.plan_document, "execution_policy": {**plan.plan_document["execution_policy"], "allowed_actions": actions}}
+    assignment.execution.update(
+        persona={"S": "agent-codex-reviewer"},
+        orchestration_continuation_receipt={"S": "committed"},
+        orchestration_continuation_action={"S": "review"},
+        orchestration_review_repairs={"BOOL": True},
+    )
+    await session.flush()
+    result = await check(session, assignment)
+    assert result.permitted is repair_allowed
+    if repair_allowed:
+        assert result.permissions["contents"] == "write"
+        assert result.permissions["workflows"] == "write"
 
 
 @pytest.mark.parametrize("field,value", [("repo", "other/repo"), ("tenant_id", "other-tenant"), ("orchestration_node_id", "other-node")])
@@ -250,7 +284,7 @@ async def test_broker_rechecks_policy_before_granting_binding(session, assignmen
     with pytest.raises(HTTPException) as exc:
         await verify_broker_worker(request)
     assert exc.value.status_code == 404
-    assert not hasattr(request.state, "agent_installation_binding")
+    assert getattr(request.state, "agent_installation_binding", None) is None
 
 
 @pytest.fixture
@@ -337,7 +371,14 @@ async def test_endpoint_mints_only_policy_permissions(session, assignment, broke
     assert response.json()["token"] == "scoped-token"
     assert broker_client.mint.await_args.kwargs == {
         "repositories": ["adp"],
-        "permissions": {"contents": contents, "pull_requests": pull_requests, "issues": pull_requests, "checks": "read", "metadata": "read"},
+        "permissions": {
+            "contents": contents,
+            "pull_requests": pull_requests,
+            "issues": pull_requests,
+            "checks": "read",
+            "metadata": "read",
+            **({"workflows": "write"} if contents == "write" else {}),
+        },
     }
     # No request asked for the reviewer identity, so none of these mints may use it —
     # including the reviewer run's. This is the bootstrap mint every run makes first,
@@ -689,3 +730,41 @@ class TestAnUnrecognizedAuthorityIsRefusedHere:
             authority=AuthorityReference(kind, "approval", APPROVER, assignment.grant.tenant_id),
         )
         assert (await check(session, assignment)).permitted
+
+
+async def test_repair_enabled_reviewer_can_mint_both_identities(session, assignment, broker_client):
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    plan.plan_document = {
+        **plan.plan_document,
+        "execution_policy": {**plan.plan_document["execution_policy"], "allowed_actions": ["review", "repair", "merge"]},
+    }
+    await session.flush()
+    assignment.execution.update(
+        persona={"S": "agent-codex-reviewer"},
+        orchestration_continuation_receipt={"S": "committed"},
+        orchestration_continuation_action={"S": "review"},
+        orchestration_review_repairs={"BOOL": True},
+    )
+    response = await broker_client.client.post(GITHUB, json=broker_client.body)
+    assert response.status_code == 200, response.text
+    assert broker_client.mint.await_args.kwargs["permissions"]["contents"] == "write"
+    assert broker_client.mint.await_args.kwargs["permissions"]["workflows"] == "write"
+    broker_client.reviewer.assert_not_awaited()
+    response = await broker_client.client.post(GITHUB, json={**broker_client.body, "identity": "review"})
+    assert response.status_code == 200, response.text
+    assert response.json()["identity"] == "review"
+    broker_client.reviewer.assert_awaited_once_with(ORG_A)
+    assert broker_client.mint.await_args.kwargs["permissions"] == {"contents": "read", "pull_requests": "write", "metadata": "read"}
+
+
+@pytest.mark.parametrize("attempt,expected", [(1, Action.DEVELOP), (2, Action.REPAIR)])
+def test_codex_developer_uses_development_and_repair_authority(attempt, expected):
+    from types import SimpleNamespace
+
+    from src.orchestration.runtime_policy import runtime_action
+
+    execution = {"persona": {"S": "agent-codex-developer"}}
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=attempt)) is expected
+    assert runtime_action(execution, SimpleNamespace(kind="eval", attempts=attempt)) is None
+    execution.update(orchestration_continuation_receipt={"S": "receipt"}, orchestration_continuation_action={"S": "review"})
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=attempt)) is None

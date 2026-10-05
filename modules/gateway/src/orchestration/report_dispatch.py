@@ -9,6 +9,7 @@ from sqlalchemy import JSON, or_, select
 
 from src.shared.models.base import utcnow
 
+from .flow_execution import flow_is_paused
 from .models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .run_reports import OrchestrationRunReport, RunReportError, prepare_run_report, run_result_for_assignment
 
@@ -43,7 +44,7 @@ async def recover_pending_reports(session, *, config, report) -> None:
     only this delivery never increments the story attempt or launches a new run.
     SQS deduplication plus the worker's atomic start receipt handles lost replies.
     """
-    if not reporting_enabled() or not config.configured or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+    if not reporting_enabled() or not config.configured:
         return
     from .dispatch_pass import PendingPublish, attempt_run_id, message_deduplication_id, message_group_id
     from .genesis import resolve_engine_genesis
@@ -55,7 +56,12 @@ async def recover_pending_reports(session, *, config, report) -> None:
     rows = (
         await session.scalars(
             select(OrchestrationRunReport)
+            .join(
+                OrchestrationFlow,
+                (OrchestrationFlow.id == OrchestrationRunReport.flow_id) & (OrchestrationFlow.org_id == OrchestrationRunReport.org_id),
+            )
             .where(
+                OrchestrationFlow.execution_paused.is_(False),
                 OrchestrationRunReport.expires_at > utcnow(),
                 or_(OrchestrationRunReport.worker_receipt.is_(None), OrchestrationRunReport.worker_receipt == JSON.NULL),
                 or_(OrchestrationRunReport.terminal_receipt.is_(None), OrchestrationRunReport.terminal_receipt == JSON.NULL),
@@ -65,6 +71,8 @@ async def recover_pending_reports(session, *, config, report) -> None:
         )
     ).all()
     for row in rows:
+        if await flow_is_paused(session, org_id=row.org_id, flow_id=row.flow_id, lock=True):
+            continue
         if row.run_id in pending_ids:
             continue
         node = await session.get(OrchestrationNode, row.node_id)
@@ -75,6 +83,8 @@ async def recover_pending_reports(session, *, config, report) -> None:
             or row.flow_id != node.flow_id
             or row.attempt != node.attempts
         ):
+            continue
+        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and not row.dispatch_metadata.get("execution_continuation"):
             continue
         if row.dispatch_metadata.get("review_cycle_input"):
             try:

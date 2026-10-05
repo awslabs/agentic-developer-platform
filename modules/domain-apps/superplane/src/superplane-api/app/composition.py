@@ -1,111 +1,11 @@
-"""One runtime composition of this API's trust adapters, for every entry point.
+"""Compose the API trust ports and owned transports without import-time effects.
 
-Issue #5535 (Superplane W6), EPIC #4910.
-
-## The defect this module removes
-
-Composition used to be `app/main.py:compose_vault_client()` — a function inside
-the FastAPI application module. The packaged image's capability preflight runs
-
-    docker run --rm --network=none --entrypoint python \
-        <api-image> -m app.installation capabilities
-
-and `app/installation.py` does **not** import `app.main`, so that function never
-ran in the preflight. The preflight therefore reported all four trust ports
-uncomposed *no matter how the deployment was configured* — including
-`credential_evidence`, the one port that does have a production adapter. The
-installer requires all four true (`installation/runner.py:410-419`), so the gate
-could not be satisfied by any configuration. It was not a gate; it was a wall.
-
-Two code paths answered the same question differently. This module is the single
-answer both of them now ask. The lifespan calls `compose()`; so does every
-packaged capability and readiness command, before it probes.
-
-## Why a returned record rather than a bare install
-
-`compose()` reports, per port, whether an adapter was installed and *why not*
-when one was not. The boolean the capability gate publishes is deliberately
-**not** derived from this record: a port is only reported composed after
-`app/capability_probes.py` has called the adapter and had it refuse an
-unauthorized request. This record explains a False; it can never manufacture a
-True. An earlier generation of this check answered `is not None`, and the whole
-point of #5524 was that "a name is bound" is not evidence.
-
-The distinction matters for the operator: "no vault URL configured" and "a vault
-URL is configured but the vault refused the probe" are different faults with
-different fixes, and four booleans cannot tell them apart.
-
-## Three rules this module keeps deliberately
-
-* **Nothing at import time.** A module-level install would give every test
-  process and every unrelated CLI action a network dependency it never
-  configured, and would make the ports' single-install guards unusable for
-  substitution.
-* **A pre-installed adapter is never displaced.** A test or an embedding host
-  that installed its own reader is the authority. Overwriting it would let
-  production composition silently replace a deliberately substituted trust
-  source — which is exactly why `install_credential_evidence_reader` refuses a
-  second install in the first place.
-* **Unconfigured composes nothing, rather than composing a stub.** A permissive
-  stub is a bypass; a stub that refuses everything reports a configuration gap as
-  a per-request denial. `None` makes the consumer answer 503 "unavailable", which
-  is the truthful answer and the one an operator can act on.
-
-## All four ports are composed here, and what each of the old blockers was
-
-An earlier revision of this module composed **one** port and hardcoded the other
-three as permanently blocked, in a `BLOCKED_PORTS` table. Each entry named a real
-obstacle and drew the wrong conclusion from it. They are recorded here because the
-shape of the mistake is worth keeping:
-
-* *"`harness_jobs` is not in this image."* True, and a **build** defect rather than
-  an architectural property — the same mistake, in the same tree, that
-  `app/services/provisioning.py` records having made about `superplane_contracts`:
-  the package was *unstaged*, not unreachable. `scripts/stage-domain-auth.sh` now
-  stages it and the `Dockerfile` fails the build by name if it is absent. The
-  consequence of the gap was quiet: the packaged preflight reported three ports
-  absent, and since the installer requires all four, **no deployment could pass
-  its own gate however it was configured.**
-* *"`harness_jobs` has no production `ApprovalSource` or `BudgetLedger`."* True,
-  and deliberate — `tests/test_admission_bypass.py:221` asserts it must never ship
-  one, because budget authority is domain-owned. That is an instruction to *this*
-  composer, not a blocker: `OperationFacadeService.__post_init__` refuses to be
-  built without them precisely so the domain must supply them. They are
-  `app/adapters/operation_authority_source.py` and
-  `app/adapters/operation_budget_ledger.py`.
-* *"The harness has no source for `run_id`."* True of the field name, false of the
-  identity. `harness_operation_leases.fence_token` advances on every grant and
-  takeover in the same statement that stamps the holder, so
-  `(operation_id, fence_token)` names exactly one execution and can never name a
-  second. See `app/adapters/harness_execution_authority.py`.
-* *"`_verify_authority` compares the binding to the request handle field for
-  field, so an adapter could only echo."* The comparison is the consumer asking
-  "did you agree with what I presented?". The answer is to resolve each
-  authority-carrying field from server-held state and *compare* — returning `None`
-  on disagreement, never a corrected handle. See
-  `app/adapters/harness_provider_authority.py`.
-
-What remains honestly conditional is **configuration**, not implementation: the
-three harness-backed ports need a PostgreSQL operation store, and with none
-configured they compose nothing and report why. That is the same fail-closed shape
-`credential_evidence` has always had, and it is the shape an operator can act on.
-
-## Why the harness adapters are installed before the pool is open
-
-`compose()` is synchronous and runs where there is no event loop and no network —
-the packaged capability preflight runs it under `--network=none`. So it builds the
-pool object without connecting, and `aopen()` is a separate awaited step the
-lifespan takes.
-
-That ordering is not a compromise; it is what makes the offline gate meaningful.
-All three harness adapters refuse an unauthorized probe *before* reaching the
-database: `report_progress` resolves the acting principal first, and with no
-authenticated request context there is none, so it refuses without a connection.
-The probe therefore establishes what it claims to — a real adapter, implementing
-the call, refusing in its contract's declared shape — with no database at all. A
-real request on an unopened pool gets `HarnessDatabaseUnavailable`, which each
-adapter translates to its port's unavailable answer, which is a 503 rather than a
-403.
+Offline capability checks exercise refusal contracts without connecting. Lifespan
+opens the shared operation store and starts the producer only after installation
+checks. Unconfigured adapters report unavailable. Provider authority requires the
+actual Gateway protected run mapping; a lease fence never substitutes for run ID.
+Shutdown unregisters only adapters installed by this composition and closes its
+owned transports once.
 """
 
 from __future__ import annotations
@@ -193,13 +93,20 @@ class Composition:
     _closeables: list[Any] = field(default_factory=list)
     _installed: dict[str, Any] = field(default_factory=dict)
     _connections: Any = None
+    ledger: Any = None
+    dispatcher: Any = None
+    dispatch_enabled: bool = True
+
+    @property
+    def operation_connect(self) -> Any:
+        if self._connections is None:
+            raise RuntimeError("operation authority is not configured")
+        return self._connections.connect
 
     @property
     def installed(self) -> frozenset[str]:
         """Ports with an adapter behind them, however it got there."""
-        return frozenset(
-            name for name, entry in self.ports.items() if entry.installed
-        )
+        return frozenset(name for name, entry in self.ports.items() if entry.installed)
 
     @property
     def unconfigured(self) -> dict[str, str]:
@@ -316,6 +223,20 @@ class Composition:
                     exc_info=False,
                 )
         self._connections = None
+        self.ledger = None
+        self.dispatcher = None
+
+    def start_dispatcher(self) -> None:
+        from app.operation_activation import dispatch_enabled
+
+        if (
+            self.dispatch_enabled
+            and dispatch_enabled()
+            and self.dispatcher is not None
+            and self._connections is not None
+            and self._connections.opened
+        ):
+            self.dispatcher.start()
 
 
 def _compose_credential_evidence(settings: Any, result: Composition) -> None:
@@ -444,7 +365,9 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     connect = connections.connect
     store = OperationStore()
     authority_source = GrantBackedAuthority(async_session_factory)
-    ledger = OperationBudgetLedger(connect)
+    ledger = OperationBudgetLedger(
+        connect, limits_for=authority_source.budget_limits_for
+    )
     execution = HarnessExecutionAuthority(connect, store=store)
 
     # The pool is owned by the composition, not by any one adapter: three adapters
@@ -452,17 +375,38 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     # two. `aclose` releases it once, after every port is released.
     result._connections = connections
     result._closeables.append(connections)
+    result.ledger = ledger
+    result.dispatch_enabled = (
+        getattr(settings, "superplane_operation_dispatch_enabled", True) is True
+    )
+    endpoint = getattr(settings, "superplane_operation_gateway_url", "")
+    if endpoint:
+        from app.adapters.operation_dispatch import (
+            OperationDispatcher,
+            ProducerTransport,
+        )
+
+        result.dispatcher = OperationDispatcher(
+            connect,
+            transport=ProducerTransport(
+                endpoint, getattr(settings, "superplane_operation_gateway_region", "")
+            ),
+            enabled=result.dispatch_enabled,
+        )
+        result._closeables.append(result.dispatcher)
+        execution._verify_run = result.dispatcher.verify_run
 
     adapters: dict[str, Any] = {}
     if PORT_OPERATION_FACADE in outstanding:
         adapters[PORT_OPERATION_FACADE] = HarnessOperationFacade(
-            OperationFacadeService(
+            enabled=result.dispatch_enabled,
+            service=OperationFacadeService(
                 connect=connect,
                 resolver=authority_source,
                 approvals=authority_source,
                 ledger=ledger,
                 store=store,
-            )
+            ),
         )
     if PORT_PROVIDER_AUTHORITY in outstanding:
         adapters[PORT_PROVIDER_AUTHORITY] = HarnessProviderAuthority(execution)

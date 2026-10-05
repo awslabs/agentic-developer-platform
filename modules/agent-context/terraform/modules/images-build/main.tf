@@ -44,8 +44,10 @@ resource "aws_ecr_repository" "agent_context_images" {
 }
 
 # -----------------------------------------------------------------------------
-# ECR Lifecycle Policies (match cyber-worker pattern: 7-day untagged expiry,
-# keep last 10 tagged)
+# ECR Lifecycle Policies
+# DeepWiki also stores digest-pinned build inputs: preserve tagged manifests so
+# a runtime publication cannot expire the curl packages required by its Dockerfile.
+# Other repositories retain their existing last-10 policy.
 # -----------------------------------------------------------------------------
 
 resource "aws_ecr_lifecycle_policy" "agent_context_images" {
@@ -53,7 +55,7 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
   repository = each.value.name
 
   policy = jsonencode({
-    rules = [
+    rules = concat([
       {
         rulePriority = 1
         description  = "Expire untagged images older than 7 days"
@@ -64,7 +66,8 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
           countNumber = 7
         }
         action = { type = "expire" }
-      },
+      }
+      ], each.key == "deepwiki" ? [] : [
       {
         rulePriority = 2
         description  = "Keep last 10 tagged images"
@@ -75,7 +78,7 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
         }
         action = { type = "expire" }
       }
-    ]
+    ])
   })
 }
 
@@ -87,7 +90,7 @@ resource "aws_codebuild_project" "agent_context_images" {
   for_each     = local.images
   name         = "${var.name_prefix}-${each.key}-build"
   description  = "Build + push agent-context/${each.key} image to ECR on Dockerfile change"
-  service_role = var.codebuild_service_role_arn
+  service_role = var.codebuild_service_role_arns[each.key]
 
   artifacts {
     type = "NO_ARTIFACTS"
@@ -95,7 +98,7 @@ resource "aws_codebuild_project" "agent_context_images" {
 
   source {
     type      = "S3"
-    location  = "${var.state_bucket}/codebuild/adp-source.zip"
+    location  = "${var.state_bucket}/codebuild/src/${var.name_prefix}-${each.key}-build/explicit-source-required.zip"
     buildspec = "codebuild/bs-agent-context-image.yml"
   }
 

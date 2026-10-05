@@ -7,9 +7,10 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_PERSONAS
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.persona_model_probe_service import (
     ProbeConflictError,
@@ -19,6 +20,7 @@ from src.internal.persona_model_probe_service import (
 )
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.tasks.personas import TASK_PERSONAS
 
 router = APIRouter(prefix="/internal/v1/persona-model-probes", tags=["internal-model-probes"])
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -30,11 +32,28 @@ class StrictBody(BaseModel):
 
 
 class ClaimRequest(StrictBody):
+    native_persona: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def native_profile(self):
+        if self.native_persona is not None and (self.native_persona not in NATIVE_PROBE_PERSONAS or self.task_persona is not None):
+            raise ValueError("Choose one registered native probe profile")
+        return self
+
+    task_persona: str | None = Field(default=None, max_length=128)
     trigger: Literal["scheduled", "manual", "change"] = "scheduled"
+
+    @field_validator("task_persona")
+    @classmethod
+    def registered_task_profile(cls, value):
+        if value is not None and value not in TASK_PERSONAS:
+            raise ValueError("Unknown Task probe profile")
+        return value
 
 
 class ClaimResponse(BaseModel):
     claimed: bool
+    task_probe_json: str | None = None
     reason: str | None = None
     slot_id: str | None = None
     lease_token: str | None = None
@@ -96,12 +115,11 @@ async def verify_model_probe_irsa(
     context = getattr(request.state, "token_context", None)
     if (
         context is None
-        # The IAM adapter's compatibility ``user_id`` is Agent Registry
-        # ``agent_name``: mutable and non-unique.  Bind this credential-bearing
-        # route to the immutable seeded primary key as well as its fixed
-        # platform metadata so a tenant-created lookalike name fails closed.
+        # Bind both the canonical IAM principal and immutable registry key.
+        # Display names are mutable and never identify the credential holder.
         or getattr(context, "agent_registry_id", "") != PROBE_WORKER_ID
-        or context.user_id != PROBE_WORKER_ID
+        or context.user_id != f"iam-agent:{PROBE_WORKER_ID}"
+        or context.auth_source != "iam"
         or context.org_id != "__platform__"
         or context.scope != "internal"
     ):
@@ -113,12 +131,13 @@ async def verify_model_probe_irsa(
 
 @router.post("/claim", response_model=ClaimResponse, dependencies=[Depends(verify_model_probe_irsa)])
 async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> ClaimResponse:
-    result = await claim_probe(db, trigger=body.trigger)
+    result = await claim_probe(db, trigger=body.trigger, task_persona=body.task_persona, native_persona=body.native_persona)
     if not result.claimed or result.slot is None:
         return ClaimResponse(claimed=False, reason=result.reason)
     slot = result.slot
     return ClaimResponse(
         claimed=True,
+        task_probe_json=TASK_PERSONAS[body.task_persona].probe_json if body.task_persona else None,
         slot_id=slot.id,
         lease_token=result.lease_token,
         model_id=slot.canonical_model_id,

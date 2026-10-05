@@ -1,0 +1,9 @@
+{
+  "repository": "adp-dev-agent-context-deepwiki",
+  "tagged_images_retained": true,
+  "untagged_expiry_days": 7,
+  "preview_expiring_images": 0,
+  "live_policy_matches_candidate": true,
+  "restored_build_input": "sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b",
+  "source_pr": 6710
+}

@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import BotoCoreError
 from moto import mock_aws
 
-from src.agentauth.bootstrap import BootstrapStore, envelope_digest, issue_bound_credential
+from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, envelope_digest, issue_bound_credential
 from src.agentauth.composition import build_authorization_service
 from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
 from src.agentauth.registration import AgentRegistrationService, RegistrationRefusedError
@@ -329,3 +329,166 @@ def test_revocation_between_renewal_read_and_commit_preserves_old_token(register
     with pytest.raises(RegistrationRefusedError):
         ctx.service.renew_control(**renewal(ctx))
     assert event(ctx)["control_token"] == {"S": "a" * 40}
+
+
+class TestAnAbortedRunRefusesProtectedRedelivery:
+    """Review finding 4: prove the redelivery refusal on the PROTECTED path.
+
+    The legacy direct-DynamoDB completion guard in
+    ``agent-worker-image/lib/invocation_completion.py`` reads ``status = aborted``
+    and refuses the redelivered message — but that guard explicitly refuses to run
+    when ``authority_enabled()``, so it says nothing about the path that runs in
+    production with delegated authority. On that path the refusal has to come from
+    the protected store instead, and it has to happen at *bootstrap*: before the
+    credential is issued, and therefore before any repository code, hook or agent
+    task can execute.
+
+    ``BootstrapStore.bind`` is where that happens. It admits a pod only from a
+    ``PENDING`` execution with no existing ``workload_binding``, so once an abort's
+    terminal report has moved the record to ``completed`` a redelivered message
+    cannot acquire a runtime at all. These tests establish that with the real store
+    and real conditional writes, because the claim is about what DynamoDB's
+    condition expressions actually enforce.
+
+    A note on the exit-code interaction this protects: ``_finalize_abort_acknowledgement``
+    is allowed to return ``AGENT_EXIT_RETRYABLE`` for an aborted run whose SQS delete
+    was unconfirmed, and that is only safe because the redelivery it invites is
+    refused here rather than starting the work again.
+
+    Mutation result worth recording, because it says something about the code
+    rather than about these tests: disabling EITHER the Python status precheck in
+    ``bind`` OR the ``#st = :pending AND attribute_not_exists(workload_binding)``
+    condition on its transactional write leaves all of these tests passing, and
+    disabling BOTH fails four of them. The refusal is genuinely defended twice over,
+    so these assert the property — a redelivered message cannot acquire a runtime —
+    rather than pinning either layer. Anyone removing one layer should know the other
+    is still load-bearing, and that no test will object until both are gone.
+    """
+
+    def _rebind(self, ctx, uid="pod-b"):
+        """A fresh pod attempting to claim the redelivered message."""
+        return ctx.store.bind(
+            invocation_id="run-a",
+            digest=envelope_digest(
+                {
+                    "message_id": "run-a",
+                    "tenant_id": "tenant",
+                    "persona": "developer",
+                    "arrived_at": "2026-09-13T09:00:00Z",
+                    "source_ref": {"repo": "org/repo", "issue": 42},
+                }
+            ),
+            pod=VerifiedPod(uid, "worker-b", "adp-agents", "agent-scaledjob-sa", "10.0.1.3"),
+            now=datetime.now(UTC),
+        )
+
+    def test_a_terminally_reported_run_refuses_a_fresh_pod(self, registered_context):
+        # The core of finding 4. The run reported terminally, so the execution is
+        # `completed`; a redelivered FIFO message reaching a new pod must not be able
+        # to bind, because binding is what yields the credential the run needs to do
+        # anything at all.
+        ctx = registered_context
+        register(ctx)
+        report(ctx, summary="Aborted by operator")
+        assert ctx.store.authority.load_execution(invocation_id="run-a", tenant_id="tenant").status == "completed"
+
+        with pytest.raises(BootstrapRefusedError):
+            self._rebind(ctx)
+
+    def test_the_refusal_leaves_no_binding_for_the_new_pod(self, registered_context):
+        # A refusal that still wrote a POD#/BINDING row would leave the replacement
+        # pod able to present itself later. Assert the absence, not just the raise.
+        ctx = registered_context
+        register(ctx)
+        report(ctx, summary="Aborted by operator")
+
+        with pytest.raises(BootstrapRefusedError):
+            self._rebind(ctx)
+
+        assert ctx.store._read("POD#pod-b", "BINDING") is None
+
+    def test_the_original_pods_binding_is_not_disturbed(self, registered_context):
+        # The single heartbeat/delete owner must stay the original pod: the review
+        # asked for one owner to be preserved, and a refused redelivery that
+        # reassigned `workload_binding` would have moved it.
+        ctx = registered_context
+        register(ctx)
+        report(ctx, summary="Aborted by operator")
+
+        with pytest.raises(BootstrapRefusedError):
+            self._rebind(ctx)
+
+        record = ctx.store.authority.load_execution(invocation_id="run-a", tenant_id="tenant")
+        assert record.workload_binding == "pod-a"
+
+    def test_the_refusal_does_not_depend_on_the_legacy_status_guard(self, registered_context):
+        # The distinction the review drew. Here the events row carries no `aborted`
+        # status at all — so the legacy `is_delivery_completed` guard would have
+        # nothing to read — and the protected store still refuses. That is the proof
+        # the two mechanisms are independent rather than one standing in for the other.
+        ctx = registered_context
+        register(ctx)
+        report(ctx, summary="Aborted by operator")
+        ctx.ddb.update_item(
+            TableName="events",
+            Key=ctx.key,
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": {"S": "in_progress"}},
+        )
+
+        with pytest.raises(BootstrapRefusedError):
+            self._rebind(ctx)
+
+    def test_the_same_pod_retrying_is_also_refused_once_terminal(self, registered_context):
+        # Bootstrap is idempotent for a live attempt — an identical retry by the same
+        # pod recovers its record rather than failing — so the terminal case has to be
+        # checked separately. After a terminal report even the original pod must not
+        # re-acquire a runtime, or a crash-loop restart of that same pod would resume
+        # the aborted work.
+        ctx = registered_context
+        register(ctx)
+        report(ctx, summary="Aborted by operator")
+
+        with pytest.raises(BootstrapRefusedError):
+            self._rebind(ctx, uid="pod-a")
+
+    def test_a_still_running_run_is_unaffected(self, registered_context):
+        # The guard must refuse redelivery of a FINISHED run, not break the ordinary
+        # idempotent-retry path. Before any terminal report, the original pod's
+        # identical bind still recovers its own record.
+        ctx = registered_context
+        register(ctx)
+
+        assert self._rebind(ctx, uid="pod-a").workload_binding == "pod-a"
+
+
+def test_engine_continuation_completes_without_dispatch_reservation(registered_context):
+    ctx = registered_context
+    register(ctx)
+    ctx.ddb.update_item(
+        TableName="authority",
+        Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": "EXEC#run-a"}},
+        UpdateExpression="SET parent_grant_id = :parent, orchestration_continuation_receipt = :receipt",
+        ExpressionAttributeValues={":parent": {"S": "parent-grant"}, ":receipt": {"S": "review-cycle-decision"}},
+    )
+    report(ctx)
+    report(ctx)
+    assert event(ctx)["status"] == {"S": "complete"}
+    assert "control_token" not in event(ctx)
+    assert ctx.store._read("TENANT#tenant", "EXEC#run-a")["status"] == {"S": "completed"}
+    assert ctx.store._read("TENANT#tenant", "RESV#parent-grant") is None
+
+
+def test_incomplete_agent_dispatch_reservation_still_refused(registered_context):
+    ctx = registered_context
+    register(ctx)
+    ctx.ddb.update_item(
+        TableName="authority",
+        Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": "EXEC#run-a"}},
+        UpdateExpression="SET parent_grant_id = :parent",
+        ExpressionAttributeValues={":parent": {"S": "parent-grant"}},
+    )
+    with pytest.raises(AuthorityStoreError, match="reservation metadata"):
+        report(ctx)
+    assert ctx.store._read("TENANT#tenant", "EXEC#run-a")["status"] == {"S": "active"}

@@ -67,6 +67,13 @@ on:
       # the regression guard for every change to the shared code.
       - 'platform/evals/lib/**'
       - '.github/workflows/eval-cli-onboarding.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -82,7 +89,7 @@ permissions:
 jobs:
   lint:
     name: Lint eval scripts
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
 
@@ -115,20 +122,25 @@ jobs:
         run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
 
   eval:
+    permissions:
+      contents: read
+      id-token: write
     name: Clean-room eval (${{ inputs.environment || 'dev' }})
     # Skipped on pull_request: the live matrix mutates dev (flag flip, throwaway
     # Cognito user, throwaway users row) and must never run from an untrusted PR.
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
     needs: [lint]
     outputs:
       cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 45
 
     # No job-level image: this job is the HARNESS, on the runner. The clean room
     # is the pod run-eval.sh spawns (see the header). The runner's existing RBAC
     # in adp-gateway-evals grants only the pod lifecycle verbs used here.
     env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
       AWS_REGION: us-east-1
       ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -148,18 +160,26 @@ jobs:
 
       - uses: actions/checkout@v7
 
-      - name: Install harness tooling (psql)
-        # HARNESS tools only — Cognito seeding, the flag lever, the approval row.
-        # The ARC runner image already ships aws/kubectl/jq/node/python3; psql is
-        # the one gap. The contamination gate is NOT run here: the runner is the
-        # harness and legitimately holds credentials. It runs inside the pod.
+      - name: Verify source belongs to reviewed main history
+        shell: bash
         run: |
           set -euo pipefail
-          if ! command -v psql >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends postgresql-client
-          fi
-          aws --version && kubectl version --client=true 2>/dev/null | head -1 && psql --version && jq --version
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
 
       - name: Configure kubeconfig (harness — flag lever)
         run: |
@@ -206,7 +226,7 @@ jobs:
           fi
           # eval-pod leftover check: a clean-room pod outlives the job that made
           # it, so a leak here is a leaked node until Karpenter reclaims it.
-          PODS=$(kubectl get pods -n $EVAL_POD_NAMESPACE -l app=eval-cli-onboarding \
+          PODS=$(kubectl get pods -n "$EVAL_POD_NAMESPACE" -l app=eval-cli-onboarding \
             --no-headers 2>/dev/null | wc -l | tr -d ' ')
           echo "- Leftover clean-room pods (\`app=eval-cli-onboarding\`): \`${PODS}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${PODS:-0}" != "0" ]; then

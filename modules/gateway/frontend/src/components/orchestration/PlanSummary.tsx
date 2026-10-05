@@ -5,6 +5,8 @@ interface PlanSummaryProps {
   waves: number;
   gates: number;
   evaluations: number;
+  /** Issue-linked evaluations; absent on older list API responses. */
+  evaluationStories?: number;
   /**
    * The authorized execution policy, when the flow has one (#5128).
    *
@@ -52,7 +54,8 @@ function expiryLabel(expiresAt: string): string {
 }
 
 /**
- * Planned implementation work is distinct from its approval and evaluation steps.
+ * Stories include implementation and issue-linked evaluation work. Unlinked
+ * evaluation checkpoints and approval gates are counted separately.
  *
  * When a policy is in force this also answers "what did I authorize?" — the targets
  * it applies to, what agents may do unattended, what still waits for a person, and
@@ -68,14 +71,20 @@ function expiryLabel(expiresAt: string): string {
  * Nothing here is a control: it describes authority that was already granted
  * elsewhere. Approving, amending and revoking stay on their existing surfaces.
  */
-export function PlanSummary({ stories, waves, gates, evaluations, policy }: PlanSummaryProps) {
+export function PlanSummary({ stories, waves, gates, evaluations, evaluationStories, policy }: PlanSummaryProps) {
+  const totalStories = stories + (evaluationStories ?? 0);
+  const checkpoints = evaluations - (evaluationStories ?? 0);
   return (
     <div className="text-sm text-gray-700 dark:text-gray-300" data-testid="plan-summary">
       <p className="font-medium">
-        {stories} {stories === 1 ? 'story' : 'stories'} across {waves} {waves === 1 ? 'wave' : 'waves'}
+        {totalStories} {evaluationStories === undefined ? 'implementation ' : ''}{totalStories === 1 ? 'story' : 'stories'} across {waves} {waves === 1 ? 'wave' : 'waves'}
       </p>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {gates} approval {gates === 1 ? 'gate' : 'gates'} · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}
+        {evaluationStories !== undefined && <>{stories} implementation · {evaluationStories} evaluation · </>}
+        {gates} approval {gates === 1 ? 'gate' : 'gates'}
+        {evaluationStories === undefined
+          ? <> · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}</>
+          : checkpoints > 0 && <> · {checkpoints} evaluation {checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</>}
       </p>
 
       {policy && (
@@ -161,11 +170,11 @@ export function PlanSummary({ stories, waves, gates, evaluations, policy }: Plan
           {policy.user_credentials && (
             <div data-testid="policy-user-credentials">
               <p>User credentials retain their configured permissions for {actionList(policy.user_credentials.actions)}.</p>
-              {policy.user_credentials.vault_credential_ids.length > 0 && (
-                <p>Vault credentials: {policy.user_credentials.vault_credential_ids.join(', ')}</p>
+              {policy.user_credentials.vault_credential_count > 0 && (
+                <p>Vault credentials: {policy.user_credentials.vault_credential_count}</p>
               )}
-              {policy.user_credentials.aws_role_arns.length > 0 && (
-                <p>AWS roles: {policy.user_credentials.aws_role_arns.join(', ')}</p>
+              {policy.user_credentials.aws_role_count > 0 && (
+                <p>AWS roles: {policy.user_credentials.aws_role_count}</p>
               )}
               <p>Cancellation or plan expiry stops new credential requests. Credentials already issued follow the provider’s expiry and revocation rules.</p>
               <p>These credentials may permit additional actions at the provider. ADP still requires the task’s approvals.</p>
@@ -178,7 +187,7 @@ export function PlanSummary({ stories, waves, gates, evaluations, policy }: Plan
                 the rounding the cost model avoids. */}
             <span className="text-gray-500 dark:text-gray-400">Limits: </span>
             up to ${policy.limits.max_spend_usd} total · {policy.limits.max_concurrent_actions} at a time ·{' '}
-            {policy.limits.max_attempts_per_node} {policy.limits.max_attempts_per_node === 1 ? 'attempt' : 'attempts'} per step
+            {policy.limits.max_attempts_per_node} {policy.limits.max_attempts_per_node === 1 ? 'attempt' : 'attempts'} per stage
           </p>
         </div>
       )}

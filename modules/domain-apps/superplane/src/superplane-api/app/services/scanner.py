@@ -147,14 +147,15 @@ async def scan_arxiv(
 
 def _parse_arxiv_response(xml_text: str, config: SourceConfig) -> list[dict[str, Any]]:
     """Parse arXiv Atom feed response into findings."""
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
+    from defusedxml import DefusedXmlException
 
     findings: list[dict[str, Any]] = []
     ns = {"atom": "http://www.w3.org/2005/Atom"}
 
     try:
         root = ET.fromstring(xml_text)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         logger.error("Failed to parse arXiv XML response")
         return findings
 
@@ -615,13 +616,14 @@ def _parse_rss_feed(
     xml_text: str, source_name: str, config: SourceConfig
 ) -> list[dict[str, Any]]:
     """Parse an RSS feed into findings."""
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
+    from defusedxml import DefusedXmlException
 
     findings: list[dict[str, Any]] = []
 
     try:
         root = ET.fromstring(xml_text)
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         logger.error("Failed to parse RSS XML for %s", source_name)
         return findings
 

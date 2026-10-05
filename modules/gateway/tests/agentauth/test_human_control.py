@@ -185,6 +185,9 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
         context.account_type = "service"
     elif attack == "wrong_owner":
         authority.live_grant.return_value.authority.human_id = "someone-else"
+        lookup = AsyncMock()
+        lookup.__aenter__.return_value.scalar.return_value = "someone-else"
+        monkeypatch.setattr("src.shared.database.get_session_factory", lambda: lambda: lookup)
     elif attack == "wrong_tenant":
         authority.live_grant.return_value.authority.org_id = "someone-elses-tenant"
     elif attack == "missing_key":
@@ -207,9 +210,18 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     if attack is not None:
         assert response.status_code == 404, response.text
         service._http_client.request.assert_not_awaited()
+        if attack == "missing_key":
+            # The key is only read while minting, so this refusal is the one that
+            # legitimately reaches the signer; it still forwards nothing.
+            signer.assert_called_once()
+        else:
+            # Every session/ownership refusal must be decided BEFORE an envelope
+            # exists. Asserting only the 404 would still pass if the gateway minted
+            # human authority first and discarded it, which would leave a signed
+            # cross-tenant envelope on the failure path.
+            signer.assert_not_called()
         if attack == "expired_during_ownership_read":
             authority.live_grant.assert_called_once()
-            signer.assert_not_called()
         return
     assert response.status_code == 202, response.text
     assert response.json()["command_status"] == "pending"
@@ -347,3 +359,54 @@ async def test_revalidation_refuses_missing_signing_key_id(human_queued, monkeyp
     monkeypatch.setattr(ctx.child.service.policy, "require_supported", lambda action: None)
     response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
     assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("canonical", ["human", "another-human", "login-subject"])
+async def test_protected_login_owner_resolves_in_target_workspace(human_queued, monkeypatch, canonical):
+    from src.agentauth import human_control
+
+    ctx = human_queued
+    monkeypatch.setattr(human_control, "_protected_human_owner", lambda *a, **kw: "login-subject")
+    resolver = AsyncMock(return_value=canonical)
+    monkeypatch.setattr(human_control, "resolve_canonical_user_id", resolver)
+    call = human_control.require_canonical_protected_human_owner(
+        ctx.store, user_id="human", tenant_id="tenant", run_id=ctx.target_invocation, generation=1, now=datetime.now(UTC)
+    )
+    if canonical == "human":
+        await call
+    else:
+        with pytest.raises(BootstrapRefusedError):
+            await call
+    assert resolver.await_args.args[1] == "login-subject"
+    assert resolver.await_args.kwargs == {"org_id": "tenant"}
+
+
+async def test_canonical_owner_still_requires_live_protected_registration(human_queued):
+    from src.agentauth.human_control import require_canonical_protected_human_owner
+
+    ctx = human_queued
+    await require_canonical_protected_human_owner(
+        ctx.store, user_id="human", tenant_id="tenant", run_id=ctx.target_invocation, generation=1, now=datetime.now(UTC)
+    )
+    with pytest.raises(BootstrapRefusedError):
+        await require_canonical_protected_human_owner(
+            ctx.store, user_id="human", tenant_id="tenant", run_id=ctx.target_invocation, generation=2, now=datetime.now(UTC)
+        )
+
+
+async def test_protected_login_owner_matches_real_canonical_account(human_queued, monkeypatch):
+    from src.agentauth import human_control
+
+    ctx = human_queued
+    async with ctx.session_factory() as db:
+        user = await db.get(User, "human")
+        user.cognito_sub = "verified-login-subject"
+        await db.commit()
+    monkeypatch.setattr(human_control, "_protected_human_owner", lambda *a, **kw: "verified-login-subject")
+    await human_control.require_canonical_protected_human_owner(
+        ctx.store, user_id="human", tenant_id="tenant", run_id=ctx.target_invocation, generation=1, now=datetime.now(UTC)
+    )
+    with pytest.raises(BootstrapRefusedError):
+        await human_control.require_canonical_protected_human_owner(
+            ctx.store, user_id="another-human", tenant_id="tenant", run_id=ctx.target_invocation, generation=1, now=datetime.now(UTC)
+        )

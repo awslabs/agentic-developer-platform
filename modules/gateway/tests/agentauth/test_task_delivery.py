@@ -215,3 +215,170 @@ def test_slow_journal_write_cannot_use_a_stale_effect_lease(tasks, monkeypatch, 
     with pytest.raises(TaskDeliveryError, match=refusal):
         tasks.delivery.maintain("pod-one", acknowledge=True)
     delete.assert_not_called()
+
+
+def test_ack_retains_transport_receipt_without_reusable_credentials(tasks, monkeypatch):
+    import hashlib
+
+    tasks.delivery.acquire("pod-one")
+    assigned = tasks.delivery.read("pod-one")
+    delete = Mock(wraps=tasks.sqs.delete_message)
+    monkeypatch.setattr(tasks.sqs, "delete_message", delete)
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    tombstone = tasks.delivery.read("pod-one")
+    assert tombstone["sqs_message_id"] == assigned["sqs_message_id"]
+    assert tombstone["sqs_message_id"]
+    assert tombstone["receipt_handle_sha256"] == hashlib.sha256(assigned["receipt"].encode()).hexdigest()
+    assert tombstone["ack_attempts"] == 1
+    assert tombstone["sqs_request_id"]
+    assert tombstone["sqs_http_status"] == 200
+    assert tombstone["sqs_retry_attempts"] == 0
+    assert tombstone["acknowledged_at"] == tasks.now[0]
+    assert not {"receipt", "body", "queue_url"} & tombstone.keys()
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    delete.assert_called_once_with(QueueUrl=tasks.queue, ReceiptHandle=assigned["receipt"])
+    assert tasks.delivery.read("pod-one") == tombstone
+    # Consume the actual SQS response-derived tombstone through the operator reader.
+    import runpy
+    from pathlib import Path
+
+    collector = runpy.run_path(str(Path(__file__).resolve().parents[4] / "platform/scripts/operator/wave3/collect_ack_receipt.py"))
+    receipt = collector["acknowledgement_receipt"](
+        tombstone, invocation_id=assigned["invocation_id"], sqs_message_id=assigned["sqs_message_id"], pod_uid="pod-one"
+    )
+    assert receipt["delete_calls"] == 1 and receipt["delete_succeeded"] is True
+    assert assigned["receipt"] not in json.dumps(receipt)
+
+
+def test_uncertain_ack_attempt_is_not_rewritten_as_one_clean_delete(tasks, monkeypatch):
+    tasks.delivery.acquire("pod-one")
+    delete = tasks.sqs.delete_message
+    monkeypatch.setattr(tasks.sqs, "delete_message", Mock(side_effect=BotoCoreError()))
+    with pytest.raises(TaskDeliveryError, match="unavailable"):
+        tasks.delivery.maintain("pod-one", acknowledge=True)
+    assert tasks.delivery.read("pod-one")["ack_attempts"] == 1
+    assert "sqs_request_id" not in tasks.delivery.read("pod-one")
+    tasks.now[0] += 21
+    monkeypatch.setattr(tasks.sqs, "delete_message", delete)
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    assert tasks.delivery.read("pod-one")["ack_attempts"] == 2
+
+
+def test_shared_legacy_passthrough_keeps_body_and_no_run_grant(tasks):
+    tasks.sqs.purge_queue(QueueUrl=tasks.queue)
+    body = '{ "version": "1.0", "channel": "github", "tenant_id": "tenant-a", "persona": "agent-reviewer-codex", "source_ref": {"issue": 1} }'
+    sent = tasks.sqs.send_message(QueueUrl=tasks.queue, MessageBody=body)
+    delivery = TaskDelivery(
+        store=tasks.delivery.store,
+        sqs=tasks.sqs,
+        queue_url=tasks.queue,
+        clock=lambda: tasks.now[0],
+        allow_task_api=True,
+        allow_legacy=False,
+        allow_shared_legacy=True,
+    )
+    assert delivery.acquire("shared-pod") == body
+    assert delivery.read("shared-pod")["invocation_id"] == sent["MessageId"]
+    assert tasks.delivery.store._read("INVOCATION#" + sent["MessageId"], "DISPATCH") is None
+    delivery.maintain("shared-pod", acknowledge=False)
+    delivery.maintain("shared-pod", acknowledge=True)
+    assert delivery.read("shared-pod")["state"] == "acknowledged"
+
+
+@pytest.mark.parametrize("kind", ["unknown.task", "adp.task"])
+def test_shared_queue_never_downgrades_a_typed_message(tasks, kind):
+    tasks.sqs.purge_queue(QueueUrl=tasks.queue)
+    tasks.sqs.send_message(
+        QueueUrl=tasks.queue,
+        MessageBody=json.dumps(
+            {"kind": kind, "version": "1.0", "channel": "github", "tenant_id": "tenant-a", "persona": "agent-reviewer-codex", "source_ref": {}}
+        ),
+    )
+    delivery = TaskDelivery(
+        store=tasks.delivery.store, sqs=tasks.sqs, queue_url=tasks.queue, allow_task_api=True, allow_legacy=False, allow_shared_legacy=True
+    )
+    with pytest.raises(TaskDeliveryError):
+        delivery.acquire("typed-pod")
+
+
+@pytest.mark.parametrize(
+    "mutation,drained",
+    [
+        ({"status": {"S": "completed"}, "workload_binding": {"S": "old-pod"}}, True),
+        ({"status": {"S": "cancelled"}}, True),
+        ({"status": {"S": "cancelled"}, "workload_binding": {"S": "old-pod"}}, False),
+        ({"status": {"S": "active"}}, False),
+        ({"status": {"S": "pending"}}, False),
+        ({"status": {"S": "completed"}, "envelope_digest": {"S": "different"}}, False),
+        ({"status": {"S": "completed"}, "tenant_id": {"S": "other"}}, False),
+        ({"status": {"S": "completed"}, "invocation_id": {"S": "other"}}, False),
+    ],
+)
+def test_terminal_protected_redelivery_drains_only_exact_fenced_assignment(tasks, mutation, drained):
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            **mutation,
+        },
+    )
+    body = tasks.delivery.acquire("redelivery-pod")
+    if drained:
+        assert body is None
+        receipt = tasks.delivery.read("redelivery-pod")
+        assert receipt["state"] == "acknowledged"
+        assert receipt["invocation_id"] == "run-1"
+        assert receipt["sqs_http_status"] == 200
+        assert "body" not in receipt and "receipt" not in receipt
+        with pytest.raises(TaskDeliveryError, match="finished"):
+            tasks.delivery.acquire("redelivery-pod")
+        assert json.loads(tasks.delivery.acquire("next-pod")) == tasks.envelopes[1]
+    else:
+        assert json.loads(body) == envelope
+        assert tasks.delivery.read("redelivery-pod")["state"] == "assigned"
+
+
+def test_terminal_protected_delivery_rechecks_saved_assignment(tasks):
+    tasks.delivery.acquire("pod-one")
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            "status": {"S": "completed"},
+        },
+    )
+    assert tasks.delivery.acquire("pod-one") is None
+    assert tasks.delivery.read("pod-one")["state"] == "acknowledged"
+
+
+def test_terminal_protected_delivery_unblocks_same_fifo_group(tasks):
+    queue = tasks.sqs.create_queue(QueueName="recovery.fifo", Attributes={"FifoQueue": "true"})["QueueUrl"]
+    for envelope in tasks.envelopes:
+        tasks.sqs.send_message(
+            QueueUrl=queue, MessageBody=json.dumps(envelope), MessageGroupId="same-node", MessageDeduplicationId=envelope["message_id"]
+        )
+    envelope = tasks.envelopes[0]
+    tasks.ddb.put_item(
+        TableName="authority",
+        Item={
+            "pk": {"S": "TENANT#tenant-1"},
+            "sk": {"S": "EXEC#run-1"},
+            "tenant_id": {"S": "tenant-1"},
+            "invocation_id": {"S": "run-1"},
+            "envelope_digest": {"S": envelope_digest(envelope)},
+            "status": {"S": "completed"},
+        },
+    )
+    delivery = TaskDelivery(store=tasks.delivery.store, sqs=tasks.sqs, queue_url=queue, clock=lambda: tasks.now[0])
+    assert delivery.acquire("terminal-pod") is None
+    assert json.loads(delivery.acquire("successor-pod")) == tasks.envelopes[1]

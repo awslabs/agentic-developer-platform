@@ -19,12 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
+from src.agentauth.task_service_policy import TaskServicePolicyError, TaskServicePolicyStore
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 from src.usage.persona_cost import get_persona_cost_report
 
-from . import catalogue_routes, catalogue_service, service
+from . import catalogue_routes, catalogue_service, identity, service
 from .catalogue import persona_compatibility_class
 from .catalogue_schemas import ModelCatalogueResponse
 from .schemas import (
@@ -41,6 +42,8 @@ from .schemas import (
     SetPreferenceRequest,
     StatusTransitionRequest,
     StatusTransitionResponse,
+    TaskPolicyPutRequest,
+    TaskPolicyResponse,
 )
 
 logger = logging.getLogger("bedrockgateway.persona_models.admin")
@@ -110,11 +113,12 @@ async def get_service_principal_persona_costs(
         chain_id=chain_id,
     )
     return PersonaCostResponse(
+        tenant_id=current_user.org_id,
         **{
             **report.__dict__,
             "status": report.status.value,
             "entries": [entry.__dict__ for entry in report.entries],
-        }
+        },
     )
 
 
@@ -527,6 +531,26 @@ async def reset_service_principal_preference(
 # ── Service-principal lifecycle ─────────────────────────────────────────────
 
 
+@router.get("/registration-contract")
+async def get_registration_contract(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    await _require_human_org_admin(db, current_user)
+    return {"version": "1.0", "registration": "durable-operation", "mutations": "revision-guarded", "credentials": "none"}
+
+
+@router.get("/{canonical_id}/identity")
+async def get_service_principal_identity(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Bounded metadata snapshot, including retired principals and alias row IDs."""
+    await _require_human_org_admin(db, current_user)
+    return await identity.snapshot(db, current_user.org_id, canonical_id)
+
+
 @router.post("/register", response_model=RegisterServicePrincipalResponse)
 async def register_service_principal(
     request: RegisterServicePrincipalRequest,
@@ -541,6 +565,18 @@ async def register_service_principal(
     await _require_human_org_admin(db, current_user)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
+
+    receipt = None
+    if request.operation_id is not None:
+        receipt, prior = await identity.registration_receipt(
+            db,
+            current_user.org_id,
+            admin_id,
+            request.operation_id,
+            request.model_dump(mode="json", exclude={"operation_id"}),
+        )
+        if prior is not None:
+            return RegisterServicePrincipalResponse(**prior)
 
     try:
         principal, alias = await service.register_service_principal(
@@ -567,15 +603,17 @@ async def register_service_principal(
             "actor_kind": "human_admin",
         },
     )
-    await db.commit()
-
-    return RegisterServicePrincipalResponse(
+    result = RegisterServicePrincipalResponse(
         canonical_service_principal_id=principal.canonical_service_principal_id,
         display_name=principal.display_name,
         alias_source=alias.alias_source,
         alias_id=alias.alias_id,
         status=principal.status,
     )
+    if receipt is not None:
+        receipt.details = {**receipt.details, "result": result.model_dump(mode="json")}
+    await db.commit()
+    return result
 
 
 @router.post("/{canonical_id}/aliases", response_model=AliasResponse)
@@ -587,6 +625,9 @@ async def link_alias(
 ) -> AliasResponse:
     """Link an additional alias to an existing service principal."""
     await _require_human_org_admin(db, current_user)
+
+    if request.expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, request.expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
@@ -640,6 +681,9 @@ async def transition_service_principal_status(
     - retired is terminal (no transitions out)
     """
     await _require_human_org_admin(db, current_user)
+
+    if request.expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, request.expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
@@ -701,9 +745,13 @@ async def revoke_alias(
     alias_row_id: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> AliasResponse:
     """Revoke an alias. Revoked aliases cannot be reactivated."""
     await _require_human_org_admin(db, current_user)
+
+    if expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
@@ -740,3 +788,58 @@ async def revoke_alias(
         is_active=alias.is_active,
         registered_by=alias.registered_by,
     )
+
+
+def task_policy_store() -> TaskServicePolicyStore:
+    return TaskServicePolicyStore()
+
+
+@router.get("/{canonical_id}/task-policy", response_model=TaskPolicyResponse)
+async def get_task_policy(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    policy_store: Annotated[TaskServicePolicyStore, Depends(task_policy_store)],
+) -> TaskPolicyResponse:
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(db, canonical_id=canonical_id, org_id=current_user.org_id)
+        policy = policy_store.get(tenant_id=current_user.org_id, canonical_principal_id=canonical_id)
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    except TaskServicePolicyError:
+        raise HTTPException(503, "task policy unavailable") from None
+    if policy is None:
+        raise HTTPException(404, "task policy not found")
+    return TaskPolicyResponse.model_validate(policy)
+
+
+@router.put("/{canonical_id}/task-policy", response_model=TaskPolicyResponse)
+async def put_task_policy(
+    canonical_id: str,
+    body: TaskPolicyPutRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    policy_store: Annotated[TaskServicePolicyStore, Depends(task_policy_store)],
+) -> TaskPolicyResponse:
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(db, canonical_id=canonical_id, org_id=current_user.org_id)
+        admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
+        values = body.model_dump(exclude={"expected_version"}, mode="python")
+        policy = policy_store.put(
+            tenant_id=current_user.org_id,
+            canonical_principal_id=canonical_id,
+            expected_version=body.expected_version,
+            policy=values,
+            updated_by=admin_id,
+        )
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    except TaskServicePolicyError as exc:
+        if exc.code == "version_conflict":
+            raise HTTPException(409, "task policy version conflict") from None
+        if exc.code == "invalid_policy":
+            raise HTTPException(422, "invalid task policy") from None
+        raise HTTPException(503, "task policy unavailable") from None
+    return TaskPolicyResponse.model_validate(policy)

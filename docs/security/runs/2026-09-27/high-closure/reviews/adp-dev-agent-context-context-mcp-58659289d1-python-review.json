@@ -1,0 +1,36 @@
+{
+  "config_digest": "sha256:db8a6d8add7e63354296810747c3cb525de6cddc0c612d08f9ce5430e2b1221a",
+  "raw_receipt": {
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0",
+    "docker_root_descriptor": "sha256:58659289d1f4bf535e5a6b85fb066a6939a0a40ffe400583e050315aaab0f6f0",
+    "config_digest": "sha256:db8a6d8add7e63354296810747c3cb525de6cddc0c612d08f9ce5430e2b1221a",
+    "time": "2026-09-27T21:23:25.804844+00:00",
+    "packages": 161,
+    "native_counts": {
+      "High": 50,
+      "Medium": 54,
+      "Negligible": 44,
+      "Low": 9
+    },
+    "sbom_sha256": "85b663440529b3130e32322d0a01fb45e2ed1c18a9cb3c58f4217cbe49ba6457",
+    "grype_sha256": "8a6457414ff86f9a4358d2021ec832e797fe92cbcece63d100b4c4b0026cec00",
+    "archive_sha256": "0ffed060d1425d875de94005d24986ad21316f1a5deb8dfbcaf8bbc189e82f40"
+  },
+  "dispositions": [
+    {
+      "native_match_index": 57,
+      "status": "fixed-source-backport",
+      "canonical_id": "CVE-2026-82049",
+      "source_evidence": {
+        "source": "/usr/local/lib/python3.13/tarfile.py",
+        "sha256": "8f46eb2064b20420b8126508a3524cd684830ed97a860992283a5074d1793743",
+        "version": "3.13.15 (main, Sep 19 2026, 01:05:27) [GCC 14.2.0]",
+        "test": "test_tar_hardlink_does_not_relocate_symlink",
+        "passed": true
+      },
+      "regression": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-context-mcp-58659289d1-python-regression.json",
+      "upstream_commit": "b8f23e307097552eaea2604383a12ab280520d0d",
+      "reviewed_manifest": "/workspaces/projects/security27-high-source/modules/gateway/security/stdlib/manifest.json"
+    }
+  ]
+}

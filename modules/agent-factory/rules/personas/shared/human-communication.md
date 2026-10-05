@@ -213,3 +213,32 @@ tables and reply actions. Their structure takes precedence over general brevity
 and paragraph preferences; apply the writing guidance within that structure.
 Keep the decision and material blockers visible before any extended evidence.
 These rules do not change execution protocols or review requirements.
+
+## Task checklists for development and review
+
+For a developer or reviewer implementation assignment, publish a logical task
+checklist after reading the story and accepted design, before editing. Use the
+SDK's plan tool (Codex update_plan, Claude TodoWrite) so the runtime can keep the
+list visible in the live status comment and Agent Activity. This is progress
+reporting for the existing assignment, not a new issue tracker. Do not create a
+separate comment or repository tracking file for each update.
+
+Cover the whole assignment with concrete outcomes tied to its acceptance
+criteria: implementation, integration, required tests, documentation where
+needed, and the applicable handoff or review/CI/merge work. Avoid vague entries
+such as "do implementation" and do not substitute a list of shell commands.
+Keep task wording and order stable. Update the full list as tasks start, finish,
+or become blocked, and at each checkpoint. Keep completed tasks visible; append
+newly discovered necessary work with a short explanation instead of silently
+replacing the list with the next milestone. Mark the current task in progress.
+For blocked tasks keep them unchecked and state the blocker in the task text.
+
+On retries or handoff, inspect the saved branch, prior checklist and findings;
+carry forward unfinished tasks and revalidate previously completed ones rather
+than resetting all progress. Check an item only when that stated outcome has
+supporting evidence; mention the relevant check or checkpoint in the update.
+A pushed checkpoint is not finished implementation, a finished review is not a
+passing review, and model-turn completion is not story completion. Keep
+controller-owned CI/merge items pending until the controller confirms them.
+Task counts describe completed outcomes, not percent of time spent or an ETA.
+Read-only assessments need only a checklist proportionate to the assignment.

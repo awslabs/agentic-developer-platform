@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import anyio
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -90,6 +91,7 @@ async def test_interrupted_stream_reports_error_without_replay_or_false_completi
     assert b"response.completed" not in b"".join(received)
     service._log_usage.assert_awaited_once()
     assert service._log_usage.call_args.args[4] == status
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
     assert stream.closed
     assert "mantle stream completed" not in caplog.text
 
@@ -107,6 +109,7 @@ async def test_partial_event_failure_does_not_inject_into_json(context, error):
     assert received == [partial]
     assert stream.closed
     assert service._log_usage.call_args.args[4] in (502, 504)
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
 
 
 @pytest.mark.parametrize("kind,status", [("response.completed", 200), ("response.incomplete", 200), ("response.failed", 502), ("error", 502)])
@@ -117,6 +120,7 @@ async def test_upstream_terminal_events_are_preserved(context, caplog, kind, sta
     async with client:
         assert b"".join([c async for c in await open_stream(service, context)]) == payload
     assert service._log_usage.call_args.args[4] == status
+    assert not service._log_usage.call_args.kwargs.get("retain_failed_bound", False)
     assert stream.closed
 
 
@@ -126,6 +130,7 @@ async def test_timeout_after_delivered_terminal_does_not_turn_success_into_failu
     async with client:
         assert b"".join([c async for c in await open_stream(service, context)]) == COMPLETED
     assert service._log_usage.call_args.args[4] == 200
+    assert not service._log_usage.call_args.kwargs.get("retain_failed_bound", False)
 
 
 async def test_client_close_cancels_upstream_and_records_cancellation(context):
@@ -137,6 +142,7 @@ async def test_client_close_cancels_upstream_and_records_cancellation(context):
         await result.aclose()
     assert stream.closed
     assert service._log_usage.call_args.args[4] == 499
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
@@ -231,3 +237,89 @@ async def test_real_http_quiet_stream_uses_read_timeout_not_general_timeout(cont
         for task in list(handlers):
             task.cancel()
         await asyncio.gather(*handlers, return_exceptions=True)
+
+
+async def test_cancelled_connect_preserves_bound_and_propagates_cancellation(context):
+    started = asyncio.Event()
+
+    async def connect(request):
+        started.set()
+        await asyncio.Event().wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(connect)) as client:
+        service = MantlePassthroughService(StubAuth(), "https://upstream.invalid", http_client=client)
+        service._log_usage = AsyncMock()
+        task = asyncio.create_task(open_stream(service, context))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    service._log_usage.assert_awaited_once()
+    assert service._log_usage.call_args.args[4] == 499
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
+
+
+async def test_disconnect_scope_does_not_cancel_stream_accounting(context):
+    # Starlette cancels the streaming task's AnyIO scope on HTTP disconnect.
+    class ClosingStream(ScriptedStream):
+        async def aclose(self):
+            await anyio.sleep(0)
+            await super().aclose()
+
+    stream = ClosingStream([DELTA, COMPLETED])
+    service, client = service_for(stream)
+    logged = []
+
+    async def record(*args, **kwargs):
+        await anyio.sleep(0)
+        logged.append((args, kwargs))
+
+    service._log_usage.side_effect = record
+    async with client:
+        result = await open_stream(service, context)
+        assert await anext(result) == DELTA
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            await result.aclose()
+    assert stream.closed
+    assert len(logged) == 1
+    assert logged[0][0][4] == 499
+    assert logged[0][1]["retain_failed_bound"] is True
+
+
+async def test_http_disconnect_finishes_accounting_through_keepalive(context):
+    from src.proxy.routes import sse_streaming_response
+
+    reading = asyncio.Event()
+    logged = asyncio.Event()
+
+    class WaitingStream(ScriptedStream):
+        async def __aiter__(self):
+            yield DELTA
+            reading.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            await anyio.sleep(0)
+            await super().aclose()
+
+    stream = WaitingStream([])
+    service, client = service_for(stream)
+
+    async def record(*args, **kwargs):
+        await anyio.sleep(0)
+        logged.set()
+
+    async def receive():
+        await reading.wait()
+        return {"type": "http.disconnect"}
+
+    service._log_usage.side_effect = record
+    async with client:
+        response = sse_streaming_response(await open_stream(service, context))
+        await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.0"}}, receive, AsyncMock()), 1)
+        await asyncio.wait_for(logged.wait(), 1)
+    assert stream.closed
+    service._log_usage.assert_awaited_once()
+    assert service._log_usage.call_args.args[4] == 499
+    assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True

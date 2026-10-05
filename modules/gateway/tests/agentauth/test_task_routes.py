@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.agentauth.bootstrap import envelope_digest
-from src.agentauth.routes import AgentRuntime, get_agent_runtime
+from src.agentauth.routes import AgentRuntime
+from src.agentauth.routes import get_agent_runtime as get_legacy_runtime
 from src.agentauth.routes import router as bootstrap_router
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_routes import router, task_delivery
 from tests.agentauth.test_bootstrap_routes import ENV, kubernetes, lifecycle_job, provision, store  # noqa: F401
 
@@ -32,6 +34,7 @@ def task_http(store, kubernetes, monkeypatch, report_only_db):  # noqa: F811 - s
     app.include_router(router)
     app.include_router(bootstrap_router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    app.dependency_overrides[get_legacy_runtime] = lambda: runtime
     app.dependency_overrides[task_delivery] = lambda: delivery
     from src.shared.database import get_db
 

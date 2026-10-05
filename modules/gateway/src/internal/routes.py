@@ -17,19 +17,18 @@ Endpoints (IAM-signed; internal only, not exposed to end users):
                                             leaves the gateway
 
 Authentication:
-    A shared secret (BG_INTERNAL_API_KEY) is expected in the
-    ``X-Internal-Api-Key`` header.  In production, rotate via Secrets Manager.
-    Full SigV4 verification is a follow-up (tracked separately).
+    Registered IAM callers authenticate through the verified API edge. Identity
+    routing additionally requires operation and tenant capabilities; worker token
+    brokers require live run authority. Shared transport keys are never accepted.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,7 +43,8 @@ from src.auth.magic_link import (
     store_nonce,
 )
 from src.internal.auth_deps import verify_internal_or_irsa
-from src.internal.credential_binding import resolve_installation_binding
+from src.internal.credential_binding_metrics import observe_identity_binding
+from src.internal.service_authorization import require_service_operation, service_tenant
 from src.knowledge.github_app_service import (
     AGENT_RUN_PERMISSIONS,
     DEFAULT_IDENTITY,
@@ -59,6 +59,12 @@ from src.knowledge.github_app_service import (
 )
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.shared.identity.providers import is_linkable_provider
+from src.shared.identity.verification import (
+    CHANNEL_PLACEMENT,
+    DELIVERY_SHARED_CHANNEL,
+    IDENTIFYING_METHODS,
+)
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
 from src.shared.models.organization import Organization, User
@@ -67,28 +73,6 @@ from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce, UserIdenti
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
-
-
-# ---------------------------------------------------------------------------
-# Auth dependency
-# ---------------------------------------------------------------------------
-
-
-def _verify_internal_key(x_internal_api_key: str | None = Header(default=None)) -> None:
-    """Validate the shared internal API key.
-
-    Missing or wrong key → 403 (not 401) so external scanners don't learn that
-    the endpoint exists from a WWW-Authenticate header.
-    """
-    settings = get_settings()
-    expected = settings.internal_api_key
-    if not expected:
-        # Key not configured — reject all calls in a loud way so misconfiguration
-        # is obvious in logs rather than silently open.
-        logger.error("BG_INTERNAL_API_KEY is not set; all /internal/v1/* calls will be rejected")
-        raise HTTPException(status_code=503, detail={"error": "not_configured", "message": "Internal API not configured"})
-    if not x_internal_api_key or x_internal_api_key != expected:
-        raise HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid internal API key"})
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +98,12 @@ class ResolveUserRequest(BaseModel):
     provider: str
     provider_user_id: str
     channel_context: str | None = None
+    # Optional tenant scope (#5664, A10). `user_identities` is unique per tenant,
+    # so one external account may legitimately hold rows in several. Supplying the
+    # tenant the inbound event is for narrows the lookup to it; omitting it means
+    # an account linked in more than one tenant is refused as ambiguous rather
+    # than silently resolved to whichever row the database returned first.
+    org_id: str | None = None
 
 
 class ResolveUserResponse(BaseModel):
@@ -121,6 +111,18 @@ class ResolveUserResponse(BaseModel):
     org_id: str
     team_id: str
     is_shadow: bool
+    # How the link this answer rests on was established (#5664, A10).
+    #
+    # A 200 does NOT mean "proven". The lookup filters to IDENTIFYING_METHODS, which
+    # deliberately includes the unproven `channel_placement` rows the
+    # auto-provision path creates, because this endpoint answers "which platform
+    # user is this account" rather than "may this account act". A caller that grants
+    # authority MUST read this field and apply `is_proven` to it; inferring proof
+    # from the status code is the bug this field exists to prevent.
+    #
+    # Empty string means a caller is talking to a gateway that predates the field:
+    # unknown provenance, which is not proof.
+    verification_method: str = ""
 
 
 class ResolveUserNotFoundResponse(BaseModel):
@@ -134,6 +136,7 @@ class ResolveInstallationRequest(BaseModel):
 
 
 class ResolveInstallationResponse(BaseModel):
+    revocation_checked: bool = True
     tenant_id: str
     # Issue #2724 (slice B): provenance of the owning organization row — which
     # path created it ("operator" | "register_flow" | "install_autocreate").
@@ -251,9 +254,33 @@ async def _write_audit(
 )
 async def issue_magic_link(
     body: IssueMagicLinkRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> IssueMagicLinkResponse:
+    principal = require_service_operation(request, "internal:identity:link")
+    # Unscoped pre-login linking is reserved for trusted ingress.
+    if "internal:cross-tenant" not in principal.credential_scopes:
+        raise HTTPException(403, "pre-login linking requires ingress authority")
+    # Closed provider allowlist, checked before any state is written (#5664, A10).
+    #
+    # This is the OTHER writer into the shared `magic_link_nonces` table, and it
+    # took `provider` from the request body with no validation at all. The internal
+    # plane is authenticated, but that only means the caller is an ADP Lambda — it
+    # does not make an arbitrary namespace safe to mint into, and the
+    # `github_app_register` namespace is the sole authenticator on the callback that
+    # overwrites the deployment's shared GitHub App credentials. A compromised or
+    # simply buggy ingest caller must not be able to reach it, so both nonce
+    # minters now enforce the same allowlist.
+    if not is_linkable_provider(body.provider):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_provider",
+                "message": "That identity provider is not supported for linking.",
+            },
+        )
+
     secret = _get_magic_link_secret()
     if not secret:
         raise HTTPException(
@@ -277,6 +304,13 @@ async def issue_magic_link(
         target_user_id=None,
         expires_at=result["expires_at"],
         db=db,
+        # Recorded honestly (#5664, A10): the ingest caller posts this link back
+        # into the conversation the triggering message arrived in, which for a
+        # public channel or an issue thread is readable by everyone there. That is
+        # channel access, not proof of account ownership, so confirming a link
+        # delivered this way yields an UNPROVEN identity row. Mislabelling it
+        # `provider_dm` here is exactly the escalation this column prevents.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result["token"])
@@ -285,7 +319,7 @@ async def issue_magic_link(
         db,
         event_type="magic_link_issued",
         org_id="__internal__",  # no org_id for Lambda-initiated issuance before user is resolved
-        actor_id=None,
+        actor_id=request.state.token_context.user_id,
         details={
             "provider": body.provider,
             "provider_user_id": body.provider_user_id,
@@ -327,16 +361,60 @@ async def issue_magic_link(
 )
 async def resolve_user(
     body: ResolveUserRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ):
-    # 1. Check user_identities
+    body.org_id = service_tenant(request, body.org_id, "internal:identity:resolve")
+    # 1. Check user_identities — trust-aware, and tenant-scoped when the caller
+    #    supplies a tenant (#5664, A10).
+    #
+    # Two defects were combined here. The lookup accepted ANY verification method,
+    # so a row a user had simply asserted about themselves resolved exactly like
+    # one the provider confirmed — and this endpoint's answer decides which
+    # platform user an inbound event acts as. And `scalar_one_or_none()` raises
+    # MultipleResultsFound on legitimate data: the unique index is per tenant
+    # (provider, provider_user_id, org_id), so one external account may hold rows
+    # in several tenants. That surfaced as an unhandled 500.
+    #
+    # Ambiguity is now an explicit refusal. Picking any one row would be guessing
+    # which tenant an event belongs to, and the safe answer to "which of these
+    # is it?" is to decline rather than to choose.
+    #
+    # The filter is IDENTIFYING_METHODS, not PROVEN_METHODS. This endpoint answers
+    # "which platform user is this account", which an auto-provisioned channel
+    # placement legitimately answers even though it proves nothing — and filtering
+    # it out would make every subsequent resolve miss, re-provisioning a shadow user
+    # and re-issuing a magic link on every inbound message. The authority decision
+    # is made by the CALLER from `verification_method` in the response, which is
+    # reported truthfully below; it is not implied by having resolved at all.
     stmt = select(UserIdentity).where(
         UserIdentity.provider == body.provider,
         UserIdentity.provider_user_id == body.provider_user_id,
+        UserIdentity.verification_method.in_(IDENTIFYING_METHODS),
     )
-    result = await db.execute(stmt)
-    identity = result.scalar_one_or_none()
+    if body.org_id:
+        stmt = stmt.where(UserIdentity.org_id == body.org_id)
+
+    candidates = (await db.execute(stmt)).scalars().all()
+
+    if len(candidates) > 1:
+        logger.warning(
+            "Ambiguous identity resolution provider=%s provider_user_id=%s org_id=%r matches=%d",
+            body.provider,
+            body.provider_user_id,
+            body.org_id,
+            len(candidates),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ambiguous_identity",
+                "message": ("This provider identity resolves to more than one tenant. Supply org_id to disambiguate."),
+            },
+        )
+
+    identity = candidates[0] if candidates else None
 
     if identity is not None:
         # Fetch the user row for org/team info
@@ -349,6 +427,7 @@ async def resolve_user(
                 org_id=user.org_id,
                 team_id=user.team_id,
                 is_shadow=user.is_shadow,
+                verification_method=identity.verification_method or "",
             )
 
     # 2. Check channel_tenant_map for auto-provisioning
@@ -372,6 +451,11 @@ async def resolve_user(
     tenant_map = map_result.scalar_one_or_none()
 
     if tenant_map is not None:
+        if body.org_id and tenant_map.org_id != body.org_id:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "channel_tenant_mismatch", "message": "Channel does not belong to the requested organization."},
+            )
         # Auto-provision a shadow user
         shadow = User(
             id=new_uuid(),
@@ -382,7 +466,25 @@ async def resolve_user(
         )
         db.add(shadow)
 
-        # Create the identity link
+        # Create the identity link.
+        #
+        # #5664 (A10): this is `channel_placement`, an UNPROVEN method. It used to
+        # say `admin_manual`, which is in PROVEN_METHODS, and that was the second
+        # half of the finding: an administrator mapped the workspace to the tenant
+        # via channel_tenant_map — an accountable act, but a fact about the
+        # WORKSPACE. The account id itself arrived in this request's body and
+        # nobody verified it. Labelling that as an administrator's assertion about
+        # a specific account manufactured proof out of a routing decision.
+        #
+        # The previous slice left the mislabel in place because relabelling it
+        # unproven would have made every subsequent resolve miss the trust filter
+        # and re-issue a magic link forever. That is now handled at the seam rather
+        # than by mislabelling: resolution filters on IDENTIFYING_METHODS (which
+        # includes this value, so the row keeps routing) while everything that
+        # mints authority asks `is_proven` (which refuses it). The flow is
+        # preserved; only the unearned authority claim is withdrawn.
+        #
+        # `verified_at` stays NULL — nothing was verified.
         link = UserIdentity(
             org_id=tenant_map.org_id,
             user_id=shadow.id,
@@ -390,7 +492,7 @@ async def resolve_user(
             provider=body.provider,
             provider_user_id=body.provider_user_id,
             provider_username=None,
-            verification_method="admin_manual",
+            verification_method=CHANNEL_PLACEMENT,
         )
         db.add(link)
 
@@ -398,7 +500,7 @@ async def resolve_user(
             db,
             event_type="shadow_user_created",
             org_id=tenant_map.org_id,
-            actor_id=None,
+            actor_id=request.state.token_context.user_id,
             details={
                 "provider": body.provider,
                 "provider_user_id": body.provider_user_id,
@@ -424,6 +526,10 @@ async def resolve_user(
                 "org_id": shadow.org_id,
                 "team_id": shadow.team_id,
                 "is_shadow": True,
+                # Stated for the same reason as the 200 path (#5664, A10): the
+                # reader should read provenance, not infer it from the status code.
+                # The value matches the row written just above.
+                "verification_method": link.verification_method or "",
             },
         )
 
@@ -450,6 +556,9 @@ async def resolve_user(
         target_user_id=None,
         expires_at=result_token["expires_at"],
         db=db,
+        # Same in-channel delivery as /issue-magic-link above, so the same honest
+        # label. See the note there.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result_token["token"])
@@ -458,7 +567,7 @@ async def resolve_user(
         db,
         event_type="magic_link_issued",
         org_id="__internal__",
-        actor_id=None,
+        actor_id=request.state.token_context.user_id,
         details={
             "provider": body.provider,
             "provider_user_id": body.provider_user_id,
@@ -508,9 +617,13 @@ async def resolve_user(
 )
 async def resolve_installation(
     body: ResolveInstallationRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> ResolveInstallationResponse:
+    require_service_operation(request, "internal:installation:resolve")
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+
     installation_id = (body.installation_id or "").strip()
     if not installation_id:
         raise HTTPException(
@@ -518,6 +631,19 @@ async def resolve_installation(
             detail={"error": "not_found", "message": "Unknown installation"},
         )
 
+    if installation_id.isdecimal():
+        owner, state = await resolve_installation_owner(int(installation_id), db=db)
+        if state is OwnerState.REVOKED:
+            raise HTTPException(status_code=410, detail={"error": "installation_revoked"})
+        if state is not OwnerState.RESOLVED or owner is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "No proven installation owner"})
+        org = await db.get(Organization, owner.tenant_id)
+        if org is not None:
+            service_tenant(request, org.id, "internal:installation:resolve")
+            return ResolveInstallationResponse(tenant_id=org.id, created_via=org.created_via or "operator")
+
+    # Retain nonnumeric legacy identifiers for compatibility; real provider IDs
+    # above always use canonical ownership and durable revocation.
     # Postgres query intent: organizations WHERE :iid = ANY(github_installation_ids)
     # (backed by the GIN index ix_organizations_github_installation_ids on
     # Postgres, migration 005). We fetch candidate orgs and match in Python so
@@ -528,6 +654,7 @@ async def resolve_installation(
     for org in result.scalars().all():
         ids = [str(i) for i in (org.github_installation_ids or [])]
         if installation_id in ids:
+            service_tenant(request, org.id, "internal:installation:resolve")
             # Issue #2724: return provenance so the webhook gate can distinguish
             # a deliberately-onboarded tenant from a self-created shell. We keep
             # returning 200 for install_autocreate rows rather than 404 — the
@@ -567,6 +694,113 @@ async def _revalidate_github_binding(request: Request, binding, permissions=None
         or (permissions is not None and getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS) != permissions)
     ):
         raise HTTPException(404, "not found")
+
+
+_TOKEN_ROUTE = "github-installation-token"
+
+
+def _assert_token_repo_binding(binding, requested_repo: str) -> None:
+    """Refuse a mint for a repository the run was not assigned (#5663, A09).
+
+    The installation binding already proves "this run's originating webhook named
+    installation X for tenant T", and Postgres proves T owns X. Neither proves the
+    run was assigned the *repository* being requested. Within one installation that
+    gap is a real escalation: a run legitimately dispatched to ``org/service-a`` can
+    ask for, and receive, a write-capable token listing ``org/service-b``.
+
+    Why this lives here rather than in ``verify_broker_worker``, which already
+    performs an equivalent compare (``broker_identity.py``: ``execution.get("repo")
+    != {"S": repo}``): that function runs only when the caller presents a run
+    credential, is marked ``requires_run_identity``, or ``AGENT_AUTHORITY_ENABLED``
+    is true (``auth_deps.py``). That flag is false in live environments, so on the
+    default path the compare never happens. #5663's acceptance is explicit that the
+    repository binding must hold "with the authority feature flag absent or set to
+    its old default" — so the check has to sit on the path every caller takes. When
+    the protected path DID run, this is a cheap second assertion of the same fact,
+    not a substitute for it.
+
+    Both outcomes below are counted through ``observe_identity_binding`` so the
+    decision is measurable per route, but the counter never decides the outcome.
+
+    ABSENT SERVER EVIDENCE IS A REFUSAL, NOT AN ALLOWANCE (#5663 review). An
+    earlier revision of this function allowed a mint when the run's row carried no
+    ``repo`` at all, gated on ``enforce_unbound_repo_token_denial`` (default
+    false), on the theory that EventBridge/scheduled dispatch legitimately produces
+    repo-less runs. That preserved the exact escalation this check exists to close:
+    with no bound repository, the *caller's* ``repo_owner``/``repo_name`` became the
+    only input deciding which repository got a write-capable token. "The server has
+    no evidence for this claim" cannot mean "the claim is granted", whatever a
+    metric records alongside it.
+
+    The scheduled-dispatch concern turned out not to describe any caller that can
+    actually reach this route. Every mint path derives the repository from the SAME
+    envelope field that produced the row's ``repo`` attribute:
+
+    * ``spawn_persona`` passes one ``repo`` value to both ``_build_envelope``
+      (``source_ref.repo``) and ``log_event`` (the ``repo`` attribute). They cannot
+      disagree, so a run with a usable ``source_ref.repo`` has a row with ``repo``.
+    * ``agent-worker-image/entrypoint.py`` calls ``repo.split("/", 1)`` at parse
+      time, BEFORE any mint, and ``parse_envelope`` requires ``source_ref.repo`` to
+      be present. An empty value raises ``ValueError`` there, so a repo-less run
+      fails during bootstrap and never reaches a mint.
+    * ``agent/src/token-refresh.ts`` refuses broker mode without ``config.owner``,
+      and both TypeScript and Python clients send the run's own envelope values.
+
+    So the repo-less-but-minting run is unreachable: the only callers that arrive
+    here with no bound repository are ones whose claim cannot be checked at all.
+    Refusing them costs no legitimate traffic and is what makes the binding hold on
+    the default configuration, which the issue's acceptance requires explicitly.
+
+    If a future producer does need a repo-less scheduled run to mint, the fix is to
+    give it server-owned repository evidence (record ``repo`` on its event row, or
+    carry an authorization for the repository it may act on) — not to reopen the
+    caller-declared path. Recorded in the PR as a rollout note.
+    """
+    bound_repo = getattr(binding, "repo", None)
+
+    if not bound_repo:
+        observe_identity_binding(route=_TOKEN_ROUTE, outcome="denied", enforced=True)
+        logger.warning(
+            "github-installation-token DENIED — run has no bound repository tenant=%s installation=%s requested=%s",
+            binding.tenant_id,
+            binding.installation_id,
+            requested_repo,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "repo_binding_failed",
+                "message": "This invocation is not bound to a repository.",
+            },
+        )
+
+    # Case-insensitive: GitHub treats owner/repo case-insensitively, and the row's
+    # casing comes from the webhook payload while the request's comes from the
+    # worker's env. A case difference is not an authorization difference, and
+    # refusing on it would be a self-inflicted outage rather than a control.
+    if bound_repo.casefold() != requested_repo.casefold():
+        # Unconditional. There is no legitimate caller that asks for a repository
+        # other than its own run's, so there is no compatibility window to stage and
+        # nothing for a flag to protect — a switch that can turn this off is just a
+        # way to reintroduce the escalation. (#5663 review: "a metric does not
+        # establish the run's authority for the requested repository".)
+        observe_identity_binding(route=_TOKEN_ROUTE, outcome="denied", enforced=True)
+        logger.warning(
+            "github-installation-token DENIED — repo mismatch tenant=%s installation=%s bound=%s requested=%s",
+            binding.tenant_id,
+            binding.installation_id,
+            bound_repo,
+            requested_repo,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "repo_binding_mismatch",
+                "message": "Requested repository does not match this invocation's repository.",
+            },
+        )
+
+    observe_identity_binding(route=_TOKEN_ROUTE, outcome="allowed", enforced=True)
 
 
 def _validate_github_expiry(request: Request, expires_at: str) -> None:
@@ -625,8 +859,6 @@ async def github_installation_token(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> GithubInstallationTokenResponse:
-    settings = get_settings()
-
     # Issue #5350: reject an identity this gateway does not implement. Checked before
     # any authz work so a typo cannot be answered with a usable authoring token.
     if body.identity not in SUPPORTED_IDENTITIES:
@@ -641,17 +873,14 @@ async def github_installation_token(
         await verify_shared_review_worker(request)
 
     # Layer 1 — bind the run to the installation its originating webhook carried.
-    # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
-    # that flag is false on at least one live environment, so a control behind it
-    # shadows instead of enforcing.
+    # Installation binding is unconditional; missing authenticated state fails closed.
     binding = getattr(request.state, "agent_installation_binding", None)
     if binding is None:
-        binding = await asyncio.to_thread(
-            resolve_installation_binding,
-            invocation_id=body.invocation_id,
-            requested_installation_id=body.installation_id,
-            settings=settings,
-        )
+        raise HTTPException(403, "authenticated run installation binding required")
+
+    # Reassert the repository bound by broker or shared-review authentication.
+    # Missing repository evidence is denied before provider minting.
+    _assert_token_repo_binding(binding, f"{body.repo_owner}/{body.repo_name}")
 
     # Layer 2 — the authoritative ownership check. Layer 1 proves "this run's
     # webhook said installation X for tenant T"; this proves T really owns X.

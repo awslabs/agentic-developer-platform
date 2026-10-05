@@ -78,14 +78,6 @@ locals {
     "                    value: \"1\"",
     "                  - name: CONTEXT_MCP_SERVER_URL",
     "                    value: http://context-mcp.agent-context.svc.cluster.local:5100",
-    "                  # Issue #4073 (finding #8): the Door authenticates every",
-    "                  # caller with a shared secret. entrypoint.py reads this",
-    "                  # secret into DOOR_API_KEY; lib/doorAuth.ts sends it as",
-    "                  # X-Internal-Api-Key. Without it every verb returns 401.",
-    "                  # Same SM secret the gateway internal plane uses, already",
-    "                  # covered by the scaledjob role's adp/* GetSecretValue.",
-    "                  - name: ADP_DOOR_API_KEY_SECRET",
-    "                    value: adp/${var.environment}/gateway/internal-api-key",
   ]) : ""
 
   # OpenTelemetry env vars for agent-worker container (#1630).
@@ -136,13 +128,15 @@ locals {
   # minted inside the pod by `secrets.token_urlsafe` per run (entrypoint.py) and
   # written straight to the invocation row. A token in a manifest would be one
   # value shared by every run, visible in `kubectl describe`, and unrotatable.
-  agent_control_env_block = var.agent_control_enabled ? join("\n", [
+  agent_control_env_block = (var.agent_control_enabled || var.agent_explanations_enabled) ? join("\n", [
     "                  # ── Live run control (Issue #3960) ───────────────────────────",
     "                  # Strict flag: the worker starts a listener ONLY on the exact",
     "                  # string \"true\". Read independently of the gateway's own flag —",
     "                  # neither side can activate the other.",
+    "                  - name: FEATURE_AGENT_EXPLANATIONS_ENABLED",
+    "                    value: \"${var.agent_explanations_enabled}\"",
     "                  - name: FEATURE_AGENT_CONTROL_ENABLED",
-    "                    value: \"true\"",
+    "                    value: \"${var.agent_control_enabled}\"",
     "                  - name: ADP_CONTROL_PORT",
     "                    value: \"${var.agent_control_port}\"",
     "                  # Duration cap only; the gateway supplies the absolute Job",
@@ -181,8 +175,6 @@ ${local.agent_worker_pause_annotation}
       pollingInterval: 5
       minReplicaCount: 0
       maxReplicaCount: 50
-      rollout:
-        strategy: gradual
       # Issue #4031: keep at most ONE Completed job visible. FIFO group
       # serialization makes KEDA spawn speculative pods that receive nothing
       # and exit 0 (entrypoint.py: "No message available after long-poll") —
@@ -245,14 +237,22 @@ ${local.agent_worker_pause_annotation}
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
                   # Persona-name routing keeps Codex on this same queue/image.
+                  - name: ADP_CODEX_TASK_PERSONAS
+                    value: ${jsonencode(join(",", sort(tolist(var.codex_task_personas))))}
+                  - name: ADP_CODEX_OTEL_ENDPOINT
+                    value: ${jsonencode(var.codex_otel_endpoint != "" ? var.codex_otel_endpoint : var.enable_agent_otel ? "http://adot-collector.adp-agents.svc.cluster.local:4318" : "")}
+                  - name: CODEX_REVIEWER_TURN_TIMEOUT_MS
+                    value: "21600000"
                   - name: CODEX_REVIEWER_APPLY_FIXES
                     value: "${var.codex_reviewer_apply_fixes}"
                   - name: CODEX_REVIEWER_MERGE_ENABLED
                     value: "${var.codex_reviewer_merge_enabled}"
                   - name: CODEX_REVIEWER_MODEL
                     value: "${var.codex_reviewer_model}"
-                  - name: URL_ANALYSIS_EVIDENCE_BUCKET
-                    value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
+%{for name, value in merge(local.domain_worker_environment, local.codex_validation_service_environment)~}
+                  - name: ${name}
+                    value: ${jsonencode(value)}
+%{endfor~}
                   - name: AGENT_RUN_LOGS_BUCKET
                     value: adp-${var.environment}-agent-run-logs-${local.account_id}
                   # Issue #4184: AGENT_FALLBACK_BUCKET had six readers in the
@@ -356,12 +356,12 @@ ${local.agent_authority_mount_block}
                     protocol: TCP
                 resources:
                   requests:
-                    cpu: "1"
-                    memory: 4Gi
+                    cpu: "4"
+                    memory: ${var.agent_worker_memory_request}
                     ephemeral-storage: 50Gi
                   limits:
                     cpu: "4"
-                    memory: 8Gi
+                    memory: ${var.agent_worker_memory_limit}
                     ephemeral-storage: 50Gi
                 securityContext:
                   allowPrivilegeEscalation: false

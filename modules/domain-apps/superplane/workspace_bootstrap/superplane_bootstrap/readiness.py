@@ -78,13 +78,27 @@ SYSTEM_NAMESPACE = "kube-system"
 # `kubectl auth can-i` in its preflight, so the credential this gate establishes is by
 # construction the credential that preflight later accepts. Restating a different set
 # here is how the two disagree and a workspace passes install and fails preflight.
+#
+# `get namespaces` is here because the registration manager reads the workspace
+# namespace and requires it `Active` before it will register anything
+# (`management/target.go::Manager.observe`). Without this verb the controller installs,
+# passes this gate, and then reports `namespace_unavailable` forever -- the runtime is
+# present and registers nothing, which is the "ready but not working" class F2 exists
+# to catch.
 REQUIRED_CONTROLLER_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("list", "nodes"),
     ("watch", "pods"),
+    ("get", "pods"),
+    ("list", "pods"),
+    ("get", "pods/log"),
+    ("get", "deployments.apps"),
+    ("list", "replicasets.apps"),
+    ("get", "jobs.batch"),
+    ("list", "nodepools.superplane.ai"),
     ("watch", "nodepools.superplane.ai"),
+    ("list", "superplanenodes.superplane.ai"),
     ("watch", "superplanenodes.superplane.ai"),
-    ("create", "leases.coordination.k8s.io"),
-    ("update", "leases.coordination.k8s.io"),
+    ("get", "namespaces"),
 )
 
 # Permissions the controller credential must NOT hold. Checked explicitly because
@@ -92,10 +106,29 @@ REQUIRED_CONTROLLER_PERMISSIONS: tuple[tuple[str, str], ...] = (
 # cluster-admin credential satisfies the first while failing the second. A controller
 # that can create ClusterRoleBindings can escalate past every boundary this package
 # establishes.
+#
+# The two `leases.coordination.k8s.io` mutations are FORBIDDEN rather than merely
+# absent, and that is the load-bearing part of this change. They were required here
+# for a controller that ran leader election. The controller #5536 ships
+# (`src/superplane-controller/main.go`) runs a registration manager with no leader
+# election and never writes a Lease -- and its own credential check,
+# `management/target.go::readOnlyWorkspaceRules`, whitelists `create` ONLY for the
+# virtual self-review resources. A credential holding `create leases` therefore fails
+# that check, so the manager refuses its own target with `credential_not_read_only`.
+#
+# Granting them is thus not over-provisioning that happens to be harmless: it is the
+# difference between a workspace that registers and one that cannot, while every check
+# in this package passed. Dropping them from the required set alone would stop granting
+# them but would still let a cluster where something else granted them reach the
+# manager and fail there, with the failure surfacing in Go as an opaque string rather
+# than here as a named readiness check. `controller_permissions` asks about both sets,
+# so listing them here is what makes that case an explicit refusal naming the verb.
 FORBIDDEN_CONTROLLER_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("create", "clusterrolebindings.rbac.authorization.k8s.io"),
     ("delete", "namespaces"),
     ("get", "secrets"),
+    ("create", "leases.coordination.k8s.io"),
+    ("update", "leases.coordination.k8s.io"),
 )
 
 
@@ -228,6 +261,33 @@ def _controller_checks(
     - The handover is complete. A previous controller that is still holding the
       coordination lease has not handed over, even when its Deployment is gone.
     """
+    if getattr(access, "controller_mode", None) == "management":
+        from .management_observation import ManagementObservation
+
+        observer = getattr(access, "management_observation", None)
+        detail = "a scoped management-controller observation is required"
+        verified = False
+        if isinstance(observer, ManagementObservation):
+            try:
+                observer.observe()
+                verified = True
+            except BootstrapRefused as exc:
+                detail = str(exc)
+        existing = [image for image in access.controller_deployments() if image.strip()]
+        return [
+            ReadinessCheck(
+                name="management_controller_observed_workspace",
+                verified=verified,
+                detail="" if verified else detail,
+            ),
+            ReadinessCheck(
+                name="single_controller_reconciles_the_cluster",
+                verified=not existing,
+                detail=""
+                if not existing
+                else "a legacy workspace controller still requires explicit handover",
+            ),
+        ]
     checks = [
         _workload_check(
             "workspace_controller_available",

@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
 from src.admin.persona_models.service import PreferenceRejectedError
+from src.agentauth.launch_configuration import mapping_enabled, select_for_dispatch
 from src.agentauth.work_routes import PROOF_HEADER, verify_producer
 from src.shared.database import get_db
 

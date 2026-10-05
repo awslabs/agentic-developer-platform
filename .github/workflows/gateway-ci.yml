@@ -1,6 +1,9 @@
 name: Gateway CI
 
 on:
+  # Reviewed source can be validated without removing [skip ci] from commits.
+  # This runs the existing tests and no-push smoke build, never a deployment.
+  workflow_dispatch:
   pull_request:
     paths:
       - 'platform/scripts/adversarial-test-assert.py'
@@ -19,6 +22,10 @@ on:
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
       - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/agent/package-lock.json'
+      - 'modules/agent-factory/agent/tsconfig.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/**'
+      - 'modules/agent-factory/agent/src/lib/url-guard.ts'
       - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
@@ -50,6 +57,12 @@ on:
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
+      # Superplane borrows this frontend toolchain. Its own CI runs focused
+      # UI and browser checks; Gateway CI also verifies the integrated build.
+      - 'modules/domain-apps/superplane/ui/**'
+      - 'modules/gateway/frontend/vite.config.ts'
+      - 'modules/gateway/frontend/vitest.config.ts'
+      - 'modules/gateway/frontend/tsconfig*.json'
       - 'libs/python/adp-common/**'
       # Shared cross-module contract fixtures (#4029). tests/internal/
       # test_provenance_contract.py validates these against the gateway's
@@ -81,11 +94,21 @@ on:
       - '.github/scripts/validate_loop_proposal.py'
       - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-smoke.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'codebuild/bs-gateway-smoke.yml'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   push:
@@ -106,6 +129,10 @@ on:
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
       - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/agent/package-lock.json'
+      - 'modules/agent-factory/agent/tsconfig.json'
+      - 'modules/agent-factory/agent/src/complex-task-chat/**'
+      - 'modules/agent-factory/agent/src/lib/url-guard.ts'
       - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
@@ -116,10 +143,20 @@ on:
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'codebuild/bs-gateway-smoke.yml'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -215,12 +252,16 @@ jobs:
   # dominates, so extra workers buy almost nothing while multiplying the
   # oversubscription risk: arc-runner/main.tf documents a 2026-08-30 incident
   # where packed runners hit 104% node CPU and a job died with "runner lost
-  # communication ... starves it for CPU/Memory". 4 shards x -n 4 stays inside
+  # communication ... starves it for CPU/Memory". 8 shards x -n 4 stays inside
   # the existing 4-CPU limit and needs no infrastructure change at all.
   #
   # Runner capacity is not the constraint and never was: the scale set allows 20
   # runners, queue time was measured at 0min on every run, and we were using
-  # one. 4 shards is spending capacity that already sits idle.
+  # one. Sharding spends pool capacity deliberately -- see maxRunners in
+  # arc-runner/main.tf, raised to 40 alongside this because at typical
+  # concurrency (3-5 overlapping Gateway CI runs, peak 11 measured over 58 runs)
+  # a 20-runner pool was already oversubscribed at 4 shards, which is why shards
+  # that take 4m19s alone were showing up as 7m24s.
   #
   # Coverage is main-only: --cov measured +58% wall clock (138s -> 218s on the
   # same slice). Nothing gates on the number, so PRs don't pay for it.
@@ -236,7 +277,7 @@ jobs:
     runs-on: arc-runner-org
     # `needs: lint` is KEPT, after measuring the alternative. Dropping it saves
     # one ~1min dispatch hop, but it raises peak concurrency per run from 4
-    # runners to 7 (lint + frontend + smoke + 4 shards all starting at once),
+    # runners to 11 (lint + frontend + smoke + 8 shards all starting at once),
     # and Gateway CI runs overlap routinely — 3 were concurrent on 2026-09-20
     # 07:24, i.e. up to 12 shards bursting to 4 CPUs each. arc-runner/main.tf
     # documents a 2026-08-30 node-saturation incident from exactly this, and the
@@ -249,7 +290,7 @@ jobs:
       # the others, or a single failure hides the state of 10k other tests.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v7
 
@@ -268,9 +309,17 @@ jobs:
         working-directory: modules/gateway
         env:
           # pytest-split partitions the collected list deterministically, so the
-          # 4 shards are disjoint and together cover every test exactly once
-          # (verified: 3475+3475+3475+3474 = 13899).
-          SHARD_ARGS: --splits 4 --group ${{ matrix.shard }}
+          # shards are disjoint and together cover every selected test exactly
+          # once (verified at 8 shards: 7x2183 + 2180 = 17461, plus the 86
+          # deselected = the full 17547 collected).
+          #
+          # 4 -> 8 because 4 saturated. Measured on one run: 1181s of total test
+          # work, 1.17x imbalance, ~46s fixed overhead per shard. That models
+          # 6.5m at 4 shards and 3.6m at 8. Returns fall off fast beyond this --
+          # 8->16 buys only another 1.4m against a hard ~46s/shard floor
+          # (checkout + Setup Python + pip install, paid per shard regardless) --
+          # so do not keep raising this expecting the same return.
+          SHARD_ARGS: --splits 8 --group ${{ matrix.shard }}
           # -n 4 is pinned to the runner's 4-CPU limit (arc-runner/main.tf). Do
           # NOT use `-n auto`: nproc inside the pod reports the NODE's 32 cores,
           # not the cgroup limit, so auto would spawn 32 workers on 4 CPUs and
@@ -292,7 +341,7 @@ jobs:
           # run and made failures harder to find, not easier. --tb=short still
           # prints a traceback for anything that fails.
           pytest tests/ -q --tb=short \
-            -m "not live_only" \
+            -m "not live_only and not chat_ports" \
             --timeout=60 \
             $SHARD_ARGS $XDIST_ARGS $COV_ARGS
 
@@ -323,7 +372,7 @@ jobs:
   test:
     name: Test
     runs-on: arc-runner-org
-    needs: test-shard
+    needs: [test-shard, chat-ports]
     if: always()
     steps:
       - name: Verify every shard passed
@@ -334,6 +383,45 @@ jobs:
             echo "::error::One or more gateway test shards did not pass ($result)."
             exit 1
           fi
+          ports='${{ needs.chat-ports.result }}'
+          if [ "$ports" != "success" ]; then
+            echo "::error::Chat data port integration did not pass ($ports)."
+            exit 1
+          fi
+
+  chat-ports:
+    name: Chat Data Port Integration
+    runs-on: arc-runner-org
+    needs: lint
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: modules/gateway/pyproject.toml
+      - name: Install gateway test dependencies
+        working-directory: modules/gateway
+        run: pip install -e '.[dev]'
+      - name: Install chat-worker test dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev --ignore-scripts
+      - name: Exercise chat ports through the gateway and storage emulators
+        working-directory: modules/gateway
+        run: pytest tests/agentauth/ -q -m chat_ports --timeout=60 --junitxml=chat-port-results.xml
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: chat-port-results-${{ github.sha }}
+          path: modules/gateway/chat-port-results.xml
+          if-no-files-found: error
 
   frontend-test:
     name: Frontend Unit Tests
@@ -359,6 +447,13 @@ jobs:
         # instead of allowing host CPU discovery to oversubscribe the container.
         run: npx vitest run --reporter=verbose --maxWorkers=2
 
+      # The domain app's sources are typechecked only here. Vitest strips types
+      # without checking them, so a type error in modules/domain-apps/ would
+      # otherwise reach main with a green suite.
+      - name: Typecheck
+        working-directory: modules/gateway/frontend
+        run: npx tsc --noEmit
+
   build:
     name: Build Container
     runs-on: arc-runner-org
@@ -373,36 +468,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # ARC runner pods have no Docker daemon (docker-ce-cli only, no DinD
-      # sidecar) — `docker build` has failed on every run since the
-      # ubuntu-latest → arc-runner-org migration (#367). Kaniko also can't
-      # run here (needs root FS ownership; runner is non-root). Platform
-      # convention: docker builds run in CodeBuild (privileged). This job
-      # triggers the gateway-build project with a build-only buildspec
-      # override — same trigger/poll pattern as security-scan.yml Grype.
+      # ARC dispatches to the existing gateway project. IAM requires the
+      # nonpublishing PR role override, even if repository code changes this job.
+      - name: Verify gateway build project exists
+        run: |
+          set -euo pipefail
+          PROJECT_ARN=$(aws codebuild batch-get-projects \
+            --names adp-dev-gateway-build --query 'projects[0].arn' --output text)
+          if [ -z "$PROJECT_ARN" ] || [ "$PROJECT_ARN" = None ]; then
+            echo "::error::Existing gateway CodeBuild project adp-dev-gateway-build is unavailable."
+            exit 1
+          fi
+
       - name: Refresh CodeBuild source zip
         id: smoke-source
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
           # Separate revisions, concurrent jobs and rerun attempts must never
           # replace source while another CodeBuild is waiting to download it.
-          SOURCE_KEY="codebuild/src/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+          SOURCE_KEY="codebuild/src/adp-dev-gateway-build-pr/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
           ARCHIVE="${RUNNER_TEMP}/gateway-smoke-source.zip"
           ./platform/scripts/zip-source.sh . "$ARCHIVE"
           aws s3 cp "$ARCHIVE" "s3://${STATE_BUCKET}/${SOURCE_KEY}"
           echo "location=${STATE_BUCKET}/${SOURCE_KEY}" >> "$GITHUB_OUTPUT"
+          echo "role=arn:aws:iam::${ACCOUNT_ID}:role/adp-dev-codebuild-gateway-pr" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-build image (CodeBuild, no push)
         env:
           SMOKE_SOURCE_LOCATION: ${{ steps.smoke-source.outputs.location }}
+          SMOKE_SERVICE_ROLE: ${{ steps.smoke-source.outputs.role }}
         run: |
           set -euo pipefail
           test -n "$SMOKE_SOURCE_LOCATION"
+          test -n "$SMOKE_SERVICE_ROLE"
           BUILD_ID=$(aws codebuild start-build \
             --project-name adp-dev-gateway-build \
+            --service-role-override "$SMOKE_SERVICE_ROLE" \
             --source-location-override "$SMOKE_SOURCE_LOCATION" \
             --buildspec-override codebuild/bs-gateway-smoke.yml \
             --query 'build.id' --output text)

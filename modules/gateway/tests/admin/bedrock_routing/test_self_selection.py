@@ -28,7 +28,7 @@ import inspect
 
 import pytest
 import sqlalchemy as sa
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -168,7 +168,8 @@ def test_s1b_the_write_body_names_a_connection_and_not_a_person():
     """
     from src.admin.bedrock_routing.schemas import MySelectionRequest
 
-    assert set(MySelectionRequest.model_fields) == {"credential_id"}
+    assert set(MySelectionRequest.model_fields) == {"credential_id", "expected_account_id"}
+    assert not {"user_id", "scope", "destination_id"} & set(MySelectionRequest.model_fields)
 
 
 async def test_s1c_a_plain_member_is_served_on_every_route(session, seeded, routable_connection, probe_ok):
@@ -720,3 +721,15 @@ def test_s5h_the_self_module_runs_no_probe_of_its_own():
     source = inspect.getsource(self_routes)
     assert "assume_role" not in source, "the self surface must not assume a role directly; go through service.validate_mapping_target"
     assert "probe_routing_destination" not in source, "the self surface must not call the probe directly"
+
+
+@pytest.mark.asyncio
+async def test_service_cannot_select_a_humans_billing_identity(session, seeded):
+    from unittest.mock import AsyncMock, patch
+
+    service = member_context().model_copy(update={"account_type": "service", "auth_source": "iam"})
+    with patch("src.proxy.bedrock_principal.routing_user", new_callable=AsyncMock) as lookup:
+        with pytest.raises(HTTPException) as error:
+            await self_routes._caller_id(session, service)
+        assert error.value.status_code == 403
+        lookup.assert_not_called()

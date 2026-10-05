@@ -37,6 +37,7 @@ _metrics_enabled = False
 # Counters
 door_query_count: Any = None
 door_query_errors: Any = None
+door_acl_denials: Any = None
 
 # Histograms
 door_query_latency: Any = None
@@ -86,7 +87,7 @@ def setup_door_metrics(service_name: str = "knowledge-layer-door") -> bool:
         On False, record_query is a no-op (fail-open).
     """
     global _meter, _metrics_initialized, _metrics_enabled
-    global door_query_count, door_query_errors, door_query_latency
+    global door_query_count, door_query_errors, door_query_latency, door_acl_denials
 
     if _metrics_initialized:
         return _metrics_enabled
@@ -150,6 +151,11 @@ def setup_door_metrics(service_name: str = "knowledge-layer-door") -> bool:
             unit="ms",
             description="Latency of Door tool calls",
         )
+        door_acl_denials = _meter.create_counter(
+            "kl.door_acl_denials",
+            unit="1",
+            description="Count of Door results withheld by the ACL boundary",
+        )
 
         _metrics_enabled = True
         log.info(
@@ -181,6 +187,19 @@ def record_query(tenant_id: str, verb: str, duration_ms: float, error: bool = Fa
             door_query_errors.add(1, {"tenant_id": tenant_id, "verb": verb})
     except Exception:
         pass  # fail-open: metrics never block query handling
+
+
+def record_denial(tenant_id: str, reason: str, count: int = 1) -> None:
+    """Record ACL denials so misconfiguration and probing are both visible.
+
+    Fail-open -- never raises. A denial has already been decided and logged by
+    the time this is called; losing the metric must not change the outcome.
+    """
+    try:
+        if door_acl_denials:
+            door_acl_denials.add(count, {"tenant_id": tenant_id, "reason": reason})
+    except Exception:
+        pass  # fail-open: metrics never block authorisation
 
 
 # ---------------------------------------------------------------------------

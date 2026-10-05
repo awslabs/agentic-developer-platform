@@ -18,6 +18,7 @@ from ._handler_loader import load_handler
 def event(model="openai.gpt-5.6-sol", api_format="openai", **usage):
     return {
         "org_id": "org",
+        "settlement_version": 1,
         "user_id": "user",
         "model": model,
         "api_format": api_format,
@@ -134,7 +135,7 @@ def test_database_bindings_preserve_exact_decimal(writer):
         handler.upsert_budget_usage(connection, "org", "user", "user", datetime.now(UTC), "daily", cost, 2304)
         bound = cursor.execute.call_args.args[1][6]
     else:
-        handler.bridge_cost_to_usage_logs(connection, "req", cost, "log.json")
+        handler.bridge_cost_to_usage_logs(connection, "req", cost, "log.json", org_id="org", user_id="user")
         bound = cursor.execute.call_args.args[1][0]
     assert isinstance(bound, Decimal)
     assert bound == Decimal("0.007040")

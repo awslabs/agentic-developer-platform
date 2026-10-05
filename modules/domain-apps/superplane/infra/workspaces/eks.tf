@@ -297,7 +297,7 @@ resource "aws_security_group" "cluster" {
 
 resource "aws_vpc_security_group_egress_rule" "cluster_all" {
   security_group_id = aws_security_group.cluster.id
-  description       = "Outbound: image pulls, AWS API calls, and the workspace's own outbound traffic via the NAT gateway."
+  description       = "Outbound: image pulls, AWS API calls, and workspace traffic via the NAT gateway."
 
   # Unrestricted egress. Stated plainly rather than presented as a restriction: this is what
   # EKS needs to function, and narrowing it requires knowing every registry, AWS endpoint and
@@ -364,6 +364,33 @@ resource "aws_eks_cluster" "workspace" {
     # to an identity that may be a shared CI role. Operator access is granted explicitly
     # through the workspace admin role in iam.tf and the access entries #5533 owns.
     bootstrap_cluster_creator_admin_permissions = false
+  }
+
+  dynamic "remote_network_config" {
+    for_each = var.hybrid_networks == null ? [] : [var.hybrid_networks]
+    content {
+      remote_node_networks {
+        cidrs = [remote_network_config.value.node_cidr]
+      }
+      remote_pod_networks {
+        cidrs = [remote_network_config.value.pod_cidr]
+      }
+    }
+  }
+
+  dynamic "kubernetes_network_config" {
+    for_each = var.hybrid_networks == null ? [] : [var.hybrid_networks]
+    content {
+      ip_family         = "ipv4"
+      service_ipv4_cidr = kubernetes_network_config.value.service_cidr
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.hybrid_networks == null || local.hybrid_ranges_disjoint
+      error_message = "Hybrid node, pod and service ranges must not overlap each other or any primary/secondary workspace VPC CIDR."
+    }
   }
 
   tags = {
@@ -577,5 +604,8 @@ resource "aws_eks_node_group" "default" {
     aws_iam_role_policy_attachment.node_worker,
     aws_iam_role_policy.node_image_pull,
     aws_eks_addon.vpc_cni,
+    aws_vpc_endpoint.private_sts,
+    aws_vpc_security_group_ingress_rule.private_sts_nodes,
+    data.aws_security_group.supplied_sts,
   ]
 }

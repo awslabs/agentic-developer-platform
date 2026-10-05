@@ -79,7 +79,7 @@ class TestValidateSelectionFailClosed:
         assert isinstance(result, SelectionResult)
         assert result.canonical_model_id == "global.anthropic.claude-opus-4-6-v1"
         assert result.compatibility_class == "claude-agent-sdk"
-        assert result.harness_contract_revision == "0.3.220"
+        assert result.harness_contract_revision == "0.3.283"
         assert result.evidence_verified_at is not None
 
     @pytest.mark.asyncio

@@ -313,7 +313,10 @@ echo "    - contents: write    (clone repos, push branches)"
 echo "    - issues: write      (read issues, post comments, manage labels)"
 echo "    - pull_requests: write (open and update PRs)"
 echo "    - checks: write      (create check runs for progress UX)"
+echo "    - actions: write     (inspect, dispatch and rerun CI workflows)"
+echo "    - workflows: write   (publish workflow file changes)"
 echo "    - metadata: read     (list repos the app is installed on)"
+echo "    - members: read      (verify active organization administrator control)"
 echo ""
 echo "  Subscribed events:"
 echo "    issues, issue_comment, pull_request, pull_request_review,"
@@ -341,7 +344,10 @@ URL="${URL}&contents=write"
 URL="${URL}&issues=write"
 URL="${URL}&pull_requests=write"
 URL="${URL}&checks=write"
+URL="${URL}&actions=write"
+URL="${URL}&workflows=write"
 URL="${URL}&metadata=read"
+URL="${URL}&members=read"
 URL="${URL}&events[]=issues"
 URL="${URL}&events[]=issue_comment"
 URL="${URL}&events[]=pull_request"
@@ -527,7 +533,7 @@ _validate_app_config() {
 
   # Expected permissions — mirrored from _build_app_manifest() in service.py
   # Format: "permission_name=minimum_level" (bash 3.2 compatible; no associative arrays)
-  local EXPECTED_PERMISSIONS="contents=write issues=write pull_requests=write checks=write metadata=read"
+  local EXPECTED_PERMISSIONS="contents=write issues=write pull_requests=write checks=write actions=write workflows=write metadata=read members=read"
 
   # Expected events — mirrored from _build_app_manifest() in service.py
   local EXPECTED_EVENTS="issues issue_comment pull_request pull_request_review pull_request_review_comment label"

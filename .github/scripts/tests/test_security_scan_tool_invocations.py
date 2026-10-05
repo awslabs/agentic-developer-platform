@@ -106,7 +106,7 @@ def test_scan_does_not_ask_for_the_plugin_list(workflow):
     """`--list-all-plugins` prints detector names and exits 0 — not findings."""
     script = strip_comments(job_script(workflow, "detect-secrets"))
     assert "--list-all-plugins" not in script
-    assert "detect-secrets scan" in script
+    assert "python3 .github/scripts/run_detect_secrets.py scan" in script
 
 
 def test_scan_reads_results_out_of_the_baseline_not_stdout(workflow):
@@ -121,7 +121,7 @@ def test_scan_reads_results_out_of_the_baseline_not_stdout(workflow):
     ), "must scan into a copy so the committed baseline is not modified"
     assert "--baseline detect-secrets-results.json" in script
     # The defect being locked out: capturing stdout from `scan --baseline`.
-    assert not re.search(r"detect-secrets scan[^\n]*>\s*detect-secrets-results\.json", script)
+    assert not re.search(r"run_detect_secrets\.py scan[^\n]*>\s*detect-secrets-results\.json", script)
 
 
 def test_scanner_failures_are_not_swallowed(workflow):
@@ -153,7 +153,7 @@ def test_audit_reads_the_current_scan_artifact(workflow):
     )
     assert "audit --report --json detect-secrets-results.json" in script
     assert "audit --report --json .github/security/.secrets.baseline" not in script
-    assert "audit omitted" in script
+    assert "validate_audit_coverage(scan, report)" in script
 
 
 def test_audit_logs_only_aggregate_counts(workflow):
@@ -217,7 +217,7 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
     artifact.write_text(BASELINE_PATH.read_text())
     proc = subprocess.run(
         [
-            "detect-secrets", "scan",
+            sys.executable, str(REPO / ".github/scripts/run_detect_secrets.py"), "scan",
             "--baseline", "detect-secrets-results.json",
             "--exclude-files", r"^\.github/security/\.secrets\.baseline$",
             "--exclude-files", r"^detect-secrets-results\.json$",
@@ -237,7 +237,7 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
     audit = tmp_path / "detect-secrets-audit.json"
     proc = subprocess.run(
         [
-            "detect-secrets", "audit", "--report", "--json",
+            sys.executable, str(REPO / ".github/scripts/run_detect_secrets.py"), "audit", "--report", "--json",
             "detect-secrets-results.json",
         ],
         cwd=tmp_path,
@@ -258,8 +258,12 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
         "detect-secrets", tmp_path, tmp_path / ".github/security"
     )
     assert summary["new_count"] == 2
-    assert "AWS Access Key:planted.py:1" in summary["new"]
-    assert summary["new_severities"]["AWS Access Key:planted.py:1"] == "unrated"
+    assert any(fp.startswith("AWS Access Key:planted.py:1:sha1:") for fp in summary["new"])
+    fingerprint = next(
+        fp for fp in summary["new"]
+        if fp.startswith("AWS Access Key:planted.py:1:sha1:")
+    )
+    assert summary["new_severities"][fingerprint] == "unrated"
 
 
 # --------------------------------------------------------------------------
@@ -516,15 +520,15 @@ def test_unproven_cleanup_is_never_reported_complete(tmp_path):
 
 
 def test_cleanup_stops_live_child_rechecks_terminal_state_and_deletes_source(tmp_path):
-    source_key = "codebuild/src/" + "a" * 40 + "-10-2-grype.zip"
-    write_json(tmp_path / "grype.json", {"build_id": "project:build", "source_key": source_key})
+    source_key = "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-2-grype.zip"
+    write_json(tmp_path / "grype.json", {"build_id": "adp-dev-grype-scan:build", "source_key": source_key})
     statuses = iter(("IN_PROGRESS", "STOPPED"))
     calls = []
 
     def aws(args):
         calls.append(args)
         if args[:2] == ["codebuild", "batch-get-builds"]:
-            return {"builds": [{"id": "project:build", "buildStatus": next(statuses)}]}
+            return {"builds": [{"id": "adp-dev-grype-scan:build", "buildStatus": next(statuses)}]}
         return {}
 
     result = reconcile.cleanup_children(tmp_path, {"grype"}, "us-east-1", "state-bucket", aws=aws, sleep=lambda _: None)
@@ -604,14 +608,14 @@ def test_tampered_private_image_artifact_blocks_receipt(tmp_path):
 
 
 def test_missing_sibling_state_still_cleans_recorded_live_child(tmp_path):
-    source_key = "codebuild/src/" + "a" * 40 + "-10-2-grype.zip"
-    write_json(tmp_path / "grype.json", {"build_id": "project:build", "source_key": source_key})
+    source_key = "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-2-grype.zip"
+    write_json(tmp_path / "grype.json", {"build_id": "adp-dev-grype-scan:build", "source_key": source_key})
     calls = []
 
     def aws(args):
         calls.append(args)
         if args[:2] == ["codebuild", "batch-get-builds"]:
-            return {"builds": [{"id": "project:build", "buildStatus": "IN_PROGRESS" if len([c for c in calls if c[:2] == ["codebuild", "batch-get-builds"]]) == 1 else "STOPPED"}]}
+            return {"builds": [{"id": "adp-dev-grype-scan:build", "buildStatus": "IN_PROGRESS" if len([c for c in calls if c[:2] == ["codebuild", "batch-get-builds"]]) == 1 else "STOPPED"}]}
         return {}
 
     result = reconcile.cleanup_children(tmp_path, {"grype", "syft"}, "us-east-1", "state-bucket", aws=aws, sleep=lambda _: None)
@@ -643,7 +647,7 @@ def _codebuild_idempotency_token(tmp_path: Path, **overrides: str) -> str:
         "STATE_BUCKET": "state-bucket",
         "AWS_REGION": "us-east-1",
         "PROJECT_NAME": "adp-dev-first-build",
-        "SOURCE_KEY": "codebuild/src/" + "a" * 40 + "-10-1-build.zip",
+        "SOURCE_KEY": "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-1-build.zip",
         "SOURCE_REVISION": "a" * 40,
         "ENV_VARS": '"name=IMAGE_TAG,value=abc,type=PLAINTEXT"',
         "CHILD_STATE_URI": "",
@@ -676,7 +680,7 @@ def test_codebuild_idempotency_token_is_retry_stable_and_request_unique(tmp_path
 
     changed_requests = [
         {"PROJECT_NAME": "adp-dev-second-build"},
-        {"SOURCE_KEY": "codebuild/src/" + "b" * 40 + "-10-1-build.zip"},
+        {"SOURCE_KEY": "codebuild/src/adp-dev-grype-scan/" + "b" * 40 + "-10-1-build.zip"},
         {"SOURCE_REVISION": "b" * 40},
         {"ENV_VARS": '"name=IMAGE_TAG,value=def,type=PLAINTEXT"'},
     ]
@@ -731,3 +735,63 @@ def test_s21_handoff_binds_dispatch_ref_and_selects_run_by_correlation():
         '.correlation == $correlation',
     ):
         assert binding in instructions
+
+
+def test_checkov_current_publisher_filename_is_accepted(tmp_path):
+    valid_findings_tree(tmp_path)
+    (tmp_path / "checkov/checkov-results.sarif").rename(tmp_path / "checkov/results_sarif.sarif")
+    reconcile.validate_findings(tmp_path, {"image"})
+
+
+def test_competing_checkov_reports_are_rejected(tmp_path):
+    valid_findings_tree(tmp_path)
+    write_json(tmp_path / "checkov/results_sarif.sarif", {"version": "2.1.0", "runs": [{"results": []}]})
+    with pytest.raises(ValueError, match="exactly one"):
+        reconcile.validate_findings(tmp_path, {"image"})
+
+
+@pytest.mark.parametrize("tamper", [None, "raw", "summary", "metadata", "build_args", "extra", "strip"])
+def test_extended_scanner_provenance_checks_all_evidence(tmp_path, tamper):
+    revision = "a" * 40
+    suffixes = {
+        "raw_artifact_sha256": ".raw.sarif",
+        "suppression_summary_sha256": ".suppression-summary.json",
+        "scanner_metadata_sha256": ".scanner-metadata.json",
+    }
+    for tool in ("grype", "syft"):
+        write_image_evidence(tmp_path, tool, revision, "sha256:" + "b" * 64)
+        path = tmp_path / tool / "provenance/image.json"
+        provenance = json.loads(path.read_text())
+        coverage_path = tmp_path / tool / "coverage.json"
+        coverage = json.loads(coverage_path.read_text())
+        extras = {"build_args": {"PYTHON_IMAGE": "python@sha256:" + "c" * 64}}
+        for field, suffix in suffixes.items():
+            extras[field] = None
+            if tool == "grype":
+                artifact = tmp_path / tool / "artifacts" / ("image" + suffix)
+                write_json(artifact, {"synthetic": suffix})
+                extras[field] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        provenance.update(extras)
+        coverage["targets"][0].update(extras)
+        write_json(path, provenance)
+        write_json(coverage_path, coverage)
+    path = tmp_path / "grype/provenance/image.json"
+    provenance = json.loads(path.read_text())
+    if tamper in ("raw", "summary", "metadata"):
+        suffix = {"raw": ".raw.sarif", "summary": ".suppression-summary.json", "metadata": ".scanner-metadata.json"}[tamper]
+        (tmp_path / "grype/artifacts" / ("image" + suffix)).write_text("tampered")
+    elif tamper == "build_args":
+        provenance["build_args"] = {"PYTHON_IMAGE": "python@sha256:" + "d" * 64}
+    elif tamper == "extra":
+        provenance["unexpected"] = True
+    elif tamper == "strip":
+        for key in ("build_args", *suffixes):
+            del provenance[key]
+    write_json(path, provenance)
+    if tamper:
+        with pytest.raises(ValueError):
+            reconcile.observed_results(tmp_path, tmp_path / "out", revision, {"image"}, True)
+    else:
+        result = reconcile.observed_results(tmp_path, tmp_path / "out", revision, {"image"}, True)
+        assert result["coverage_complete"] is True
+        assert json.loads((tmp_path / "out/grype-image.json").read_text()) == provenance

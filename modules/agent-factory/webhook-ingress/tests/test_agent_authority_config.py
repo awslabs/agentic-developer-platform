@@ -45,6 +45,7 @@ step that supplies the image digests it depends on.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -138,63 +139,34 @@ class TestProtectedRouteIsWiredAsOneUnit:
     """
 
     def test_enable_flag_and_control_endpoint_ship_in_the_same_block(self, bootstrap: str):
-        env_block = _block(bootstrap, "agent_authority_env_block")
-        assert ENABLE_ENV in env_block, (
-            f"{ENABLE_ENV} must be set for the client to leave the legacy route"
-        )
-        assert CONTROL_ENDPOINT_ENV in env_block, (
-            f"{ENABLE_ENV} without {CONTROL_ENDPOINT_ENV} leaves the client unable to resolve the protected route"
-        )
-        assert WORKLOAD_TOKEN_FILE_ENV in env_block, (
-            "the run credential cannot be presented without the projected workload token"
-        )
+        env = json.loads((INFRA / "protected-worker-pod.json").read_text())["container"]["env"]
+        names = {entry["name"] for entry in env}
+        assert {ENABLE_ENV, WORKLOAD_TOKEN_FILE_ENV} <= names
+        assert "local.agent_authority_pod.container.env" in bootstrap
+        assert CONTROL_ENDPOINT_ENV in bootstrap
+        assert 'jsondecode(file("${path.module}/protected-worker-pod.json"))' in bootstrap
 
     def test_the_enable_flag_is_the_exact_string_true(self, bootstrap: str):
-        """The worker compares lowercased equality against "true".
-
-        Anything else (``1``, ``yes``, ``True`` via a different path) leaves the
-        feature off rather than half-on, so the emitted value is load-bearing.
-        """
-        env_block = _block(bootstrap, "agent_authority_env_block")
-        marker = env_block.index(ENABLE_ENV)
-        # The emitted YAML is `value: "true"`, which appears escaped in the HCL
-        # source. Normalising the escape keeps this about the value the pod sees.
-        emitted = env_block[marker : marker + 200].replace('\\"', '"')
-        assert 'value: "true"' in emitted, (
-            f"{ENABLE_ENV} must be emitted as the literal string true"
-        )
+        env = json.loads((INFRA / "protected-worker-pod.json").read_text())["container"]["env"]
+        assert [e for e in env if e["name"] == ENABLE_ENV] == [{"name": ENABLE_ENV, "value": "true"}]
 
     def test_the_whole_env_block_is_gated_on_one_variable(self, bootstrap: str):
-        """One switch, so the pod cannot get a partial authority configuration."""
-        env_block = _block(bootstrap, "agent_authority_env_block")
-        assert "var.agent_authority_enabled ?" in env_block, (
-            "the env block must be gated on var.agent_authority_enabled"
-        )
+        for name in ("env", "mount", "volume"):
+            line = next(line for line in bootstrap.splitlines() if f"agent_authority_{name}_block" in line)
+            assert "var.agent_authority_enabled ?" in line
 
     def test_control_endpoint_points_at_the_internal_agent_prefix(self, bootstrap: str):
-        """The client refuses a base URL it cannot derive, so the path matters.
-
-        It must be the gateway's ``/internal/v1/agent`` prefix: that router is
-        the one authenticated by run credential plus workload token.
-        """
-        env_block = _block(bootstrap, "agent_authority_env_block")
-        assert "/internal/v1/agent" in env_block, (
-            "the control endpoint must target the protected /internal/v1/agent router"
-        )
+        assert '/internal/v1/agent' in bootstrap
 
     def test_the_pod_mounts_a_dedicated_audience_bootstrap_token(self, bootstrap: str):
-        """A cluster-default audience token would be replayable at other services."""
-        volume_block = _block(bootstrap, "agent_authority_volume_block")
-        assert "serviceAccountToken" in volume_block, (
-            "the workload proof must be a projected serviceAccountToken"
-        )
-        assert BOOTSTRAP_AUDIENCE in volume_block, (
-            f"the projected token must be scoped to the {BOOTSTRAP_AUDIENCE} audience"
-        )
-        mount_block = _block(bootstrap, "agent_authority_mount_block")
-        assert "adp-workload-identity" in mount_block, (
-            "the projected token volume must be mounted into the worker"
-        )
+        pod = json.loads((INFRA / "protected-worker-pod.json").read_text())
+        volume = next(v for v in pod["volumes"] if v["name"] == "adp-workload-identity")
+        token = volume["projected"]["sources"][0]["serviceAccountToken"]
+        assert token == {"audience": BOOTSTRAP_AUDIENCE, "expirationSeconds": 3600, "path": "token"}
+        mount = next(m for m in pod["container"]["volumeMounts"] if m["name"] == volume["name"])
+        assert mount["readOnly"] is True
+        assert "local.agent_authority_pod.container.volumeMounts" in bootstrap
+        assert "local.agent_authority_pod.volumes" in bootstrap
 
     def test_the_scaledjob_interpolates_every_authority_block(self, scaledjob: str):
         """A block defined but never interpolated configures nothing.
@@ -261,3 +233,44 @@ class TestAuthorityCannotOutrunItsPrerequisites:
             "agent_authority_enabled must not be committed as true: this module auto-applies on merge, "
             "ahead of the operator step supplying agent_authority_worker_image_digests"
         )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_terraform_renders_protected_fields_only_when_enabled(tmp_path, enabled):
+    """Evaluate the actual production locals, including YAML quoting/indentation."""
+    import shutil
+    import subprocess
+
+    terraform = shutil.which("terraform")
+    if not terraform:
+        pytest.skip("Terraform is needed to evaluate protected pod composition")
+    source = BOOTSTRAP_TF.read_text()
+    start = source.index("  agent_authority_pod =")
+    end = source.index("\n}", start)
+    block = source[start:end].replace(
+        "data.aws_ssm_parameter.gateway_apigw_invoke_url.value", "local.test_gateway_url")
+    (tmp_path / "main.tf").write_text(
+        'variable "agent_authority_enabled" { type = bool }\n'
+        'variable "task_api_worker_enabled" { default = false }\nlocals {\n'
+        ' test_gateway_url = "https://fixture.example/dev"\n'
+        ' agent_control_verification_keys = { test = "public-key" }\n' + block + '\n}\n')
+    shutil.copy(INFRA / "protected-worker-pod.json", tmp_path)
+    expression = ('jsonencode({env = yamldecode(local.agent_authority_env_block), '
+                  'mounts = try(yamldecode(local.agent_authority_mount_block), null), '
+                  'volumes = try(yamldecode(local.agent_authority_volume_block), null)})\n')
+    result = subprocess.run([terraform, "console", f"-var=agent_authority_enabled={str(enabled).lower()}"],
+                            input=expression, text=True, capture_output=True, cwd=tmp_path, timeout=30)
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(json.loads(result.stdout))
+    env = {entry["name"]: entry["value"] for entry in actual["env"]}
+    assert env[CONTROL_ENDPOINT_ENV] == "https://fixture.example/dev/internal/v1/agent"
+    if enabled:
+        canonical = json.loads((INFRA / "protected-worker-pod.json").read_text())
+        assert env[ENABLE_ENV] == "true"
+        assert env[WORKLOAD_TOKEN_FILE_ENV] == "/var/run/adp-workload/token"
+        assert actual["mounts"]["volumeMounts"] == canonical["container"]["volumeMounts"]
+        assert actual["volumes"]["volumes"] == canonical["volumes"]
+    else:
+        assert set(env) == {CONTROL_ENDPOINT_ENV}
+        assert actual["mounts"] is None
+        assert actual["volumes"] is None

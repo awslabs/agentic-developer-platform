@@ -214,6 +214,10 @@ resource "aws_iam_role_policy" "gateway_elasticache_iam_auth" {
 }
 
 # Cognito permissions (scoped to the gateway's Cognito pool).
+# Keep the existing read policy inline, but attach the lifecycle permissions as
+# a managed policy. The gateway role has many inline policies and IAM enforces
+# a 10,240-byte aggregate limit on them. Attach the managed policy before
+# shrinking the inline policy during an upgrade.
 # Read: onboarding identity lookup, admin group/user listing.
 # Write (AdminUpdateUserAttributes): onboarding approval syncs the approved
 # user's role/org onto their Cognito custom: attributes so the pre-token Lambda
@@ -238,7 +242,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
+      }
+    ]
+  })
+
+  depends_on = [module.cognito, aws_iam_role_policy_attachment.gateway_cognito_lifecycle]
+}
+
+resource "aws_iam_policy" "gateway_cognito_lifecycle" {
+  name        = "${local.name_prefix}-policy-gateway-cognito-lifecycle"
+  description = "Gateway identity, machine client and CLI login lifecycle in its Cognito pool"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
       {
         # Native identity lifecycle (#5010). Keep every write scoped to the
         # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
@@ -253,6 +270,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:CreateGroup",
           "cognito-idp:GetGroup",
           "cognito-idp:DeleteGroup"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
+        # Authorized machine-agent lifecycle (#5624). Cognito client creation,
+        # protected credential delivery and terminal retirement all use this
+        # existing gateway pool. This is static gateway authority, not worker
+        # or per-task permission, and grants no client update/secret rotation.
+        Sid    = "CognitoMachineClientLifecycle"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateUserPoolClient",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:DeleteUserPoolClient"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       },
@@ -275,6 +306,11 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
   })
 
   depends_on = [module.cognito]
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_cognito_lifecycle" {
+  role       = local.gateway_service_irsa_role_name
+  policy_arn = aws_iam_policy.gateway_cognito_lifecycle.arn
 }
 
 # CFN template read permissions (issue #562)
@@ -536,6 +572,14 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
         ]
       },
       {
+        # #5634: staged supplied-key activation moves only this deployment's
+        # GitHub App key version. Never grant version-stage writes to the vault.
+        Sid      = "GitHubAppKeyActivation"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:UpdateSecretVersionStage"]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/github-app/adp-agent-platform-key-??????"
+      },
+      {
         # ListSecrets is account-wide by necessity (no resource-level scoping).
         # The gateway uses it to enumerate its own vault inventory (e.g. for
         # the orphan sweeper, admin listings, and per-user quota checks).
@@ -626,7 +670,8 @@ module "s3_chat_logs" {
 # =============================================================================
 
 module "rds" {
-  source = "./modules/rds"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/rds"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -677,12 +722,14 @@ module "redis" {
 # =============================================================================
 
 module "cognito" {
-  source = "./modules/cognito"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/cognito"
 
-  environment       = var.environment
-  name_prefix       = local.name_prefix
-  common_tags       = local.common_tags
-  mfa_configuration = var.cognito_mfa_configuration
+  environment            = var.environment
+  name_prefix            = local.name_prefix
+  common_tags            = local.common_tags
+  mfa_configuration      = var.cognito_mfa_configuration
+  threat_protection_mode = var.cognito_threat_protection_mode
   callback_urls = concat(
     var.cognito_callback_urls,
     ["https://${module.cloudfront.distribution_domain_name}/auth/callback"]
@@ -777,6 +824,8 @@ module "s3_cloudfront_logs" {
 # -----------------------------------------------------------------------------
 # Broker origin for CloudFront (see enable_broker_cloudfront_route)
 # -----------------------------------------------------------------------------
+# Shared Task ingress / GitHub broker origin. Task-only routing must not turn
+# on the GitHub OAuth behavior.
 # Resolved from the published invoke URL rather than from module.api_gateway
 # outputs, which would create a dependency cycle:
 #
@@ -795,14 +844,14 @@ module "s3_cloudfront_logs" {
 # the same shape as enable_vpc_origin, which likewise depends on a value from an
 # earlier apply.
 data "aws_ssm_parameter" "apigw_invoke_url_for_broker_origin" {
-  count = var.enable_broker_cloudfront_route ? 1 : 0
+  count = var.enable_broker_cloudfront_route || var.enable_task_api_route ? 1 : 0
 
   name = "/adp/${var.environment}/gateway/apigw-invoke-url"
 }
 
 locals {
   # https://<id>.execute-api.<region>.amazonaws.com/<stage>
-  broker_origin_match = var.enable_broker_cloudfront_route ? regexall(
+  broker_origin_match = var.enable_broker_cloudfront_route || var.enable_task_api_route ? regexall(
     "https://([a-z0-9]+)\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com/(.+)$",
     nonsensitive(data.aws_ssm_parameter.apigw_invoke_url_for_broker_origin[0].value)
   ) : []
@@ -829,8 +878,10 @@ module "cloudfront" {
   # VITE_GITHUB_AUTH_BROKER_URL and the broker's CALLBACK_URL point at it, so
   # enabling it should be a deliberate step rather than a side effect of having
   # an API Gateway.
-  broker_origin_domain_name = local.broker_origin_domain_name
-  broker_origin_path        = local.broker_origin_path
+  broker_origin_domain_name      = local.broker_origin_domain_name
+  broker_origin_path             = local.broker_origin_path
+  enable_broker_cloudfront_route = var.enable_broker_cloudfront_route
+  enable_task_api_route          = var.enable_task_api_route
 
   waf_web_acl_arn        = var.cloudfront_waf_web_acl_arn
   enable_ipv6            = var.cloudfront_enable_ipv6
@@ -969,7 +1020,8 @@ resource "aws_ssm_parameter" "model_allowed_models_config" {
 # =============================================================================
 
 module "rds_bootstrap" {
-  source = "./modules/rds-bootstrap"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/rds-bootstrap"
 
   name_prefix            = local.name_prefix
   namespace              = "bedrockgw"
@@ -982,6 +1034,8 @@ module "rds_bootstrap" {
   oidc_issuer            = local.oidc_issuer
   common_tags            = local.common_tags
   rds_instance_id        = module.rds.db_instance_id
+
+  db_connect_arn = "arn:${data.aws_partition.current.partition}:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${module.rds.db_instance_resource_id}/${var.rds_username}"
 
   depends_on = [
     module.rds,
@@ -997,8 +1051,9 @@ module "rds_bootstrap" {
 # =============================================================================
 
 module "budget_lambda" {
-  count  = var.enable_chat_logging ? 1 : 0
-  source = "./modules/budget-lambda"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_chat_logging ? 1 : 0
+  source                              = "./modules/budget-lambda"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1023,7 +1078,9 @@ module "budget_lambda" {
   rds_resource_id       = module.rds.db_instance_resource_id
 
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #1038)
-  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  lambda_artifact_bucket      = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  psycopg2_layer_s3_key       = var.psycopg2_layer_s3_key
+  psycopg2_layer_skip_destroy = var.psycopg2_layer_skip_destroy
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -1061,7 +1118,8 @@ module "budget_lambda" {
 # produces a real Terraform diff. See the image_uri comment in the module call.
 data "aws_ecr_image" "orchestration_tick" {
   repository_name = "adp-gateway"
-  image_tag       = var.orchestration_tick_image_tag
+  image_tag       = var.orchestration_tick_image_digest == null ? var.orchestration_tick_image_tag : null
+  image_digest    = var.orchestration_tick_image_digest
 }
 
 # Issue #4316: the SG fronting the shared VPC interface endpoints, so the tick can
@@ -1092,8 +1150,9 @@ data "aws_security_group" "vpc_endpoints" {
 # only artifact that already carries the async stack plus the RDS CA bundle the
 # TLS path needs. See modules/orchestration-tick/main.tf for the full rationale.
 module "orchestration_tick" {
-  count  = var.enable_orchestration_tick ? 1 : 0
-  source = "./modules/orchestration-tick"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_orchestration_tick ? 1 : 0
+  source                              = "./modules/orchestration-tick"
 
   environment = var.environment
   name_prefix = "adp-${var.environment}"
@@ -1140,7 +1199,8 @@ module "orchestration_tick" {
   redis_username          = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : ""
   redis_cache_name        = var.enable_redis ? module.redis[0].replication_group_id : ""
 
-  tick_schedule = var.orchestration_tick_schedule
+  tick_schedule    = var.orchestration_tick_schedule
+  schedule_enabled = var.orchestration_tick_schedule_enabled && !var.orchestration_tick_upgrade_hold
 
   # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's
   # description for why an unsubscribed topic is visible rather than fatal.
@@ -1211,8 +1271,9 @@ module "orchestration_tick" {
 # =============================================================================
 
 module "api_gateway" {
-  count  = var.enable_api_gateway ? 1 : 0
-  source = "./modules/api-gateway"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_api_gateway ? 1 : 0
+  source                              = "./modules/api-gateway"
 
   # EAA runbook 5.1 — per-path source restrictions at the API edge. Empty by
   # default, in which case no resource policy is created at all.
@@ -1267,6 +1328,17 @@ module "api_gateway" {
   # at plan time (the invoke_arn above is unknown until apply).
   enable_broker_route = var.enable_github_auth_broker
 
+  # Issue #5795 (T2): POST /v1/tasks route in the OpenAPI body.
+  #
+  # These arrive as root variables rather than a module reference because the
+  # ingress Lambda is owned by modules/agent-factory/webhook-ingress, a separate
+  # Terraform state — the same reason internal_alb_arn is an input here. Both
+  # default to empty, and the route is default-off, so a gateway apply that does
+  # not set them publishes no task route and behaves exactly as it does today.
+  task_api_lambda_invoke_arn    = var.task_api_lambda_invoke_arn
+  task_api_lambda_function_name = var.task_api_lambda_function_name
+  enable_task_api_route         = var.enable_task_api_route
+
   depends_on = [module.cognito]
 }
 
@@ -1282,8 +1354,9 @@ module "api_gateway" {
 # =============================================================================
 
 module "lambda_authorizer" {
-  count  = var.enable_api_gateway ? 1 : 0
-  source = "./modules/lambda-authorizer"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_api_gateway ? 1 : 0
+  source                              = "./modules/lambda-authorizer"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1291,7 +1364,9 @@ module "lambda_authorizer" {
   aws_region  = var.aws_region
 
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #408)
-  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  lambda_artifact_bucket   = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  pyjwt_layer_s3_key       = var.pyjwt_layer_s3_key
+  pyjwt_layer_skip_destroy = var.pyjwt_layer_skip_destroy
 
   # Cognito Configuration
   cognito_user_pool_id = module.cognito.cognito_user_pool_id
@@ -1677,8 +1752,9 @@ data "aws_secretsmanager_secret" "github_oauth_for_broker" {
 }
 
 module "github_auth_broker" {
-  count  = var.enable_github_auth_broker ? 1 : 0
-  source = "./modules/github-auth-broker"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_github_auth_broker ? 1 : 0
+  source                              = "./modules/github-auth-broker"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -1741,6 +1817,7 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:DeleteItem",
           "dynamodb:GetItem",

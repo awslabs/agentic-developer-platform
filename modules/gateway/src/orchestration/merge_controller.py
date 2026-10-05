@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
@@ -26,7 +28,14 @@ from .execution_runner import (
 )
 from .execution_state import ActionIntent, BlockCode, ExecutionPhase, Observation, ObservedOutcome, OutcomeKind
 from .execution_store import load_execution, prepare_action, record_observation
-from .merge_evidence import EligibilityReason, EligibilityState, GitHubEvidenceSource, observe_merge_eligibility
+from .merge_evidence import (
+    EligibilityReason,
+    EligibilityState,
+    GitHubEvidenceSource,
+    GitHubMergeObserver,
+    evaluate_required_checks,
+    observe_merge_eligibility,
+)
 from .merge_provider import MergeProvider
 from .merge_review import load_merge_review
 from .models import (
@@ -46,7 +55,11 @@ PHASES = (ExecutionPhase.MERGE_READY,)
 
 
 async def code_only_delivery(session, context, node):
-    """Only the explicitly accepted delivery contract may end at merged code."""
+    """End code delivery at merge when the accepted policy contains only code work.
+
+    Deployment permissions or gates retain the full delivery pipeline. Evaluation
+    nodes retain their own acceptance requirements in either mode.
+    """
     plan = await session.scalar(
         select(OrchestrationAcceptedPlan).where(
             OrchestrationAcceptedPlan.org_id == node.org_id,
@@ -55,12 +68,30 @@ async def code_only_delivery(session, context, node):
         )
     )
     marker = (plan.plan_document or {}).get("execution_continuation") if plan else None
+    if marker is None:
+        from .policy_admission import load_in_force_policy
+
+        admission = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+        policy = admission.policy
+        if admission.refusal is not None or admission.plan_version != context.identity.accepted_plan_version:
+            raise CycleBlockedError("code_delivery_contract_changed")
+        return bool(
+            policy is not None
+            and Action.MERGE in policy.allowed_actions
+            and not policy.environment_connection_ids
+            and set(policy.allowed_actions).union(policy.human_gates) <= {Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE}
+        )
     if not isinstance(marker, dict) or marker.get("delivery_mode") is None:
         return False
     from .shared_cycle import shared_marker
 
     accepted, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
-    if accepted.version != context.identity.accepted_plan_version or marker["delivery_mode"] != "code_only":
+    from .plan_lineage import ancestor_plan
+
+    if (
+        await ancestor_plan(session, accepted, context.identity.accepted_plan_version, node_id=node.id) is None
+        or marker["delivery_mode"] != "code_only"
+    ):
         raise CycleBlockedError("code_delivery_contract_changed")
     return True
 
@@ -130,11 +161,14 @@ class MergeObservation(HandlerObservation):
 class MergeServices:
     def __init__(self, factory, *, authority=None, provider=None, storage=None):
         self.factory = factory
-        from .review_cycle_dispatch import cycle_services
-
-        self.authority = authority or cycle_services(factory)
+        self.authority = authority
         self.provider = provider or MergeProvider()
         self.storage = storage
+
+    async def authority_for(self, context):
+        from .review_cycle_dispatch import cycle_services
+
+        return self.authority or await cycle_services(self.factory, context)
 
     async def state(self, session, context):
         loaded = await load_execution(session, identity=context.identity)
@@ -150,8 +184,10 @@ class MergeServices:
         )
         if node is None or node.kind != "story" or node.attempts != context.identity.cycle or node.state not in {"running", "awaiting_merge"}:
             raise CycleBlockedError("merge_outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
+        # Container state is derived from nodes. The stored default remains
+        # pending even while an accepted protected execution is running.
         flow = await session.get(OrchestrationFlow, node.flow_id)
-        if flow is None or (flow.state != "running" and not (flow.state == "pending" and getattr(self.authority, "allows_pending_flow", False))):
+        if flow is None or flow.state not in {"pending", "running"}:
             raise CycleBlockedError("merge_flow_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
         binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
         if binding is None or binding.role != "implementation" or not binding_scope_matches(binding, node):
@@ -169,11 +205,15 @@ class MergeServices:
         return node, binding, claim.active_run_id
 
     async def review(self, session, context, node, binding, run_id, provider_state):
-        raw = await self.authority.protected(node.org_id, run_id)
+        authority = await self.authority_for(context)
+        raw = await authority.protected(node.org_id, run_id)
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
         if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
-            raise CycleBlockedError("reviewer_still_active")
+            from .review_assignment import reviewer_owns_delivery
+
+            if not (provider_state.merged and await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run_id)):
+                raise CycleBlockedError("reviewer_still_active")
         return await load_merge_review(
             session,
             context=context,
@@ -190,7 +230,8 @@ class MergeServices:
 
         async def current_authority():
             current_node, current_binding, current_run = await self.state(session, context)
-            facts = await self.authority.authority_context(session, context, current_node, current_binding, current_run, Action.MERGE)
+            authority = await self.authority_for(context)
+            facts = await authority.authority_context(session, context, current_node, current_binding, current_run, Action.MERGE)
             # The engine uses the typed, single-repository merge adapter. The
             # worker-token selector intentionally exposes no MERGE capability.
             # Actual scoped token minting must still succeed in M1/provider I/O.
@@ -233,7 +274,18 @@ class MergeServices:
             or evidence.merged_at != state.merged_at
         ):
             raise CycleBlockedError("merged_pr_identity_changed")
-        if not evidence.checks_successful:
+        # The reviewer and merge controller use repository requirements to
+        # select applicable checks. A merged PR must use that same policy:
+        # GitHub's aggregate is null when no checks apply, not SUCCESS.
+        async with AsyncExitStack() as stack:
+            client = self.provider.client or await stack.enter_async_context(httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False))
+            observation = await GitHubMergeObserver(client, token, lambda: datetime.now(UTC)).observe(binding)
+        if not observation.merged or observation.head_sha != evidence.head_sha or observation.merge_commit_sha != evidence.merge_commit_sha:
+            raise CycleBlockedError("merged_pr_identity_changed")
+        if len(observation.requirements.checks) > 100 or len(observation.checks) > 200 or len(observation.sources) > 64:
+            raise CycleBlockedError("merge_evidence_bound_exceeded")
+        check_reasons, checks = evaluate_required_checks(observation)
+        if check_reasons:
             raise CycleBlockedError("merged_pr_checks_not_successful")
         if not evidence.review_approved:
             raise CycleBlockedError("merged_pr_review_not_approved")
@@ -247,10 +299,16 @@ class MergeServices:
             "head_sha": evidence.head_sha,
             "merge_sha": evidence.merge_commit_sha,
             "merged_at": evidence.merged_at,
-            "checks_state": evidence.checks_state,
+            "checks_state": "SATISFIED" if checks else "NOT_REQUIRED",
+            "check_requirements": asdict(observation.requirements),
+            "checks": [asdict(check) for check in checks],
+            "check_sources": [{"kind": source.kind, "digest": source.payload_sha256} for source in observation.sources],
             "review_state": evidence.review_state,
             "review_ref": review.artifact_ref,
         }
+        serialized = encode(verification)
+        if len(serialized) > 65536:
+            raise CycleBlockedError("merge_evidence_bound_exceeded")
         key = OperationIdentity.from_context(context, "observe_existing_merge", binding.id, str(binding.revision), state.merge_sha).key
         receipt = MergeReceipt(
             **asdict(context.identity),
@@ -267,7 +325,7 @@ class MergeServices:
             operation_key=key,
             method="external",
             verification_kind="post_merge_verification",
-            eligibility_digest=hashlib.sha256(encode(verification).encode()).hexdigest(),
+            eligibility_digest=hashlib.sha256(serialized.encode()).hexdigest(),
             eligibility_observed_at=now,
             merged_at=datetime.fromisoformat(state.merged_at.replace("Z", "+00:00")),
             observed_at=now,
@@ -438,8 +496,7 @@ class MergeServices:
                     current = await self.provider.read(current_binding)
                     if not self.matches(expected, current_binding, current) or current.base_sha != expected["base_sha"]:
                         raise CycleBlockedError("merge_revision_changed")
-                    reserved_context = replace(context, execution=replace(context.execution, attempts=max(0, context.execution.attempts - 1)))
-                    eligibility, review = await self.eligibility(session, reserved_context, current_node, current_binding, current_run, current)
+                    eligibility, review = await self.eligibility(session, context, current_node, current_binding, current_run, current)
                     if not eligibility.eligible:
                         raise CycleBlockedError("merge_eligibility_withdrawn", BlockCode.AUTHORITY_UNVERIFIABLE)
                     fresh = self.snapshot(current_binding, current, eligibility, review, expected["sequence"])
@@ -515,6 +572,18 @@ class MergeController:
                 raise CycleBlockedError("implementation_pr_closed_without_merge", BlockCode.HUMAN_INPUT_REQUIRED)
             if state.head_sha != binding.head_sha:
                 return MergeObservation(ObservationKind.FAILED, snapshot={"return_to_review": True}, detail="Reviewed head changed.")
+            from .run_reports import OrchestrationRunReport
+
+            report = await session.get(OrchestrationRunReport, run)
+            from .review_assignment import reviewer_owns_delivery
+
+            if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=run):
+                # Reviewer delivery owns mutation; the engine only adopts the
+                # independently verified merged state above.
+                raw = await (await self.services.authority_for(context)).protected(node.org_id, run)
+                if (report and not report.terminal_receipt) or (not report and raw and raw.get("status") != {"S": "completed"}):
+                    return MergeObservation(ObservationKind.WAITING, detail="Reviewer is delivering the merge.")
+                raise CycleBlockedError("reviewer_merge_not_delivered", BlockCode.HUMAN_INPUT_REQUIRED)
             if state.queue_id:
                 if latest is None or latest.detail.get("method") != "queue":
                     raise CycleBlockedError("merge_queue_admission_unattributed")
@@ -681,16 +750,7 @@ async def settle_merge(session, context, receipt, snapshot):
     ):
         raise CycleBlockedError("merge_settlement_scope_changed")
     flow = await session.get(OrchestrationFlow, node.flow_id)
-    if flow is not None and flow.state == "pending":
-        # Legacy flows can retain their original container state while accepted
-        # story work runs. Only an explicit shared continuation admits that
-        # compatibility state, and it must still be this execution's plan.
-        from .shared_cycle import shared_marker
-
-        plan, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
-        if plan.version != context.identity.accepted_plan_version:
-            raise CycleBlockedError("merge_flow_gate_changed")
-    elif flow is None or flow.state != "running":
+    if flow is None or flow.state not in {"pending", "running"}:
         raise CycleBlockedError("merge_flow_gate_changed")
     if bool(snapshot.get("code_only")) != await code_only_delivery(session, context, node):
         raise CycleBlockedError("code_delivery_contract_changed")

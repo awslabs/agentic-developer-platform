@@ -22,6 +22,10 @@ export default function ConnectAws() {
   return (
     <div className="max-w-2xl mx-auto p-6">
       <h1 className="text-2xl font-bold mb-6">Connect an AWS Account</h1>
+      <p className="text-sm text-gray-700 mb-4">
+        Personal connections are for AWS accounts separate from the accounts used by the ADP platform.
+        If your agents need access to platform resources, ask your ADP platform administrator to arrange scoped access for the task.
+      </p>
 
       <ConnectAwsForm
         showRoleName

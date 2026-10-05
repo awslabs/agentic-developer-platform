@@ -19,7 +19,8 @@ from src.shared.schemas.auth import TokenContext
 @pytest.fixture
 def context():
     return TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",
@@ -130,9 +131,11 @@ async def test_authoring_policy_refusal_precedes_body_consumption(context, runti
 
 
 async def test_legacy_worker_and_control_routes_keep_existing_auth(context, runtime):
-    context.user_id = "scaledjob-worker"
+    context.user_id = "iam-agent:scaledjob-worker"
+    context.agent_registry_id = "scaledjob-worker"
     assert (await call(context, []))[0][0]["status"] == 200
-    context.user_id = "authority-worker"
+    context.user_id = "iam-agent:authority-worker"
+    context.agent_registry_id = "authority-worker"
     assert (await call(context, [], path="/internal/v1/agent/status"))[0][0]["status"] == 200
     runtime.validate_flow.assert_not_awaited()
 
@@ -150,3 +153,11 @@ async def test_budget_cannot_replace_protected_binding_in_any_legacy_mode(contex
     assert await service._resolve_run_scope(context, None) is context._protected_run_binding
     with pytest.raises(RunBindingError):
         await service._resolve_run_scope(context, "sibling")
+
+
+async def test_paid_domain_worker_has_no_model_authority(context, runtime):
+    runtime.authenticate("credential", "pod")[3].authority.kind = "paid_domain_operation"
+    sent, consumed = await call(context, PROOF)
+    assert sent[0]["status"] == 403
+    assert consumed == []
+    assert context._protected_run_binding is None

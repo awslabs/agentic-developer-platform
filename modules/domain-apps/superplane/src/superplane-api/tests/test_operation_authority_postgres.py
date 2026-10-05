@@ -91,17 +91,19 @@ from app.models.workspace_grant import WorkspaceGrantRecord
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
+from tests.test_installation_postgres import (
+    installation_postgres_url as installation_postgres_url,
 )
+from tests.test_installation_postgres import pytestmark as postgres_available
+
+pytestmark = [] if os.environ.get("CI") else postgres_available
 
 PROVISION = "workspace:provision"
 SPEND = "workspace:spend"
 
 
 @pytest.fixture
-async def authority():
+async def authority(installation_postgres_url):  # noqa: F811 - pytest fixture injection
     """A resolver over its own schema, with helpers to seed real grant rows.
 
     Yields a small facade rather than the adapter alone because every test needs
@@ -114,7 +116,7 @@ async def authority():
     carry the real foreign key this suite depends on, and `tests/test_models.py`
     already pins the declaration against the migrations.
     """
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+    url = installation_postgres_url
     schema = "authority_test_" + uuid.uuid4().hex
     admin = create_async_engine(url)
     async with admin.begin() as connection:
@@ -129,6 +131,8 @@ async def authority():
     from app.models.cluster import Cluster
     from app.models.organization import Organization
     from app.models.workspace import Workspace
+    from app.models.operation_approval import OperationApproval
+    from app.services.operation_approvals import ApprovalService
 
     tables = [
         Organization.__table__,
@@ -137,6 +141,7 @@ async def authority():
         Workspace.__table__,
         OrganizationGrantRecord.__table__,
         WorkspaceGrantRecord.__table__,
+        OperationApproval.__table__,
     ]
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all, tables=tables)
@@ -149,6 +154,7 @@ async def authority():
             self.resolver = GrantBackedAuthority(factory)
             self.schema = schema
             self.engine = engine
+            self.approvals = ApprovalService(factory)
 
         async def organization(self, permissions: str = ORGANIZATION_ADMINISTER):
             """An organization and a principal holding `permissions` on it."""
@@ -170,8 +176,8 @@ async def authority():
                 await session.commit()
             return org_id, subject
 
-        async def workspace(self, org_id) -> uuid.UUID:
-            workspace_id = uuid.uuid4()
+        async def workspace(self, org_id, workspace_id=None) -> uuid.UUID:
+            workspace_id = workspace_id or uuid.uuid4()
             async with factory() as session:
                 session.add(
                     Workspace(
@@ -248,6 +254,53 @@ async def authority():
 # ----------------------------------------------------------------------
 # 1. Zero-workspace ordering
 # ----------------------------------------------------------------------
+
+
+async def test_budget_caps_are_read_from_current_workspace_rows(authority):
+    org, _ = await authority.organization()
+    workspace = await authority.workspace(org)
+    async with authority.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE workspaces SET budget_max_daily_usd=12.50, "
+                "budget_max_hourly_usd=2.25, budget_max_gpus=4 WHERE id=:id"
+            ),
+            {"id": workspace},
+        )
+    limits = await authority.resolver.budget_limits_for(
+        org_id=str(org), workspace_id=str(workspace)
+    )
+    assert limits.max_cost_micros == 2_250_000
+    assert limits.max_resource_units == 4
+    async with authority.engine.begin() as connection:
+        await connection.execute(
+            text("UPDATE workspaces SET budget_max_hourly_usd=0 WHERE id=:id"),
+            {"id": workspace},
+        )
+    assert (
+        await authority.resolver.budget_limits_for(
+            org_id=str(org), workspace_id=str(workspace)
+        )
+    ).max_cost_micros == 0
+
+
+async def test_budget_caps_never_read_another_organizations_workspace(authority):
+    org, _ = await authority.organization()
+    workspace = await authority.workspace(org)
+    with pytest.raises(_AuthorityUnreadable):
+        await authority.resolver.budget_limits_for(
+            org_id=str(uuid.uuid4()), workspace_id=str(workspace)
+        )
+
+
+async def test_unreadable_budget_store_is_not_an_unconfigured_cap(authority):
+    org, _ = await authority.organization()
+    workspace = await authority.workspace(org)
+    await authority.hide("workspaces")
+    with pytest.raises(_AuthorityUnreadable):
+        await authority.resolver.budget_limits_for(
+            org_id=str(org), workspace_id=str(workspace)
+        )
 
 
 async def test_org_admin_can_provision_the_first_workspace(authority):
@@ -621,6 +674,218 @@ async def test_approval_for_returns_the_harness_approval_context(authority):
     )
 
     assert isinstance(context, ApprovalContext)
+
+
+async def _approval_participants(authority):
+    org, requester = await authority.organization()
+    workspace = await authority.workspace(org)
+    approver = "approver-" + uuid.uuid4().hex
+    await authority.grant(org, workspace, requester, PROVISION)
+    await authority.grant(org, workspace, approver, "workspace:administer")
+    principal = await authority.ask(org, requester, workspace)
+    request = await _request(
+        max_resource_units="2", max_runtime_seconds="60", max_cost_micros="100"
+    )
+    ticket = await authority.approvals.issue(
+        workspace_id=str(workspace), request=request
+    )
+    return org, workspace, requester, approver, principal, request, ticket
+
+
+async def test_explicit_approval_is_durable_and_gates_the_exact_request(authority):
+    from harness_jobs.approval import evaluate_approval
+    from harness_jobs.identity import OperationRequest
+
+    (
+        org,
+        workspace,
+        requester,
+        approver,
+        principal,
+        request,
+        ticket,
+    ) = await _approval_participants(authority)
+    assert ticket["result"] == "pending"
+    assert ticket["approvers"] == [approver]
+    assert not ticket["can_decide"]
+    assert (
+        await authority.resolver.approval_for(principal=principal, request=request)
+    ).record is None
+    assert (
+        await authority.approvals.issue(workspace_id=str(workspace), request=request)
+    )["approval_id"] == ticket["approval_id"]
+    await authority.ask(org, approver, workspace)
+    assert (await authority.approvals.read(ticket["approval_id"]))["can_decide"]
+    await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    await authority.ask(org, requester, workspace)
+    context = await authority.resolver.approval_for(
+        principal=principal, request=request
+    )
+    assert context.record.approval_id == ticket["approval_id"]
+    assert evaluate_approval(
+        context.record,
+        principal=principal,
+        request=request,
+        requested_envelope=context.requested_envelope,
+        approver_statuses=context.approver_statuses,
+        now=datetime.now(timezone.utc),
+    ).permitted
+    changed = OperationRequest(
+        action=request.action,
+        idempotency_key=request.idempotency_key,
+        parameters=dict(request.parameters, max_cost_micros="101"),
+    )
+    assert (
+        await authority.resolver.approval_for(principal=principal, request=changed)
+    ).record is None
+
+
+async def test_requester_cannot_decide_own_ticket(authority):
+    from app.services.operation_approvals import ApprovalDenied
+
+    *_, ticket = await _approval_participants(authority)
+    with pytest.raises(ApprovalDenied):
+        await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    assert (await authority.approvals.read(ticket["approval_id"]))[
+        "result"
+    ] == "pending"
+
+
+async def test_decision_cannot_change_after_a_lost_reply(authority):
+    from app.services.operation_approvals import ApprovalDenied
+
+    org, workspace, _, approver, _, _, ticket = await _approval_participants(authority)
+    await authority.ask(org, approver, workspace)
+    first = await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    again = await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    assert again["decided_at"] == first["decided_at"]
+    with pytest.raises(ApprovalDenied):
+        await authority.approvals.decide(ticket["approval_id"], "rejected")
+
+
+async def test_approver_revocation_invalidates_a_stored_allow(authority):
+    from harness_jobs.approval import evaluate_approval
+
+    (
+        org,
+        workspace,
+        requester,
+        approver,
+        principal,
+        request,
+        ticket,
+    ) = await _approval_participants(authority)
+    await authority.ask(org, approver, workspace)
+    await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    async with authority.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE workspace_grants SET revoked_at=now() WHERE workspace_id=:workspace AND principal=:subject"
+            ),
+            {"workspace": workspace, "subject": approver},
+        )
+    await authority.ask(org, requester, workspace)
+    context = await authority.resolver.approval_for(
+        principal=principal, request=request
+    )
+    assert not evaluate_approval(
+        context.record,
+        principal=principal,
+        request=request,
+        requested_envelope=context.requested_envelope,
+        approver_statuses=context.approver_statuses,
+        now=datetime.now(timezone.utc),
+    ).permitted
+
+
+async def test_unreadable_approval_store_reports_unavailable(authority):
+    org, requester = await authority.organization()
+    principal = await authority.ask(org, requester, uuid.uuid4())
+    await authority.hide("operation_approvals")
+    with pytest.raises(_AuthorityUnreadable):
+        await authority.resolver.approval_for(
+            principal=principal, request=await _request()
+        )
+
+
+async def test_first_workspace_approval_keeps_original_org_scope_after_registration(
+    authority,
+):
+    from harness_jobs.approval import evaluate_approval
+
+    org, requester = await authority.organization()
+    workspace, approver = uuid.uuid4(), "distinct-approver"
+    async with authority.approvals.sessions() as session:
+        session.add(
+            OrganizationGrantRecord(
+                org_id=org,
+                principal=approver,
+                principal_type="human",
+                permissions=ORGANIZATION_ADMINISTER,
+                granted_by="bootstrap",
+            )
+        )
+        await session.commit()
+    principal = await authority.ask(org, requester, workspace)
+    request = await _request(
+        max_resource_units="1", max_runtime_seconds="60", max_cost_micros="100"
+    )
+    ticket = await authority.approvals.issue(
+        workspace_id=str(workspace), request=request
+    )
+    await authority.ask(org, approver, workspace)
+    await authority.approvals.decide(ticket["approval_id"], "allowed-once")
+    await authority.workspace(org, workspace)
+    await authority.grant(org, workspace, requester, "workspace:administer")
+    principal = await authority.ask(org, requester, workspace)
+    context = await authority.resolver.approval_for(
+        principal=principal, request=request
+    )
+    assert evaluate_approval(
+        context.record,
+        principal=principal,
+        request=request,
+        requested_envelope=context.requested_envelope,
+        approver_statuses=context.approver_statuses,
+        now=datetime.now(timezone.utc),
+    ).permitted
+    async with authority.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE organization_grants SET revoked_at=now() WHERE principal=:principal"
+            ),
+            {"principal": approver},
+        )
+    context = await authority.resolver.approval_for(
+        principal=principal, request=request
+    )
+    assert not evaluate_approval(
+        context.record,
+        principal=principal,
+        request=request,
+        requested_envelope=context.requested_envelope,
+        approver_statuses=context.approver_statuses,
+        now=datetime.now(timezone.utc),
+    ).permitted
+    # The preserved scope belongs only to the pre-creation approval, not all new
+    # approvals on the now existing workspace.
+    workspace_approver = "current-workspace-approver"
+    await authority.grant(org, workspace, workspace_approver, "workspace:administer")
+    other = await _request(max_cost_micros="200")
+    fresh = await authority.approvals.issue(workspace_id=str(workspace), request=other)
+    assert approver not in fresh["approvers"]
+    assert workspace_approver in fresh["approvers"]
+
+
+async def test_org_admin_has_no_implicit_approval_on_existing_workspace(authority):
+    org, subject = await authority.organization()
+    workspace = await authority.workspace(org)
+    from harness_jobs.identity import ResolvedPrincipal
+
+    principal = ResolvedPrincipal(
+        str(org), str(workspace), subject, frozenset({PROVISION})
+    )
+    assert subject not in await authority.resolver._approver_statuses(principal)
 
 
 async def test_approval_is_refused_for_want_of_a_record_not_reported_unavailable(

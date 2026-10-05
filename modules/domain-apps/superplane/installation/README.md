@@ -1,5 +1,9 @@
 # Complete domain installation (U23 / #5327)
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 `modules/domain-apps/superplane/deploy.sh` plans, checks and executes an installation of the API, controller, platform monitor and pinned SkyPilot server on an **existing** ADP installation. It never calls a platform deployment script. Actual installation, database mutation, feature activation and workload operation remain subject to the accepted installation authorization.
 
 The explicit `control_plane_only: true` mode installs organization administration,
@@ -24,7 +28,7 @@ and repeated restarts even before Kubernetes reports node memory pressure.
 
 ## Inputs and prerequisites
 
-Use Python 3.12 with `PyYAML`, `httpx` and `boto3`, Terraform matching the maintained module,
+Use Python 3.12 with the dependencies in [requirements.txt](requirements.txt) (`PyYAML`, `httpx` and `boto3`), Terraform matching the maintained module,
 AWS CLI v2 with conditional S3 PUT/DELETE support, and kubectl. Set
 `image_execution: cluster` for private RDS or machines without Docker. This path
 verifies ECR manifest/config digests and OCI source labels, tests actual
@@ -37,6 +41,64 @@ Temporary probe pods block voluntary Karpenter/Auto Mode disruption for their
 bounded lifetime, so node consolidation cannot erase an in-progress check.
 
 Supply an environment YAML based on `environment.example.yaml` and an immutable release lock based on `releases/superplane.lock.yaml`. The example deliberately leaves unresolved environment decisions blank; it is not an execution configuration. No credentials belong in either file.
+
+Full installation also requires `controller_profiles`, the explicit version-1
+policy consumed by the deployment API. Use the structure in
+[`controller-profiles.example.json`](controller-profiles.example.json) as a mapping
+under that YAML key. Replace its organization/workspace keys and every unresolved
+value with reviewed inputs; the template intentionally cannot pass validation.
+The policy names exactly this installation's domain organization and its actual
+`adp_org_id`, and includes the selected workspace. Additional workspace entries
+must each contain their own explicit profiles. Control-plane-only installation
+may omit the field; deployment admission then remains unavailable.
+The serialized installer policy is limited to 64 KiB so both supported image
+probe transports fit the operating system's per-string limit. The API's separate
+256 KiB policy limit does not enlarge the installer transport limit.
+
+Each profile pins the serving image by SHA-256 digest, its model options and exact
+invocation, compatible AMI/instance/network/cluster/public-CA inputs, registered
+opaque credential reference, physical GPU capacity, finite runtime and cost
+limits. No image, AMI, resource allocation or credential fallback is generated.
+The current controller supports one serving replica. Its serving image must
+implement `superplane-token-file-header-v1`: read the token from
+`SUPERPLANE_AUTH_TOKEN_FILE` and require `X-Superplane-Token` on `/healthz`.
+`workload.auth_secret` names an **existing Secret in the target workspace
+namespace** with a `token` key containing at least 32 characters. Create that
+Secret through the separately authorized workspace credential process before
+running a workload. The installer neither reads nor writes its token, and the
+profile contains only its name.
+
+The installer serializes the reviewed policy into an immutable, content-named
+ConfigMap, mounted read-only in the API at
+`/etc/superplane/controller-profiles/profiles.json`, and sets
+`SUPERPLANE_CONTROLLER_PROFILES_FILE`. Missing ConfigMap content prevents the API
+pod from starting. Policy changes select a new ConfigMap and replace the API pod;
+resume and rollback retain the policy in the exact environment/receipt identity.
+Regional profiles with an approved `network` may also include the closed
+`node_bootstrap` descriptor documented in
+[`executor/node-command/README.md`](../executor/node-command/README.md). Local
+planning checks its shape; preflight and verification use the pinned API image's
+canonical native validator for the complete runtime manifest and digest contract.
+This supports native batch profiles without installing executor dependencies in
+the operator's Python environment. It does not prepare an AMI, install SSM
+documents, or grant native execution authority.
+Preflight runs the maintained `build_deployment_preview`/plan validator in the
+pinned API image, and private verification checks the mounted policy and digest
+again. In cluster mode these checks run in the isolated preflight pod; execute CLI
+and runtime regression tests only on the authorized EC2 harness.
+Every profile for the selected workspace must match the installation's explicit
+cluster UUID, ARN, namespace, AWS account and region. Before installation writes,
+the existing EKS preflight also compares its endpoint and public CA with the
+independently queried selected cluster. A self-consistent profile pointing at a
+different destination is refused.
+
+`controller_profiles_validated` proves configuration compatibility, not canonical
+database registration or a running model. The actual API preview independently
+checks current organization, workspace, cluster, account and credential bindings.
+Installation receipts explicitly leave `serving_workload_ready: false`; a model
+becomes ready only after its separately reviewed approval, paid admission and
+authenticated provider/runtime checks succeed. API/controller management health
+and a valid profile cannot establish that result.
 
 The release lock must remove the three built images from `pending_images`, supply their observed ECR digests in `images`, and record `registry`, `repository` and `source_revision` under each `image_sources` entry. Set the root `source_revision` to the exact clean ADP checkout used by the maintained build lanes. Registry tags and OCI revision labels must match each image’s recorded build revision. An image from an earlier commit is reusable only when Git proves its complete component build context (including its Dockerfile) is identical to the installation revision. Both commits must be available locally; changed or unavailable source is refused. The receipt records reused build revisions and Git tree IDs. Preserve the reviewed SkyPilot 0.12.0 digest. This command consumes completed immutable builds; it does not treat a workflow dispatch as a completed build.
 
@@ -95,11 +157,11 @@ for UID 1000, and SkyPilot calls `getpass.getuser()` while importing its modules
 Exec probes allow time for Python startup and the bounded health request, rather
 than using Kubernetes' one-second default.
 
-Install Gateway transport version 2 and its scoped route-read IAM policy through the normal reviewed platform release before running the domain installer. `/api/superplane/installation-support` must report configured `s3-conditional-domain-registration`; older or unconfigured Gateways fail preflight. The deployment ConfigMap derives `BG_SUPERPLANE_ROUTE_BUCKET` from the existing platform account placeholder. The Gateway may read only `s3://adp-terraform-state-<account>/domain-routes/<environment>/superplane/public-route.json`, not Terraform state. Each installer route write durably records its complete payload, unique revision and prior ETag before using S3 `If-None-Match` or `If-Match`; concurrent creation, replacement or stale writers refuse enable/disable, rollback and cleanup without overwriting another registration.
+Install Gateway transport version 2 through the normal reviewed platform release before running the domain installer. `/api/superplane/installation-support` must report configured `s3-conditional-domain-registration`; older or unconfigured Gateways fail preflight. The gateway derives the route bucket from its existing platform account setting; the Superplane installer owns the route object and its scoped read IAM policy. The Gateway may read only `s3://adp-terraform-state-<account>/domain-routes/<environment>/superplane/public-route.json`, not Terraform state. Each installer route write durably records its complete payload, unique revision and prior ETag before using S3 `If-None-Match` or `If-Match`; concurrent creation, replacement or stale writers refuse enable/disable, rollback and cleanup without overwriting another registration.
 
 Version 2 no longer reads the legacy SSM route parameter. Preserve it for rollback; do not copy it over an existing S3 registration. A controlled Gateway upgrade disables the legacy route until an authorized installer resume/reinstallation publishes the verified S3 route. Perform this cutover under the existing installation gate. Subsequent activation/removal takes at most five seconds and needs no Gateway restart. An explicit `FEATURE_SUPERPLANE_ENABLED=false` overrides registration. The public proxy forwards only inventoried domain methods/paths and the original ADP bearer token; the domain API performs token and workspace authorization. It does not publish local login/token minting, internal callbacks, OpenAPI or service diagnostics.
 
-The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach `017_add_workspace_bootstrap_reservations`. An image rollback does not reverse a database migration.
+The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach the selected image's required migration head (`042_controller_cleanup_snapshots` for this release). An image rollback does not reverse a database migration.
 
 Three environment-scoped Secrets Manager references contain these exact JSON string fields:
 
@@ -238,3 +300,68 @@ For image/configuration rollback, pass a prior **successful receipt from this sa
 ## Code validation
 
 The offline integration harness uses instrumented tool processes and HTTP responses. It exercises the real installer sequence, missing prerequisites, account/source/image/ownership boundaries, migration and rollout failure, public verification failure, lock retention, schema-incompatible rollback, and secret-free receipts. Separate API tests exercise schema confinement against disposable PostgreSQL. Gateway tests compare the public route list with the maintained API inventory and exercise authentication forwarding and private-route denial. Go tests validate signed controller observations and SkyPilot token/redirect handling. None is presented as live installation acceptance.
+
+### Staging existing API adapters
+
+The optional `api_adapters` environment mapping configures existing vault evidence
+and IAM producer transports on **the API only**. Omission keeps the previous
+manifest and installer path. This feature creates no key, Secret, IAM role, Gateway
+registry or producer binding. See [API-ADAPTER-STAGING.md](API-ADAPTER-STAGING.md)
+for the reviewed boundaries and verification limits.
+
+To create the dedicated API producer identity in the same reviewed Terraform
+apply, explicitly select [api_producer_role](API-PRODUCER-ROLE.md). Preserve that
+desired configuration on subsequent upgrades. The installer verifies the saved
+IAM plan and the applied live identity before changing the API service account.
+
+The closed mapping requires `vault`, `dispatcher` and `verification`:
+
+- `vault.url` must be the exact `http://SERVICE.NAMESPACE.svc.cluster.local:PORT`.
+  `secret_key_ref` contains only the existing API-namespace Secret `name` and `key`.
+  `transport` contains `namespace`, `service`, numeric `port` and `target_port`,
+  the actual Service `selector` mapping, and
+  `security: reviewed-cluster-http`. Select this boundary only after reviewing
+  the installation's internal HTTP trust contract. Other transports are refused.
+- `dispatcher` contains the existing `endpoint`, `region`, `role_arn`, `api_id`
+  and `stage`. The endpoint must exactly match that API Gateway invoke API/stage
+  in the selected account's region. The dedicated role must trust only the
+  management cluster OIDC and API ServiceAccount, and grant only POST invoke on
+  `producer-readiness`, `verify-run` and `dispatch`. Other role authorities require
+  separate review and are refused by this installer.
+- `verification` contains an existing `workspace_id`, `connection_id`,
+  `credential_id`, `service` and `label`. The installation verification token must
+  belong to a real user with the current workspace credential grant and the
+  existing organization administration grant. The private metadata check uses
+  that authenticated caller; the API IAM role never supplies human authority.
+
+The existing execute command disables routing, refuses outstanding admitted or
+active work, and rolls out the API in management mode with admission and dispatch
+explicitly disabled. An isolated image contract check is not a production
+capability verdict. The actual installed API must pass the original four composed
+ports, workload STS identity, tenant producer readiness, live credential metadata,
+management reads and a deliberately unapproved admission-refusal control. The
+Secret's UID/resourceVersion and selected Service/role/profile/environment/release
+are bound to a private receipt. Full mode activates only a fresh unchanged stage;
+management-only mode stays disabled. Changed metadata or expired proof requires
+verification again. Public routing still uses the existing publication fence.
+
+An activation failure restores the same release's disabled API and independently
+checks its internal management process; public routing stays disabled. This does
+not promise uninterrupted management availability or cancel previously admitted
+workers. Credential version proof is unavailable in the current evidence contract;
+the receipt reports that limitation rather than inventing a version. Existing
+broad API TCP443/5432 egress remains; the selected Gateway peer receives only the
+explicit Service/target ports. Cluster-specific denied-neighbor network evidence
+and all behavioral tests still require remote CI and authorized live verification.
+
+The rotation check negotiates Kubernetes `PartialObjectMetadata` with no full
+Secret fallback. It does not request Secret `.data` or `.stringData`. Metadata
+annotations can nevertheless contain legacy embedded values (for example a
+`kubectl` last-applied annotation); they are received privately and discarded,
+never logged or persisted. Only the Secret UID and resourceVersion enter the
+receipt. Kubernetes still authorizes this operation through Secret `get` RBAC;
+metadata negotiation is response minimization, not a separate RBAC capability.
+
+### Optional native paid-worker source preparation
+
+The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused at zero replicas; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.

@@ -112,8 +112,10 @@ async def _rows(registration):
         return list((await session.scalars(select(OrchestrationPullRequestBinding))).all())
 
 
-async def test_registration_uses_provider_head_and_is_idempotent(registration):
+@pytest.mark.parametrize("persona", ["developer", "agent-codex-developer"])
+async def test_registration_uses_provider_head_and_is_idempotent(registration, persona):
     reg = registration
+    reg.runtime.store._read.return_value["persona"] = {"S": persona}
     first = await reg.client.post(URL, headers=HEADERS, json=_body(head_sha="b" * 40))
     retry = await reg.client.post(URL, headers=HEADERS, json=_body())
     assert first.status_code == 201, first.text
@@ -153,10 +155,11 @@ async def test_reused_repo_name_cannot_replace_authorized_repository(registratio
     assert await _rows(registration) == []
 
 
-async def test_reviewer_role_is_derived_from_protected_execution(registration):
+@pytest.mark.parametrize("persona", ["reviewer", "agent-codex-reviewer"])
+async def test_reviewer_role_is_derived_from_protected_execution(registration, persona):
     # Even a credential's advisory persona / an omitted downgrade cannot promote
     # the persona on the protected execution row.
-    registration.runtime.store._read.return_value["persona"] = {"S": "reviewer"}
+    registration.runtime.store._read.return_value["persona"] = {"S": persona}
     response = await registration.client.post(URL, headers=HEADERS, json=_body(reviewer_artifact=False))
     assert response.status_code == 201
     assert response.json()["role"] == "reviewer_artifact"
@@ -232,3 +235,12 @@ async def test_worker_accepts_actual_created_route_response(registration, monkey
     assert headers["X-Adp-Run-Credential"] == "adpr1.run.signature"
     assert headers["X-Adp-Workload-Token"] == "workload-token"
     assert "Credential=platform-key/" in headers["Authorization"]
+
+
+@pytest.mark.parametrize("persona", ["architect", "operations", "agent-codex-architect", "unregistered-developer"])
+async def test_non_delivery_persona_cannot_register_even_with_developer_credential_hint(registration, persona):
+    registration.runtime.store._read.return_value["persona"] = {"S": persona}
+    response = await registration.client.post(URL, headers=HEADERS, json=_body())
+    assert response.status_code == 404
+    assert await _rows(registration) == []
+    registration.provider.assert_not_awaited()

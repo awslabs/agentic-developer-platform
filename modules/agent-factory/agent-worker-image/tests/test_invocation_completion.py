@@ -239,7 +239,7 @@ def worker(delivery, monkeypatch, tmp_path):
     def run(command, **kwargs):
         if command[0] == "node":
             executions.append(envelope["message_id"])
-            return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
+            return MagicMock(returncode=exit_codes[-1], stdout=json.dumps({"status": "merged", "merged": True}), stderr="")
         return MagicMock(
             returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
@@ -258,7 +258,7 @@ def worker(delivery, monkeypatch, tmp_path):
         return 0 if success else exit_codes[-1]
 
     monkeypatch.setattr(entrypoint, "_handle_success", lambda *args, **kwargs: terminal(True))
-    monkeypatch.setattr(entrypoint, "_handle_failure", lambda *args: terminal(False))
+    monkeypatch.setattr(entrypoint, "_handle_failure", lambda *args, **kwargs: terminal(False))
     return client, envelope, executions, exit_codes, acknowledgements, merged
 
 
@@ -483,10 +483,13 @@ def test_stale_pr_review_releases_queue_before_current_review(
     expected, current = "a" * sha_length, "b" * sha_length
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    from lib import review_cycle_input
+    history = MagicMock()
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
     attempts = 0
 
     def verify_obsolete_receipt(*_args):
@@ -521,6 +524,7 @@ def test_stale_pr_review_releases_queue_before_current_review(
     seed(client, envelope)
     assert entrypoint.main() == 0
     assert executions == ["current-review"]
+    history.assert_called_once_with({"baseRefOid": "c" * 40}, run=entrypoint.run_cmd, cwd=entrypoint.WORK_DIR)
     assert row(client, envelope)["status"] == {"S": "complete"}
 
 
@@ -531,7 +535,7 @@ def test_unverifiable_pr_head_does_not_acknowledge(worker, monkeypatch, expected
     client, envelope, executions, _, ack, _ = worker
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
@@ -556,3 +560,184 @@ def test_pr_checkout_transport_failure_remains_retryable(worker, monkeypatch):
         entrypoint.main()
     ack.assert_not_called()
     assert executions == []
+
+
+def test_aborted_delivery_is_not_re_executed(worker):
+    """An operator's abort is terminal to this guard — Issue #3963 (S4).
+
+    This is the pairing that makes the abort finalizer's honest "unconfirmed
+    acknowledgement" outcome safe rather than a hole. That path can legitimately
+    end without deleting the queue message, which means the message redelivers;
+    what must not follow is the work running again, because restarting it is
+    precisely what the abort existed to prevent.
+
+    Asserted as behaviour against the real conditional writes, not by reading the
+    expression: what matters is that a row carrying `aborted` refuses the work
+    before the Node agent is launched, and that it does so without disturbing the
+    outcome an operator can already see.
+    """
+    client, envelope, executions, _, ack, _ = worker
+    seed(client, envelope, "aborted")
+
+    assert entrypoint.main() == 0
+
+    assert executions == []
+    ack.assert_called_once()
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
+
+
+def test_aborted_row_is_recognised_as_completed_without_losing_its_outcome(delivery):
+    """The guard's own answer, at the seam the worker calls.
+
+    `aborted` is checked distinctly from `complete` rather than folded in with it,
+    because the two are different facts about the run — and the promotion to a
+    durable receipt must not overwrite the status or summary an operator reads.
+    """
+    client, envelope = delivery
+    seed(client, envelope, completion.ABORTED_STATUS)
+
+    assert completion.is_delivery_completed(envelope) is True
+
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert row(client, envelope)["summary"] == {"S": "existing outcome"}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
+
+
+def test_abort_between_the_two_checks_defers_rather_than_claiming_the_row(delivery, monkeypatch):
+    """An abort landing mid-check must not be overwritten — Issue #3963 (S4).
+
+    The counterpart to `test_completion_between_checks_defers_then_skips`, for the
+    abort status. The first write establishes "already finished"; the second claims
+    the row as unfinished. Between them, another actor can finalize the run — and
+    for an abort that window is real, because the abort finalizer writes its
+    terminal status from a different process than the one reading this guard.
+
+    If the second write did not also exclude `aborted`, it would succeed here and
+    stamp `delivery_completed = false` onto a row an operator just aborted,
+    re-opening it for execution. Instead the guard refuses to conclude anything and
+    the queue message is preserved, so the next delivery re-reads the row and sees
+    the abort. This is the branch a source-text assertion cannot distinguish: the
+    clause is only observable through this race.
+    """
+    client, envelope = delivery
+    writes = MagicMock()
+
+    def abort_arrives_between_checks(**request):
+        if writes.update_item.call_count == 2:
+            client.update_item(
+                TableName=request["TableName"],
+                Key=request["Key"],
+                UpdateExpression="SET #status = :aborted",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":aborted": {"S": completion.ABORTED_STATUS}},
+            )
+        return client.update_item(**request)
+
+    writes.update_item.side_effect = abort_arrives_between_checks
+    monkeypatch.setattr(completion, "_get_client", lambda: writes)
+
+    with pytest.raises(completion.InvocationCompletionError):
+        completion.is_delivery_completed(envelope)
+
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert "delivery_completed" not in row(client, envelope)
+    # The redelivery this defers to now reads the abort and refuses the work.
+    assert completion.is_delivery_completed(envelope) is True
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
+def test_codex_operator_abort_uses_shared_terminal_status_and_durable_ack(worker, monkeypatch):
+    client, envelope, executions, exit_codes, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {"issue": {"number": 42}, "comment": {"body": "review"}}
+    seed(client, envelope)
+    exit_codes[:] = [1]
+    monkeypatch.setattr(entrypoint, "_resolve_abort_outcome", lambda *_: {"command_id": "operator-abort"})
+    aborted = MagicMock(return_value=(0, True))
+    finalized = MagicMock(return_value=0)
+    monkeypatch.setattr(entrypoint, "_handle_abort", aborted)
+    monkeypatch.setattr(entrypoint, "_finalize_abort_acknowledgement", finalized)
+    assert entrypoint.main() == 0
+    assert len(executions) == 1
+    aborted.assert_called_once()
+    finalized.assert_called_once()
+    assert finalized.call_args.kwargs["terminal_persisted"] is True
+    ack.assert_not_called()
+
+
+def test_codex_review_archives_progress_before_terminal_status(worker, monkeypatch):
+    client, envelope, _, _, _, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {"issue": {"number": 42}, "comment": {"body": "review"}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_read_run_reports", lambda: ("Review done", "Live reviewer activity"))
+    archive = MagicMock(return_value="runs/reviewer/transcript.md")
+    monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", archive)
+    assert entrypoint.main() == 0
+    assert archive.call_args.args[0].startswith("Live reviewer activity")
+    assert "Child process exit code: 0" in archive.call_args.args[0]
+    entrypoint._record_session_id.assert_called_once()
+    assert row(client, envelope)["transcript_key"] == {"S": "runs/reviewer/transcript.md"}
+
+
+@pytest.mark.parametrize("outcome", ["merged", "blocked", "evidence_error"])
+def test_engine_reviewer_terminal_status_requires_delivery(worker, monkeypatch, outcome):
+    from lib import codex_review_delivery, review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["intent"]["trigger"] = "engine_review_cycle"
+    envelope["review_cycle_input"] = {
+        "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 42,
+        "head_sha": "a" * 40, "accepted_scope": "story-revision", "operation_key": "review:1",
+        "findings": [], "reviewer_owned_delivery": True,
+    }
+    seed(client, envelope)
+    monkeypatch.setattr(review_cycle_input, "checkout_cycle_input", lambda *a, **kw: ("story", "a" * 40))
+    finish = MagicMock(return_value="Evidence recorded")
+    if outcome == "evidence_error":
+        finish.side_effect = RuntimeError("invalid repair lineage")
+    monkeypatch.setattr(codex_review_delivery, "finish_engine_review", finish)
+    if outcome == "blocked":
+        run = entrypoint.subprocess.run
+        def blocked(command, **kwargs):
+            result = run(command, **kwargs)
+            if command[0] == "node":
+                result.stdout = json.dumps({"status": "engine_reviewed", "merged": False,
+                                           "delivery_blocked": "Required design contract missing"})
+            return result
+        monkeypatch.setattr(entrypoint.subprocess, "run", blocked)
+    assert entrypoint.main() == (0 if outcome == "merged" else 1)
+    assert row(client, envelope)["status"] == {"S": "complete" if outcome == "merged" else "failed"}
+    if outcome == "blocked":
+        assert "Required design contract missing" in row(client, envelope)["error_message"]["S"]
+    assert len(executions) == 1
+    ack.assert_called_once()
+
+
+def test_pr_review_history_failure_stops_before_model_execution(worker, monkeypatch):
+    from lib import review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha="a" * 40)
+    envelope["payload"] = {"pull_request": {
+        "number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "b" * 40},
+    }}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="a" * 40)))
+    history = MagicMock(side_effect=RuntimeError("history fetch unavailable"))
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
+    with pytest.raises(RuntimeError, match="history fetch unavailable"):
+        entrypoint.main()
+    history.assert_called_once()
+    assert executions == []
+    ack.assert_not_called()

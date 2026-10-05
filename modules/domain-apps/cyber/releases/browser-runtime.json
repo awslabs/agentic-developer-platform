@@ -1,0 +1,5 @@
+{
+  "repository": "adp-agent-runtime",
+  "digest": "sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
+  "note": "Compatibility pin from the verified 23 September deployment. Build cyber/browser/Dockerfile and supply images[\"cyber-browser\"] to the Cyber hosted-integration root to roll out its dedicated image."
+}

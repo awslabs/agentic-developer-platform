@@ -29,7 +29,7 @@ def models():
 
 
 def specification(value):
-    if isinstance(value, dict) and value.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1"}:
+    if isinstance(value, dict) and value.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
         from .repository_evaluation_contract import native_specification
 
         return native_specification(value)

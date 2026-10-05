@@ -94,13 +94,14 @@ from src.orchestration.amend import FlowNotFoundError
 from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError, ProposalRejectedError, TenantMismatchError, plan_hash
 from src.orchestration.draft_binding import DraftBindingError, resolve_draft_tenant
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
+from src.orchestration.executor_assignment import ExecutorAssignment
 from src.orchestration.pending_amendments import (
     AmendmentRequestNotFoundError,
     register_amendment_draft,
     resolve_authoring_request,
 )
 from src.orchestration.preview import ConclusionAuthority, derive_nodes, derive_waves
-from src.orchestration.proposal import LoopProposal, validate_proposal
+from src.orchestration.proposal import EpicMetadata, LoopProposal, validate_proposal
 from src.orchestration.registration import DraftFlowConflictError, register_draft_proposal, transform_for_registration
 from src.orchestration.state import ActorKind
 from src.shared.database import get_db
@@ -214,6 +215,7 @@ class PreviewNode(BaseModel):
     # from the document the operator wrote, so a preview that did not distinguish
     # them would leave them looking like the author's own work.
     inserted_by_server: bool
+    executor: ExecutorAssignment | None = None
     # The issue this node's work is bound to, as the author declared it. Empty when
     # the node declares none — which for a story is a real gap a reviewer should see
     # before approving, because a story with no issue binding has nowhere to report.
@@ -259,6 +261,8 @@ class PreviewWave(BaseModel):
 
     epic_ref: str
     wave_ref: str
+    title: str | None = None
+    description: str | None = None
     # `None` when the document's wave-level dependencies form a cycle, which can
     # happen even though the NODE graph is acyclic (`w1/a -> w2/b` with
     # `w2/c -> w1/d`). Reported as unknown rather than given an invented number: the
@@ -342,6 +346,7 @@ class DraftPreviewResponse(BaseModel):
     # a harmless empty field, so it is named positively and affirmatively here.
     execution_is_unbounded: bool = False
     # The waves of the effective graph in execution order, with concurrency staged.
+    epic_metadata: list[EpicMetadata] = Field(default_factory=list)
     waves: list[PreviewWave] = Field(default_factory=list)
     # Stated on the wire, not just in this docstring. A caller reading a preview
     # needs to know that no flow exists yet and no authority was granted — the
@@ -826,6 +831,7 @@ async def preview_draft(
             title=node.title,
             inserted_by_server=node.address not in authored_addresses,
             issue_ref=node.issue_ref or "",
+            executor=node.executor,
             epic_ref=derived.epic_ref if (derived := derived_nodes.get(node.address)) is not None else "",
             wave_ref=derived.wave_ref if derived is not None else "",
             concluded_by=(derived.concluded_by.value if derived is not None else ConclusionAuthority.UNDETERMINED.value),
@@ -883,10 +889,13 @@ async def preview_draft(
         # Derived from the same both-fields read the summary uses, so the boolean and
         # the summary can never disagree about whether a policy is present.
         execution_is_unbounded=transformed.proposed_execution_policy is None and transformed.execution_policy is None,
+        epic_metadata=transformed.epic_metadata,
         waves=[
             PreviewWave(
                 epic_ref=wave.epic_ref,
                 wave_ref=wave.wave_ref,
+                title=wave.title,
+                description=wave.description,
                 stage=wave.stage,
                 node_addresses=list(wave.node_addresses),
                 depends_on=list(wave.depends_on),

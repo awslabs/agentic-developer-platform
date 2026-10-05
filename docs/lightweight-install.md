@@ -208,7 +208,7 @@ Causes:
 
 ### `BEADS_S3_BUCKET` error
 
-**Symptom**: workflow fails at the `Setup Beads` step, mentions `adp-beads-state-193832579677`.
+**Symptom**: workflow fails at the `Setup Beads` step, mentions `adp-beads-state-000000000214`.
 
 Cause: `BEADS_ENABLED=false` not set. The step runs and tries to sync from an S3 bucket in another account.
 
@@ -287,7 +287,7 @@ All variables use `${{ vars.X || 'default' }}` — defaults match today's hardco
 | `EKS_CLUSTER` | `bedrockgw-dev-eks-cluster` | Your EKS cluster name | `agent-operations`, `skill-agent` |
 | `BEADS_ENABLED` | `true` | `false` | All agent workflows |
 | `BEADS_DYNAMODB_TABLE` | `adp-beads-manifest` | _(not set — irrelevant when disabled)_ | All agent workflows |
-| `BEADS_S3_BUCKET` | `adp-beads-state-193832579677` | _(not set)_ | All agent workflows |
+| `BEADS_S3_BUCKET` | `adp-beads-state-000000000214` | _(not set)_ | All agent workflows |
 | `BEADS_DATABASE` | `adp` | _(not set)_ | All agent workflows |
 
 ### Secrets Manager layout

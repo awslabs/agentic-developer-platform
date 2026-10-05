@@ -473,7 +473,7 @@ class TestChainCompilesForPostgres:
 
 
 def _tables_created_by_migrations() -> set[str]:
-    """Table names passed to `op.create_table(...)` across the chain, read statically.
+    """Table names in create_table calls or referenced literal SQL, read statically.
 
     Parsed with `ast` rather than by executing the migrations, so this stays independent
     of the DDL-rendering test above: if executing the chain regressed, this check should
@@ -500,12 +500,30 @@ def _tables_created_by_migrations() -> set[str]:
             if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
         ]
         for upgrade_fn in upgrades:
+            # Some journals execute a literal DDL batch one statement at a time
+            # for asyncpg compatibility. Inspect only constants referenced by
+            # upgrade(), so an unused string or downgrade-only table is excluded.
+            import re
+
+            referenced = {
+                node.id for node in ast.walk(upgrade_fn) if isinstance(node, ast.Name)
+            }
+            for constant in referenced & constants.keys():
+                value = constants[constant]
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    created.update(
+                        re.findall(
+                            r"\bCREATE\s+TABLE\s+([a-z_][a-z0-9_]*)\s*\(",
+                            value.value,
+                            flags=re.IGNORECASE,
+                        )
+                    )
             for node in ast.walk(upgrade_fn):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
                 func = node.func
                 name = func.attr if isinstance(func, ast.Attribute) else ""
-                if name != "create_table":
+                if name not in {"create_table", "execute"}:
                     continue
                 try:
                     argument = node.args[0]
@@ -515,7 +533,19 @@ def _tables_created_by_migrations() -> set[str]:
                 except (ValueError, SyntaxError):
                     continue
                 if isinstance(table, str):
-                    created.add(table)
+                    if name == "create_table":
+                        created.add(table)
+                    else:
+                        # Revisions 040/041 execute each prepared DDL statement
+                        # directly. Count only literal SQL passed by upgrade(),
+                        # not unrelated strings or rollback-only definitions.
+                        created.update(
+                            re.findall(
+                                r"\bCREATE\s+TABLE\s+([a-z_][a-z0-9_]*)\s*\(",
+                                table,
+                                flags=re.IGNORECASE,
+                            )
+                        )
     return created
 
 

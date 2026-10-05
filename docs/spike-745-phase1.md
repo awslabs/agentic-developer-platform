@@ -114,7 +114,7 @@ Claude Code SDK
 sigv4-proxy.ts (in-pod)
   → Strips old auth headers
   → Re-signs with service=execute-api using pod IRSA creds
-  → POST https://<APIGW>.execute-api.us-east-1.amazonaws.com/prod/agent/v1/messages
+  → POST https://<APIGW>.gateway-14.example.com/prod/agent/v1/messages
 
 API Gateway
   → Validates SigV4 signature (AWS_IAM auth)

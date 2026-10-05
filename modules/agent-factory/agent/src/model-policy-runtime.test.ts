@@ -1,3 +1,4 @@
+import { once } from 'events';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { createPolicyQuery, policyBody, ModelPolicyRefused } from './model-policy-runtime';
@@ -37,7 +38,7 @@ function signedReply(nonce: string, policy = responsePolicy, context?: any) {
 
 function policy(posture: string) {
   return { posture, posture_verified: true, status: 'proposed', decision: { schema_version: 1,
-    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture, compatibility_class: 'claude-agent-sdk', harness_contract_revision: '0.3.220',
+    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture, compatibility_class: 'claude-agent-sdk', harness_contract_revision: '0.3.283',
     resolved_model_id: model } };
 }
 
@@ -300,4 +301,35 @@ it.each(['disabled', 'enforcing'])('does not emit report-only shadow data under 
     await createPolicyQuery(legacy);
     expect(logs.mock.calls.some(call => String(call[0]).startsWith('PMM09_MODEL_SHADOW '))).toBe(false);
   } finally { logs.mockRestore(); }
+});
+
+it('keeps App keys out of real child processes after policy env merges and retries', async () => {
+  const { spawnSdkWithoutAppKey } = await import('./github-runtime-auth');
+  process.env.GH_APP_PRIVATE_KEY = 'test-only-parent-key';
+  const observations: boolean[] = [];
+  let attempts = 0;
+  (query as jest.Mock).mockImplementation((params: any) => ({
+    async *[Symbol.asyncIterator]() {
+      const child = params.options.spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write(String(!(process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY)))'],
+        env: params.options.env,
+        signal: new AbortController().signal,
+      });
+      let output = ''; child.stdout.on('data', (data: Buffer) => { output += data; });
+      expect((await once(child, 'close'))[0]).toBe(0);
+      observations.push(output === 'true');
+      if (++attempts === 1) throw new Error('rate limit');
+      yield { type: 'result', subtype: 'success' };
+    },
+    close: jest.fn(),
+  }));
+  const params = { ...legacy, options: { ...legacy.options,
+    env: { ...legacy.options.env, GH_APP_KEY: 'test-only-option-key' },
+    spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
+  } };
+  for await (const _ of resilientQuery({ queryParams: params, maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, log: () => {} })) { /* policy preparation on each retry */ }
+  const resumed = await createPolicyQuery({ ...params, options: { ...params.options, resume: 'test-session' } });
+  for await (const _ of resumed) { /* final spawn on a resumed session */ }
+  expect(observations).toEqual([true, true, true]);
 });

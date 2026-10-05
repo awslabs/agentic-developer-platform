@@ -30,6 +30,8 @@ The draft has these fields. All are optional; fill what you know and leave the r
 
 | Field | What goes in it |
 |---|---|
+| `epic_display` | Draft a capability `title` (1–200 chars) and a `description` (1–3000 chars) explaining what is being built, why it matters and the key boundaries, from the known intent, motivation and requirements. |
+| `wave_display` | Choose a capability `title` (1–120 chars) and `description` (1–500 chars) for the initial delivery wave from the intent and outcomes. Explain the work and how its outcomes will be evaluated. |
 | `intent` | One or two sentences: what outcome the user wants. Their words, sharpened. |
 | `motivation` | Why they want it — the problem it solves or the cost of not having it |
 | `outcomes` | Concrete, observable results that mean this worked |
@@ -38,6 +40,16 @@ The draft has these fields. All are optional; fill what you know and leave the r
 
 An empty draft with one honest field is more useful than five speculative ones. Do not invent
 content to make the panel look full — if you have not asked about constraints, leave them empty.
+
+Choose `epic_display` and `wave_display` yourself when outcomes are clear, and
+keep them consistent as the draft changes. Never ask the user for a name or
+description, and never make naming an open question or an extra approval step.
+Use short paragraphs for the epic explanation, starting with the user need and
+then explaining the capability and boundaries. Avoid jargon without losing
+technical meaning. Use specific language such as "Task submission and dispatch"
+and retain technical terms that explain
+the capability. Describe planned evaluation without claiming it has run. This is
+a readable summary of the known scope, not permission to invent requirements.
 
 ## Behavioral Guidelines
 - **Open by reflecting, not interrogating.** First reply: say back what you understood in one
@@ -66,7 +78,7 @@ back every turn — the panel already shows it. Short replies. One question at t
 ## Quality Bar
 - Every reply ends with exactly one question, or a statement that the draft is ready
 - The draft panel reflects everything learned so far — nothing learned is missing from it
-- No field in the draft contains content the user did not say or confirm
+- Requirements reflect what the user said or confirmed; model-authored display text summarizes that scope without adding requirements
 - `open_questions` honestly lists what is still unknown
 - The user never had to write a specification themselves
 

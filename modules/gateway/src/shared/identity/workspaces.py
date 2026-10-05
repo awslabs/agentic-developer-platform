@@ -10,6 +10,7 @@ workspace access.
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Team, TeamMembership, User
@@ -59,7 +60,11 @@ async def linked_user_ids(db: AsyncSession, user: User, *, username: str = "") -
     # account id remains the immutable identity proof.
     provider, _, provider_user_id = username.partition("_")
     if provider.lower() == "github" and provider_user_id.isascii() and provider_user_id.isdigit():
-        predicates.append((UserIdentity.provider == "github") & (UserIdentity.provider_user_id == provider_user_id))
+        predicates.append(
+            (UserIdentity.provider == "github")
+            & (UserIdentity.provider_user_id == provider_user_id)
+            & UserIdentity.verification_method.in_(PROVEN_METHODS)
+        )
     if not predicates:
         return {user.id}
     rows = await db.scalars(
@@ -85,7 +90,10 @@ async def memberships_for_login(
         await db.execute(select(User, TenantMembership).join(TenantMembership, TenantMembership.user_id == User.id).where(User.id.in_(ids)))
     ).all()
     by_org: dict[str, tuple[User, TenantMembership | None]] = {}
+    revoked_orgs = {membership.tenant_id for member, membership in rows if membership.revoked_at is not None}
     for member, membership in rows:
+        if membership.tenant_id in revoked_orgs:
+            continue
         # Legacy rows attach several memberships to the canonical user. A real
         # org-local account wins over that legacy representation, never a union
         # of their roles.
@@ -101,16 +109,25 @@ async def memberships_for_login(
     # Older native-user provisioning did not create member-role membership rows.
     # Its own account still confers the existing least-privilege member access.
     # No display role is promoted into authority by this fallback.
-    if user.org_id and user.org_id not in by_org:
+    if user.org_id and user.org_id not in by_org and user.org_id not in revoked_orgs:
         by_org[user.org_id] = user, None
     return user, by_org
 
 
 async def workspace_user(db: AsyncSession, subject: str, org_id: str, *, username: str = "") -> User | None:
     # Keep the common single-org/FK lookup to one query on model-call paths.
-    local = (await db.execute(select(User).where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject)))).scalar_one_or_none()
+    revoked = (
+        select(TenantMembership.id)
+        .where(
+            TenantMembership.user_id == User.id,
+            TenantMembership.tenant_id == org_id,
+            TenantMembership.revoked_at.is_not(None),
+        )
+        .exists()
+    )
+    local = (await db.execute(select(User, revoked).where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject)))).one_or_none()
     if local is not None:
-        return local
+        return None if local[1] else local[0]
     _, memberships = await memberships_for_login(db, subject, username=username)
     pair = memberships.get(org_id)
     return pair[0] if pair else None
@@ -158,6 +175,7 @@ async def link_login_to_workspace(db: AsyncSession, source: User, target: User) 
             if existing.user_id != user.id:
                 raise ValueError("This login is already assigned to a different account in the organization")
             existing.verification_method = PLACEMENT_VERIFICATION
+            existing.verified_at = utcnow()
         else:
             db.add(
                 UserIdentity(

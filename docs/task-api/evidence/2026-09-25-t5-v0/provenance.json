@@ -1,0 +1,7 @@
+{
+  "image_source_sha": "f41fbf61f",
+  "harness_source_sha": "d7f11ae7989b9981eeefbe5a3cc9599a5a180ccd",
+  "image_digest": "sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697",
+  "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697",
+  "fixture_sha256": "bbe0067e69970e76285fbca66bbb8315872397286c438db1952f30fe217a0a19"
+}

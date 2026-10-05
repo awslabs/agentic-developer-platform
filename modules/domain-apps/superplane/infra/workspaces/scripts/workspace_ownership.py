@@ -80,9 +80,14 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         # --- Network (owned mode only; every one is gated on local.owns_network, which
         # ../tests/test_networking_modes.py enforces by type category).
         "aws_vpc",
+        # The default group is adoptable only inside this workspace's OWNED VPC.
+        # Its AWS name is always "default": identity tags and the typed VPC
+        # relationship below provide ownership, never the name or address alone.
+        "aws_default_security_group",
         "aws_subnet",
         "aws_internet_gateway",
         "aws_nat_gateway",
+        "aws_vpc_endpoint",
         "aws_eip",
         "aws_route_table",
         "aws_route_table_association",
@@ -109,6 +114,7 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         "aws_launch_template",
         "aws_security_group",
         "aws_vpc_security_group_egress_rule",
+        "aws_vpc_security_group_ingress_rule",
         # --- The workspace's identities. Least-privilege scoping is asserted separately by
         # ../tests/test_least_privilege.py; this list only says the TYPE is workspace-scoped.
         "aws_iam_role",
@@ -138,9 +144,13 @@ ALLOWED_RESOURCE_TYPES = frozenset(
 ALLOWED_DATA_SOURCES = frozenset(
     {
         "aws_caller_identity",
+        "aws_security_group",
+        "aws_vpc_security_group_rule",
+        "aws_vpc_security_group_rules",
         "aws_partition",
         "aws_iam_session_context",
         "aws_iam_policy_document",
+        "aws_vpc_endpoint",
         # The supplied VPC, in supplied networking mode. Reading it is precisely what keeps
         # it out of this module's lifecycle (design item 3).
         "aws_vpc",
@@ -625,9 +635,11 @@ IDENTITY_FIELDS: dict[str, str] = {
 TAG_IDENTIFIED_TYPES = frozenset(
     {
         "aws_vpc",
+        "aws_default_security_group",
         "aws_subnet",
         "aws_internet_gateway",
         "aws_nat_gateway",
+        "aws_vpc_endpoint",
         "aws_eip",
         "aws_route_table",
         "aws_kms_key",
@@ -641,6 +653,7 @@ ADDRESS_IDENTIFIED_TYPES = frozenset(
         "aws_route_table_association",
         "aws_iam_role_policy_attachment",
         "aws_vpc_security_group_egress_rule",
+        "aws_vpc_security_group_ingress_rule",
         # Carries a plan-time precondition and creates nothing in the account. It has no
         # AWS identity to check because it has no AWS existence.
         "terraform_data",
@@ -720,6 +733,16 @@ RELATIONSHIP_TARGET_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "launch_template[].id": ("aws_launch_template",),
     },
     "aws_security_group": {"vpc_id": ("aws_vpc",)},
+    "aws_default_security_group": {"vpc_id": ("aws_vpc",)},
+    "aws_vpc_endpoint": {
+        "vpc_id": ("aws_vpc",),
+        "subnet_ids[]": ("aws_subnet",),
+        "security_group_ids[]": ("aws_security_group",),
+    },
+    "aws_vpc_security_group_ingress_rule": {
+        "security_group_id": ("aws_security_group",),
+        "referenced_security_group_id": ("workspace_eks_managed_group",),
+    },
     # `role` holds the role NAME (not ARN), and only an IAM ROLE may vouch for it.
     # `policy_arn` is deliberately NOT checked: it names an AWS-managed policy in the `aws`
     # account (arn:aws:iam::aws:policy/...), which no workspace owns and which _check_account
@@ -1132,6 +1155,16 @@ def _owned_identifiers(
                 identifier = values.get(identifier_field)
                 if isinstance(identifier, str) and identifier:
                     ids_by_type.setdefault(resource_type, set()).add(identifier)
+            if resource_type == "aws_eks_cluster":
+                for group in relationship_values(
+                    values, "vpc_config[].cluster_security_group_id"
+                ):
+                    if isinstance(group, str) and re.fullmatch(
+                        r"sg-[0-9a-f]{8,17}", group
+                    ):
+                        ids_by_type.setdefault(
+                            "workspace_eks_managed_group", set()
+                        ).add(group)
 
     return names_by_type, ids_by_type
 
@@ -1190,6 +1223,17 @@ def _created_target_reference(
     refs = _configuration_expression(plan, address, target_field).get("references", [])
     if not isinstance(refs, list) or not refs:
         return False
+    if permitted_types == ("workspace_eks_managed_group",):
+        base = "aws_eks_cluster.workspace"
+        if not all(isinstance(ref, str) for ref in refs):
+            return False
+        normalized = {re.sub(r"\[[^]]*\]", "", ref) for ref in refs}
+        exact = base + ".vpc_config.cluster_security_group_id"
+        return (
+            base in valid_addresses
+            and exact in normalized
+            and normalized.issubset({base, base + ".vpc_config", exact})
+        )
     found = False
     for ref in refs:
         if ref == "count.index":
@@ -1259,7 +1303,28 @@ def _check_relationship_targets(
                 "subnet_ids[]",
                 "vpc_config[].subnet_ids[]",
             )
-            if network_field:
+            if (
+                resource_type == "aws_default_security_group"
+                and target_field == "vpc_id"
+            ):
+                # Unlike an additive SG, adopting a default SG revokes existing
+                # rules. A supplied VPC is never a legitimate parent, even with
+                # matching workspace tags or a plausible local.vpc_id reference.
+                allowed = mode == "owned" and (
+                    allowed
+                    or (
+                        not known
+                        and computed
+                        and _created_target_reference(
+                            plan,
+                            address,
+                            target_field,
+                            permitted_types,
+                            valid_addresses,
+                        )
+                    )
+                )
+            elif network_field:
                 subnet = target_field != "vpc_id"
                 local_ref = "local.private_subnet_ids" if subnet else "local.vpc_id"
                 if mode == "supplied":

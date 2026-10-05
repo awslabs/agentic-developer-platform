@@ -237,15 +237,19 @@ variable "eks_cluster_name" {
 # module (keda.tf) rather than discovered via data source. See issue #1052.
 
 variable "agent_image" {
-  description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."
+  description = "Verified agent-worker image URI pinned by OCI digest or full source SHA. No implicit mutable fallback."
   type        = string
   default     = ""
+  validation {
+    condition     = can(regex("(@sha256:[0-9a-f]{64}|:[0-9a-f]{40})$", var.agent_image))
+    error_message = "agent_image must explicitly select an OCI digest or full immutable source SHA; empty, latest and placeholders are refused."
+  }
 }
 
 variable "agent_pod_deadline_seconds" {
   description = "Max runtime for an agent pod before Kubernetes kills it. Decoupled from sqs_visibility_timeout (#2324) — the worker heartbeat bridges the gap. This controls the absolute max run time; sqs_visibility_timeout controls dead-worker detection speed."
   type        = number
-  default     = 21600 # 6h — max run time for long deploy orchestrators. Independent of sqs_visibility_timeout (300s); worker heartbeat extends visibility while alive.
+  default     = 22200 # 6h Task deadline + 10min startup/cleanup allowance. Independent of SQS visibility; heartbeat extends it while alive.
 }
 
 variable "agent_warm_pool_replicas" {
@@ -355,7 +359,7 @@ variable "enable_agent_otel" {
 variable "otel_collector_image" {
   description = "ADOT Collector container image. Use the AWS-maintained public ECR image."
   type        = string
-  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.40.0"
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector@sha256:7968fb60db6a2390a47ba6a2df029745638486e285c9b2487da1b722d0855a3e"
 }
 
 variable "otel_collector_log_group" {
@@ -428,7 +432,19 @@ variable "gitlab_webhook_enabled" {
 # -----------------------------------------------------------------------------
 
 variable "enable_adversarial_e2e" {
-  description = "Enable adversarial E2E test infrastructure (SSM mirror of gateway internal API key, evidence S3 bucket). Requires the secret adp/<env>/gateway/internal-api-key to exist in Secrets Manager. Set to false on fresh deploys where CI has not yet seeded the secret."
+  description = "Enable adversarial E2E evidence storage. Inspection calls require a registered IAM principal with explicit tenant and operation capabilities."
+  type        = bool
+  default     = false
+}
+
+variable "task_api_admission_enabled" {
+  description = "Allow the ingress Lambda to accept POST /v1/tasks after task-capable storage, dispatch, consumers, and gateway authority are ready."
+  type        = bool
+  default     = false
+}
+
+variable "task_api_human_enabled" {
+  description = "Enable authenticated human Task admission; standing enrollment, tenant membership, model and budget authorization remain required."
   type        = bool
   default     = false
 }
@@ -502,6 +518,12 @@ variable "webhook_lambda_security_group_ids" {
 # readers are deployed. Enabling the flag on a shared environment before then is
 # how a control that appears to pause a run without doing so reaches a user.
 
+variable "agent_explanations_enabled" {
+  description = "Enable authenticated live explanation reads independently of control mutations. Requires protected worker identity and gateway-only listener ingress."
+  type        = bool
+  default     = false
+}
+
 variable "agent_control_enabled" {
   description = "Whether agent-worker pods start a live control listener. Strict: the worker acts on the exact string \"true\" and nothing else, so a typo leaves the feature off rather than half-on. Off by default and intended to stay off for ordinary workloads until a verb is actually implemented — this story ships the authenticated path with every verb answering 501. Read INDEPENDENTLY of the gateway's own FEATURE_AGENT_CONTROL_ENABLED: a config change on one side must not be able to start a listener on the other."
   type        = bool
@@ -511,6 +533,14 @@ variable "agent_control_enabled" {
 # #5222: pause/resume require this protected path and configured signing keys.
 # Keep activation explicit; distributing control keys must not bypass the
 # worker isolation/readiness gates in #5195/#5210.
+
+
+variable "task_api_recovery_enabled" {
+  description = "Enable the independent 60-second task recovery schedule and adapters. Default-off."
+  type        = bool
+  default     = false
+}
+
 variable "agent_authority_enabled" {
   description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
   type        = bool
@@ -593,4 +623,104 @@ variable "gateway_authority_managed_policies" {
   description = "Use managed policies for new gateway authority grants when the existing role has exhausted its aggregate inline-policy quota. Enable through a reviewed environment rollout."
   type        = bool
   default     = false
+}
+
+variable "enabled_domain_integrations" {
+  type        = set(string)
+  default     = []
+  description = "Installed domain apps whose worker configuration is read from their own Terraform state. Empty for the base platform."
+  validation {
+    condition     = length(setsubtract(var.enabled_domain_integrations, ["cyber"])) == 0
+    error_message = "Only the Cyber hosted worker integration is currently supported."
+  }
+}
+
+# This controls only pull_request event reviews, not mentions, labels or engine work.
+variable "github_auto_pr_review_enabled" {
+  description = "Automatically review agent PRs from GitHub PR events. Keep disabled when the engine owns reviewer dispatch. Explicit issue triggers remain available."
+  type        = bool
+  default     = false
+}
+
+variable "agent_worker_memory_request" {
+  description = "Memory reserved for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "4Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_request))
+    error_message = "agent_worker_memory_request must be a positive Mi or Gi memory quantity."
+  }
+}
+
+variable "agent_worker_memory_limit" {
+  description = "Memory limit for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "8Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_limit))
+    error_message = "agent_worker_memory_limit must be a positive Mi or Gi memory quantity."
+  }
+}
+
+variable "internal_api_key_parameter_name" {
+  description = "Existing SSM SecureString containing the gateway internal API key; no key value is stored in source."
+  type        = string
+  default     = ""
+}
+
+variable "task_persona_tools" {
+  type        = map(list(string))
+  default     = {}
+  description = "Generic Task persona tool permission names; intersected with service-principal policy at admission."
+  validation {
+    condition = length(var.task_persona_tools) <= 64 && length(jsonencode(var.task_persona_tools)) <= 16384 && alltrue([
+      for persona, tools in var.task_persona_tools : length(persona) > 0 && length(persona) <= 128 && length(tools) <= 64 && length(distinct(tools)) == length(tools) && alltrue([
+        for tool in tools : can(regex("^[a-z][a-z0-9_]{0,47}\\.[a-z][a-z0-9_]{0,63}$", tool))
+      ])
+    ])
+    error_message = "Task tool grants require at most 64 personas and 64 unique domain.operation names per persona within the 16384-byte policy bound."
+  }
+}
+
+
+variable "codex_task_personas" {
+  description = "Qualified shared Codex Task personas to enable on workers. Empty keeps candidates disabled; gateway catalogue and policies are required separately."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for persona in var.codex_task_personas : contains(["agent-task-gpt-developer", "agent-task-gpt-intent-refinement", "agent-task-gpt-architect", "agent-task-gpt-product", "agent-task-gpt-pm"], persona)])
+    error_message = "Only packaged shared Codex Task personas may be enabled."
+  }
+}
+
+variable "codex_otel_endpoint" {
+  description = "Host-owned OTLP HTTP collector override for the shared Codex harness; empty uses the existing ADOT collector when enable_agent_otel is enabled."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.codex_otel_endpoint == "" || can(regex("^https?://[^@?#]+$", var.codex_otel_endpoint))
+    error_message = "Use an HTTP(S) collector base URL without credentials, query or fragment."
+  }
+}
+
+variable "codex_validation_service_endpoint" {
+  description = "Qualified dedicated validation API endpoint for Codex Tasks; empty preserves the current worker backend. Does not enable personas."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.codex_validation_service_endpoint == "" || can(regex("^https://[A-Za-z0-9.-]+(/[A-Za-z0-9_-]+)*/tools/validation$", var.codex_validation_service_endpoint))
+    error_message = "Use an HTTPS validation route without credentials, query, fragment or custom port."
+  }
+}
+
+variable "task_max_usd_per_task" {
+  type        = number
+  default     = 1000
+  description = "Platform ceiling for Task policy enrollment and edits in USD. Does not increase any existing identity or organization budget."
+  validation {
+    condition     = var.task_max_usd_per_task > 0
+    error_message = "Task policy ceiling must be positive."
+  }
 }

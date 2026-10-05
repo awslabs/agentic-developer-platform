@@ -153,7 +153,7 @@ def _policy() -> dict:
 @pytest.fixture
 async def execution(session_factory):
     async with session_factory() as session:
-        flow = OrchestrationFlow(org_id=ORG, slug="runner-flow", title="Runner flow")
+        flow = OrchestrationFlow(execution_paused=False, org_id=ORG, slug="runner-flow", title="Runner flow")
         session.add(flow)
         await session.flush()
         node = OrchestrationNode(
@@ -1167,7 +1167,10 @@ async def test_effect_authority_is_rechecked_against_live_policy_and_claim(sessi
     assert denied is not None
     assert denied.code is BlockCode.AUTHORITY_UNVERIFIABLE
 
-    exhausted = await verify_live_authority(session_factory, replace(execution, attempts=3), permitted, NOW)
+    async with session_factory() as session:
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
+        await session.commit()
+    exhausted = await verify_live_authority(session_factory, execution, permitted, NOW)
     assert exhausted is not None
     assert exhausted.code is BlockCode.ATTEMPTS_EXHAUSTED
 
@@ -1175,7 +1178,7 @@ async def test_effect_authority_is_rechecked_against_live_policy_and_claim(sessi
         claim = await session.get(OrchestrationWorkClaim, CLAIM)
         claim.state = ClaimState.RELEASED.value
         await session.commit()
-    withdrawn = await verify_live_authority(session_factory, execution, permitted, NOW)
+    withdrawn = await verify_live_authority(session_factory, execution, EffectRequest(ActionIntent("repair:first", "repair"), Action.REPAIR), NOW)
     assert withdrawn is not None
     assert withdrawn.code is BlockCode.OWNERSHIP_LOST
 
@@ -1521,7 +1524,7 @@ async def test_a_stuck_block_keeps_its_wakeup_moving_and_cannot_starve_other_ten
     async with session_factory() as session:
         first = (await session.execute(select(OrchestrationExecution))).scalar_one()
         blocked_node_id = first.node_id
-        other_flow = OrchestrationFlow(org_id="org-other", slug="other-flow", title="Other flow")
+        other_flow = OrchestrationFlow(execution_paused=False, org_id="org-other", slug="other-flow", title="Other flow")
         session.add(other_flow)
         await session.flush()
         other_node = OrchestrationNode(
@@ -1802,3 +1805,112 @@ async def test_deadline_lapsing_between_intent_and_effect_stops_the_effect(sessi
     assert {action.kind for action in actions} == {"synthetic_provider_effect", "notify_execution_block"}
     effect = next(action for action in actions if action.kind == "synthetic_provider_effect")
     assert effect.status == ActionStatus.PREPARED.value
+
+
+@pytest.mark.parametrize("action", [Action.DEVELOP, Action.REVIEW, Action.REPAIR])
+async def test_paused_flow_observes_but_never_reserves_or_performs(session_factory, execution, action):
+    async with session_factory() as session:
+        await session.execute(update(OrchestrationFlow).values(execution_paused=True))
+        await session.commit()
+    decision = _effect_decision()
+    decision = replace(decision, effect=replace(decision.effect, action=action))
+    handler = SyntheticHandler(decision=decision)
+    clock = FrozenClock()
+    for _ in range(3):
+        report = await run_execution_runner(
+            session_factory, handlers={ExecutionPhase.ADMITTED: handler}, config=_config(), clock=clock, authority_verifier=_allow
+        )
+        assert report.effects_attempted == 0 and report.reserved == 0 and report.errors == 0
+        clock.advance(2)
+    row, actions = await _row_state(session_factory)
+    assert row.attempts == 0 and actions == []
+    assert handler.observe_count == 3 and handler.perform_count == 0
+    async with session_factory() as session:
+        await session.execute(update(OrchestrationFlow).values(execution_paused=False))
+        await session.commit()
+    resumed = await run_execution_runner(
+        session_factory, handlers={ExecutionPhase.ADMITTED: handler}, config=_config(), clock=clock, authority_verifier=_allow
+    )
+    assert resumed.effects_succeeded == 1
+    row, actions = await _row_state(session_factory)
+    assert row.attempts == 1 and len(actions) == 1
+
+
+async def test_resume_does_not_reset_exhausted_attempts(session_factory, execution):
+    async with session_factory() as session:
+        await session.execute(update(OrchestrationFlow).values(execution_paused=True))
+        await session.execute(update(OrchestrationExecution).values(attempts=3))
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
+        await session.commit()
+    handler = SyntheticHandler(decision=_effect_decision())
+    clock = FrozenClock()
+    await run_execution_runner(session_factory, handlers={ExecutionPhase.ADMITTED: handler}, config=_config(), clock=clock, authority_verifier=_allow)
+    async with session_factory() as session:
+        await session.execute(update(OrchestrationFlow).values(execution_paused=False))
+        await session.commit()
+    clock.advance(2)
+    report = await run_execution_runner(
+        session_factory,
+        handlers={ExecutionPhase.ADMITTED: handler},
+        config=_config(),
+        clock=clock,
+        authority_verifier=_allow,
+        notifier=lambda _: "test-notice",
+    )
+    row, actions = await _row_state(session_factory)
+    assert report.blocked == 1 and handler.perform_count == 0
+    assert row.attempts == 3 and row.block_code == BlockCode.ATTEMPTS_EXHAUSTED.value
+    assert all(action.kind != "synthetic_provider_effect" for action in actions)
+
+
+async def test_completed_work_reconciles_while_flow_is_paused(session_factory, execution):
+    async with session_factory() as session:
+        await session.execute(update(OrchestrationFlow).values(execution_paused=True))
+        await session.commit()
+    handler = SyntheticHandler(decision=HandlerDecision(DecisionKind.CONCLUDE, phase=ExecutionPhase.CONCLUDED))
+    report = await run_execution_runner(
+        session_factory, handlers={ExecutionPhase.ADMITTED: handler}, config=_config(), clock=FrozenClock(), authority_verifier=_allow
+    )
+    row, actions = await _row_state(session_factory)
+    assert report.errors == 0 and row.status == "concluded"
+    assert row.attempts == 0 and actions == [] and handler.perform_count == 0
+
+
+async def seed_stage_attempts(session, execution, action, count):
+    for index in range(count):
+        session.add(
+            OrchestrationAction(
+                org_id=execution.org_id,
+                execution_id=execution.id,
+                operation_key=f"history:{action.value}:{index}",
+                kind="historical_effect",
+                status="failed",
+                attempt=index + 1,
+                detail={"attempt_stage": action.value},
+                created_at=NOW,
+            )
+        )
+    await session.flush()
+
+
+async def test_exhausted_stage_does_not_consume_another_stage(session_factory, execution):
+    from src.orchestration.stage_attempts import stage_attempts
+
+    async with session_factory() as session:
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
+        await seed_stage_attempts(session, execution, Action.REVIEW, 3)
+        await session.commit()
+        assert await stage_attempts(session, org_id=ORG, node_id=execution.node_id, action=Action.REVIEW) == 3
+        assert await stage_attempts(session, org_id=ORG, node_id=execution.node_id, action=Action.MERGE) == 0
+    # The default plan permits repair; development exhaustion cannot block it.
+    repair = EffectRequest(ActionIntent("repair:first", "repair"), Action.REPAIR)
+    assert await verify_live_authority(session_factory, execution, repair, NOW) is None
+    handler = SyntheticHandler(decision=HandlerDecision(DecisionKind.EFFECT, effect=repair), effect_result=EffectResult(EffectOutcome.SUCCEEDED))
+    result = await run_execution_runner(
+        session_factory,
+        handlers={ExecutionPhase.ADMITTED: handler},
+        config=_config(max_attempts=1),
+        clock=FrozenClock(),
+        authority_verifier=verify_live_authority,
+    )
+    assert result.effects_succeeded == 1

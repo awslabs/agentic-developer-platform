@@ -1,0 +1,6 @@
+{
+  "before": "41a9f1930e5285455b4b0db2b9394247cce312c3fa1ef586a58e66c0100668d5",
+  "after": "adf18eec412186452efada4deaa1d2b5185b9f24d75845caee0f5694cedea6b8",
+  "upstream_commit": "b38be2e6cf9d989075ab73412c63e003ebad4ff3",
+  "cve": "CVE-2026-82049"
+}

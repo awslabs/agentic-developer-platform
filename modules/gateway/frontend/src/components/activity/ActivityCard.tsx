@@ -9,6 +9,7 @@
  * collapsible "More" section.
  */
 
+import { LiveStreamLink } from './LiveStreamLink';
 import { useState, useCallback } from 'react';
 import type { InvocationItem, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -33,6 +34,7 @@ const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
 
 export interface ActivityCardProps {
   item: InvocationItem;
+  liveStreamEnabled?: boolean;
   onDetailClick: (item: InvocationItem) => void;
   onTranscriptClick: (invocationId: string) => void;
 }
@@ -41,7 +43,7 @@ export interface ActivityCardProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActivityCard({ item, onDetailClick, onTranscriptClick }: ActivityCardProps) {
+export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStreamEnabled }: ActivityCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const statusConfig = describeStatus(item.status);
@@ -88,7 +90,7 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
 
   return (
     <div
-      className="border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
+      className="activity-run-card border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       tabIndex={0}
@@ -109,7 +111,8 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
         </h3>
         <div className="flex flex-col items-end gap-1">
           <span
-            className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+            className={`activity-status-badge inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+            data-status={item.status}
           >
             <span aria-hidden="true">{statusConfig.glyph}</span>
             <span>{statusConfig.label}</span>
@@ -157,6 +160,8 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
           {formatRunCost(item.total_cost_usd, item.status)}
         </span>
       </div>
+
+      <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => onDetailClick(item)} />
 
       {/* Expand/collapse toggle */}
       <button

@@ -28,8 +28,9 @@ The distinction that actually matters is between *expected* absence and
 
 - A node still `pending`/`ready` has not executed. Its absent cost is expected, and
   contributes nothing.
-- A node that HAS executed (`running` onward) but has no ledger row is genuinely
-  unknown spend — the reconciliation gap the issue names. That denies.
+- A running node may not have its first asynchronous usage row yet. An initialized,
+  valid flow model meter can account for that gap, including pending call bounds.
+- A stopped node without a ledger row remains unreconciled spend. That denies.
 - A `gate` node never bills a model call, so its absence is expected in any state.
 
 So spend is `None` (deny) only when something that ran cannot be accounted for, and
@@ -77,6 +78,7 @@ from .models import (
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
+from .stage_attempts import stage_attempts
 from .state import NodeState
 
 logger = logging.getLogger(__name__)
@@ -257,6 +259,7 @@ async def _member_facts(session: AsyncSession, *, org_id: str, user_id: str) -> 
             select(TenantMembership.tenant_id).where(
                 TenantMembership.user_id == user_id,
                 TenantMembership.tenant_id == org_id,
+                TenantMembership.revoked_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -327,7 +330,9 @@ def _engine_evaluation():
     )
 
 
-async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str, nodes: list[OrchestrationNode]) -> SpendObservation:
+async def _observed_spend(
+    session: AsyncSession, *, org_id: str, flow_slug: str, nodes: list[OrchestrationNode], policy: ExecutionPolicy
+) -> SpendObservation:
     """Settled spend for a flow, and which nodes' holds it supersedes.
 
     A `None` total denies. See the module docstring for why this is not simply "any
@@ -361,6 +366,7 @@ async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str,
 
     total = Decimal(0)
     settled: set[str] = set()
+    unreported_running: list[OrchestrationNode] = []
     for node in nodes:
         # `graph_address` rather than a local f-string: the ledger is grouped by
         # exactly that spelling, and a second one here would silently match nothing
@@ -378,6 +384,9 @@ async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str,
         # ever ran, and on whether it is the kind of node that bills at all.
         if node.kind == NodeKind.GATE.value or node.id in observers:
             continue
+        if node.state == NodeState.RUNNING.value:
+            unreported_running.append(node)
+            continue
         if node.state in _EXECUTED_STATES:
             logger.warning(
                 "orchestration admission: flow %s (org %s) node %s is %s with no usage row — spend is UNKNOWN, refusing new spend until reconciled",
@@ -387,6 +396,21 @@ async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str,
                 node.state,
             )
             return SpendObservation(total_usd=None)
+    if unreported_running:
+        from .flow_meter import read_flow_meter
+
+        # Dispatch marks a node running before its first model call can write a
+        # usage row. Do not serialize a whole fan-out behind that asynchronous
+        # write. The initialized meter accounts for every flow call, including
+        # pending and retained bounds; absent/expired/unbounded entries fail closed.
+        # Keep the running nodes' admission holds: the atomic reservation below
+        # still checks their worst-case future spend plus this new admission.
+        meter = await read_flow_meter(org_id=org_id, flow_id=unreported_running[0].flow_id, policy=policy)
+        if meter is None:
+            return SpendObservation(total_usd=None)
+        # These are overlapping flow-wide readings, not additive charges. Never
+        # lower the SQL observation or discard failed-call bounds in the meter.
+        total = max(total, meter.total_usd)
     return SpendObservation(total_usd=total, settled_node_ids=frozenset(settled))
 
 
@@ -639,14 +663,14 @@ async def authorize_node_dispatch(
     # first asynchronous usage row arrives. Fresh admissions also reconcile the
     # settled ledger's completed-node holds.
     if continuing_node:
-        from .flow_meter import read_flow_meter
+        from .flow_meter import reconcile_flow_meter
 
         if node.state != NodeState.RUNNING.value:
             return Decision.block(DenyReason.WORK_NOT_OWNED, "continuation no longer belongs to a running node")
-        meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        meter = await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
         spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
     else:
-        spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)
+        spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes, policy=inputs.policy)
 
     context = await resolve_authorization_context(
         session,
@@ -661,7 +685,8 @@ async def authorize_node_dispatch(
         work_claim_issue=work_claim_issue,
     )
     if continuing_node:
-        context = replace(context, observed_attempts=max(0, node.attempts - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
+        used = await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
+        context = replace(context, observed_attempts=max(0, used - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
 
     resource = ResourceRef(
         repository_id=target_repository,

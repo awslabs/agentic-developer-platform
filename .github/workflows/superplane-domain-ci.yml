@@ -24,76 +24,99 @@ name: Superplane Domain CI
 # TRANSFERRED SOURCE (U22, #5326). This lane also runs the tests that came with the three
 # Superplane components ADP now maintains under `src/` — the API's pytest suite and the
 # controller's and platform monitor's Go suites. That is what makes the ownership transfer
-# real: the tests run here, on every PR, instead of in a repository ADP cannot read.
+# real: affected component tests run here, instead of in a repository ADP cannot read.
 #
-# They run in their own steps rather than under the module-wide glob because each component
+# They run in separate jobs rather than under the module-wide glob because each component
 # has its own toolchain and dependency set, preserved byte-for-byte from the origin. The
 # module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
 # excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
 # still cover it.
+#
+# The stable domain check runs for every PR, including core-only PRs. Its
+# summary names the selected components; skipped module steps never imply coverage.
+# Component jobs run independently. Shared inputs select their actual consumers;
+# lifecycle and worker-image changes do not run unrelated API or Go suites.
 
 on:
   pull_request:
     # Pinned to main, matching all 22 sibling `pull_request` lanes. Without this the lane
     # also fires for PRs targeting arbitrary branches (#5198 review).
     branches: [main]
-    paths:
-      # The module this lane gates.
-      - 'modules/domain-apps/superplane/**'
-      # The lane itself, so a change to it is checked by it.
-      - '.github/workflows/superplane-domain-ci.yml'
-      # The central registration lists. These live OUTSIDE the module directory, which is
-      # the entire reason they get missed (R1 acc. 3) — so a PR touching any of them has
-      # to be able to run the suites that assert the registration is complete and paired.
-      - 'platform/scripts/deploy-all.sh'
-      - 'platform/scripts/undeploy.sh'
-      - 'platform/scripts/undeploy-phases.sh'
-      - '.github/workflows/undeploy.yml'
-      - 'docs/adp-platform-deployment/deployment-manifest.md'
-      # The feature gate's four surfaces. Read as text by the registration suite, so an
-      # edit to one without the others must be able to trigger it.
-      - 'modules/gateway/src/features/routes.py'
-      - 'modules/gateway/src/domain_proxy/**'
-      - 'modules/gateway/src/app.py'
-      - 'modules/gateway/pyproject.toml'
-      - 'modules/gateway/tests/features/test_superplane_proxy.py'
-      - 'modules/gateway/frontend/src/services/features.ts'
-      - 'modules/gateway/frontend/src/App.tsx'
-      - 'modules/gateway/frontend/src/components/Navigation.tsx'
-      - 'modules/gateway/frontend/src/components/next/journeys.ts'
-      # The suites themselves.
-      - 'modules/gateway/tests/features/test_superplane_flag.py'
-      - 'modules/gateway/tests/features/test_superplane_registration.py'
-      - 'modules/gateway/tests/features/test_superplane_deploy_scope.py'
-      - 'modules/gateway/tests/e2e/test_superplane_route_gated.py'
-      # The persona catalogue (issue #5038, U4). Same reasoning as the lists above:
-      # these live OUTSIDE the module, and U4 registers two Superplane personas in
-      # them. A PR editing the catalogue without its prompt files — or a prompt file
-      # without the catalogue — must be able to run the suites that assert the
-      # pairing, or the "name registered without its file" bug class (#4037) ships
-      # again. `stage-personas.sh` is here because the persona-file resolution rule
-      # those suites encode is derived from it: change the staging and the suites'
-      # premise changes with it.
-      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
-      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_prompt_files.py'
-      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_catalogue_parity.py'
-      - 'modules/agent-factory/agent-worker-image/stage-personas.sh'
-      - 'docs/agent-catalogue.md'
+    # Always emit the stable required check, including on core-only PRs. A
+    # path-filtered workflow would leave required checks pending indefinitely.
   workflow_dispatch:
+    inputs:
+      controller_only:
+        description: Focused remote controller/RPC tests; does not satisfy the full domain gate
+        type: boolean
+        default: false
 
 # No OIDC token permission: lint and unit tests do not need an AWS role.
 permissions:
   contents: read
 
 concurrency:
-  group: superplane-domain-ci-${{ github.ref }}
+  group: superplane-domain-ci-${{ github.ref }}-${{ inputs.controller_only || false }}
   cancel-in-progress: true
 
 jobs:
+  change-scope:
+    name: Select Superplane checks
+    runs-on: arc-runner-org
+    outputs:
+      components: ${{ steps.scope.outputs.components }}
+      controller_changed: ${{ steps.scope.outputs.controller_changed }}
+      persona_changed: ${{ steps.scope.outputs.persona_changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Classify PR changes
+        id: scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/superplane_ci_scope.py
+
+  superplane-browser:
+    name: Superplane browser
+    needs: change-scope
+    if: ${{ !inputs.controller_only && contains(fromJSON(needs.change-scope.outputs.components), 'ui') }}
+    uses: ./.github/workflows/superplane-ui-browser-ci.yml
+    permissions:
+      contents: read
+
+  persona-registration-tests:
+    name: Superplane persona registration tests
+    needs: change-scope
+    if: ${{ needs.change-scope.outputs.persona_changed == 'true' }}
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install pytest
+      - name: Check persona prompt files and catalogue parity
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          python3 -m pytest \
+            lambda/common/tests/test_persona_prompt_files.py \
+            lambda/common/tests/test_persona_catalogue_parity.py -q
+
   superplane-domain-tests:
-    # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
-    # rather than failing, so treat this string as a contract.
-    name: Superplane domain tests
+    needs: change-scope
+    if: ${{ !inputs.controller_only }}
+    name: Superplane / ${{ matrix.component }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.change-scope.outputs.components) }}
+    timeout-minutes: 40
     runs-on: arc-runner-org
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
@@ -117,6 +140,10 @@ jobs:
           bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # CLI evaluation guards verify historical release artifacts by Git
+          # object ID, so the default shallow checkout cannot run that suite.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -126,12 +153,56 @@ jobs:
           cache-dependency-path: modules/gateway/pyproject.toml
 
       - name: Install gateway dependencies
+        if: ${{ matrix.component == 'domain' || matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # The registration suites import the gateway's feature module, so they need its
-        # dependency set. The domain module has none of its own yet.
-        run: pip install -e ".[dev]"
+        # dependency set, also used by the domain integration suites.
+        run: pip install -e ".[dev]" "setuptools>=75.0" wheel
+
+      - name: Report selected coverage
+        env:
+          COMPONENT: ${{ matrix.component }}
+          SELECTED_COMPONENTS: ${{ needs.change-scope.outputs.components }}
+        run: |
+          echo "Superplane component: $COMPONENT"
+          echo "### Superplane component: $COMPONENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Selected jobs: $SELECTED_COMPONENTS. Unselected component suites were not run." >> "$GITHUB_STEP_SUMMARY"
+      - name: Install classifier test dependency
+        run: python3 -m pip install pytest pyyaml boto3 ruff
+      - name: Test CI scope selection
+        run: python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
+      - name: Verify shared lifecycle integration offline
+        if: ${{ matrix.component == 'lifecycle' }}
+        run: |
+          python3 -m pytest --noconftest --import-mode=importlib platform/scripts/tests/test_teardown.py \
+            modules/gateway/tests/features/test_superplane_registration.py \
+            modules/gateway/tests/features/test_superplane_deploy_scope.py -q
+
+      - name: Verify CLI evaluation guards without network access
+        if: ${{ matrix.component == 'domain' }}
+        # The CLI dependency changes E18's acceptance and cleanup logic. Exercise
+        # those offline guards in the manual source-only lane as well as PR CI;
+        # the live evaluation workflow deliberately cannot run from a PR branch.
+        run: |
+          python -m pip install pytest-socket
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
+
+      - name: Verify agent task compatibility with pinned SkyPilot
+        if: ${{ matrix.component == 'worker' }}
+        env:
+          SKYPILOT_DISABLE_USAGE_COLLECTION: '1'
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/superplane-skypilot-schema
+          /tmp/superplane-skypilot-schema/bin/pip install 'skypilot==0.12.0' pytest pytest-socket
+          /tmp/superplane-skypilot-schema/bin/python -m pytest \
+            -c /dev/null --noconftest --disable-socket -q \
+            modules/domain-apps/superplane/tests/_skypilot_task_schema_check.py
 
       - name: Lint the domain module
+        if: ${{ matrix.component == 'domain' }}
         run: |
           set -euo pipefail
           # Only lint if there is Python to lint — the module is a skeleton today, and
@@ -145,6 +216,7 @@ jobs:
           fi
 
       - name: Lint the gateway-side gate and its suites
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         run: |
           set -euo pipefail
@@ -164,6 +236,7 @@ jobs:
             tests/e2e/test_superplane_route_gated.py
 
       - name: Verify Superplane authorization policy
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # Domain-only policy edits must exercise these integration tests even
         # when Gateway CI's path filter does not match the new domain path.
@@ -181,6 +254,7 @@ jobs:
             --cov=../domain-apps/superplane/auth/superplane_auth --cov-fail-under=90
 
       - name: Run domain module tests
+        if: ${{ matrix.component == 'domain' }}
         env:
           # Account-create fencing and recovery require the real PostgreSQL fixture.
           ACCOUNT_PROVISIONING_REQUIRE_POSTGRES: '1'
@@ -200,6 +274,7 @@ jobs:
           fi
 
       - name: Run migration, placement and handover tests with coverage
+        if: ${{ matrix.component == 'domain' }}
         # Pinned BY PATH and NOT tolerant of an empty glob, for the same reason as the
         # MCP step below: #5061 (U19) names these three files, so "no tests found" here
         # means a PR deleted one and must fail rather than pass silently.
@@ -223,6 +298,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=90
 
       - name: Run MCP tool surface tests with coverage
+        if: ${{ matrix.component == 'domain' }}
         # Pinned BY PATH and NOT tolerant of an empty glob, unlike the step above: these
         # tests exist as of #5038, so "no tests found" here means a PR deleted them and
         # must fail rather than pass silently.
@@ -238,9 +314,11 @@ jobs:
             --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
 
       - name: Run transferred Superplane API tests
+        # API dependencies and tests run in their own job.
+        if: ${{ matrix.component == 'api' }}
         # The tests that came WITH the transferred source (U22, #5326). This is the step that
         # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
-        # every PR, rather than pointing at a repository it cannot read and calling that
+        # affected PRs, rather than pointing at a repository it cannot read and calling that
         # coverage.
         #
         # Run from the component directory with its own dependency set, because that is the
@@ -278,6 +356,9 @@ jobs:
           # src/superplane-api/pyproject.toml. Importing rather than vendoring keeps
           # one definition of the rules; the cost is that whoever installs the API has
           # to install this too, and this is that step.
+          # This isolated job cannot inherit the gateway's PostgreSQL fixture
+          # dependency. API PostgreSQL tests import pgserver directly.
+          pip install 'pgserver>=0.1.4' -c ../../releases/transfer-constraints.txt
           pip install -e ../../auth
           pip install -e ".[dev]" \
             -c ../../releases/transfer-constraints.txt
@@ -289,28 +370,29 @@ jobs:
           # with ModuleNotFoundError and pytest exits 4.
           pip install -e ../../contracts \
             -c ../../releases/transfer-constraints.txt
-          # The shared durable-operation package (#5527), which `app/composition.py` and
-          # the adapters under `app/adapters/` import to build three of the four
-          # production trust ports. Same situation as the two above: maintained in this
-          # repository, not published to any index, so not a declared dependency — the
-          # lane installs it from its path. It lives outside this module (at
-          # modules/harness/jobs), which is why the relative path is longer.
-          #
-          # It declares no dependencies of its own, deliberately, so this cannot
-          # conflict with the constraint file or the API's pinned versions.
-          pip install -e ../../../../harness/jobs
+          # Install the same maintained operation/lifecycle packages staged into
+          # the API and worker image. No developer checkout imports are assumed.
+          pip install -e ../../../../harness/jobs \
+            -e ../../infra/account-factory \
+            -e ../../infra/account-provisioning \
+            -e ../../workspace_bootstrap -e ../.. -e ../../executor \
+            -c ../../releases/transfer-constraints.txt
+          python3 -I -c 'from account_factory.modes import validate; from account_provisioning.creation_runner import create_account; from superplane_bootstrap.workspace import bootstrap_workspace; from workspace_provisioning.preview import preview_workspace; from harness_jobs.execution import OperationExecutor'
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
           #
-          # stderr is kept (it used to go to /dev/null): a collection ERROR and an empty
-          # glob both reach this line, `pipefail` fails the step for either, and with
-          # stderr discarded the log showed the failure without the traceback naming the
-          # unimportable module. The count is still read from the last stdout line.
-          COUNT=$(python3 -m pytest tests/ --collect-only -q | tail -1)
+          # Pytest emits collection tracebacks on stdout. Print that output when
+          # collection fails instead of losing it inside command substitution.
+          if ! python3 -m pytest tests/ --collect-only -q > /tmp/superplane-api-collection.log 2>&1; then
+            cat /tmp/superplane-api-collection.log
+            exit 1
+          fi
+          COUNT=$(tail -1 /tmp/superplane-api-collection.log)
           echo "Collected: ${COUNT}"
           python3 -m pytest tests/ -v --tb=short
 
       - name: Enforce coverage on the observation receiver
+        if: ${{ matrix.component == 'api' }}
         # Issue #5056 (U15) requires >=85% on the receiver logic it changed. The step
         # above RUNS these tests but has no --cov-fail-under, so it cannot enforce that.
         #
@@ -350,6 +432,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Enforce coverage on the provider-connection routes and service
+        if: ${{ matrix.component == 'api' }}
         # Issue #5053 (U7b) requires >=85% on the API and service logic it changed. The
         # suite runs in an earlier step with no --cov-fail-under, so nothing enforced it.
         #
@@ -391,6 +474,7 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Enforce coverage on provider-handle persistence
+        if: ${{ matrix.component == 'api' }}
         # Issue #5054 (U11c) requires >=85% on the API/service logic it changed.
         # Scoped to the three modules this story wrote, for the same reason as the
         # step above: an app-wide percentage lets exactly this code rot behind an
@@ -409,6 +493,13 @@ jobs:
           cat > /tmp/superplane-handles-cov.ini <<'INI'
           [run]
           concurrency = greenlet,thread
+          [report]
+          include =
+              app/services/provider_handles.py
+              app/services/provider_authority.py
+              app/services/provider_inventory.py
+              app/routers/provider_handles.py
+              app/models/provider_handle.py
           INI
           # The transferred tree is excluded from the general module lint pass.
           # Explicitly lint these maintained provider modules and regressions.
@@ -417,26 +508,28 @@ jobs:
             app/models/provider_handle.py tests/test_provider_handles.py \
             tests/test_provider_handles_postgres.py \
             alembic/versions/013_add_provider_operations.py
+          # Measure the app directory without coverage's dotted-module discovery
+          # importing ORM models before pytest. SQLAlchemy's C-extension state can
+          # retain those provisional imports and fail on the first session flush.
+          # The report keeps the same five modules and unchanged coverage floor.
           python3 -m pytest tests/test_provider_handles.py -v --tb=short \
-            --cov=app.services.provider_handles \
-            --cov=app.services.provider_authority \
-            --cov=app.services.provider_inventory \
-            --cov=app.routers.provider_handles \
-            --cov=app.models.provider_handle \
+            --cov=app \
             --cov-config=/tmp/superplane-handles-cov.ini \
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Set up Go for the transferred components
-        # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
-        # toolchain that judges this code is the one it was written against.
+        if: ${{ matrix.component == 'controller' || matrix.component == 'monitor' }}
+        # Match the maintained controller toolchain; patched x/net requires Go 1.25+.
+        # Install it explicitly instead of downloading a second toolchain during tests.
         uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version: '1.26.8'
           cache-dependency-path: |
             modules/domain-apps/superplane/src/superplane-controller/go.sum
             modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
 
       - name: Run transferred Superplane controller tests
+        if: ${{ matrix.component == 'controller' }}
         # `go vet` before `go test` because a build-level mistake in transferred code should
         # be reported as such rather than as a test failure. Both are scoped to this
         # component: the controller and the monitor are separate modules with separate
@@ -457,6 +550,7 @@ jobs:
           go test ./... -count=1 -v
 
       - name: Run transferred Superplane platform monitor tests
+        if: ${{ matrix.component == 'monitor' }}
         # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration`, so
         # the default build excludes it and this lane does not pass `-tags=integration`. That
         # exclusion is the file's own design, not a suppression added here — but it is stated
@@ -479,6 +573,7 @@ jobs:
           go test ./... -count=1 -v
 
       - name: Enforce coverage on the observation client
+        if: ${{ matrix.component == 'monitor' }}
         # The sender half of #5056's >=85% requirement. Scoped to `db/`, the package the
         # story rewrote from a pgx pool into an authenticated contract client; a
         # component-wide number would average it against monitors/ and config/.
@@ -500,7 +595,32 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Node for Superplane UI
+        if: ${{ matrix.component == 'ui' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+
+      - name: Test Superplane UI
+        if: ${{ matrix.component == 'ui' }}
+        working-directory: modules/gateway/frontend
+        run: |
+          npm ci
+          npx vitest run ../../domain-apps/superplane/ui --maxWorkers=2
+          npm run lint:superplane-ui
+          npx tsc --noEmit
+
+      - name: Verify Superplane worker packaging
+        if: ${{ matrix.component == 'worker' }}
+        run: |
+          python3 -m pytest \
+            modules/domain-apps/superplane/tests/acceptance/test_worker_image_assets.py \
+            modules/domain-apps/superplane/agent/tests -q
+
       - name: Run domain skill tests
+        if: ${{ matrix.component == 'worker' }}
         # Skills may ship their own tests (the cyber pack's url-analysis skill does).
         # Discovered rather than pinned, because a skill added later should be picked up
         # without editing this lane — but the log distinguishes "none found" from "passed".
@@ -512,26 +632,8 @@ jobs:
             echo "No skill tests under modules/domain-apps/superplane/agent/skills/ — nothing to run."
           fi
 
-      - name: Run persona registration tests
-        working-directory: modules/agent-factory/webhook-ingress
-        # Run from the module root, not from `lambda/`, so the `pythonpath = ["lambda"]`
-        # in this module's pyproject.toml is what makes `common` importable — matching
-        # webhook-ingress-ci.yml. Invoking from inside `lambda/` also happens to work,
-        # via pytest's rootdir insertion, but that is incidental to the package layout
-        # and would break if an `__init__.py` were added or removed above the tests.
-        #
-        # Pinned BY NAME for the same reason as the gateway suites: these are the only
-        # checks that every registered persona name has its prompt file (#4037's bug
-        # class) and that a domain persona filename does not silently shadow a core one.
-        # A directory glob would pass if they were deleted.
-        run: |
-          set -euo pipefail
-          python3 -m pytest \
-            lambda/common/tests/test_persona_prompt_files.py \
-            lambda/common/tests/test_persona_catalogue_parity.py \
-            -v --tb=short
-
       - name: Run gate and registration tests
+        if: ${{ matrix.component == 'gateway' }}
         working-directory: modules/gateway
         # Pinned BY NAME, not by directory glob. A PR that deleted one of these files
         # would pass a directory-wide invocation, because "no tests" and "all tests
@@ -579,3 +681,126 @@ jobs:
           assert boto3.Session().get_credentials() is None, "Offline tests discovered AWS credentials"
           print("Confirmed: AWS SDK credential discovery is disabled for this test job.")
           PYTHON
+
+  controller-execution-tests:
+    needs: change-scope
+    if: ${{ needs.change-scope.outputs.controller_changed == 'true' }}
+    name: Superplane controller execution tests
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: modules/domain-apps/superplane/src/superplane-controller/go.sum
+      - name: Verify Go execution client against shared RPC and PostgreSQL
+        # Isolate harness dependencies from the API's production importability
+        # checks above. Only a test worker is built; no image or CLI is installed.
+        env:
+          HARNESS_JOBS_REQUIRE_POSTGRES: '1'
+        run: |
+          set -euo pipefail
+          controller="$GITHUB_WORKSPACE/modules/domain-apps/superplane/src/superplane-controller"
+          go -C "$controller" vet ./execution
+          go -C "$controller" test ./... -count=1
+          go -C "$controller" test -c -o "$RUNNER_TEMP/superplane-rpc-worker" ./execution
+          python3 -m venv "$RUNNER_TEMP/superplane-rpc-venv"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/pip" install './modules/harness/jobs[dev]' \
+            './modules/domain-apps/superplane/contracts' './modules/domain-apps/superplane/executor'
+          export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
+          export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
+          # The repository root also has a tests package. Start in the harness
+          # directory so its maintained PostgreSQL fixtures resolve unambiguously.
+          cd "$GITHUB_WORKSPACE/modules/harness/jobs"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/python" -m pytest \
+            -p tests.conftest -c "$controller/execution/integration/pytest.ini" \
+            "$controller/execution/integration" -v \
+            --junitxml="$RUNNER_TEMP/superplane-rpc-results.xml"
+          python3 - "$RUNNER_TEMP/superplane-rpc-results.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          if len(cases) < 14 or any(case.find('skipped') is not None for case in cases):
+              sys.exit('Real Go/RPC/PostgreSQL coverage must execute without skips')
+          PY
+
+      - name: Verify trusted controller assignment and provider adapters
+        env:
+          HARNESS_JOBS_REQUIRE_POSTGRES: '1'
+        run: |
+          export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
+          export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
+          executor="$GITHUB_WORKSPACE/modules/domain-apps/superplane/executor"
+          cd "$GITHUB_WORKSPACE/modules/harness/jobs"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/python" -m pytest \
+            -p tests.conftest -c "$executor/pytest.ini" "$executor/tests" -v \
+            --junitxml="$RUNNER_TEMP/superplane-executor-results.xml"
+          python3 - "$RUNNER_TEMP/superplane-executor-results.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          if len(cases) < 41 or any(case.find('skipped') is not None for case in cases):
+              sys.exit('Trusted executor tests must execute against PostgreSQL without skips')
+          PY
+
+  superplane-required-check:
+    # Preserve the required check and fail closed if classification or any
+    # selected coverage fails, is cancelled, or unexpectedly skips.
+    name: Superplane domain tests
+    needs: [change-scope, superplane-domain-tests, persona-registration-tests, controller-execution-tests, superplane-browser]
+    if: ${{ always() && !inputs.controller_only }}
+    runs-on: arc-runner-org
+    steps:
+      - name: Verify selected checks succeeded
+        env:
+          COMPONENTS: ${{ needs.change-scope.outputs.components }}
+          CONTROLLER_CHANGED: ${{ needs.change-scope.outputs.controller_changed }}
+          SCOPE_RESULT: ${{ needs.change-scope.result }}
+          DOMAIN_RESULT: ${{ needs.superplane-domain-tests.result }}
+          PERSONA_CHANGED: ${{ needs.change-scope.outputs.persona_changed }}
+          PERSONA_RESULT: ${{ needs.persona-registration-tests.result }}
+          BROWSER_RESULT: ${{ needs.superplane-browser.result }}
+          CONTROLLER_RESULT: ${{ needs.controller-execution-tests.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          test "$DOMAIN_RESULT" = success
+          python3 - <<'PYCOMPONENTS'
+          import json, os
+          components = json.loads(os.environ['COMPONENTS'])
+          allowed = {'core', 'domain', 'api', 'controller', 'monitor', 'gateway', 'worker', 'lifecycle', 'ui'}
+          assert isinstance(components, list) and components and all(c in allowed for c in components)
+          assert len(set(components)) == len(components)
+          assert 'core' not in components or components == ['core']
+          assert os.environ['CONTROLLER_CHANGED'] == str('controller' in components).lower()
+          assert os.environ['PERSONA_CHANGED'] in ('true', 'false')
+          if 'ui' in components:
+              assert os.environ['BROWSER_RESULT'] == 'success'
+          PYCOMPONENTS
+          if [ "$CONTROLLER_CHANGED" = true ]; then
+            test "$CONTROLLER_RESULT" = success
+          fi
+          if [ "$PERSONA_CHANGED" = true ]; then
+            test "$PERSONA_RESULT" = success
+          fi

@@ -11,6 +11,7 @@ from datetime import datetime
 
 import redis.asyncio as redis
 
+from src.shared.metrics import emit_error_count
 from src.shared.redis_client import create_redis_client
 
 from ..backend import RateLimitBackend
@@ -166,6 +167,9 @@ class RedisBackend(RateLimitBackend):
                 self._redis_url,
                 encoding="utf-8",
                 decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                retry_on_timeout=False,
             )
             # Register Lua scripts
             self._consume_script = self._client.register_script(TOKEN_BUCKET_CONSUME_SCRIPT)
@@ -211,8 +215,9 @@ class RedisBackend(RateLimitBackend):
             return allowed, remaining, wait_time
         except redis.RedisError as e:
             logger.error(f"Redis error in check_limit: {e}")
-            # Fail open - allow the request
-            return True, max_tokens, 0
+            emit_error_count(org_id="__backend__", model="rate_limit", error_type="backend_unavailable")
+            # Backend outage must never grant quota.
+            return False, 0, 5
 
     async def consume(
         self,
@@ -241,8 +246,9 @@ class RedisBackend(RateLimitBackend):
             return success, remaining, wait_time
         except redis.RedisError as e:
             logger.error(f"Redis error in consume: {e}")
-            # Fail open - allow the request
-            return True, max_tokens, 0
+            emit_error_count(org_id="__backend__", model="rate_limit", error_type="backend_unavailable")
+            # Backend outage must never grant quota.
+            return False, 0, 5
 
     async def get_remaining(
         self,
@@ -321,8 +327,9 @@ class RedisBackend(RateLimitBackend):
             return success, current, limit
         except redis.RedisError as e:
             logger.error(f"Redis error in increment_concurrent: {e}")
-            # Fail open
-            return True, 0, 100
+            emit_error_count(org_id="__backend__", model="rate_limit", error_type="backend_unavailable")
+            # Backend outage must never grant a concurrent slot.
+            return False, 0, 0
 
     async def decrement_concurrent(self, key: str) -> int:
         """Decrement concurrent request counter."""
@@ -330,12 +337,13 @@ class RedisBackend(RateLimitBackend):
             client = await self._get_client()
             concurrent_key = self._get_concurrent_key(key)
 
-            current = await client.decr(concurrent_key)
-            # Ensure non-negative
-            if current < 0:
-                await client.set(concurrent_key, 0)
-                return 0
-            return current
+            return int(
+                await client.eval(
+                    "local n = tonumber(redis.call('GET', KEYS[1])) or 0; if n > 0 then return redis.call('DECR', KEYS[1]) end; return 0",
+                    1,
+                    concurrent_key,
+                )
+            )
         except redis.RedisError as e:
             logger.error(f"Redis error in decrement_concurrent: {e}")
             return 0
@@ -348,9 +356,9 @@ class RedisBackend(RateLimitBackend):
 
             value = await client.get(concurrent_key)
             return int(value) if value else 0
-        except redis.RedisError as e:
-            logger.error(f"Redis error in get_concurrent_count: {e}")
-            return 0
+        except redis.RedisError:
+            logger.error("Rate limit backend unavailable: get_concurrent_count")
+            raise
 
     async def set_concurrent_limit(self, key: str, limit: int) -> None:
         """Set the concurrent request limit for a key."""
@@ -358,8 +366,9 @@ class RedisBackend(RateLimitBackend):
             client = await self._get_client()
             limit_key = self._get_concurrent_limit_key(key)
             await client.set(limit_key, limit, ex=self._default_ttl)
-        except redis.RedisError as e:
-            logger.error(f"Redis error in set_concurrent_limit: {e}")
+        except redis.RedisError:
+            logger.error("Rate limit backend unavailable: set_concurrent_limit")
+            raise
 
     async def close(self) -> None:
         """Close and cleanup backend resources."""

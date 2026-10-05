@@ -12,6 +12,7 @@ Responsibilities:
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +35,7 @@ class AssumeRoleResult:
     expiration: str  # ISO 8601
     region: str
     profile_name: str
+    assumed_role_arn: str | None = None
 
 
 class STSAssumeError(Exception):
@@ -44,7 +46,7 @@ class STSAssumeError(Exception):
         self.code = code
 
 
-def assume_role(
+def _assume_role(
     *,
     role_arn: str,
     external_id: str | None,
@@ -64,7 +66,7 @@ def assume_role(
     role_arn : str
         The ARN of the role to assume.
     external_id : str | None
-        Optional ExternalId for confused-deputy protection.
+        Required ExternalId for confused-deputy protection.
     session_duration_seconds : int
         Requested session duration (capped by role's max).
     default_region : str
@@ -154,4 +156,29 @@ def assume_role(
         expiration=expiration_str,
         region=default_region,
         profile_name=profile_name,
+        assumed_role_arn=response.get("AssumedRoleUser", {}).get("Arn"),
     )
+
+
+def assume_role(**kwargs):
+    """Deliver a customer session only with a nonempty connection trust ID."""
+    external_id = kwargs.get("external_id")
+    if not isinstance(external_id, str) or not external_id.strip():
+        raise STSAssumeError("ExternalId is required", code="invalid_trust")
+    return _assume_role(**kwargs)
+
+
+def require_external_id_enforcement(**kwargs):
+    """Identical assumes with a wrong ID AND no ID must be explicitly denied.
+
+    All other request attributes stay identical to the successful probe. Never
+    return probe credentials. Non-AccessDenied errors are inconclusive.
+    """
+    for probe_id in (str(uuid.uuid4()), None):
+        try:
+            _assume_role(**{**kwargs, "external_id": probe_id})
+        except STSAssumeError as exc:
+            if exc.code == "AccessDenied":
+                continue
+            raise STSAssumeError("Trust verification failed", code="trust_verification_failed") from None
+        raise STSAssumeError("Role does not enforce the connection trust ID", code="trust_verification_failed")

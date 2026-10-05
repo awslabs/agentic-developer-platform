@@ -3,6 +3,7 @@
 Issue #702: Validates the Postgres safety-net call to POST /internal/v1/resolve-user.
 """
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -17,13 +18,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 @pytest.fixture(autouse=True)
 def _reset_module(monkeypatch):
     """Reset cached module state before each test."""
-    monkeypatch.setenv("GATEWAY_API_URL", "http://gateway.internal:8080")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv(
+        "GATEWAY_API_URL", "https://example123.execute-api.us-east-1.amazonaws.com/dev"
+    )
     monkeypatch.setenv("INTERNAL_API_KEY_ARN", "")
     monkeypatch.setenv("BG_INTERNAL_API_KEY", "test-internal-key")
     # Force re-import to pick up env vars
     mods_to_remove = [k for k in sys.modules if k.startswith("common.gateway_client")]
     for mod in mods_to_remove:
         del sys.modules[mod]
+    # Removing sys.modules alone leaves common.gateway_client pointing at the
+    # previous object. Rebind the package attribute before `from common import`.
+    importlib.import_module("common.gateway_client")
     yield
     mods_to_remove = [k for k in sys.modules if k.startswith("common.gateway_client")]
     for mod in mods_to_remove:
@@ -52,7 +61,9 @@ class TestResolveUserByIdentity:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch(
+            "common.gateway_client._open_internal_lookup", return_value=mock_resp
+        ):
             result = gateway_client.resolve_user_by_identity("github", "20402445")
 
         assert result is not None
@@ -70,14 +81,16 @@ class TestResolveUserByIdentity:
         gateway_client._internal_api_key = None
 
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-user",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user",
             code=404,
             msg="Not Found",
             hdrs={},
             fp=None,
         )
 
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=http_error
+        ):
             result = gateway_client.resolve_user_by_identity("github", "99999")
 
         assert result is None
@@ -88,7 +101,10 @@ class TestResolveUserByIdentity:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("timeout")):
+        with patch(
+            "common.gateway_client._open_internal_lookup",
+            side_effect=ConnectionError("timeout"),
+        ):
             result = gateway_client.resolve_user_by_identity("github", "12345")
 
         assert result is None
@@ -162,15 +178,18 @@ class TestResolveUserByIdentity:
             captured_req["body"] = json.loads(req.data.decode("utf-8"))
             return mock_resp
 
-        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=mock_urlopen
+        ):
             gateway_client.resolve_user_by_identity("github", "20402445")
 
         assert (
             captured_req["url"]
-            == "http://gateway.internal:8080/internal/v1/resolve-user"
+            == "https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user"
         )
         assert captured_req["method"] == "POST"
-        assert captured_req["headers"]["X-internal-api-key"] == "test-internal-key"
+        assert "X-internal-api-key" not in captured_req["headers"]
+        assert captured_req["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256")
         assert captured_req["body"] == {
             "provider": "github",
             "provider_user_id": "20402445",
@@ -188,7 +207,7 @@ class TestResolveUserByIdentity:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("common.gateway_client._open_internal_lookup") as mock_urlopen:
             result = gateway_client.resolve_user_by_identity("github", "12345")
 
         assert result is None
@@ -236,7 +255,7 @@ class TestResolveInstallationById:
         gateway_client._internal_api_key = None
 
         with patch(
-            "urllib.request.urlopen",
+            "common.gateway_client._open_internal_lookup",
             return_value=_mock_200({"tenant_id": "pranavsharma1000"}),
         ):
             result = gateway_client.resolve_installation_by_id("144082554")
@@ -247,6 +266,7 @@ class TestResolveInstallationById:
             "state": "resolved",
             "tenant_id": "pranavsharma1000",
             "created_via": "",
+            "revocation_checked": False,
         }
         no_cloudwatch.assert_not_called()
 
@@ -257,7 +277,7 @@ class TestResolveInstallationById:
         gateway_client._internal_api_key = None
 
         with patch(
-            "urllib.request.urlopen",
+            "common.gateway_client._open_internal_lookup",
             return_value=_mock_200(
                 {"tenant_id": "acme", "created_via": "install_autocreate"}
             ),
@@ -268,6 +288,7 @@ class TestResolveInstallationById:
             "state": "resolved",
             "tenant_id": "acme",
             "created_via": "install_autocreate",
+            "revocation_checked": False,
         }
         no_cloudwatch.assert_not_called()
 
@@ -280,13 +301,15 @@ class TestResolveInstallationById:
         gateway_client._internal_api_key = None
 
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-installation",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-installation",
             code=404,
             msg="Not Found",
             hdrs={},
             fp=None,
         )
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=http_error
+        ):
             result = gateway_client.resolve_installation_by_id("999999")
 
         assert result == {"state": "not_found"}
@@ -302,13 +325,15 @@ class TestResolveInstallationById:
         gateway_client._internal_api_key = None
 
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-installation",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-installation",
             code=500,
             msg="Internal Server Error",
             hdrs={},
             fp=None,
         )
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=http_error
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
@@ -320,7 +345,10 @@ class TestResolveInstallationById:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with patch(
+            "common.gateway_client._open_internal_lookup",
+            side_effect=TimeoutError("timed out"),
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
@@ -332,7 +360,10 @@ class TestResolveInstallationById:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+        with patch(
+            "common.gateway_client._open_internal_lookup",
+            side_effect=ConnectionError("refused"),
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
@@ -349,28 +380,33 @@ class TestResolveInstallationById:
 
         monkeypatch.setattr(gateway_client, "GATEWAY_API_URL", "")
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("common.gateway_client._open_internal_lookup") as mock_urlopen:
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
         assert result["reason"] == "gateway_url_not_configured"
         mock_urlopen.assert_not_called()
 
-    def test_state_error_when_api_key_missing(self, monkeypatch, no_cloudwatch):
-        """Missing internal API key is an error state — and never issues a request."""
-        monkeypatch.setenv("INTERNAL_API_KEY_ARN", "")
-        monkeypatch.setenv("BG_INTERNAL_API_KEY", "")
-
+    def test_missing_shared_key_does_not_prevent_iam_request(
+        self, monkeypatch, no_cloudwatch
+    ):
         from common import gateway_client
 
-        gateway_client._internal_api_key = None
-
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            result = gateway_client.resolve_installation_by_id("144082554")
-
-        assert result["state"] == "error"
-        assert result["reason"] == "internal_api_key_unavailable"
-        mock_urlopen.assert_not_called()
+        monkeypatch.setattr(
+            gateway_client,
+            "_resolve_internal_api_key",
+            lambda: pytest.fail("retired key read"),
+        )
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=TimeoutError
+        ) as transport:
+            gateway_client.resolve_installation_by_id("12345")
+        transport.assert_called_once()
+        assert (
+            transport.call_args.args[0]
+            .get_header("Authorization")
+            .startswith("AWS4-HMAC-SHA256")
+        )
 
     def test_state_error_on_empty_tenant(self, no_cloudwatch):
         """A 200 with an empty tenant_id is malformed → error, not not_found.
@@ -383,7 +419,10 @@ class TestResolveInstallationById:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", return_value=_mock_200({"tenant_id": ""})):
+        with patch(
+            "common.gateway_client._open_internal_lookup",
+            return_value=_mock_200({"tenant_id": ""}),
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
@@ -395,7 +434,10 @@ class TestResolveInstallationById:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", return_value=_mock_200({}, status=204)):
+        with patch(
+            "common.gateway_client._open_internal_lookup",
+            return_value=_mock_200({}, status=204),
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
         assert result["state"] == "error"
@@ -444,15 +486,18 @@ class TestResolveInstallationById:
             captured_req["body"] = json.loads(req.data.decode("utf-8"))
             return mock_resp
 
-        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch(
+            "common.gateway_client._open_internal_lookup", side_effect=mock_urlopen
+        ):
             gateway_client.resolve_installation_by_id("144082554")
 
         assert (
             captured_req["url"]
-            == "http://gateway.internal:8080/internal/v1/resolve-installation"
+            == "https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-installation"
         )
         assert captured_req["method"] == "POST"
-        assert captured_req["headers"]["X-internal-api-key"] == "test-internal-key"
+        assert "X-internal-api-key" not in captured_req["headers"]
+        assert captured_req["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256")
         assert captured_req["body"] == {"installation_id": "144082554"}
 
 
@@ -495,7 +540,9 @@ class TestPostProvenance:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch(
+            "urllib.request.urlopen", return_value=mock_resp
+        ):
             result = self._call()
 
         assert result == "prov-uuid-123"
@@ -509,14 +556,16 @@ class TestPostProvenance:
         gateway_client._internal_api_key = None
 
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/provenance",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/provenance",
             code=500,
             msg="Internal Server Error",
             hdrs={},
             fp=None,
         )
 
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with patch(
+            "urllib.request.urlopen", side_effect=http_error
+        ):
             result = self._call()
 
         assert result is None
@@ -527,7 +576,10 @@ class TestPostProvenance:
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
             result = self._call()
 
         assert result is None
@@ -572,7 +624,9 @@ class TestPostProvenance:
             captured["timeout"] = kwargs.get("timeout")
             return mock_resp
 
-        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch(
+            "urllib.request.urlopen", side_effect=mock_urlopen
+        ):
             self._call()
 
         assert captured["timeout"] == 5

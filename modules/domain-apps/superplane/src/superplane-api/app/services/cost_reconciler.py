@@ -1,4 +1,9 @@
-"""CostReconciler — periodic budget enforcement and cost aggregation.
+"""Periodic budget enforcement from recorded node-rate estimates.
+
+These estimates are not reconciled provider bills. Missing node rates cannot
+establish a complete total; public cost/budget responses expose that distinction.
+The existing enforcement calculation uses the known subtotal to detect threshold
+breaches, while paid operation admission separately reserves approved budgets.
 
 Runs on a configurable interval (default 60s) to:
 1. Aggregate daily costs per workspace from node hourly rates
@@ -19,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.budget_alert import BudgetAlert
@@ -27,6 +32,7 @@ from app.models.event import Event
 from app.models.node import Node
 from app.models.reconcile_lock import ReconcileLock
 from app.models.workspace import Workspace
+from app.services.node_cost_estimates import estimate, window, workspace_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -272,16 +278,18 @@ class CostReconciler:
         day_start: datetime,
         now: datetime,
     ) -> Decimal:
-        """Compute the total cost for a workspace since day_start.
+        """Compute the known node-rate subtotal for threshold enforcement.
 
         Sums hourly_cost_usd * hours_running for all nodes in the workspace's cluster
-        that were active during the current day.
+        that were active during the current day. Missing rates contribute nothing
+        to this lower bound; it must not be presented as a complete or billed total.
         """
         if not workspace.cluster_id:
             return Decimal("0")
 
         node_result = await self.db.execute(
             select(Node).where(
+                Node.org_id == workspace.org_id,
                 Node.cluster_id == workspace.cluster_id,
                 # Include nodes that were active at any point today
                 Node.created_at <= now,
@@ -295,8 +303,16 @@ class CostReconciler:
         for node in nodes:
             hourly_rate = node.hourly_cost_usd or Decimal("0")
 
-            start = max(node.created_at, day_start) if node.created_at else day_start
-            end = node.terminated_at or now
+            # Node timestamps are stored as UTC. SQLite returns them without
+            # tzinfo, unlike PostgreSQL's timestamptz; restore that UTC meaning.
+            created_at = node.created_at
+            if created_at is not None and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            terminated_at = node.terminated_at
+            if terminated_at is not None and terminated_at.tzinfo is None:
+                terminated_at = terminated_at.replace(tzinfo=timezone.utc)
+            start = max(created_at, day_start) if created_at else day_start
+            end = terminated_at or now
             if end > now:
                 end = now
             if end < day_start:
@@ -318,6 +334,7 @@ class CostReconciler:
 
         result = await self.db.execute(
             select(func.coalesce(func.sum(Node.gpu_count), 0)).where(
+                Node.org_id == workspace.org_id,
                 Node.cluster_id == workspace.cluster_id,
                 Node.terminated_at.is_(None),
                 Node.status.in_(["Running", "Provisioning", "Ready"]),
@@ -447,78 +464,42 @@ async def get_org_cost_summary(
     ws_result = await db.execute(select(Workspace).where(Workspace.org_id == org_id))
     workspaces = ws_result.scalars().all()
 
-    org_total = Decimal("0")
-    workspace_costs: list[dict[str, Any]] = []
-    gpu_breakdown: dict[str, Decimal] = {}
-    cloud_breakdown: dict[str, Decimal] = {}
-
+    start, end = window(start_date, end_date, now)
+    workspace_costs = []
+    # A shared cluster may appear in several workspaces. Organization estimates
+    # count each recorded node once; workspace rows explicitly describe a cluster.
+    org_nodes = {}
+    incomplete_workspace = False
     for ws in workspaces:
-        if not ws.cluster_id:
-            workspace_costs.append(
-                {
-                    "workspace_id": str(ws.id),
-                    "workspace_name": ws.name,
-                    "total_cost_usd": "0.00",
-                    "status": ws.status,
-                    "budget_max_daily_usd": str(ws.budget_max_daily_usd)
-                    if ws.budget_max_daily_usd
-                    else None,
-                    "budget_max_gpus": ws.budget_max_gpus,
-                }
-            )
-            continue
-
-        # Build node query
-        filters = [Node.cluster_id == ws.cluster_id]
-        if start_date:
-            filters.append(Node.created_at >= start_date)
-        if end_date:
-            filters.append(Node.created_at <= end_date)
-
-        node_result = await db.execute(select(Node).where(and_(*filters)))
-        nodes = node_result.scalars().all()
-
-        ws_total = Decimal("0")
-        for node in nodes:
-            hourly_rate = node.hourly_cost_usd or Decimal("0")
-            start = node.created_at
-            if start_date and start < start_date:
-                start = start_date
-            end = node.terminated_at or now
-            if end_date and end > end_date:
-                end = end_date
-            if end <= start:
-                continue
-
-            delta = end - start
-            hours = Decimal(str(delta.total_seconds())) / Decimal("3600")
-            node_cost = hourly_rate * hours
-            ws_total += node_cost
-
-            gpu_key = node.gpu_type or "unknown"
-            gpu_breakdown[gpu_key] = (
-                gpu_breakdown.get(gpu_key, Decimal("0")) + node_cost
-            )
-
-            cloud_key = node.cloud or "unknown"
-            cloud_breakdown[cloud_key] = (
-                cloud_breakdown.get(cloud_key, Decimal("0")) + node_cost
-            )
-
-        org_total += ws_total
+        nodes = await workspace_nodes(db, ws, start, end)
+        costs = estimate(nodes, start, end).values
+        incomplete_workspace = (
+            incomplete_workspace or costs["estimate_status"] != "available"
+        )
+        org_nodes.update((str(node.id), node) for node in nodes)
         workspace_costs.append(
             {
                 "workspace_id": str(ws.id),
                 "workspace_name": ws.name,
-                "total_cost_usd": str(ws_total.quantize(Decimal("0.01"))),
-                "node_count": len(nodes),
+                **{
+                    key: value
+                    for key, value in costs.items()
+                    if key not in {"nodes", "breakdown_by_gpu", "breakdown_by_cloud"}
+                },
+                "cost_scope": "workspace_cluster",
                 "status": ws.status,
                 "budget_max_daily_usd": str(ws.budget_max_daily_usd)
-                if ws.budget_max_daily_usd
+                if ws.budget_max_daily_usd is not None
                 else None,
                 "budget_max_gpus": ws.budget_max_gpus,
             }
         )
+    costs = estimate(list(org_nodes.values()), start, end).values
+    if incomplete_workspace:
+        costs["total_cost_usd"] = None
+        if costs["estimate_status"] == "available":
+            costs["estimate_status"] = "partial"
+    costs.pop("nodes")
 
     # Get active budget alerts for the org
     alert_result = await db.execute(
@@ -539,8 +520,10 @@ async def get_org_cost_summary(
             "alert_type": a.alert_type,
             "severity": a.severity,
             "message": a.message,
-            "current_value": str(a.current_value) if a.current_value else None,
-            "limit_value": str(a.limit_value) if a.limit_value else None,
+            "current_value": str(a.current_value)
+            if a.current_value is not None
+            else None,
+            "limit_value": str(a.limit_value) if a.limit_value is not None else None,
             "created_at": a.created_at.isoformat() if a.created_at else None,
         }
         for a in alerts
@@ -548,20 +531,16 @@ async def get_org_cost_summary(
 
     return {
         "org_id": str(org_id),
-        "total_cost_usd": str(org_total.quantize(Decimal("0.01"))),
+        **costs,
         "currency": "USD",
+        "cost_scope": "organization_nodes",
+        "checked_at": now.isoformat(),
         "workspace_count": len(workspaces),
         "workspaces": workspace_costs,
-        "breakdown_by_gpu": {
-            k: str(v.quantize(Decimal("0.01"))) for k, v in gpu_breakdown.items()
-        },
-        "breakdown_by_cloud": {
-            k: str(v.quantize(Decimal("0.01"))) for k, v in cloud_breakdown.items()
-        },
         "active_alerts": alert_list,
         "period": {
-            "start": start_date.isoformat() if start_date else None,
-            "end": end_date.isoformat() if end_date else None,
+            "start": start.isoformat() if start else None,
+            "end": end.isoformat(),
         },
     }
 
@@ -591,7 +570,11 @@ async def get_workspace_budget_status(
 
     # Compute today's cost
     reconciler = CostReconciler(db)
-    daily_cost = await reconciler._compute_daily_cost(workspace, day_start, now)
+    daily_estimate = estimate(
+        await workspace_nodes(db, workspace, day_start, now), day_start, now
+    )
+    costs = daily_estimate.values
+    daily_cost = daily_estimate.total_usd
     active_gpus = await reconciler._count_active_gpus(workspace)
 
     # Get active alerts
@@ -608,7 +591,7 @@ async def get_workspace_budget_status(
 
     budget_limit = workspace.budget_max_daily_usd
     budget_pct = None
-    if budget_limit and budget_limit > 0:
+    if budget_limit is not None and budget_limit > 0 and daily_cost is not None:
         budget_pct = str(
             ((daily_cost / budget_limit) * Decimal("100")).quantize(Decimal("0.1"))
         )
@@ -618,9 +601,17 @@ async def get_workspace_budget_status(
         "workspace_name": workspace.name,
         "status": workspace.status,
         "budget": {
-            "max_daily_usd": str(budget_limit) if budget_limit else None,
+            "max_daily_usd": str(budget_limit) if budget_limit is not None else None,
             "max_gpus": workspace.budget_max_gpus,
-            "current_daily_cost_usd": str(daily_cost.quantize(Decimal("0.01"))),
+            "current_daily_cost_usd": costs["total_cost_usd"],
+            "known_subtotal_usd": costs["known_subtotal_usd"],
+            "estimate_status": costs["estimate_status"],
+            "cost_basis": costs["cost_basis"],
+            "cost_scope": "workspace_cluster",
+            "observed_cost_usd": None,
+            "cost_reconciliation": "unavailable",
+            "unestimated_node_count": costs["unestimated_node_count"],
+            "checked_at": now.isoformat(),
             "current_active_gpus": active_gpus,
             "daily_budget_used_pct": budget_pct,
         },

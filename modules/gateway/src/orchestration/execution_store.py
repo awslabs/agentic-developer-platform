@@ -332,6 +332,7 @@ async def _live_authority_conflict(
     *,
     flow_id: str,
     lock: bool = True,
+    released_failure_run_id: str | None = None,
 ) -> str | None:
     """Verify the claim and accepted plan that are live in this transaction.
 
@@ -363,8 +364,17 @@ async def _live_authority_conflict(
         return "claim_mismatch"
     if claim.owner_kind != OwnerKind.ENGINE_FLOW.value or claim.owner_ref != flow_id:
         return "claim_owner_mismatch"
-    if claim.state != ClaimState.HELD.value:
+    released_failure = (
+        released_failure_run_id is not None
+        and claim.state == ClaimState.RELEASED.value
+        and claim.release_reason == "failed"
+        and claim.active_run_id is None
+        and claim.claim_event_id == released_failure_run_id
+    )
+    if claim.state != ClaimState.HELD.value and not released_failure:
         return "claim_not_held"
+    if released_failure_run_id is not None and not released_failure and claim.active_run_id != released_failure_run_id:
+        return "claim_run_mismatch"
     if claim.generation != identity.claim_generation:
         return "claim_generation_superseded" if claim.generation > identity.claim_generation else "claim_generation_mismatch"
 
@@ -384,7 +394,10 @@ async def _live_authority_conflict(
         return "accepted_plan_ambiguous"
     current_version = plans[0].version if plans else 0
     if current_version != identity.accepted_plan_version:
-        return "accepted_plan_version_mismatch"
+        from .plan_lineage import ancestor_plan
+
+        if not plans or await ancestor_plan(session, plans[0], identity.accepted_plan_version, node_id=identity.node_id) is None:
+            return "accepted_plan_version_mismatch"
     return None
 
 
@@ -639,6 +652,7 @@ async def load_execution(
     *,
     identity: ExecutionIdentity,
     for_update: bool = False,
+    released_failure_run_id: str | None = None,
 ) -> ExecutionOutcome | None:
     """Read one execution, optionally under a row lock.
 
@@ -646,6 +660,10 @@ async def load_execution(
     writer wait rather than interleave, so the revision the caller reads is still
     current when it writes. The default plain read is for diagnostics and the read
     model (#5145), which must not take locks on live work.
+
+    The failure reconciler may supply released_failure_run_id after authenticating
+    that run's terminal failure. Only its unchanged, failed claim generation is
+    readable through this exception; ordinary callers still require a held claim.
 
     Returns:
         `None` when no execution exists for the identity — genuinely absent, which is
@@ -657,7 +675,9 @@ async def load_execution(
         return None
     # A plain read takes no locks, here or in the authority check it delegates to:
     # the read model renders live work and must not block on — or block — a writer.
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id, lock=for_update)
+    live_conflict = await _live_authority_conflict(
+        session, identity, flow_id=flow_id, lock=for_update, released_failure_run_id=released_failure_run_id
+    )
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict, lock=for_update)
 
@@ -911,6 +931,7 @@ async def advance_execution(
     pending_action_key: str | None = None,
     notification_receipt_ref: str | None = None,
     handoff_receipt_ref: str | None = None,
+    released_failure_run_id: str | None = None,
 ) -> ExecutionOutcome:
     """Compare-and-set the execution's phase, status and next check time — atomically.
 
@@ -946,13 +967,28 @@ async def advance_execution(
         write — the block is now durable); `STALE` when the revision had moved, with
         nothing written; `CONFLICT` for an authority mismatch.
     """
+    # A recorded terminal failure can arrive after claim recovery released the
+    # same run. This exception only concludes its ledger; it cannot authorize
+    # another action, advance a delivery phase, or consume an attempt.
+    if released_failure_run_id is not None and (
+        advance.phase != ExecutionPhase.CONCLUDED
+        or advance.status != ExecutionStatus.CONCLUDED
+        or advance.consume_attempt
+        or advance.next_check_at is not None
+        or intent is not None
+        or block is not None
+        or pending_action_key is not None
+        or notification_receipt_ref is not None
+        or handoff_receipt_ref is not None
+    ):
+        raise ExecutionStoreError("invalid_failure_settlement", "Released failure authority only permits terminal conclusion.")
     flow_id = await _resolve_flow_id(session, identity)
     if flow_id is None:
         raise ExecutionStoreError(
             "unknown_execution",
             f"No execution exists for node {identity.node_id} cycle {identity.cycle}; create it before advancing.",
         )
-    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id)
+    live_conflict = await _live_authority_conflict(session, identity, flow_id=flow_id, released_failure_run_id=released_failure_run_id)
     if live_conflict:
         return await _live_refusal(session, identity, live_conflict)
 
@@ -996,6 +1032,13 @@ async def advance_execution(
     # with standing can move it, and raised via `_adopt_generation` so it is monotonic
     # rather than a plain assignment — see that helper for why lowering it must be
     # impossible even though today's authority check never admits a lower one.
+    if advance.consume_attempt:
+        from .flow_execution import flow_is_paused
+
+        # _live_authority_conflict already holds the flow lock. A pause that
+        # wins the reservation race must not consume an attempt or create intent.
+        if await flow_is_paused(session, org_id=identity.org_id, flow_id=flow_id):
+            return ExecutionOutcome(kind=OutcomeKind.CONFLICT, record=_to_record(row), reason="flow_paused")
     _adopt_generation(row, identity)
 
     status = ExecutionStatus.BLOCKED if block is not None else advance.status

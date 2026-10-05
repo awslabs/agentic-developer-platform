@@ -1,8 +1,11 @@
 name: Webhook Ingress CI
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
+      - 'modules/domain-apps/cyber/infra/platform-integration/**'
+      - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
       - 'environments/*/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-ci.yml'
@@ -43,6 +46,25 @@ on:
       # gateway-side edit to _PLACEHOLDER_KEYS must reach this job. Same
       # lockstep-reachability reason as the runner-iam path above.
       - 'modules/gateway/src/orchestration/command_attribution.py'
+      # Issue #5663 (A09): tests/test_correlation_pointer_attribute_boundary_5663.py
+      # bounds the worker credential's correlation-pointer writes to an attribute
+      # allow-list, and checks that list against the attribute names the REAL WRITERS
+      # send — parsed out of their source. Both writers live outside this module, so
+      # without these paths someone could add an attribute to a writer and the
+      # boundary would start refusing its writes with no CI run at all. That failure
+      # is SILENT in production (both writers swallow the error: `except Exception` in
+      # the Python one, `.catch` in the TS one), so lineage would simply stop
+      # connecting with nothing red anywhere. Same lockstep-reachability reason as the
+      # runner-iam and command_attribution paths above.
+      - 'modules/agent-factory/agent-worker-image/lib/correlation_store.py'
+      - 'modules/agent-factory/agent/src/lib/correlationStore.ts'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -77,7 +99,8 @@ jobs:
             modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
-            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py
+            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py \
+            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py
       - name: Check Terraform rollout states with mocked providers
         working-directory: modules/agent-factory/webhook-ingress/infra
         run: |
@@ -187,37 +210,36 @@ jobs:
           ls -lh dist/*.zip
 
   plan:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch')
     name: Terraform Plan
+    environment: adp-deploy-dev
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       # The committed backend tfvars keeps the literal
       # "adp-terraform-state-ACCOUNT_ID" placeholder (the real account id is
       # never committed). Resolve it at runtime from the runner's own identity
@@ -294,3 +316,20 @@ jobs:
           echo "## Terraform Plan -- webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module**: webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.plan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+
+  validate-pr-config:
+    name: Terraform PR Configuration
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.2
+      - name: Validate without state or deployment credentials
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate -no-color

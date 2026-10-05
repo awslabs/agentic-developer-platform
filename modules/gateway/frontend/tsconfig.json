@@ -17,16 +17,29 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@superplane-ui/*": ["../../domain-apps/superplane/ui/*"],
+      // Superplane's UI lives outside this package root and so cannot find
+      // react by walking up for node_modules. These must point at @types/* and
+      // NOT at node_modules/react: mapping to the runtime package resolves but
+      // finds no declarations, and under "strict" that degrades every React
+      // value to an implicit `any` (TS7016) instead of failing outright — the
+      // typecheck then passes while checking nothing. Pinned by
+      // tests/features/test_superplane_registration.py.
+      "react": ["node_modules/@types/react"],
+      "react/*": ["node_modules/@types/react/*"],
+      "react-dom": ["node_modules/@types/react-dom"],
+      "react-dom/*": ["node_modules/@types/react-dom/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "../../domain-apps/superplane/ui"],
   "exclude": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/__tests__/**",
     "src/test/**",
-    "src/mocks/**"
+    "src/mocks/**",
+    "../../domain-apps/superplane/ui/__tests__/**"
   ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

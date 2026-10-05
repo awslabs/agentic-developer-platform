@@ -1,0 +1,113 @@
+{"at": "2026-09-25T06:04:26.198999+00:00", "kind": "scope", "namespace": "task-v3-fixture-d252918ce659487b9d21811faaa4760e", "redis_key_prefix": "{task-sse:5bcf66c020468d8753c55918}", "client_count": 2, "lease_seconds": 45.0, "model_calls": 0, "task_writes": 0}
+{"at": "2026-09-25T06:04:26.199215+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:environment"}
+{"at": "2026-09-25T06:04:26.199235+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:20903916029a1606a87afaf45b519c81ab543938841e1bff7dbc667b6fc267d8"}
+{"at": "2026-09-25T06:04:26.199247+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:4a6c332311655a78d9904c14ea640ba29e15b85c0d7249c47615040451981b1f"}
+{"at": "2026-09-25T06:04:26.204000+00:00", "kind": "PASS", "check": "concurrent independent clients enforce 2 per task"}
+{"at": "2026-09-25T06:04:26.205885+00:00", "kind": "PASS", "check": "released slot can be reacquired cross client"}
+{"at": "2026-09-25T06:04:26.206074+00:00", "kind": "PASS", "check": "stale duplicate release preserves replacement"}
+{"at": "2026-09-25T06:04:26.207158+00:00", "kind": "PASS", "check": "all current environment memberships released 3"}
+{"at": "2026-09-25T06:04:26.207303+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:c00b8f2e57f9708aa6e7beb5a7b48a28d0c3a7877af522de1a14cce85ba827c2"}
+{"at": "2026-09-25T06:04:26.207322+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:02b57e051dce62ee5d79f110a7ad8332262253c3ecee40472db1a3e778a29030"}
+{"at": "2026-09-25T06:04:26.208304+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:346ac075436f14f503837f77ff7605353c62724cb9babc2534f667bfc5835b1a"}
+{"at": "2026-09-25T06:04:26.209241+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:6172587701d96a9ad7bc7f133186b6430563e3fc9b4d21621daef6a459ca7c8b"}
+{"at": "2026-09-25T06:04:26.210204+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:b6fcd3d8f6479ab71b2b35b4cc93a6ba48e6406d1e69dc61d1daf78f7c903a72"}
+{"at": "2026-09-25T06:04:26.211306+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:fbe5a5f77104e607f4ce246d28f8b160c593fb06b088929244697872be43d9a3"}
+{"at": "2026-09-25T06:04:26.212366+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:681a44b071e58c2d1271462a049d50e2ddb0cdc5c5080d9525d8a0f05c9ea86f"}
+{"at": "2026-09-25T06:04:26.213389+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:ef945b87301196b6208ee4bc7efb038ee105251e3a356657a862ab8ce07b6b17"}
+{"at": "2026-09-25T06:04:26.214419+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:59141bc7982f464de813c7605c7a7abd2db3132e620f0ee80bce3af3c612dbaf"}
+{"at": "2026-09-25T06:04:26.215486+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:fbbe3b168a4e81709e0d4b5b015fb1645f20d87145871dc7dc9c73cd3c11d533"}
+{"at": "2026-09-25T06:04:26.216509+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:fcf4ec7cf04ebd3b4bae04cc99d6e167fbc629fe23efa501a2df73f7caa63495"}
+{"at": "2026-09-25T06:04:26.217481+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:953e0ab047220dcb52518625b6380e1d2614a583373fa2f0c1be1a128f98c92f"}
+{"at": "2026-09-25T06:04:26.218228+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:c1cc4726fca6d2d7dd7341b955c6acc1fb594887c75c874061e85f6111ab9a33"}
+{"at": "2026-09-25T06:04:26.218966+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:4255f239fa7a118359719f53586d080b06ae2b5eca815e8c20bc4112e65936e8"}
+{"at": "2026-09-25T06:04:26.221774+00:00", "kind": "PASS", "check": "independent clients enforce 10 per principal"}
+{"at": "2026-09-25T06:04:26.225258+00:00", "kind": "PASS", "check": "all current environment memberships released 5"}
+{"at": "2026-09-25T06:04:26.225464+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:fd056c08c9018c13029fe22e8bcd3c151784e5cf2b231dd34028a61ba9be3598"}
+{"at": "2026-09-25T06:04:26.225497+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:0525969128317cca4f06e7470c52b3d3ca5e50297c10e5e6b5eb5b72f2f711c2"}
+{"at": "2026-09-25T06:04:26.226452+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:8ca6c0cf0ac74f5d9460a8fd9b59cf00645bd4ae9ecaa9d7ac03c73cdf5509cc"}
+{"at": "2026-09-25T06:04:26.226484+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:acc58549b6d3866c99a806d562a28da0c8933e3063734c9623e00630dd4dd38e"}
+{"at": "2026-09-25T06:04:26.227432+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:d890c6d33058347f7887893de33aac94d8ab3529b4676eb9118ea7a82482bc1e"}
+{"at": "2026-09-25T06:04:26.227466+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:14be398d705d0315f03a751f819d3e7bbd02cc6e2c61fda1ee426da80fc14c30"}
+{"at": "2026-09-25T06:04:26.228359+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:29b59605ad93c09ba7933d0eaabba681e733d7566d0bf19b2e35d636d2d024ab"}
+{"at": "2026-09-25T06:04:26.228391+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:47189b6477fd9584002702b70566963aadc1cb6524bae2f0c46fee55875c76c6"}
+{"at": "2026-09-25T06:04:26.229351+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:6eb33b968b3552fab7f9494c6484fe1c2b9f46db132fa45c8995033d11f4ac9f"}
+{"at": "2026-09-25T06:04:26.229383+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:13ef48c6b7cf1cd528b69b70d31dd6a1a06d3a12a2f09e0b0541b61b1c8a4334"}
+{"at": "2026-09-25T06:04:26.230416+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:253c3c0126da83bedf08c02ffd60607a69917b36a806483c5c10916b4059ca0b"}
+{"at": "2026-09-25T06:04:26.230448+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:ca8626ff1189837f0215961b2f62bb6592b27463bebcc3f4bdea9d3e793aa461"}
+{"at": "2026-09-25T06:04:26.231460+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:691f4031b8b45da0926ad4031ca8873427894e6e48aff382e24989b9e50d65ca"}
+{"at": "2026-09-25T06:04:26.231492+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:06616f4bdf076aff5094eb474b59856127ba9251b31839f201c539b902ecda9f"}
+{"at": "2026-09-25T06:04:26.232522+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:ddf7e1fd06a9810cc41be92d8b86ae92229751e3fef78767e60b8adf6ad0f317"}
+{"at": "2026-09-25T06:04:26.232583+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:15e598618db6f8aacf780e90885b8dc17b5855c5cb2ecd40c80e36fde0c7c94f"}
+{"at": "2026-09-25T06:04:26.233573+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:67da121cbd939bab599063c8e18413a8a386d69c495f72b7ccbd19fc3898c04c"}
+{"at": "2026-09-25T06:04:26.233606+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:2b0bfb71fc0843c707557460466600c9b82ba9f8b19a23315c29f19c271424dd"}
+{"at": "2026-09-25T06:04:26.235490+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:aa40da8d055a2675c0091850f67509259cc3bc7412b3af0fd7b0f2aab5dd9919"}
+{"at": "2026-09-25T06:04:26.235631+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:76730490da41e48f029c1ce6bc952b44a951b7f1e88b9f7db1820fb61e38370f"}
+{"at": "2026-09-25T06:04:26.236659+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:dff058edb54e2d09dc3fc006f90b7e37ac5f31bc5623403fec9a8dec05847301"}
+{"at": "2026-09-25T06:04:26.236692+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:fbffbdd587fefb38e0aefa6bfceee4256808c8d0ff9dadc2790c0fe0adcfb13f"}
+{"at": "2026-09-25T06:04:26.237669+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:089b490c12c0d99113d2000b0883006374c8ce69f19630011f02650e301a1825"}
+{"at": "2026-09-25T06:04:26.237713+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:284f0090d78d6c469cebe9c8a73e262cfa1104e81d4a0f503ac63e9371717e23"}
+{"at": "2026-09-25T06:04:26.238722+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:eb2a5f6eca08db07a0df9a07b124bf0ef10c405a18218a06a9a22869134b183f"}
+{"at": "2026-09-25T06:04:26.238753+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:ff4a942d0d4176414569023cdf876de04194182458cf473ce8ca048732532f4a"}
+{"at": "2026-09-25T06:04:26.239685+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:a2721908b1e5a10a8fead0f5af351ddcea31f86d7e57912aaf92ce1e27ce4420"}
+{"at": "2026-09-25T06:04:26.239715+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:014314eff6c794d250e8ff13fa4b3c0678db58ba789d3120fb77bc8c99abc4a3"}
+{"at": "2026-09-25T06:04:26.240683+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:2abf0037929c36f2e460dcfafa9ffe03f00bfbfe0cc8cc19bfa2086a43364bb9"}
+{"at": "2026-09-25T06:04:26.240715+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:ae7fb3c1f3bf3412539e9ca2ccd5e90312be2f66a78c798c37839a8624a78c0d"}
+{"at": "2026-09-25T06:04:26.241652+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:d931505616a64748d77e0ee8f3114e84f30517d01f1298bdf49216e65fd5a51a"}
+{"at": "2026-09-25T06:04:26.241681+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:14a6db26248581ebb7458edafbc2c9f898001e3f55c97513d2c1ee5d47484772"}
+{"at": "2026-09-25T06:04:26.242664+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:8077aa5370998f6016266c4819ddc6afb8e91df489353555da794b2fe5ac23e5"}
+{"at": "2026-09-25T06:04:26.242694+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:a4201e23ffb1d81049bcfd0e4b9c103d67f12a0a6fb958f9cc9f7b4d27daa21f"}
+{"at": "2026-09-25T06:04:26.243636+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:721402f1392beef1d974229ef26e436382d054d97b57dc7ef428e4e59150aa3e"}
+{"at": "2026-09-25T06:04:26.243666+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:7ed039c890922a1fc0b14e26e2fe2a8c2a776b4ad7fb96b2aae5365033835fd3"}
+{"at": "2026-09-25T06:04:26.244582+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:c1438ac05ca861d2023f1310f28958ae520b29a5dfa8699da32195a628f3466a"}
+{"at": "2026-09-25T06:04:26.244615+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:8567077d494aefbe2d74207fd6b27e4127ec807064410782d27d9bd787cf1c0f"}
+{"at": "2026-09-25T06:04:26.245577+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:ada24d75aa8c0df1469ac77d42d85d2d0d7d71ffa5a3d9118773a556446f5304"}
+{"at": "2026-09-25T06:04:26.245608+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:31f9416208dc8e2ee03c51ea43508938e3a6c1b3b03d14bee6b3bed2aa06883a"}
+{"at": "2026-09-25T06:04:26.246610+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:9018ae06a13331ef0af92bc42abacea87377f52c059b1b3063f3ebb1d4662216"}
+{"at": "2026-09-25T06:04:26.246651+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:72e40244bae14fcd365804da83ee6ae2a5592107a536feaa9068243b90c2e47d"}
+{"at": "2026-09-25T06:04:26.247517+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:2d3257e27a00ff3e2c25249db1e90716a41a6101bde071708563400009f8a282"}
+{"at": "2026-09-25T06:04:26.247560+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:f9425fcefa7cf7d0174dfea86c6855dc4784fbbc5ebf2fee372c333ea7b6418d"}
+{"at": "2026-09-25T06:04:26.248401+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:ef62d9d3f99e40e4e631382334ae549c62dec465150f0c6fa8a72135a867baae"}
+{"at": "2026-09-25T06:04:26.248433+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:d9b68999b137873fe4f684212fff1437b2adfa56e9ac891e7faad1cb4d602f3a"}
+{"at": "2026-09-25T06:04:26.249255+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:126da6d69d94aba9c4a0514f20a31843d41e2d1d4c9e559921b8bf4a67176a7f"}
+{"at": "2026-09-25T06:04:26.249285+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:f7f7228efaa9ec9b1cb22fd338c855740af729700d52e4b02faf45ed4a14af44"}
+{"at": "2026-09-25T06:04:26.250160+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:2dc91eab581ba878e5ff7f47c0bdb5f4507d523476412fac4df1865760e7c2d7"}
+{"at": "2026-09-25T06:04:26.250189+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:0d7048eee72fa10e09fd163e252d7ff94fc736c0911d0f3699dac02afa41272b"}
+{"at": "2026-09-25T06:04:26.251690+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:4f54e25e7cf9763a3017cd77ed51c9098ab73df0f00b567d9ff1dd43d91003c8"}
+{"at": "2026-09-25T06:04:26.251722+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:b2337a5ca50d842b7f2398e9ae806bb8265b8769d1f86fee13a91c8468882da0"}
+{"at": "2026-09-25T06:04:26.252656+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:d9532af031c1a65a71c7f5a6bf20b0dbbb51b94c7d1cb107e1eb7658e20c7d4f"}
+{"at": "2026-09-25T06:04:26.252689+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:c147e930c367709a589a42e08f1f3282b66d00532c21e5c849bfd69b225fbc43"}
+{"at": "2026-09-25T06:04:26.253515+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:07ceaccd6eeaf1437c4968ca1ed5ac2b9e7abd8333555241ba73c42dd769fa8e"}
+{"at": "2026-09-25T06:04:26.253575+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:6c8de1597c72c3279e1bed26b5e88a95403cc5e7939f6afed59529ab7d3a975e"}
+{"at": "2026-09-25T06:04:26.254566+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:37bda38e70794fb783c8164cc680af6530c0ef22ad9c4bdd1caa61ff20329290"}
+{"at": "2026-09-25T06:04:26.254598+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:bffbf3e97c3a887d43114316acbdff9c10b58d7d954fd1741c2626c141779dbe"}
+{"at": "2026-09-25T06:04:26.255524+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:c37aa200b038f083ae349a25ebe544ba4f0457c6230749330ddb7c96e2922ccf"}
+{"at": "2026-09-25T06:04:26.255583+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:c737461e8829ff47e0200278c5c649f4cb0c85a65897e691d79dfcbd04da07b9"}
+{"at": "2026-09-25T06:04:26.256584+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:47789087df4798be7bbfb4619894e6827bd6868d6e87e517b7d3198a3a347167"}
+{"at": "2026-09-25T06:04:26.256617+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:660c50fd1db0fd82ff23dc95bfb25ca6e8d3ddcf5892baef9f368e3e617045ad"}
+{"at": "2026-09-25T06:04:26.257576+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:b41a3d4c824ce6ab5e8aa5804814e6c216f140f867d73a7dcd1a578b27ccde0b"}
+{"at": "2026-09-25T06:04:26.257611+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:47cd40250234f519d035189d3d966839bbe97bfb16da027af8636a828e8bf540"}
+{"at": "2026-09-25T06:04:26.258593+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:c9ca3b90b487138326521077e7fa9fbbb1531b7980c48e1473022588f853db50"}
+{"at": "2026-09-25T06:04:26.258625+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:713e6584dc4d3d0b0ee19119c987361dc7633f9879cb6c7f9a96ff1b7673ed8c"}
+{"at": "2026-09-25T06:04:26.259286+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:e432d0098ba0e863c941228dd4b2c42b53eb815e14a0896967fc9922395fb507"}
+{"at": "2026-09-25T06:04:26.259311+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:60b653af74dad055fc1bc97963bbbde76798b17ea8bba15950c3000f790a8e15"}
+{"at": "2026-09-25T06:04:26.259964+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:f5f724a47f621c538a5f57575bd2101039c9e901c12282e8129d114726daea09"}
+{"at": "2026-09-25T06:04:26.259992+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:9246a25efff8413f22c1270eb08365ebf479649f21fe96fa9fe9c3a14a3986f1"}
+{"at": "2026-09-25T06:04:26.260605+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:65b1660e48e7044afa801baafed280e8fcd716734441b8f06a7bbb0a3e355799"}
+{"at": "2026-09-25T06:04:26.260635+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:f4accaf1a52bbc3126977a5fc4efdd20161d1d142767f2e69edf5b42264eca57"}
+{"at": "2026-09-25T06:04:26.261348+00:00", "kind": "PASS", "check": "independent clients enforce 32 per environment"}
+{"at": "2026-09-25T06:04:26.274650+00:00", "kind": "PASS", "check": "all current environment memberships released 7"}
+{"at": "2026-09-25T06:04:26.274718+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:5927ad65b22f4878bcbb5b8c3d943599493f3cc4e5a5ffa20e6c5ae0d47e1dba"}
+{"at": "2026-09-25T06:04:26.274733+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:51c1de187f02c068cf8f45653c76ce0ee7533cee0e68b5de36abe71893941803"}
+{"at": "2026-09-25T06:04:26.276428+00:00", "kind": "PASS", "check": "current native lease renews"}
+{"at": "2026-09-25T06:04:26.277128+00:00", "kind": "PASS", "check": "missing-scope renewal cannot resurrect ownership"}
+{"at": "2026-09-25T06:04:26.278013+00:00", "kind": "PASS", "check": "all current environment memberships released 10"}
+{"at": "2026-09-25T06:04:26.278083+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:principal:309aa62d6d3b6722c3fb84b0496c855ceafc84714063034339024c1dec14104e"}
+{"at": "2026-09-25T06:04:26.278099+00:00", "kind": "cleanup_key", "key": "{task-sse:5bcf66c020468d8753c55918}:task:b83edb2fc21698cceee4274f67aa4a846acc6ca53c011a1d649b438a6d81c149"}
+{"at": "2026-09-25T06:04:26.279041+00:00", "kind": "waiting_for_real_expiry", "seconds": 45.25}
+{"at": "2026-09-25T06:05:11.559782+00:00", "kind": "PASS", "check": "local expired lease cannot renew", "elapsed_seconds": 45.28073331800988}
+{"at": "2026-09-25T06:05:11.560407+00:00", "kind": "PASS", "check": "Redis clock independently refuses expired token"}
+{"at": "2026-09-25T06:05:11.561149+00:00", "kind": "PASS", "check": "expiry frees quota to independent client"}
+{"at": "2026-09-25T06:05:11.561467+00:00", "kind": "PASS", "check": "old expired-token release preserves new token"}
+{"at": "2026-09-25T06:05:11.562050+00:00", "kind": "PASS", "check": "all current environment memberships released 15"}
+{"at": "2026-09-25T06:05:11.562071+00:00", "kind": "summary", "status": "PASS", "checks": 16, "limitations": ["Private namespace real Redis Lua/connection qualification; public gateway cross-replica behavior separately qualified", "Does not change deployment quota state or exercise provider workloads"]}
+{"at": "2026-09-25T06:05:11.566729+00:00", "kind": "cleanup", "exact_keys": 93, "remaining": [], "errors": []}

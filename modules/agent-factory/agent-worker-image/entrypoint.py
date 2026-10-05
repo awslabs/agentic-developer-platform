@@ -24,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -38,6 +39,12 @@ from lib.amendment_input import (
     AuthoringInputError,
     materialize_authoring_input,
 )
+from lib.abort_sentinel import (
+    authorized_abort_reason,
+    read_abort_sentinel,
+    verify_abort_authorization,
+)
+from lib.authenticated_http import open_authenticated
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
@@ -85,6 +92,7 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
 CODEX_PERSONA_PREFIX = "agent-codex-"
+SHARED_CODEX_PERSONAS = frozenset({"agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -123,6 +131,26 @@ RETIRED_BEDROCK_VIA = {
 # queue's maxReceiveCount before it lands in the DLQ. Keep in sync with
 # EXIT_RETRYABLE in agent/src/agent-worker.ts.
 AGENT_EXIT_RETRYABLE = 75
+
+# Bounds on the aborted run's queue acknowledgement (#3963). Three attempts with a
+# linear backoff, so the whole sequence is ~3s — long enough to ride out a
+# transient SQS error, short enough to stay well inside the visibility timeout.
+# Unbounded retry here would hold the FIFO group for the pod's whole lifetime, and
+# the fallback if all attempts fail is sound: the row is already terminal, so the
+# redelivery is refused rather than re-executed.
+ABORT_ACK_ATTEMPTS = 3
+ABORT_ACK_BACKOFF_SECONDS = 1.0
+
+# Bounds on the aborted run's terminal status write (#3963 review finding 3). The
+# same shape and the same reasoning as the acknowledgement bounds above, because the
+# two writes are the two halves of a reported abort and failing either one has a
+# consequence an operator sees: a missing row leaves the dashboard stale and leaves
+# the legacy completion guard with nothing to refuse a redelivery with. Bounded for
+# the same reason too — the retries run before the DeleteMessage that actually
+# prevents the rerun, so a long sequence here would delay the thing that matters
+# most. ~3s + ~3s stays well inside the visibility timeout.
+ABORT_TERMINAL_WRITE_ATTEMPTS = 3
+ABORT_TERMINAL_WRITE_BACKOFF_SECONDS = 1.0
 
 # Personas whose branch-bootstrap logic should NEVER delete an existing remote
 # branch. AIDLC runs multiple sequential stages on the same issue/branch, each
@@ -163,6 +191,10 @@ def worker_command(persona: str) -> list[str]:
         return ["node", AGENT_BINARY]
     if persona == "agent-codex-reviewer":
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    if persona in {"agent-codex-developer", "agent-codex-architect"}:
+        return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
+    if persona in SHARED_CODEX_PERSONAS:
+        return ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
     raise ValueError(f"Codex persona is not packaged yet: {persona}")
 
 
@@ -260,6 +292,24 @@ _MEDIATED_WITHHELD_TOKEN_VARS = (
 # is duplicated here rather than imported because the authority is those two shell
 # scripts; if their default moves, this tuple must move with it.
 MEDIATED_TOKEN_FILE_PATHS = ("/tmp/.adp-gh-token",)
+
+
+
+def _write_pat_token_file(token: str, path: str = "/tmp/.adp-gh-token") -> None:
+    """Publish a private token without opening an attacker-precreated file.
+
+    Exclusive random temporary creation avoids following a predictable symlink
+    or retaining the permissions of an existing file. Atomic replace replaces
+    the destination directory entry, including a symlink, without following it.
+    """
+    destination = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=".adp-gh-token-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(token.encode())
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _remove_token_file() -> None:
@@ -484,7 +534,7 @@ def _resolve_execution_token(
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             user_data = json.loads(resp.read().decode("utf-8"))
             github_login = user_data.get("login", "")
     except urllib.error.HTTPError as exc:
@@ -539,6 +589,11 @@ def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     )  # nosemgrep: dangerous-subprocess-use-audit
 
 
+def task_queue_enabled() -> bool:
+    """Use pod-bound queue delivery without changing legacy runtime authority."""
+    return authority_enabled() or os.environ.get("ADP_TASK_API_WORKER_ENABLED", "").lower() in {"true", "1", "yes"}
+
+
 def _receive_one_message(queue_url: str, region: str):
     """Block for up to 20s waiting for one SQS message.
 
@@ -547,7 +602,7 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
-    if authority_enabled():
+    if task_queue_enabled():
         from lib.task_gateway_client import own_task
 
         body = own_task()
@@ -569,7 +624,7 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
-    if authority_enabled():
+    if task_queue_enabled():
         from lib.task_gateway_client import acknowledge_task
 
         acknowledge_task()
@@ -589,6 +644,7 @@ def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
 # heartbeats frees the message (safety margin = 300 - 120 = 180s).
 HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL", "120"))
 HEARTBEAT_EXTEND = int(os.environ.get("HEARTBEAT_EXTEND", "300"))
+TASK_HEARTBEAT_INTERVAL = 30
 
 
 class VisibilityHeartbeat:
@@ -605,10 +661,18 @@ class VisibilityHeartbeat:
         hb.stop()  # blocks until thread exits
     """
 
-    def __init__(self, queue_url: str, region: str, receipt_handle: str) -> None:
+    def __init__(
+        self,
+        queue_url: str,
+        region: str,
+        receipt_handle: str,
+        *,
+        interval: float | None = None,
+    ) -> None:
         self._queue_url = queue_url
         self._region = region
         self._receipt_handle = receipt_handle
+        self._interval = HEARTBEAT_INTERVAL if interval is None else interval
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._extensions = 0
@@ -622,7 +686,7 @@ class VisibilityHeartbeat:
         self._thread.start()
         logger.info(
             "Heartbeat started (interval=%ds, extend=%ds)",
-            HEARTBEAT_INTERVAL,
+            self._interval,
             HEARTBEAT_EXTEND,
         )
 
@@ -634,14 +698,14 @@ class VisibilityHeartbeat:
         """
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=HEARTBEAT_INTERVAL + 5)
+            self._thread.join(timeout=self._interval + 5)
         logger.info("Heartbeat stopped (total extensions=%d)", self._extensions)
 
     def _run(self) -> None:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            if authority_enabled():
+            if task_queue_enabled():
                 from lib.task_gateway_client import heartbeat_task
 
                 extend = heartbeat_task
@@ -657,7 +721,7 @@ class VisibilityHeartbeat:
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
-        while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
+        while not self._stop_event.wait(timeout=self._interval):
             try:
                 extend()
                 self._extensions += 1
@@ -852,7 +916,43 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
             if github_text
             else ""
         )
+    # The child writes this atomically after each observation. Preserve its last
+    # checklist even when it exits before CheckRunStreamer can flush a transcript.
+    # The invocation match prevents stale artifacts from crossing run boundaries.
+    if not transcript_text.startswith("<!-- adp-run-record:v1 "):
+        try:
+            import base64
+            with open(os.path.join(directory, "adp-run-record.json"), "rb") as fh:
+                raw = fh.read(1024 * 1024 + 1)
+            if len(raw) <= 1024 * 1024:
+                record = json.loads(raw)
+                invocation = os.environ.get("ADP_MESSAGE_ID")
+                if (isinstance(record, dict) and record.get("version") == 1
+                        and invocation and record.get("invocation_id") == invocation):
+                    encoded = base64.b64encode(raw).decode("ascii")
+                    transcript_text = (
+                        f"<!-- adp-run-record:v1 {encoded} -->\n\n"
+                        "## Partial run record\n\n"
+                        "Recovered the last saved observations after the child exited. "
+                        "The explanation transcript may be incomplete. "
+                        "Checklist state is agent-reported, not proof of acceptance.\n\n"
+                        + transcript_text
+                    )
+        except (OSError, ValueError, UnicodeError):
+            pass  # A missing or malformed report cannot block terminal handling.
     return github_text, transcript_text
+
+
+def _with_worker_exit_observation(transcript: str, returncode: int) -> str:
+    """Retain the observed process exit without predicting the final delivery outcome."""
+    if not transcript:
+        return transcript
+    return transcript + (
+        "\n\n## Worker exit observation\n\n"
+        f"Child process exit code: {returncode}. "
+        "This records process exit only. Delivery validation and final invocation "
+        "status are recorded separately by the platform.\n"
+    )
 
 
 def _upload_transcript_to_s3(
@@ -994,7 +1094,7 @@ def _handle_gitlab_mention(
     ack_failed = False
     try:
         req = urllib.request.Request(notes_url, data=note_payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             logger.info(
                 "GitLab ack comment posted: project=%s issue=%s status=%s",
                 project_id,
@@ -1010,7 +1110,7 @@ def _handle_gitlab_mention(
     project_url = f"{base_url}/api/v4/projects/{project_id}"
     try:
         req = urllib.request.Request(project_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             project_data = json.loads(resp.read().decode("utf-8"))
             default_branch = project_data.get("default_branch", "main") or "main"
             logger.info(
@@ -1032,7 +1132,7 @@ def _handle_gitlab_mention(
         req = urllib.request.Request(
             branches_url, data=branch_payload, headers=headers, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             logger.info("GitLab branch created: %s (status=%s)", branch_name, resp.status)
     except urllib.error.HTTPError as exc:
         if exc.code == 400:
@@ -1108,58 +1208,10 @@ def _fail_bootstrap_status(message_id: str, arrived_at: str, error_message: str)
 
 
 def _load_door_api_key(region: str) -> None:
-    """Resolve the Door shared secret into DOOR_API_KEY. Issue #4073, finding #8.
-
-    The Door (context-mcp) authenticates every caller with this key. The Node
-    runtime reads it via ``lib/doorAuth.ts``, which looks at ``DOOR_API_KEY``.
-
-    Resolution order:
-      1. ``DOOR_API_KEY`` already in the environment (local dev / explicit
-         override) — used as-is, no AWS call.
-      2. Secrets Manager, at the name in ``ADP_DOOR_API_KEY_SECRET``.
-
-    Degrades gracefully rather than failing the run, mirroring
-    ``lib/marker_signing.py``: the Knowledge Layer verbs are an enhancement
-    (``KNOWLEDGE_LAYER_ENABLED`` defaults off) and an agent summoned to fix an
-    issue must not die because a context-retrieval credential is unavailable. The
-    Door is the side that fails closed — it serves nothing without a key. The
-    cost of this choice is that a misconfiguration shows up as "the agent had no
-    context" rather than a hard error, so both failure paths log at WARNING.
-    """
-    if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED") == "true":
-        # These shared credentials bypass run-bound authorization. Protected
-        # workers need a mediated Door integration before enabling that feature.
-        for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
-            os.environ.pop(key, None)
-        logger.info("Protected worker uses no shared Door or gateway credentials")
-        return
-
-    if os.environ.get("DOOR_API_KEY"):
-        logger.debug("DOOR_API_KEY already set in environment; not reading Secrets Manager")
-        return
-
-    secret_id = os.environ.get("ADP_DOOR_API_KEY_SECRET")
-    if not secret_id:
-        logger.warning(
-            "ADP_DOOR_API_KEY_SECRET is not set; Knowledge Layer calls to the Door "
-            "will be rejected with 401 (issue #4073). Set it on the ScaledJob."
-        )
-        return
-
-    try:
-        sm = boto3.client("secretsmanager", region_name=region)
-        os.environ["DOOR_API_KEY"] = sm.get_secret_value(SecretId=secret_id)["SecretString"]
-        logger.info("Door API key loaded from %s", secret_id)
-    except Exception as exc:  # noqa: BLE001
-        # Blind by design: any failure here must degrade to "no Door access",
-        # never abort the agent run. Never log the exception's response body —
-        # only the secret name and the error text.
-        logger.warning(
-            "Failed to load Door API key from %s: %s. Knowledge Layer verbs will "
-            "return 401 (issue #4073).",
-            secret_id,
-            exc,
-        )
+    """Retire broad transport credentials for every worker, including legacy runs."""
+    for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY",
+                "GATEWAY_INTERNAL_API_KEY", "ADP_DOOR_API_KEY_SECRET"):
+        os.environ.pop(key, None)
 
 
 def _describe_vault_fetch_failure(exc: Exception, secret_path: str) -> str:
@@ -1402,10 +1454,15 @@ def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue:
 
 
 def main() -> int:
-    if authority_enabled():
+    if task_queue_enabled():
         # Lease starts at task assignment, before clone/bootstrap/model startup.
         # Always stop it on early refusal as well as normal harness termination.
-        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        heartbeat = VisibilityHeartbeat(
+            "",
+            os.environ.get("AWS_REGION", "us-east-1"),
+            "",
+            interval=TASK_HEARTBEAT_INTERVAL,
+        )
         try:
             return _main(task_heartbeat=heartbeat)
         finally:
@@ -1453,6 +1510,54 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         message_id=_msg_id_pre,
     )
 
+    # Task API assignments share the protected queue but not the GitHub host
+    # lifecycle. The gateway authenticated and bound this pod before returning
+    # the body; branch here before parse_envelope, installation guards, token
+    # minting, checkout, persona staging, or legacy finalization.
+    from lib.task_dispatch import (
+        TaskDispatchError,
+        is_task_envelope,
+        parse_task_envelope,
+        reject_task_persona_on_legacy_path,
+    )
+
+    if is_task_envelope(_pre):
+        bootstrap_log.step_start(1, "parse_task_envelope", message_id=_msg_id_pre)
+        try:
+            if not task_queue_enabled() or task_heartbeat is None:
+                raise TaskDispatchError("task assignment requires authenticated acquisition")
+            assignment = parse_task_envelope(_pre)
+        except TaskDispatchError as exc:
+            bootstrap_log.step_error(1, "parse_task_envelope", exc)
+            bootstrap_log.close()
+            logger.error("Task assignment refused: %s", exc)
+            return AGENT_EXIT_RETRYABLE
+        bootstrap_log.step_success(
+            1,
+            "parse_task_envelope",
+            message_id=assignment.message_id,
+            persona=assignment.persona,
+        )
+        bootstrap_log.close()
+        from lib.task_flow import run_task_assignment
+
+        return run_task_assignment(
+            assignment,
+            _pre,
+            heartbeat=task_heartbeat,
+            acknowledge=lambda: _delete_message(queue_url, region, receipt_handle),
+        )
+
+    # A task persona without the discriminator is malformed task work, not a
+    # legacy persona. Refuse before parse_envelope can reach GitHub setup.
+    try:
+        reject_task_persona_on_legacy_path(_pre)
+    except TaskDispatchError as exc:
+        bootstrap_log.step_error(1, "parse_task_envelope", exc)
+        bootstrap_log.close()
+        logger.error("Task assignment refused: %s", exc)
+        return AGENT_EXIT_RETRYABLE
+
     # Step 1: Parse envelope
     bootstrap_log.step_start(1, "parse_envelope", message_id=_msg_id_pre)
     try:
@@ -1466,6 +1571,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     persona = envelope["persona"]
     runtime = persona_runtime(persona)
     is_codex_review = persona == "agent-codex-reviewer"
+    is_shared_codex = persona in SHARED_CODEX_PERSONAS
     is_codex_pr_review = is_codex_review and isinstance(
         (envelope.get("payload") or {}).get("pull_request"), dict
     )
@@ -1499,7 +1605,14 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # token-mint will 404 deterministically. Delete the poison message to
     # prevent FIFO head-of-line blocking and exit cleanly. Only applies to
     # GitHub-path messages (GitLab is routed above).
-    if installation_id in (0, None, "0"):
+    # A protected control evaluation has no GitHub installation. This marker
+    # only defers the GitHub guard: bootstrap and evaluation_request below must
+    # still authenticate the dispatch and verify its projected fixture identity
+    # before any experiment runs or any repository credential is requested.
+    control_evaluation_requested = authority_enabled() and isinstance(
+        (envelope.get("payload") or {}).get("control_evaluation"), dict
+    )
+    if installation_id in (0, None, "0") and not control_evaluation_requested:
         logger.error(
             "FATAL: installation_id=%r is invalid (message_id=%s, repo=%s, issue=%s). "
             "Deleting poison message to prevent FIFO jam.",
@@ -1589,6 +1702,62 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     run_identity = bootstrap_run_identity(envelope)
 
+    # The operator's live SDK fixture uses the same acquired dispatch and
+    # authenticated bootstrap, but needs no repository/GitHub credential. The
+    # projected fixture nonce and protected envelope must agree before entering
+    # this bounded handoff. Ordinary dispatches do not select this path.
+    from lib.control_evaluation import evaluation_request, run_evaluation
+
+    evaluation = evaluation_request(
+        envelope, authenticated=run_identity is not None, env=dict(os.environ)
+    )
+    if evaluation is not None:
+        bootstrap_log.step_success(1, "control_evaluation_authenticated")
+        bootstrap_log.close()
+        # Issue #5891 (LF-01): register the SAME production control channel an
+        # ordinary run registers, before the evaluation's SDK process starts.
+        # Before this, the fixture branch returned above `_setup_agent_control`
+        # (line ~2816 in the ordinary path) entirely — no token was minted, no
+        # listener address was written to the invocation row, so the gateway's
+        # dashboard had nothing to reach. `control_env` carries the ADP_CONTROL_*
+        # values `run_evaluation` places into the evaluation subprocess's own
+        # environment; `os.environ` is left untouched, exactly as the ordinary
+        # path leaves it for its own agent subprocess (#3960's separation between
+        # this process's env and the child's).
+        control_env: dict = {}
+        registered_mode = evaluation.get("mode", "sdk") != "sdk"
+        control_registered = (
+            _setup_agent_control(control_env, message_id, arrived_at) if registered_mode else False
+        )
+        try:
+            rc = run_evaluation(evaluation, envelope, start_proxy=_start_sigv4_proxy,
+                                stop_proxy=_stop_sigv4_proxy, control_env=control_env)
+        except Exception:
+            logger.exception("Authenticated control evaluation failed")
+            rc = 1
+        finally:
+            # Symmetric with the ordinary path: the credential must not outlive
+            # the process it was minted for, whether the run succeeded or raised.
+            _teardown_agent_control(message_id, arrived_at, control_registered)
+        if task_heartbeat is not None:
+            task_heartbeat.stop()
+        abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+        if abort_outcome is not None:
+            summary = "Run-bound live control evaluation aborted by an operator"
+            persisted = _persist_abort_terminal_status(message_id, arrived_at, summary)
+            return _finalize_abort_acknowledgement(
+                queue_url=queue_url, region=region, receipt_handle=receipt_handle,
+                exit_code=0, terminal_persisted=persisted, message_id=message_id,
+                arrived_at=arrived_at, summary=summary,
+            )
+        recorded = update_invocation_status(
+            message_id, arrived_at, "complete" if rc == 0 else "failed",
+            summary="Run-bound live control evaluation finished",
+        )
+        if recorded:
+            _delete_message(queue_url, region, receipt_handle)
+        return rc if recorded else 1
+
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
     # envelope["correlation"] (see handler.py:711-718). Do NOT read them top-level.
@@ -1665,7 +1834,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     review_delivery = prepare_review_delivery(envelope)
-    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input
+    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input, prepare_review_history
     cycle_input = prepare_cycle_input(envelope)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
@@ -2074,15 +2243,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
-        # Use 0o600 + atomic rename to prevent world-readable window.
-        _token_tmp = "/tmp/.adp-gh-token.tmp"
-        _token_path = "/tmp/.adp-gh-token"
-        fd = os.open(_token_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, token.encode())
-        finally:
-            os.close(fd)
-        os.replace(_token_tmp, _token_path)
+        _write_pat_token_file(token)
     else:
         # Credentials the agent-worker.ts TokenManager needs to re-mint an
         # installation token before the 1-hour expiry (#1502). Without a working
@@ -2132,6 +2293,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if model_resolved:
         env_vars["ADP_MODEL_RESOLVED"] = model_resolved
 
+    # Recovery is advisory context from the sealed launch envelope, not authority.
+    # Clear inherited context for ordinary invocations in a reused worker.
+    recovery = (envelope.get("orchestration") or {}).get("developer_recovery")
+    env_vars["ADP_DEVELOPER_RECOVERY_CONTEXT"] = (
+        json.dumps(recovery) if isinstance(recovery, dict) else ""
+    )
+
     # Issue #3574: Expose /aws-label directive for agent visibility.
     # The label targets a specific linked AWS account within the user's vault.
     aws_label = envelope.get("aws_label")
@@ -2153,6 +2321,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     os.environ.update(env_vars)
 
     bootstrap_log.step_success(4, "set_env")
+
+    # PR conversation mentions arrive as issue_comment with only a PR marker.
+    if is_codex_review and not is_codex_pr_review:
+        from lib.codex_pr_context import hydrate_pr_comment
+
+        if hydrate_pr_comment(envelope, run_cmd):
+            is_codex_pr_review = True
+            raw_message = json.dumps(envelope)
+
 
     # Step 4b: Compose OTEL_RESOURCE_ATTRIBUTES with per-run dimensions (#1630).
     # The ScaledJob template sets static attributes (service.namespace,
@@ -2293,6 +2470,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             raise
         work_branch_ready = True
         bootstrap_log.step_success(7, "review_cycle_branch", sha=wip_sha[:7])
+    elif is_shared_codex:
+        if _mediated_run:
+            raise RuntimeError("Shared GitHub Codex reports require scoped GitHub token delivery")
+        branch_name = run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+        wip_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        work_branch_ready = True
+        bootstrap_log.step_success(7, "codex_report_base", sha=wip_sha[:7])
     elif is_codex_review:
         if _mediated_run:
             raise RuntimeError(
@@ -2336,6 +2520,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                     f"review head changed before checkout: expected {expected_review_sha}, "
                     f"found {actual_review_sha}"
                 )
+            prepare_review_history(
+                {"baseRefOid": envelope["payload"]["pull_request"]["base"]["sha"]},
+                run=run_cmd, cwd=WORK_DIR,
+            )
             bootstrap_step = "review_branch"
         else:
             branch_name = (
@@ -2787,9 +2975,20 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     )
     try:
         run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if persona == "developer" and envelope.get("pr_binding_required") is True:
+            agent_env["ADP_REQUIRE_IMPLEMENTATION_PROGRESS"] = "true"
         if is_codex_review:
             run_options.update({"input": raw_message, "text": True, "capture_output": True})
-        result = subprocess.run(command, **run_options)
+        from lib.agent_process import run_agent
+
+        with tempfile.TemporaryDirectory(prefix="adp-failure-") as diagnostic_dir:
+            diagnostic_file = Path(diagnostic_dir) / "failure.json"
+            agent_env["ADP_FAILURE_REPORT_FILE"] = str(diagnostic_file)
+            result = run_agent(command, **run_options)
+            if not is_codex_review and result.returncode != 0 and diagnostic_file.is_file():
+                with diagnostic_file.open() as diagnostic:
+                    result.stdout = diagnostic.read(16 * 1024)
+
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -2808,24 +3007,52 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
 
-    if is_codex_review:
+    # Native reviewers share operator abort finalization and acknowledgement.
+    # Otherwise a stopped reviewer is marked failed and its message is retried.
+    abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+    if is_codex_review and abort_outcome is None:
+        _record_session_id(message_id, arrived_at)
+        _, transcript_text = _read_run_reports()
+        transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
+        transcript_key = _upload_transcript_to_s3(
+            transcript_text, repo, issue, message_id, arrived_at, persona
+        )
+        if transcript_key:
+            update_invocation_status(message_id, arrived_at, "in_progress", transcript_key=transcript_key)
         output_lines = (result.stdout or "").strip().splitlines()
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
             if cycle_input is not None:
-                from lib.codex_review_delivery import finish_engine_review
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, finish_engine_review, require_delivery_success
                 try:
                     summary = finish_engine_review(
                         result.stdout or "", envelope=envelope, delivery=review_delivery,
                         run=run_cmd, cwd=WORK_DIR,
                     )
+                    require_delivery_success(result.stdout or "", envelope)
                 except Exception as exc:
-                    logger.warning("Codex engine evidence delivery failed (%s)", type(exc).__name__)
+                    # A finished process with undelivered evidence is not live or
+                    # successful. Preserve the concrete delivery outcome instead
+                    # of leaving a phantom worker for the engine to wait on.
+                    error = str(exc) if isinstance(exc, ReviewDeliveryBlocked) else f"Reviewer evidence delivery failed ({type(exc).__name__}); PR merge was not verified"
+                    failure = {"category": "inspection" if isinstance(exc, ReviewDeliveryBlocked) else "contract", "exit_code": 1}
                     if run_report.enabled():
-                        # A failed receipt is real terminal evidence. A zero exit
-                        # without review evidence must not leave an executing owner.
-                        run_report.terminal("failed")
-                    update_invocation_status(message_id, arrived_at, "failed", error_message="Codex engine evidence delivery failed")
+                        try:
+                            run_report.spool_undelivered_failure(failure=failure)
+                            run_report.terminal("failed", failure=failure)
+                        except run_report.RunReportError as report_error:
+                            logger.error("Reviewer failure reporting deferred: %s", report_error.code)
+                            return AGENT_EXIT_RETRYABLE
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.error("%s", error)
+                    return 1
+            if cycle_input is None:
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, require_delivery_success
+                try:
+                    require_delivery_success(result.stdout or "", envelope)
+                except ReviewDeliveryBlocked as exc:
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=str(exc))
                     _delete_message(queue_url, region, receipt_handle)
                     return 1
             if run_report.enabled():
@@ -2844,13 +3071,22 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _delete_message(queue_url, region, receipt_handle)
             logger.info("Codex review completed and shared queue message was acknowledged")
             return 0
-        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        from lib.codex_failure import failure_details, failure_summary
+
+        error = failure_summary(result)
         if cycle_input is not None and run_report.enabled():
-            run_report.spool_undelivered_failure()
-            run_report.terminal("failed")
+            try:
+                run_report.spool_undelivered_failure(failure=failure_details(result))
+                run_report.terminal("failed", failure=failure_details(result))
+            except run_report.RunReportError as exc:
+                logger.error("Codex failure reporting deferred (%s); original cause: %s", exc.code, error)
+                return AGENT_EXIT_RETRYABLE
             _delete_message(queue_url, region, receipt_handle)
         update_invocation_status(message_id, arrived_at, "failed", error_message=error)
-        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        if cycle_input is not None and run_report.enabled():
+            logger.error("Codex review failed; terminal failure recorded and queue message acknowledged: %s", error)
+        else:
+            logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
         return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
@@ -2860,33 +3096,80 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     _record_session_id(message_id, arrived_at)
 
     # The own-run credential is still live here; terminal status invalidates it.
-    review_note = review_delivery.finish(reviewed_head_sha=reviewed_head_sha) if review_delivery else ""
+    review_note = review_delivery.finish(reviewed_head_sha=reviewed_head_sha) if review_delivery and abort_outcome is None else ""
     if review_note:
         logger.info("%s", review_note)
     review_options = {"review_note": review_note} if review_note else {}
 
+    # Issue #3963: an operator's abort is resolved BEFORE the exit-code branch
+    # below, and the ordering is the requirement rather than a tidiness choice.
+    # A cancelled run does not exit 0 — the Node worker's typed cancellation
+    # propagates and the process ends non-zero — so leaving this until afterwards
+    # would post a "failed with exit code N" comment for a run an operator stopped
+    # on purpose, and `_handle_failure`'s status write would already have landed by
+    # the time anything could correct it. One terminal handler runs, never two.
+    if result.returncode != 0 and abort_outcome is None:
+        from lib.codex_failure import failure_summary
+
+        error = failure_summary(result).replace("Codex reviewer", f"Agent {persona}", 1)
+        logger.error("%s", error)
+
+    # Only meaningful when `abort_outcome` is set; `_handle_abort` assigns the real
+    # value. Defaulted to False so a future edit that reads it on a non-abort path
+    # errs toward "not proven durable" rather than toward a silent claim.
+    abort_terminal_persisted = False
+
+    # GitHub's clipped display is separate from the readable explanation archive.
+    # Read outside the check-run block so archival remains independent of finalize.
+    final_text, transcript_text = _read_run_reports()
+    transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
+    if review_note:
+        final_text = _join_notes(final_text or "", review_note)
+        transcript_text = _join_notes(transcript_text or "", review_note)
+
+    # Own-run artifact writes require a live execution. Archive and attach its
+    # server-derived key before a terminal handler ends that authority. Staging
+    # metadata does not select the outcome; the handler below still owns it.
+    transcript_key = _upload_transcript_to_s3(
+        transcript_text, repo, issue, message_id, arrived_at, persona
+    )
+    if transcript_key:
+        update_invocation_status(
+            message_id, arrived_at, "in_progress", transcript_key=transcript_key
+        )
+
     # Step 11/12: Post-agent actions
-    if result.returncode == 0:
+    if abort_outcome is not None:
+        exit_code, abort_terminal_persisted = _handle_abort(
+            repo, issue, persona, message_id, arrived_at, abort_outcome, check_run_url,
+            **review_options
+        )
+    elif result.returncode == 0:
         exit_code = _handle_success(
             repo, issue, branch_name, persona, message_id, arrived_at, check_run_url,
             review_only=review_delivery is not None, **review_options
         )
     else:
         exit_code = _handle_failure(
-            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, **review_options
+            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, failure_error=error, **review_options
         )
-
-    # GitHub's clipped display is separate from the readable explanation archive.
-    # Read outside the check-run block so archival remains independent of finalize.
-    final_text, transcript_text = _read_run_reports()
-    if review_note:
-        final_text = _join_notes(final_text or "", review_note)
-        transcript_text = _join_notes(transcript_text or "", review_note)
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
         try:
-            if exit_code == 0:
+            if abort_outcome is not None:
+                # Checked ahead of the exit code, which is 0 for an abort (see
+                # `_handle_abort`): a run an operator stopped must not display a
+                # green check. `cancelled` is GitHub's own vocabulary for exactly
+                # this — deliberately stopped, neither passed nor failed — so the
+                # Checks tab agrees with the `aborted` status the row now carries.
+                cr_conclusion = "cancelled"
+                cr_title = f"Agent {persona} was aborted"
+                cr_summary = f"Agent `{persona}` was aborted by an operator on issue #{issue}."
+                if abort_outcome.get("reason"):
+                    # Operator text, already bounded on both sides of the bridge.
+                    cr_summary += f"\n\nReason given: {abort_outcome['reason']}"
+            elif exit_code == 0:
                 cr_conclusion = "success"
                 cr_title = f"Agent {persona} completed successfully"
                 cr_summary = f"Agent `{persona}` finished processing issue #{issue}."
@@ -2930,13 +3213,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
-    # Persist the independent transcript, preserving explanations beyond GitHub's
-    # display limit. This includes captured explanations and selected previews,
-    # not raw tool results or a complete terminal log. Upload remains best-effort.
-    transcript_key = _upload_transcript_to_s3(
-        transcript_text, repo, issue, message_id, arrived_at, persona
-    )
-
     # Issue #4187: a run the gateway stopped on a spend cap is neither a success
     # nor a crash, so it gets its own terminal status and a reason. Resolved
     # BEFORE the write below because that write is unconditional: it would
@@ -2945,11 +3221,21 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # being made.
     stop_reason = _budget_stop_reason(_read_result_metadata())
 
-    # Issue #3069: Write-back the S3 key to the DDB invocation row so the
-    # gateway can serve the transcript from the Agent Activity UI.
-    # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
-    if transcript_key or stop_reason:
-        if stop_reason:
+    # Preserve the existing spend-cap classification path. Transcript metadata
+    # was staged before the terminal handler and needs no later status write.
+    if stop_reason:
+        if abort_outcome is not None:
+            # Issue #3963: resolved first, for the same reason `budget_stopped` is —
+            # this write is unconditional, and `exit_code` is 0 for an abort, so
+            # without this branch it would overwrite the `aborted` status with
+            # `complete` a few lines after `_handle_abort` established it. The
+            # distinction the operator needs would be destroyed by the transcript
+            # write, which is a field update that has no business changing an
+            # outcome. The reason is re-asserted rather than dropped, so the row
+            # does not end up aborted with no explanation.
+            terminal_status = "aborted"
+            stop_reason = stop_reason or "operator_aborted"
+        elif stop_reason:
             terminal_status = "budget_stopped"
         else:
             terminal_status = "complete" if exit_code == 0 else "failed"
@@ -2957,7 +3243,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             message_id,
             arrived_at,
             terminal_status,
-            transcript_key=transcript_key,
             stop_reason=stop_reason,
         )
 
@@ -2995,9 +3280,24 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     if run_report.enabled():
         try:
-            if exit_code != 0:
-                run_report.spool_undelivered_failure()
-            run_report.terminal("complete" if exit_code == 0 else "failed")
+            # Issue #3963: an abort reports the engine's `failed`, not `complete`,
+            # even though `exit_code` is 0. The engine's terminal vocabulary is
+            # binary and the load-bearing fact for it is whether the story was
+            # delivered — an aborted run delivered nothing. `complete` would
+            # advance a workflow on work an operator deliberately stopped, which is
+            # the one direction that cannot be undone from here; `failed` merely
+            # understates *why* it did not finish, and the invocation row carries
+            # `aborted` with its reason for anyone asking that question. Spooling
+            # is kept for the same reason it applies to a failure: the undelivered
+            # material stays recoverable.
+            aborted = abort_outcome is not None
+            if exit_code != 0 or aborted:
+                from lib.codex_failure import failure_details
+
+                run_report.spool_undelivered_failure(failure=failure_details(result, aborted=aborted))
+                run_report.terminal("failed", failure=failure_details(result, aborted=aborted))
+            else:
+                run_report.terminal("complete")
         except run_report.RunReportError as exc:
             logger.warning("Engine terminal report deferred: %s", exc.code)
             return AGENT_EXIT_RETRYABLE
@@ -3008,6 +3308,36 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         except InvocationCompletionError as exc:
             logger.error("AIDLC acknowledgement deferred: %s", exc)
             return AGENT_EXIT_RETRYABLE
+
+    # Issue #3963: an aborted run's acknowledgement is *confirmed*, and its outcome
+    # is reported honestly. The path below deliberately swallows a delete failure —
+    # the work is already on GitHub and a redelivery would only re-post the same
+    # comment — but an abort inverts that reasoning. The message still being on the
+    # queue means the run an operator just stopped is due to start again, which is
+    # the single thing the abort was issued to prevent. So the delete is retried
+    # within a bound, and an unconfirmed acknowledgement does not report success:
+    # AGENT_EXIT_RETRYABLE says "this pod did not finish handling the message", and
+    # the redelivery it invites is refused by the completion guard — but only when
+    # the terminal `aborted` row actually landed, which is why `_handle_abort`
+    # reports whether it did instead of leaving that assumed (#3963 finding 3). The
+    # operator-facing outcome (comment, status, check conclusion) is already in
+    # place either way.
+    if abort_outcome is not None:
+        return _finalize_abort_acknowledgement(
+            queue_url=queue_url,
+            region=region,
+            receipt_handle=receipt_handle,
+            exit_code=exit_code,
+            terminal_persisted=abort_terminal_persisted,
+            # Passed so a terminal row lost earlier can be repaired once the
+            # acknowledgement is confirmed (#3963 finding 3). The summary is rebuilt
+            # from the same persona the original write used, so a repaired row is
+            # identical to the one `_handle_abort` intended rather than a second,
+            # differently-worded outcome.
+            message_id=message_id,
+            arrived_at=arrived_at,
+            summary=f"Agent `{persona}` was aborted by an operator.",
+        )
 
     try:
         _delete_message(queue_url, region, receipt_handle)
@@ -3274,7 +3604,7 @@ def _setup_agent_control(
     abort the run it is attached to. What it must not do is fail silently, since
     the UI would then offer a channel that does not exist (FR-1.12, NFR-10).
     """
-    if not _is_agent_control_enabled():
+    if not (_is_agent_control_enabled() or os.environ.get("FEATURE_AGENT_EXPLANATIONS_ENABLED") == "true"):
         logger.info("Agent control disabled (FEATURE_AGENT_CONTROL_ENABLED not 'true')")
         return False
 
@@ -3361,7 +3691,7 @@ def _setup_agent_control(
             agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] = envelope_keys_file
         if envelope_keys:
             agent_env["ADP_CONTROL_ENVELOPE_KEYS"] = envelope_keys
-        else:
+        elif not envelope_keys_file:
             # Not fatal: no verb is implemented yet, so a pod with no key is the
             # normal state today and refusing to start control here would remove
             # the read paths for no benefit. The listener fails closed on its own
@@ -3374,6 +3704,13 @@ def _setup_agent_control(
         # Armed only after the write succeeded, so there is no path where a
         # teardown is scheduled for a registration that never happened.
         _install_control_teardown_guard(message_id, arrived_at)
+
+        # Kept for the abort resolver, which runs long after this function and
+        # cannot re-derive the generation: the value came from the row's atomic
+        # increment and re-reading the row would return whatever a concurrent
+        # attempt has since incremented it to (#3963).
+        global _registered_control_generation
+        _registered_control_generation = generation
 
         if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
             from lib.control_renewal import ControlRenewal
@@ -3418,6 +3755,14 @@ def _control_token_ttl_seconds() -> int:
 # passed arguments (Issue #3960).
 _pending_control_teardown: tuple[str, str] | None = None
 _control_renewal_session = None
+
+# The control generation this process was assigned, from the invocation row's own
+# atomic increment (#3963). Module-level for the same reason as the teardown key:
+# the abort resolver runs after the agent process is gone and needs the value the
+# registration returned, and it must not be derivable from anything the agent can
+# write. `None` until a registration succeeds — and a run with no registration has
+# no generation for a sentinel to be bound to, so the abort path declines.
+_registered_control_generation: int | None = None
 
 
 def _install_control_teardown_guard(message_id: str, arrived_at: str) -> None:
@@ -3539,6 +3884,339 @@ def _record_session_id(message_id: str, arrived_at: str) -> str | None:
         return None
 
 
+def _resolve_abort_outcome(message_id: str, was_registered: bool) -> dict | None:
+    """The authorized abort this run stopped for, or ``None`` — Issue #3963 (S4).
+
+    Two questions, asked in this order, because they fail differently:
+
+    1. :func:`read_abort_sentinel` — is there a well-formed sentinel bound to this
+       run and this control generation? A stale file from a superseded attempt, a
+       torn write, or a document from another run all answer no.
+    2. :func:`verify_abort_authorization` — did the *gateway* authorize it? Every
+       field in the sentinel is self-asserted: the agent runs with a ``Bash`` tool,
+       so any code in the pod can write that file. The envelope it carries is an
+       Ed25519 token signed with a key that exists only in the gateway, which makes
+       it the one artifact here that could not have been produced from inside the
+       pod.
+
+    Both must pass. Honouring step 1 alone would mean this function could be made
+    to return an abort by a shell command, and what follows a `True` here is a
+    deleted queue message and an operator told a crash was a deliberate stop.
+
+    Returns ``None`` whenever anything is missing or unproven, which the caller
+    treats as "classify by exit code" — the behaviour that predates this story.
+    Never raises: it runs during teardown, where an escaping exception would cost
+    the acknowledgement and strand the message.
+
+    Skipped entirely when control was never registered. A flag-off run has no
+    generation to bind against, so there is nothing a sentinel could prove.
+    """
+    if not was_registered:
+        return None
+    try:
+        # This process's own generation, captured by `_setup_agent_control` from
+        # the value the invocation row's atomic increment returned. Deliberately
+        # not read from the environment: `ADP_CONTROL_GENERATION` is placed only in
+        # the *child's* env, and taking it from anywhere the agent can influence
+        # would let the pod choose the generation its own sentinel is checked
+        # against — which is the staleness defence the binding exists to provide.
+        generation = _registered_control_generation
+        if generation is None:
+            return None
+        sentinel = read_abort_sentinel(message_id, generation)
+        if sentinel is None:
+            return None
+        if not verify_abort_authorization(
+            sentinel, run_id=message_id, generation=int(generation)
+        ):
+            # Deliberately loud. A sentinel that parsed but could not prove itself
+            # is either a bug in the handoff or an attempt to fabricate an abort,
+            # and both are worth an operator seeing rather than a silent fallback.
+            logger.error(
+                "Abort sentinel for run %s is present but not authorized by the gateway; "
+                "classifying this run by exit code instead (abort_unauthorized)",
+                message_id,
+            )
+            return None
+        # The operator's words, and the only place they enter this process.
+        #
+        # Derived here, after verification, rather than read from the document:
+        # `validate_abort_sentinel` deliberately does not carry the file's own
+        # `reason` field through, because that field sits beside the envelope in a
+        # file the agent's `Bash` tool can write and is covered by no signature. A
+        # real-signature reproduction substituted text there under an otherwise
+        # valid envelope and had it attributed to the human who authorized the
+        # abort. `authorized_abort_reason` instead parses the reason out of the
+        # exact request bytes whose sha256 the envelope signed — bytes
+        # `verify_abort_authorization` has just confirmed against `body_digest`.
+        #
+        # `None` when the operator gave no reason, and then nothing downstream may
+        # invent one: every consumer (`_handle_abort`'s comment, the check-run
+        # summary) must say nothing about a reason rather than fall back.
+        sentinel["reason"] = authorized_abort_reason(sentinel)
+        logger.info(
+            "Authorized abort recorded for command %s; finalizing as aborted",
+            sentinel.get("command_id"),
+        )
+        return sentinel
+    except Exception as exc:  # noqa: BLE001 - teardown path; must never raise
+        logger.warning("Could not resolve an abort outcome (non-fatal): %s", exc)
+        return None
+
+
+def _handle_abort(
+    repo: str,
+    issue: int,
+    persona: str,
+    message_id: str,
+    arrived_at: str,
+    sentinel: dict,
+    check_run_url: str = "",
+    review_note: str = "",
+) -> tuple[int, bool]:
+    """Report the terminal aborted outcome: one comment, one status.
+
+    Returns ``(exit_code, terminal_persisted)``.
+
+    The exit code is 0. An abort is neither a success nor a crash, but the *pod*
+    handled it exactly as asked, and the exit code is what Kubernetes retries on:
+    the ScaledJob runs with ``backoffLimit: 2``, so a non-zero exit here would start
+    a replacement pod for a run an operator deliberately stopped. The outcome the
+    dashboard reads is the ``aborted`` status, not the exit code.
+
+    ``terminal_persisted`` is the second half of the pair because this function used
+    to call a fail-soft status writer and then let its caller behave as though a
+    durable ``aborted`` row existed (#3963 review finding 3). It does not always
+    exist: ``update_invocation_status`` logs and returns on a refused status, an
+    absent row, an unavailable transport or a gateway error. That row is the thing
+    the legacy completion guard reads to refuse a redelivery, so when it is missing
+    AND the queue acknowledgement also fails, nothing on that path stops the stopped
+    run from executing again. The caller needs to know which of those two worlds it is
+    in, and it can only know by being told whether the write was observed to land.
+
+    On the protected path (``authority_enabled()``) the guard does not run at all —
+    ``use_completion_receipt`` requires ``not authority_enabled()`` — and a redelivery
+    is refused by ``bind`` instead, because the execution record is ACTIVE and already
+    bound. So this return value is load-bearing for the legacy path's rerun safety and
+    for *reporting* on both, which is why the row is still repaired after a confirmed
+    ack rather than treated as optional once the protected path is in play.
+
+    Note what is deliberately NOT done here: the exit code does not change when the
+    write fails. Exiting non-zero would launch the replacement pod this abort exists
+    to prevent, so the honest signal travels in the return value instead, and the
+    caller decides the acknowledgement policy.
+
+    The reason is the operator's own text, derived from the gateway-signed request
+    bytes and already whitespace-collapsed and length-bounded by both sentinel
+    halves. It is interpolated into a GitHub comment, so it is used only inside a
+    fenced block — an operator reason must not be able to forge markdown structure
+    in a comment attributed to the platform.
+    """
+    reason = sentinel.get("reason")
+    summary = f"Agent `{persona}` was aborted by an operator."
+    body = summary
+    if reason:
+        body = f"{summary}\n\n> Reason given:\n> ```\n> {reason}\n> ```"
+    _post_comment(repo, issue, message_id, "aborted", _join_notes(body, review_note), check_run_url)
+    # The comment is posted first and unconditionally: the operator asked for this
+    # and deserves to see it acknowledged even if the row write then fails. A
+    # published comment is not a redelivery guard, though, which is why the status
+    # result is what travels back rather than the fact that a comment exists.
+    terminal_persisted = _persist_abort_terminal_status(message_id, arrived_at, summary)
+    if not terminal_persisted:
+        logger.error(
+            "The aborted run's terminal status did not persist; the completion guard "
+            "has nothing to read, so this run's queue acknowledgement must be "
+            "confirmed before the abort can be reported as handled"
+        )
+    return 0, bool(terminal_persisted)
+
+
+def _persist_abort_terminal_status(message_id: str, arrived_at: str, summary: str) -> bool:
+    """Write the terminal ``aborted`` row, retrying a lost write — #3963 finding 3.
+
+    ``update_invocation_status`` is fail-soft: it logs and returns ``False`` on a
+    transport error rather than raising. A single call was therefore one transient
+    DynamoDB or gateway blip away from an abort with no terminal row, and that row is
+    not merely cosmetic — it is what ``is_delivery_completed`` reads to refuse a
+    redelivery, and what the dashboard shows an operator who just asked for a stop.
+
+    Retried on the same bounds as the acknowledgement, and for the same reasons: a
+    few seconds rides out a transient fault, while unbounded retry would hold the
+    FIFO group for the pod's whole lifetime and delay the DeleteMessage that actually
+    prevents the rerun. The two together stay comfortably inside the visibility
+    timeout.
+
+    Bounded, not guaranteed. A ``False`` return still happens and still matters —
+    ``_finalize_abort_acknowledgement`` is what decides the consequence. This narrows
+    the window; it does not close it, and nothing downstream should treat it as
+    though it had.
+
+    Idempotent by construction: every attempt writes the same terminal status for the
+    same row key, so a retry after an ambiguous failure cannot produce a second or
+    conflicting outcome.
+    """
+    for attempt in range(1, ABORT_TERMINAL_WRITE_ATTEMPTS + 1):
+        if update_invocation_status(
+            message_id,
+            arrived_at,
+            "aborted",
+            summary=summary,
+            stop_reason="operator_aborted",
+        ):
+            if attempt > 1:
+                logger.info(
+                    "The aborted run's terminal status persisted on attempt %d", attempt
+                )
+            return True
+        logger.warning(
+            "Could not persist the aborted run's terminal status (attempt %d/%d)",
+            attempt,
+            ABORT_TERMINAL_WRITE_ATTEMPTS,
+        )
+        if attempt < ABORT_TERMINAL_WRITE_ATTEMPTS:
+            time.sleep(ABORT_TERMINAL_WRITE_BACKOFF_SECONDS * attempt)
+    return False
+
+
+def _finalize_abort_acknowledgement(
+    *,
+    queue_url: str,
+    region: str,
+    receipt_handle: str,
+    exit_code: int,
+    terminal_persisted: bool,
+    message_id: str = "",
+    arrived_at: str = "",
+    summary: str = "",
+) -> int:
+    """Acknowledge an aborted run's message and return the pod's exit code.
+
+    Split out of ``main`` so the outcomes below can be tested directly. They are
+    otherwise reachable only by driving an entire run, which is why the dangerous one
+    went uncovered (#3963 review finding 3).
+
+    ==================  ===========  ===========================================
+    terminal row        ack          result
+    ==================  ===========  ===========================================
+    persisted           confirmed    ``exit_code`` — clean abort
+    NOT persisted       confirmed    repaired if possible; clean, or logged stale
+    persisted           unconfirmed  retryable; the guard refuses the redelivery
+    NOT persisted       unconfirmed  retryable, and logged as unprotected
+    ==================  ===========  ===========================================
+
+    The second row is the one review finding 3 named: a successful delete used to be
+    reported as a clean abort on its own, which left an operator looking at a
+    dashboard that still showed the run as active. A confirmed acknowledgement means
+    the run cannot restart; it says nothing about whether the outcome was *reported*,
+    and those are two separate requirements. So the terminal row is repaired here,
+    after the delete — the ordering root specified, because the delete is what
+    establishes that no rerun can follow and therefore what makes it safe to spend
+    more time on reporting.
+
+    The last two rows cannot be distinguished by exit code — a non-zero exit summons
+    the replacement pod the abort exists to prevent, so both are
+    ``AGENT_EXIT_RETRYABLE`` — which is why the distinction is made explicit in the
+    log instead.
+    """
+    if _acknowledge_abort(queue_url, region, receipt_handle):
+        # The message is gone, so the stopped run cannot restart: the operator's
+        # primary requirement is met and re-queueing would undo it.
+        #
+        # But "cannot restart" is not "was reported". When the terminal write failed
+        # earlier, this is the first moment it is safe to spend more time on it: the
+        # delete is confirmed, so a retry here cannot delay the thing that prevents a
+        # rerun, and there is no longer a redelivery for a guard to have to refuse.
+        # Attempting the repair only in this branch is deliberate — doing it before
+        # the delete would trade the rerun guarantee for a reporting improvement.
+        if not terminal_persisted and message_id:
+            if _persist_abort_terminal_status(message_id, arrived_at, summary):
+                logger.info(
+                    "The aborted run's terminal status was repaired after its queue "
+                    "acknowledgement was confirmed"
+                )
+            else:
+                # Reported rather than escalated. The run is stopped and acknowledged,
+                # so exiting non-zero would start a pod that can only pick up an
+                # unrelated message — it cannot repair this row. A stale dashboard is
+                # a reporting defect with no rerun risk, and it is logged as exactly
+                # that so an operator seeing an active-looking aborted run has the
+                # explanation.
+                logger.error(
+                    "The aborted run was stopped and acknowledged, but its terminal "
+                    "status could not be persisted or repaired. The run cannot execute "
+                    "again; its dashboard row is stale and still shows the pre-abort "
+                    "status (message_id=%s)",
+                    message_id,
+                )
+        return exit_code
+    if terminal_persisted:
+        # The message survives and will redeliver, but the durable `aborted` row was
+        # observed to land, so the legacy completion guard reads it and refuses the
+        # redelivered work. AGENT_EXIT_RETRYABLE is honest about this pod not having
+        # finished handling the message.
+        return AGENT_EXIT_RETRYABLE
+    # Neither the terminal row nor the acknowledgement landed, so on the legacy path
+    # nothing refuses the redelivery — the guard has no `aborted` status to read — and
+    # the run an operator stopped is queued to execute again. (On the protected path
+    # `bind` refuses it regardless, because the record is ACTIVE and already bound;
+    # that is a property of the binding lifecycle, not of this row, so it is not a
+    # reason to soften the message.) Say so as loudly as this process can.
+    logger.error(
+        "Abort finalization is unprotected: the terminal status did not persist AND "
+        "the queue acknowledgement is unconfirmed, so the redelivered message has no "
+        "terminal row to refuse it. The run may execute again despite being aborted"
+    )
+    return AGENT_EXIT_RETRYABLE
+
+
+def _acknowledge_abort(queue_url: str, region: str, receipt_handle: str) -> bool:
+    """Delete the aborted run's queue message, and report whether it is confirmed.
+
+    Bounded retry, and a boolean rather than a swallowed exception. The ordinary
+    ack path logs a delete failure and returns the exit code anyway, on the
+    reasoning that the work is already committed to GitHub — which is fine for a
+    run that finished, because a redelivery re-posts a comment and stops. For an
+    abort it is not fine: the message is still there, so the run an operator just
+    stopped is queued to start again.
+
+    So the caller is told the truth. An unconfirmed acknowledgement is not
+    reported as a successful abort, because the one thing an operator needs from an
+    abort — that the work does not continue — has not been established. The
+    redelivery that follows is refused by ``bind`` on the protected path (an ACTIVE,
+    already-bound record admits no second pod) and, on the legacy path, by the
+    completion guard reading the ``aborted`` status this run has already written —
+    which is why that write's *observed* result is what the caller acts on.
+
+    Attempts are bounded, not indefinite: this runs inside the visibility timeout
+    and a pod that retries forever holds the FIFO group for its whole lifetime.
+    """
+    for attempt in range(1, ABORT_ACK_ATTEMPTS + 1):
+        try:
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Aborted run's SQS message acked and deleted (attempt %d)", attempt)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Could not acknowledge the aborted run's SQS message (attempt %d/%d): %s",
+                attempt,
+                ABORT_ACK_ATTEMPTS,
+                exc,
+            )
+            if attempt < ABORT_ACK_ATTEMPTS:
+                time.sleep(ABORT_ACK_BACKOFF_SECONDS * attempt)
+    # Deliberately does NOT claim the row is terminal. This function does not know
+    # whether the terminal write landed — only the caller holds `terminal_persisted` —
+    # and the previous wording asserted it unconditionally, which read as reassurance
+    # in exactly the case (write failed AND ack failed) where it was untrue. The
+    # caller's branch says which world this is.
+    logger.error(
+        "Abort acknowledgement unconfirmed after %d attempts — the message may redeliver",
+        ABORT_ACK_ATTEMPTS,
+    )
+    return False
+
+
 def _should_ack_message(worker_exit_code: int) -> bool:
     """Should the SQS message be deleted for a worker that exited with this code?
 
@@ -3657,6 +4335,34 @@ def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     return ""
 
 
+def _developer_pr_ready_for_review(repo: str, branch: str) -> bool:
+    """Observe an exact published artifact, never substitute for review or CI."""
+    try:
+        number = _find_open_pr(repo, branch)
+        if not number:
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        result = run_cmd(
+            ["gh", "pr", "view", str(number), "--repo", repo, "--json",
+             "state,isDraft,headRefOid,headRefName,isCrossRepository"],
+            cwd=WORK_DIR,
+        )
+        pr = json.loads(result.stdout)
+        if not isinstance(pr, dict):
+            return False
+        return bool(
+            re.fullmatch(r"[0-9a-f]{40}", head)
+            and pr.get("state") == "OPEN"
+            and pr.get("isDraft") is False
+            and pr.get("isCrossRepository") is False
+            and pr.get("headRefName") == branch
+            and pr.get("headRefOid") == head
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        logger.warning("Could not verify a published developer PR for review")
+        return False
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -3668,7 +4374,27 @@ def _handle_success(
     review_note: str = "",
     review_only: bool = False,
 ) -> int:
-    """Step 11: Commit remaining changes, push branch, create PR if needed."""
+    """Step 11: Finalize delivery, preserving incomplete developer work separately."""
+    if persona in SHARED_CODEX_PERSONAS:
+        # Host-verified report delivery never creates or commits a PR as a side effect.
+        try:
+            metadata = json.loads(Path(RESULT_METADATA_PATH).read_text())
+            if metadata.get("codex_persona_report") is not True or metadata.get("session_completed") is not True:
+                raise ValueError("missing report receipt")
+            if metadata.get("codex_persona_invocation") != message_id:
+                raise ValueError("report invocation mismatch")
+            if not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/issues/{issue}#issuecomment-[1-9][0-9]*", str(metadata.get("outcome_comment_url", ""))):
+                raise ValueError("report destination mismatch")
+        except (OSError, ValueError, TypeError):
+            update_invocation_status(message_id, arrived_at, "failed", error_message="Codex report delivery was not verified")
+            return 1
+        if run_report.enabled():
+            try:
+                run_report.terminal("complete")
+            except run_report.RunReportError:
+                return AGENT_EXIT_RETRYABLE
+        update_invocation_status(message_id, arrived_at, "complete", summary="Codex persona report delivered")
+        return 0
     if review_only:
         # The review already names its inspected commit. Auto-committing a report
         # here changes that head and causes an endless fresh-review cycle.
@@ -3685,6 +4411,59 @@ def _handle_success(
         diff = run_cmd(["git", "diff", "--stat"], cwd=WORK_DIR)
         status_out = run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR)
         has_uncommitted = bool(diff.stdout.strip() or status_out.stdout.strip())
+
+        if persona == "developer":
+            from lib.validation import state_dir, verify
+
+            validation_note = "No validation receipts recorded; final-commit checks are unverified."
+            can_finalize = not has_uncommitted
+            published_review = False
+            # Older/non-code runs can have no manifest. Report missing evidence;
+            # do not invent checks or infer semantic acceptance from a receipt.
+            try:
+                git_path = Path(WORK_DIR) / ".git"
+                folder = (state_dir(Path(WORK_DIR)) if git_path.is_file()
+                          else git_path / "adp-validation")
+                manifest = folder / "commands.json"
+                if manifest.exists():
+                    published_review = not has_uncommitted and _developer_pr_ready_for_review(repo, branch)
+                    if published_review:
+                        validation_note = "Local validation receipts left for Codex review."
+                if manifest.exists() and not published_review:
+                    # The SDK tool shell and Python supervisor have different
+                    # environments. Inspect the latest actual test evidence here;
+                    # the CLI owns environment matching and cache reuse.
+                    can_finalize, validation_note = verify(
+                        Path(WORK_DIR), strict_environment=False
+                    )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                can_finalize = False
+                validation_note = f"Final-commit validation unavailable: {exc}"
+            # Development delivers an artifact for independent review; it does
+            # not certify acceptance. An exploratory/host-dependent check must
+            # not strand an already published PR before the reviewer can repair
+            # it. Only the exact, clean, published head qualifies for this path.
+            if has_uncommitted or (not can_finalize and not published_review):
+                if has_uncommitted:
+                    run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
+                    run_cmd(["git", "commit", "-m", f"WIP: unvalidated agent/{persona} work for #{issue}"], cwd=WORK_DIR)
+                # A separate ref preserves work without updating an existing ready PR.
+                suffix = re.sub(r"[^a-zA-Z0-9-]", "-", message_id)[:64] or "run"
+                checkpoint = f"{branch}-incomplete-{suffix}"
+                run_cmd(["git", "push", "origin", f"HEAD:refs/heads/{checkpoint}"], cwd=WORK_DIR)
+                note = (f"Incomplete work preserved on `{checkpoint}`; no review handoff was made. "
+                        + ("Uncommitted files were checkpointed without validation. " if has_uncommitted else "")
+                        + validation_note)
+                _post_comment(repo, issue, message_id, "failed", note, check_run_url)
+                update_invocation_status(message_id, arrived_at, "failed", summary=note)
+                return 1
+            if published_review:
+                validation_note = (
+                    "Development artifact delivered for independent review; local validation "
+                    "is NOT verified. Review/repair and required CI must resolve these gaps "
+                    "before merge. " + validation_note
+                )
+            review_note = _join_notes(review_note, validation_note)
 
         if has_uncommitted:
             run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
@@ -3789,10 +4568,12 @@ def _handle_success(
                 _join_notes(summary, draft_note, amendment_note, binding_note, handoff, review_note),
                 check_run_url,
             )
+            # The model process has exited. A reporting-only retry must not
+            # leave it looking live forever or fabricate successful delivery.
             update_invocation_status(
                 message_id,
                 arrived_at,
-                "in_progress" if pr_handoff_pending() else "complete",
+                "failed" if pr_handoff_pending() else "complete",
                 summary=f"{persona} — run ended; "
                 + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
@@ -3910,7 +4691,7 @@ def _handle_success(
         update_invocation_status(
             message_id,
             arrived_at,
-            "in_progress" if pr_handoff_pending() else "complete",
+            "failed" if pr_handoff_pending() else "complete",
             summary=f"{persona} — run ended; "
             + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
@@ -4022,6 +4803,7 @@ def _handle_failure(
     exit_code: int,
     check_run_url: str = "",
     review_note: str = "",
+    failure_error: str = "",
 ) -> int:
     """Step 12: Post failure comment, exit nonzero."""
     summary = f"Agent `{persona}` failed with exit code {exit_code}."
@@ -4031,6 +4813,7 @@ def _handle_failure(
         arrived_at,
         "failed",
         summary=summary,
+        **({"error_message": failure_error} if failure_error else {}),
     )
     return exit_code
 

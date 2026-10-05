@@ -47,8 +47,10 @@ def apply_concurrency_limit(policy, limit, decision_id):
 
 
 async def effective_shared_concurrency(session, plan, policy):
-    marker = (plan.plan_document or {}).get("execution_continuation") or {}
-    if marker.get("mode") != "shared_worker_role" or marker.get("contract_version") != 1:
+    from .shared_window import accepted_document_hash, policy_owner_matches
+
+    marker = (plan.plan_document or {}).get("execution_continuation")
+    if marker is not None and (marker.get("mode") != "shared_worker_role" or marker.get("contract_version") != 1):
         return policy
     decision = await session.scalar(
         select(OrchestrationDecision)
@@ -74,22 +76,27 @@ async def effective_shared_concurrency(session, plan, policy):
     if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
         raise ConcurrencyIncreaseError("concurrency_receipt_unverifiable")
     if data["plan_version"] < plan.version:
-        return policy  # A later graph acceptance requires its own approval.
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data)
+        if plan is None:
+            return policy  # General plan changes still require a fresh approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
     if (
         decision.actor_kind != "human"
         or decision.actor_role != "platform_admin"
         or not decision.actor_id
-        or decision.actor_id != policy.principal_id
         or data.get("contract") != CONTRACT
         or data.get("flow_id") != plan.flow_id
         or data.get("plan_hash") != plan.plan_hash
-        or plan.plan_hash != digest(plan.plan_document)
+        or plan.plan_hash != accepted_document_hash(plan)
         or data.get("original_policy_hash") != original.policy_hash
         or original.policy_hash != policy_hash(original)
         or policy.policy_hash != policy_hash(policy)
         or data.get("principal_id") != policy.principal_id
     ):
+        raise ConcurrencyIncreaseError("concurrency_receipt_unverifiable")
+    if not await policy_owner_matches(session, decision.actor_id, policy):
         raise ConcurrencyIncreaseError("concurrency_receipt_unverifiable")
     if limit <= policy.limits.max_concurrent_actions:
         raise ConcurrencyIncreaseError("concurrency_receipt_reduces_limit")
@@ -105,11 +112,20 @@ async def prepare_increase(session, *, flow_id, actor, request):
     flow, plan = await current_plan(session, flow_id=flow_id, actor=actor)
     if plan.version != request.expected_plan_version or plan.plan_hash != request.expected_plan_hash:
         raise ConcurrencyIncreaseError("accepted_plan_changed")
-    if plan.plan_hash != digest(plan.plan_document):
+    from .shared_window import accepted_document_hash, policy_owner_matches
+
+    if plan.plan_hash != accepted_document_hash(plan):
         raise ConcurrencyIncreaseError("accepted_document_hash_changed")
-    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    if (plan.plan_document or {}).get("execution_continuation") is not None:
+        inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    else:
+        from .policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=actor.org_id, flow_id=flow_id)
+        if inputs.refusal is not None or inputs.policy is None:
+            raise ConcurrencyIncreaseError("accepted_policy_unverifiable")
     policy = inputs.policy
-    if actor.actor_id != policy.principal_id:
+    if not await policy_owner_matches(session, actor.actor_id, policy):
         raise ConcurrencyIncreaseError("original_principal_required")
     if policy.expires_at <= datetime.now(UTC):
         raise ConcurrencyIncreaseError("policy_expired")

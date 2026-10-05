@@ -138,6 +138,7 @@ class _Harness:
 
     async def _inner_app(self, scope, receive, send):
         self.app_invoked = True
+        scope["state"]["token_context"]._budget_provider_started = True
         # Read the body the way a real downstream handler would, so a middleware
         # that consumed it would show up here as an empty read.
         chunks = []
@@ -667,3 +668,47 @@ class TestMantlePassthrough:
 
         assert harness.status == 200
         assert harness.body_seen == body, "the passthrough body must reach the handler unconsumed and unmodified"
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_usage_retains_ordinary_reservation(redis_client, clock):
+    service = BudgetEnforcementService(
+        reservations=ReservationStore(redis_url=None, ttl_seconds=RESERVATION_TTL, clock=lambda: clock[0], client=redis_client)
+    )
+    targets = [_target("1.00")]
+    assert (await service._get_reservations().reserve("uncertain", Decimal("0.95"), targets)).admitted
+    with patch("src.budget.enforcement_service.budget_config", _config()):
+        await service.reconcile_reservation(
+            context=_context(),
+            request_id="uncertain",
+            model_id=OPUS,
+            input_tokens=0,
+            output_tokens=0,
+            actual_cost_usd=Decimal("0"),
+            usage_known=False,
+        )
+    assert not (await service._get_reservations().reserve("next", Decimal("0.50"), targets)).admitted
+
+
+@pytest.mark.asyncio
+async def test_admission_and_reconcile_keep_request_start_period_across_midnight(redis_client, clock):
+    service = BudgetEnforcementService(
+        reservations=ReservationStore(redis_url=None, ttl_seconds=RESERVATION_TTL, clock=lambda: clock[0], client=redis_client)
+    )
+    context = _context()
+    context._budget_request_timestamp = datetime(2026, 9, 24, 23, 59, tzinfo=UTC)
+    session = _ledger_session(budget_usd="1.00", settled_usd="0.00")
+    with patch.object(service, "_get_session") as get_session:
+        get_session.return_value.__aenter__ = AsyncMock(return_value=session)
+        get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("src.budget.enforcement_service.budget_config", _config()):
+            result = await service.check_budget_hierarchy(context, Decimal("0.50"), request_id="midnight")
+            assert result.allowed
+            assert context._budget_admission_targets[0].period_start == "2026-09-24"
+            # Actual wall clock is a later day, but reconciliation must touch
+            # the same Redis field admission reserved for this request.
+            with patch.object(service._get_reservations(), "reconcile", new_callable=AsyncMock) as reconcile:
+                await service.reconcile_reservation(
+                    context=context, request_id="midnight", model_id=OPUS, input_tokens=1, output_tokens=1, actual_cost_usd=Decimal("0.01")
+                )
+                assert reconcile.await_args.args[2] == context._budget_admission_targets

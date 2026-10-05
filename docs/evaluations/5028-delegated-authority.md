@@ -13,7 +13,7 @@ and abort still return 501 and have no SDK implementation.
 - Initial gateway/worker checks used `e8abc376feab31ab788f27bdfdcbbd0c330d1d1f`.
   The final worker repeated the actual online revocation check; the final gateway
   repeated human service approval with the registered child ceiling.
-- AWS account `879318057152`, region `us-east-1`; namespace
+- AWS account `000000000101`, region `us-east-1`; namespace
   `adp-e5028-20260913-212933`; five disposable DynamoDB tables, one FIFO queue,
   disposable PostgreSQL and a separate gateway deployment.
 - Separate REST API, exact ALB rule and target group. IAM authentication supplied

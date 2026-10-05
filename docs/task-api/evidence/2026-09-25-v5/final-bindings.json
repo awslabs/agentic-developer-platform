@@ -1,0 +1,204 @@
+{
+  "at": "2026-09-25T06:21:05.315517+00:00",
+  "account_id": "000000000101",
+  "api_id": "59o2rakc50",
+  "stage": "dev",
+  "routes": [
+    {
+      "path": "/v1/tasks",
+      "method": "ANY",
+      "authorization_type": "NONE",
+      "integration_type": "HTTP_PROXY",
+      "integration_uri": "http://gateway-16.example.com/v1/tasks",
+      "timeout_ms": 900000,
+      "response_transfer_mode": null,
+      "connection_type": "VPC_LINK"
+    },
+    {
+      "path": "/v1/tasks",
+      "method": "POST",
+      "authorization_type": "NONE",
+      "integration_type": "AWS_PROXY",
+      "integration_uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000101:function:adp-dev-github-webhook/invocations",
+      "timeout_ms": 29000,
+      "response_transfer_mode": null,
+      "connection_type": null
+    },
+    {
+      "path": "/{proxy+}",
+      "method": "ANY",
+      "authorization_type": "NONE",
+      "integration_type": "HTTP_PROXY",
+      "integration_uri": "http://gateway-16.example.com/{proxy}",
+      "timeout_ms": 900000,
+      "response_transfer_mode": null,
+      "connection_type": "VPC_LINK"
+    }
+  ],
+  "lambda": {
+    "name": "adp-dev-github-webhook",
+    "code_sha256": "ITVzgBjlSYZ0vn1rVK9sNMTnuvymz7nc8ESyEIHxFJE=",
+    "last_modified": "2026-09-25T05:31:19.000+0000",
+    "update_status": "Successful",
+    "recovery_alias": "115",
+    "settings": {
+      "GATEWAY_API_URL": "https://gateway-1.example.com/dev",
+      "ADP_TASK_API_RECOVERY_ENABLED": "true",
+      "INTERNAL_API_KEY_PARAMETER_NAME": "/adp/dev/gateway/internal-api-key",
+      "ADP_TASK_API_ADMISSION_ENABLED": "true",
+      "AGENT_AUTHORITY_ENABLED": "false",
+      "ADP_TASK_ADMIT_ENDPOINT": "https://gateway-1.example.com/dev",
+      "ADP_TASK_GATEWAY_ENDPOINT": "https://gateway-1.example.com/dev"
+    }
+  },
+  "gateway": {
+    "images": [
+      "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+    ],
+    "desired": 9,
+    "ready": 9,
+    "updated": 9,
+    "generation": 1706,
+    "observed_generation": 1706,
+    "task_settings": {
+      "ADP_TASK_ADMISSION_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_API_ADMISSION_ENABLED": "true",
+      "ADP_TASK_API_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-agent-submit.fifo",
+      "ADP_TASK_API_READ_ENABLED": "true",
+      "ADP_TASK_API_RECOVERY_ENABLED": "true",
+      "ADP_TASK_API_WORKER_ENABLED": "true",
+      "ADP_TASK_DISPATCH_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_QUALIFICATION_ID": "task-api-5792-20260925",
+      "ADP_TASK_RECOVERY_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_WORKER_IMAGE_DIGESTS": "sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3,sha256:146442e6acf6c00c46c42070fa40c61ccaf775eec7c9aee5be56ffac23ae9dda,sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697,sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+      "ADP_TASK_WORKER_SERVICE_ACCOUNT": "agent-scaledjob-sa",
+      "BG_REDIS_CACHE_NAME": "bedrockgw-dev-redis-cluster",
+      "BG_REDIS_IAM_AUTH": "true",
+      "BG_REDIS_USERNAME": "bedrockgw-dev-iam-user",
+      "TASK_ARTIFACT_BUCKET_NAME": "adp-dev-chat-artifacts-000000000101"
+    },
+    "exact_pod_cohort": {
+      "at": "2026-09-25T06:21:52.358463+00:00",
+      "all_nine_ready_on_qualified_image": true,
+      "pods": [
+        {
+          "pod": "bedrockgateway-798cf4f444-2mmwv",
+          "uid": "1eb42fd6-02c8-4ccf-91e9-447e3f5caa05",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-9cbqh",
+          "uid": "5b0abf2f-a95e-4c43-b5d7-4cc943bf3180",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-gvj6s",
+          "uid": "c4e30045-68a7-4c17-9721-9700f39910f9",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-lbbbb",
+          "uid": "e012eb41-277d-4fc6-beb0-4e5f63839a7e",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-lf647",
+          "uid": "25bda03b-4377-45ee-bd22-0093673be3aa",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-ln62h",
+          "uid": "2b3576d8-0ad5-4563-af45-f6464f486719",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-nbhtp",
+          "uid": "7c0a75bb-1e85-4981-85fe-8a3e8b16a1d5",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-pfchs",
+          "uid": "50a11554-a517-4ec8-87bc-6d7238882737",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-qtf57",
+          "uid": "d3da946e-c9de-4917-937d-b29fe17d7dac",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

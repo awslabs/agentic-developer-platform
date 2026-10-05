@@ -1,18 +1,195 @@
 """Tests verifying all SQLAlchemy models are importable and have correct table names."""
 
+import html
 import json
-
-import pytest
+import unicodedata
+import urllib.parse
 
 import app.models  # noqa: F401 — triggers model registration with Base
+import pytest
 from app.database import Base
+
+
+class TestEncodedConfusableCredentialReferences:
+    ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            ARN,
+            ARN.replace(":", "%EF%BC%9A"),
+            ARN.replace(":", "&#xff1a;"),
+            ARN.replace("a", "&#xFF41;", 1),
+            ARN.replace(":", "&#65306;", 1).replace("&", "%2526", 1),
+            ARN.replace(":", "%EF%BC%853A", 1),
+            ARN.replace(":", "%25EF%25BC%25853A", 1),
+            ARN.replace(":", "%EF%BC%86#58;", 1),
+            "AKIAIOSFODNN7EXAMPLE",
+            urllib.parse.quote("AKIAIOSFODNN7EXAMPLE".replace("A", "Ａ", 1)),
+        ],
+    )
+    def test_storable_recoverable_material_is_refused_at_every_entry_point(
+        self, encoded
+    ):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry, validate_adp_credential_id
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from app.schemas.account import (
+            RegisterAccountRequest,
+            RegisterCredentialRequest,
+        )
+        from pydantic import ValidationError
+
+        assert len(encoded) <= 255
+        recovered = encoded
+        for _ in range(5):
+            recovered = unicodedata.normalize(
+                "NFKC", urllib.parse.unquote(html.unescape(recovered))
+            )
+        assert recovered in (self.ARN, "AKIAIOSFODNN7EXAMPLE")
+
+        with pytest.raises(ValueError):
+            validate_adp_credential_id(encoded)
+        for model in (
+            CredentialRegistry,
+            ProviderConnection,
+            ProviderConnectionBinding,
+        ):
+            with pytest.raises(ValueError):
+                model(adp_credential_id=encoded)
+        with pytest.raises(ValueError):
+            CloudAccount(adp_credential_ids_json=json.dumps([encoded]))
+        with pytest.raises(ValidationError):
+            RegisterCredentialRequest(
+                name="test", provider="nebius", adp_credential_id=encoded
+            )
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=[encoded],
+            )
+
+    def test_normalization_is_required_to_refuse_the_storable_bypass(self, monkeypatch):
+        from app.models import credential
+
+        encoded = self.ARN.replace(":", "%EF%BC%9A")
+        assert len(encoded) <= 255
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            credential.validate_adp_credential_id(encoded)
+        monkeypatch.setattr(
+            credential.unicodedata, "normalize", lambda _form, value: value
+        )
+        assert credential.validate_adp_credential_id(encoded) == encoded
+
+    def test_deepest_storable_percent_nesting_is_still_examined(self):
+        from app.models.credential import validate_adp_credential_id
+
+        encoded = "arn%3Aaws:s::"
+        while len(encoded) + 2 <= 255:
+            encoded = encoded.replace("%", "%25")
+        assert len(encoded) == 255
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            validate_adp_credential_id(encoded)
+
+    def test_exhausted_detection_budget_fails_closed(self, monkeypatch):
+        from app.models import credential
+
+        monkeypatch.setattr(credential, "_MAX_RECOVERABLE_FORMS", 1)
+        with pytest.raises(ValueError, match="excessive escaping"):
+            credential.validate_adp_credential_id("ref%252Fmore")
+
+    def test_bounds_run_at_schema_and_model_without_decoding_large_values(
+        self, monkeypatch
+    ):
+        from app.models import credential
+        from app.models.cloud_account import CloudAccount
+        from app.schemas.account import RegisterAccountRequest
+        from pydantic import ValidationError
+
+        oversized = "v" * 256
+        monkeypatch.setattr(
+            credential.urllib.parse,
+            "unquote",
+            lambda _value: pytest.fail("decoded oversized input"),
+        )
+        with pytest.raises(ValueError, match="short opaque reference"):
+            credential.validate_adp_credential_id(oversized)
+        with pytest.raises(ValueError, match="short opaque reference"):
+            CloudAccount(adp_credential_ids_json=json.dumps([oversized]))
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=[oversized],
+            )
+        references = ["ref"] * 65
+        with pytest.raises(ValueError, match="at most 64"):
+            CloudAccount(adp_credential_ids_json=json.dumps(references))
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=references,
+            )
+        with pytest.raises(ValueError, match="reference list limit"):
+            CloudAccount(adp_credential_ids_json="[" + " " * 100_000 + "]")
+
+    def test_valid_printable_opaque_references_are_not_normalized_or_decoded(self):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from app.schemas.account import RegisterAccountRequest
+
+        reference = "vault:secret/data/team/ref%2Fv2"
+        assert (
+            CredentialRegistry(adp_credential_id=reference).adp_credential_id
+            == reference
+        )
+        for model in (ProviderConnection, ProviderConnectionBinding):
+            assert model(adp_credential_id=reference).adp_credential_id == reference
+        assert json.loads(
+            CloudAccount(
+                adp_credential_ids_json=json.dumps([reference])
+            ).adp_credential_ids_json
+        ) == [reference]
+        assert RegisterAccountRequest(
+            name="test",
+            account_id="test",
+            role_arn="role",
+            external_id="id",
+            adp_credential_ids=[reference],
+        ).adp_credential_ids == [reference]
+
+    def test_long_sk_word_slug_is_refused_without_changing_the_detector(self):
+        from app.models.credential import validate_adp_credential_id
+
+        with pytest.raises(ValueError, match="secret material"):
+            validate_adp_credential_id("risk-" + "x" * 30)
 
 
 def test_all_tables_registered():
     """All tables from design doc sections 6.1, 15.7, and auth are registered."""
     expected_tables = {
+        "controller_network_completion",
+        "controller_network_resources",
+        "controller_network_members",
+        "controller_network_effects",
         "organizations",
         "organization_grants",
+        "organization_grant_cluster_scopes",
         "workspaces",
         "clusters",
         "node_pools",
@@ -64,6 +241,30 @@ def test_all_tables_registered():
         # written by raw SQL over the harness connection, not through a session; see
         # `app/models/operation_budget.py`.
         "operation_budget_reservations",
+        "operation_approvals",
+        "operation_settlement_receipts",
+        "workspace_bootstrap_read_tokens",
+        "workspace_lifecycle_artifacts",
+        "workspace_lifecycle_effects",
+        "workspace_lifecycle_control_operations",
+        # Governed controller assignments, async handles and accounting (018).
+        "controller_deployment_operations",
+        "controller_batch_results",
+        "controller_cleanup_bindings",
+        "controller_workload_submissions",
+        "controller_node_commands",
+        "controller_cleanup_snapshots",
+        "controller_executions",
+        "controller_provider_requests",
+        "controller_capacity",
+        "controller_execution_accounting",
+        # Per-workspace binding to a cluster, separate from the cluster's own
+        # ownership (issue #6048). Lets two workspaces share one cluster while
+        # keeping distinct namespaces, registrations and credential scope.
+        "cluster_memberships",
+        "membership_credentials",
+        "cluster_credential_authorities",
+        "membership_credential_components",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
@@ -99,6 +300,49 @@ def test_cluster_has_heartbeat_fields():
     table = Base.metadata.tables["clusters"]
     col_names = {c.name for c in table.columns}
     assert {"endpoint", "health_status", "last_heartbeat"} <= col_names
+
+
+def test_cluster_sharing_eligibility_is_explicit_and_defaults_off():
+    """Issue #6048: sharing/platform eligibility are explicit flags, default false.
+
+    Neither column may default to a value that makes an existing cluster shareable
+    just because this migration ran — see DESIGN.md's "never inferred" rule.
+    """
+    table = Base.metadata.tables["clusters"]
+    col_names = {c.name for c in table.columns}
+    assert {"sharing_enabled", "platform_eligible"} <= col_names
+    for name in ("sharing_enabled", "platform_eligible"):
+        column = table.columns[name]
+        assert column.default.arg is False
+        assert not column.nullable
+
+
+def test_cluster_membership_table_columns():
+    """Issue #6048: per-workspace membership carries its own namespace and generation.
+
+    This is the record that lets two workspaces share a cluster with distinct
+    namespaces, registrations and credential scope — see
+    `app/models/cluster_membership.py` for why it is a separate table rather than
+    a second column on `workspaces` or `clusters`.
+    """
+    table = Base.metadata.tables["cluster_memberships"]
+    col_names = {c.name for c in table.columns}
+    assert {
+        "id",
+        "org_id",
+        "workspace_id",
+        "cluster_id",
+        "generation",
+        "namespace",
+        "namespace_uid",
+        "state",
+        "operation_id",
+        "credential_reference_id",
+        "removal_reason",
+        "created_at",
+        "updated_at",
+        "removed_at",
+    } <= col_names
 
 
 class TestCredentialRecordsHoldAReferenceNotSecretMaterial:

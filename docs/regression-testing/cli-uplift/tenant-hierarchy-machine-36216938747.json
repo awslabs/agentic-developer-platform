@@ -1,0 +1,224 @@
+{
+  "evaluation_id": "adp-e2e-20260926-040832-a8e82b",
+  "expected_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
+  "harness_commit": "62b03d343181978aeb54ef1b29634204d050637d",
+  "counts": {
+    "blocked": 0,
+    "failed": 0,
+    "not_run": 0,
+    "passed": 5
+  },
+  "cleanup": "complete",
+  "full_acceptance": false,
+  "partial": true,
+  "workflow_run": 36216938747,
+  "workflow_source_sha": "306fe195b9722e92922a43ac98448c38f9d2795a",
+  "harness_commit_meaning": "Pinned tenant-validation dependency; workflow_source_sha identifies the CLI-uplift checkout",
+  "report_sha256": "50af6e33ad6dfc4ede4ecb53918c3053c18e808fd11f6e1d256eedc45ab7ebaa",
+  "instance_id": "i-00000000000000018",
+  "independent_instance_state": "terminated",
+  "cases": [
+    {
+      "detail": {
+        "checks": [],
+        "concurrent_rounds": 2,
+        "purpose": "tenant_isolation",
+        "qualification": "two-tenant CLI read/default/refresh isolation; long-lived model inference, membership revocation and lost mutation acknowledgement remain separate acceptance",
+        "refreshed": true,
+        "tenant_ids": [
+          "adp-platform",
+          "aws-e"
+        ]
+      },
+      "id": "E27",
+      "owner": "#5622",
+      "status": "passed",
+      "suite": "tenant-isolation",
+      "summary": "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim"
+    },
+    {
+      "detail": {
+        "checks": [
+          "ordinary_access_and_admin_session_review_boundary",
+          "same_operation_and_mapping_identity",
+          "duplicate_alias_and_foreign_tenant_refused",
+          "owned_alias_and_stale_revision_refusal",
+          "suspended_readback",
+          "terminal_retirement_and_ordinary_access_preserved"
+        ],
+        "cleanup": "retired_aliases_revoked_history_retained",
+        "final_identity": {
+          "aliases": [
+            {
+              "alias_id": "adp-evaluation-machine-32bd78ffa27cba2f9f4597e6edd05f3a",
+              "alias_source": "eventbridge",
+              "id": "1bb53d39-84e4-4483-a9eb-601fd2942477",
+              "is_active": false
+            },
+            {
+              "alias_id": "adp-evaluation-machine-secondary-32bd78ffa27cba2f9f4597e6edd05f3a",
+              "alias_source": "github_actions",
+              "id": "486e0eca-8b89-41d3-86be-37503275b116",
+              "is_active": false
+            }
+          ],
+          "canonical_service_principal_id": "18329166-106e-4992-be87-f77e4bfc66ab",
+          "display_name": "owned-machine-32bd78ffa27cba2f9f4597e6edd05f3a",
+          "effect": "Canonical resolution refuses inactive principals and revoked aliases; existing runs are not terminated.",
+          "revision": "ddbc2bfe148dfe969874a95d88dc0f4f6c6c7dd5891934d5d873714701da3d34",
+          "status": "retired",
+          "tenant_id": "aws-e"
+        },
+        "phase": "checks_complete",
+        "principal_id": "18329166-106e-4992-be87-f77e4bfc66ab",
+        "qualification": "Canonical metadata only; no provider identity, credential, inference, session revocation or membership mutation. Access/session coverage is read/denial only.",
+        "recovery_plan": {
+          "aliases": [
+            {
+              "alias_id": "adp-evaluation-machine-32bd78ffa27cba2f9f4597e6edd05f3a",
+              "alias_source": "eventbridge"
+            },
+            {
+              "alias_id": "adp-evaluation-machine-secondary-32bd78ffa27cba2f9f4597e6edd05f3a",
+              "alias_source": "github_actions"
+            }
+          ],
+          "cleanup": "Revoke only recorded aliases and retire exact owned principal; retain history. No provider identity or credential is created.",
+          "display_name": "owned-machine-32bd78ffa27cba2f9f4597e6edd05f3a",
+          "duplicate_id": "9d25baec-79c8-53cf-acc1-40e2fbf8faae",
+          "evaluation_id": "adp-e2e-20260926-040832-a8e82b",
+          "fixture": {
+            "canonical_user_id": "adb83c0b-ba03-4901-ab4e-be1584f8550d",
+            "login_user_id": "d46864a8-8011-70ef-166b-5a9c9c717daa",
+            "ordinary_canonical_user_id": "bec852f3-d20a-4d58-84cf-3c25a1d63079",
+            "ordinary_native_tenant": "adp-platform",
+            "owned_mutations_authorized": true,
+            "tenant_id": "aws-e"
+          },
+          "gateway": "https://gateway-101.example.com/api",
+          "purpose": "machine_lifecycle",
+          "registration_id": "71885afa-6a90-5019-ac49-4445c9be9e08",
+          "version": 1
+        },
+        "session_review": {
+          "cognito_sessions_revoked": false,
+          "credential_families": "<redacted>",
+          "effect": "Gateway-issued tokens are refused on their next database validation. Cognito login/refresh and established connections are unchanged. Hosted runs are not stopped.",
+          "org": "aws-e",
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "user_id": "bec852f3-d20a-4d58-84cf-3c25a1d63079"
+        }
+      },
+      "id": "D05",
+      "owner": "#5624/#5625",
+      "status": "passed",
+      "suite": "machine-lifecycle",
+      "summary": "Owned canonical principal lifecycle with ordinary access and session review boundary"
+    },
+    {
+      "detail": {
+        "checks": [
+          "independent-ordinary-admin-denial",
+          "same-id-create-conflict-original-unchanged",
+          "explicit-department-team-parentage",
+          "ordinary-hierarchy-read-write-refused",
+          "canonical-id-required-name-selector-refused",
+          "org-create-update-local-stale-refusal",
+          "populated-delete-no-cascade",
+          "two-teams-remove-one",
+          "foreign-parent-refused",
+          "retained-signed-lease-api-denied",
+          "revoked-tenant-denied-native-preserved",
+          "same-id-delete-retry-reports-absence",
+          "membership-restored-and-owned-resources-absent"
+        ],
+        "cleanup": {
+          "adp-eval-dept-d8f0d9b88a5e7963": "absent",
+          "adp-eval-org-d8f0d9b88a5e7963": "absent",
+          "adp-eval-org-d8f0d9b88a5e7963-dept-default": "absent",
+          "adp-eval-org-d8f0d9b88a5e7963-team-default": "absent",
+          "adp-eval-team-a-d8f0d9b88a5e7963": "absent",
+          "adp-eval-team-b-d8f0d9b88a5e7963": "absent"
+        },
+        "create_retry": {
+          "code": "resource_conflict",
+          "exit_code": 5,
+          "expected_http_status": 409
+        },
+        "delete_retry": {
+          "code": "resource_not_found",
+          "exit_code": 5,
+          "expected_http_status": 404
+        },
+        "membership_restoration": "verified",
+        "name_selector_refusal": {
+          "code": "usage_error",
+          "exit_code": 1,
+          "expected_http_status": null
+        },
+        "ordinary_hierarchy_read": {
+          "code": "access_denied",
+          "exit_code": 3,
+          "expected_http_status": 403
+        },
+        "ordinary_hierarchy_write": {
+          "code": "access_denied",
+          "exit_code": 3,
+          "expected_http_status": 403
+        },
+        "parentage": {
+          "adp-eval-dept-d8f0d9b88a5e7963": {
+            "department_id": null,
+            "org_id": "aws-e"
+          },
+          "adp-eval-org-d8f0d9b88a5e7963": {
+            "department_id": null,
+            "org_id": "adp-eval-org-d8f0d9b88a5e7963"
+          },
+          "adp-eval-team-a-d8f0d9b88a5e7963": {
+            "department_id": "adp-eval-dept-d8f0d9b88a5e7963",
+            "org_id": "aws-e"
+          },
+          "adp-eval-team-b-d8f0d9b88a5e7963": {
+            "department_id": "adp-eval-dept-d8f0d9b88a5e7963",
+            "org_id": "aws-e"
+          }
+        },
+        "plan": {
+          "default_department_id": "adp-eval-org-d8f0d9b88a5e7963-dept-default",
+          "default_team_id": "adp-eval-org-d8f0d9b88a5e7963-team-default",
+          "department_id": "adp-eval-dept-d8f0d9b88a5e7963",
+          "evaluation_id": "adp-e2e-20260926-040832-a8e82b",
+          "fixture": {
+            "canonical_user_id": "adb83c0b-ba03-4901-ab4e-be1584f8550d",
+            "login_user_id": "d46864a8-8011-70ef-166b-5a9c9c717daa",
+            "ordinary_canonical_user_id": "bec852f3-d20a-4d58-84cf-3c25a1d63079",
+            "ordinary_login_user_id": "e512c3c3-cc09-4d09-8820-1a887b77d633",
+            "ordinary_native_tenant": "adp-platform",
+            "owned_mutations_authorized": true,
+            "tenant_id": "aws-e"
+          },
+          "gateway": "https://gateway-101.example.com/api",
+          "org_id": "adp-eval-org-d8f0d9b88a5e7963",
+          "restore": {
+            "membership_status": "active",
+            "role": "member",
+            "team_id": "",
+            "teams": []
+          },
+          "schema": "hierarchy-lifecycle-v2",
+          "team_ids": [
+            "adp-eval-team-a-d8f0d9b88a5e7963",
+            "adp-eval-team-b-d8f0d9b88a5e7963"
+          ]
+        },
+        "qualification": "Role-change authority remains unqualified: adding an existing person to a disposable organization retains an org-local user after membership removal; no supported CLI identity cleanup is available."
+      },
+      "id": "D03",
+      "owner": "#5623/#5622",
+      "status": "passed",
+      "suite": "hierarchy-lifecycle",
+      "summary": "Owned hierarchy lifecycle and ordinary tenant revocation/restoration"
+    }
+  ]
+}

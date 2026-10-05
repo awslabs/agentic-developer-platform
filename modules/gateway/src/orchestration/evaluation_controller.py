@@ -118,7 +118,10 @@ class EvaluationServices:
             .execution_options(populate_existing=True)
         )
         flow = await session.get(OrchestrationFlow, context.execution.flow_id, populate_existing=True)
-        require(node is not None and flow is not None and flow.org_id == node.org_id and flow.state == "running", "evaluation_flow_not_running")
+        require(
+            node is not None and flow is not None and flow.org_id == node.org_id and flow.state in {"pending", "running"},
+            "evaluation_flow_not_running",
+        )
         require(node.attempts == context.identity.cycle, "evaluation_cycle_changed")
         return node
 

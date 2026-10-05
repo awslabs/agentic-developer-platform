@@ -823,7 +823,7 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     """Move a held engine lane to its committed successor without a new generation.
 
     The same accepted execution and owner continue after a successful terminal
-    receipt, or an explicit human recovery decision verified against a positively
+    receipt, or an owner- or policy-authorized recovery decision verified against a positively
     exited worker and this exact PR. Recovery never supplies a terminal receipt.
     """
     import json
@@ -875,6 +875,12 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     if claim.active_run_id != expected_run_id:
         raise WorkClaimError("continuation_owner_changed", "Another run owns the mutating lane.")
     prior = completed_execution
+    from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+    bootstrap_retry = action.detail.get("bootstrap_retry_of") == expected_run_id and is_bootstrap_failure(prior)
+    from .review_cycle_dispatch import failed_review
+
+    review_retry = action.detail.get("review_retry_of") == expected_run_id and action.detail.get("action") == "review" and failed_review(prior)
     if recovery_decision_id:
         from .execution_runner import RunnerContext
         from .models import OrchestrationNode
@@ -898,7 +904,7 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
         not prior
         or prior.get("tenant_id") != {"S": identity.org_id}
         or prior.get("status") != {"S": "completed"}
-        or prior.get("terminal_outcome") != {"S": "complete"}
+        or (prior.get("terminal_outcome") != {"S": "complete"} and not bootstrap_retry and not review_retry)
         or prior.get("orchestration_node_id") != {"S": identity.node_id}
     ):
         raise WorkClaimError("continuation_owner_not_finished", "The previous protected worker has not completed successfully.")

@@ -1,0 +1,51 @@
+[
+  {
+    "package": "openssh-client",
+    "version": "1:10.0p1-7+deb13u4+adp.security.1",
+    "archive_sha256": "369aa27bf7203a35290d9512e7b42ce718d4b0156c037e857a94ec66e9812af7",
+    "binaries": [
+      {
+        "path": "/usr/bin/ssh",
+        "sha256": "040d6afdb0e3194a3afca73981e4be57c8acb5898ed4108ea2b051232d0001c1"
+      },
+      {
+        "path": "/usr/bin/scp",
+        "sha256": "bde7f8e3badea00a86faa4522efcac312dafe6fae5bf3d9dcd6d5beb4de036e9"
+      },
+      {
+        "path": "/usr/bin/sftp",
+        "sha256": "82db87c4c00f6c817eb771b8a273bf81d35107f70c2bdb6c6af75a5f85c81e29"
+      }
+    ]
+  },
+  {
+    "package": "openssh-server",
+    "version": "1:10.0p1-7+deb13u4+adp.security.1",
+    "archive_sha256": "da721201e80806f22a16c31ccd8557e087b05466625d2eaa5a00f492eb3bbd74",
+    "binaries": [
+      {
+        "path": "/usr/sbin/sshd",
+        "sha256": "8013b400f3acbb7576788c6647631ecca00dc1227dba3f5fcb0ece9a1f4f05e7"
+      },
+      {
+        "path": "/usr/lib/openssh/sshd-auth",
+        "sha256": "c4f41ebb9b0f85787e85d389fd2888c8fbee12724ecb9c4c48f3c1a4806bab7b"
+      },
+      {
+        "path": "/usr/lib/openssh/sshd-session",
+        "sha256": "373fc3e87d8ae7f4ac8edd02f7093ef4eb3b90b3518f0d1f0c801206baac3289"
+      }
+    ]
+  },
+  {
+    "package": "openssh-sftp-server",
+    "version": "1:10.0p1-7+deb13u4+adp.security.1",
+    "archive_sha256": "49209e21f9e1b9234ef8517dde93db1c26b87b1d52faed9666b418b3e2b989ab",
+    "binaries": [
+      {
+        "path": "/usr/lib/openssh/sftp-server",
+        "sha256": "58ac747f13c7e765066c2a3c1396e5094ab014062d4fc67317ff583d264185df"
+      }
+    ]
+  }
+]

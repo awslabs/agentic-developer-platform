@@ -36,8 +36,9 @@ transaction. The ordering is chosen deliberately (hazard 3 of the ruling, and th
 publish.**
 
 - Commit, then publish, and the publish fails: the node is `running` with no run.
-  Recovered by the stall/halt detector from #4211, which is merged — a node stuck
-  in `running` is exactly what `stall.py` exists to find. The failure is also
+  Protected dispatch now retains its exact envelope in the committed decision;
+  the next dispatch pass replays it until protected worker startup is observed.
+  Historical dispatches without an envelope still require recovery. The failure is also
   counted (`publish_failed`) and forces a non-success report, so it is never
   silent.
 - Publish, then commit, and the commit fails: a run exists with no `running` node,
@@ -152,9 +153,10 @@ from src.shared.models.base import utcnow
 from src.shared.models.organization import Organization
 
 from .dispatch import DispatchStatus, dispatch_node
+from .flow_execution import flow_is_paused
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
 from .handoff import HANDOFF_RECEIPT_CONTRACT_VERSION
-from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .policy_admission import authorize_node_dispatch
 from .state import ActorKind, NodeState
 
@@ -549,7 +551,9 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
     """
     stmt = (
         select(OrchestrationNode)
+        .join(OrchestrationFlow, (OrchestrationFlow.id == OrchestrationNode.flow_id) & (OrchestrationFlow.org_id == OrchestrationNode.org_id))
         .where(
+            OrchestrationFlow.execution_paused.is_(False),
             OrchestrationNode.state == NodeState.READY.value,
             OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
@@ -724,6 +728,22 @@ async def _dispatch_one_unclaimed(
     org_id = node.org_id
     observed_attempts = node.attempts
 
+    from dataclasses import replace
+
+    from .executor_assignment import accepted_executor_persona
+
+    try:
+        config = replace(config, persona=await accepted_executor_persona(session, node, default=config.persona))
+    except ValueError as exc:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="flow-owner",
+                required_input="restore or amend the accepted node executor assignment",
+                detail=str(exc),
+            )
+        ) from None
+
     # --- Everything needed for a valid envelope, checked before any write. ---
     if not config.configured:
         logger.warning(
@@ -881,24 +901,22 @@ async def _dispatch_one_unclaimed(
         owner, detail, required_input = description(code)
         raise _AdmissionRefusedError(_admission_refused(code, owner=owner, required_input=required_input, detail=detail))
 
-    selection = None
-    from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
+    from src.agentauth.launch_configuration import resolve_launch_configuration
 
-    if mapping_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
-        try:
-            selection = await select_for_dispatch(
-                session,
-                org_id=org_id,
-                user_id=user_id,
-                persona=EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona,
-            )
-        except Exception:
-            logger.exception("Saved persona model unavailable for node %s; node remains ready", node.id)
-            report.record(org_id, "policy_blocked")
-            report.policy_block_reasons["persona_model_selection_unavailable"] = (
-                report.policy_block_reasons.get("persona_model_selection_unavailable", 0) + 1
-            )
-            return
+    try:
+        launch_configuration = await resolve_launch_configuration(
+            session,
+            org_id=org_id,
+            user_id=user_id,
+            persona=EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona,
+        )
+    except Exception:
+        logger.exception("Agent configuration unavailable for node %s; node remains ready", node.id)
+        report.record(org_id, "policy_blocked")
+        report.policy_block_reasons["persona_model_selection_unavailable"] = (
+            report.policy_block_reasons.get("persona_model_selection_unavailable", 0) + 1
+        )
+        return
 
     # A repair inherits the implementation identity, not an old approval. Resolve
     # provider truth before consuming an attempt; failure leaves the node READY.
@@ -972,10 +990,13 @@ async def _dispatch_one_unclaimed(
         user_id=user_id,
         cognito_sub=cognito_sub,
     )
-    if selection is not None:
-        envelope["model_selection"] = selection
-        if selection["model"] is not None:
-            envelope["model_resolved"] = selection["model"]
+    envelope.update(launch_configuration)
+    if observed_attempts:
+        from .developer_recovery import retry_context
+
+        recovery = await retry_context(session, node, observed_attempts)
+        if recovery is not None:
+            envelope["orchestration"]["developer_recovery"] = recovery
 
     if correction is not None:
         detail = correction.detail
@@ -1062,6 +1083,19 @@ async def _dispatch_one_unclaimed(
             envelope["execution_continuation"] = dict(envelope["handoff_expect"])
             envelope["action"] = Action.REPAIR.value if observed_attempts else Action.DEVELOP.value
 
+    if prior_binding is not None:
+        from .pr_bindings import binding_summary
+
+        # Carry-forward needs the dispatch decision below to resolve authority.
+        # Freeze the provider-verified PR pointer first, then verify that the
+        # binding transaction produced exactly this assignment before commit.
+        envelope["bound_pull_request"] = {
+            **binding_summary(prior_binding),
+            "head_sha": repair_pr.head_sha,
+            "provider_repository_id": repair_pr.provider_repository_id,
+            "provider_pr_node_id": repair_pr.provider_pr_node_id,
+        }
+
     session.add(
         OrchestrationDecision(
             org_id=org_id,
@@ -1085,6 +1119,11 @@ async def _dispatch_one_unclaimed(
                     "handoff_required": receipt_required,
                     "provider_repository_id": repository_id,
                     "installation_id": installation_id,
+                    **(
+                        {"dispatch_envelope": envelope}
+                        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and not shared_continuation
+                        else {}
+                    ),
                 }
             ),
         )
@@ -1102,17 +1141,19 @@ async def _dispatch_one_unclaimed(
             pr=repair_pr,
             expected_revision=prior_revision,
         )
-        envelope["bound_pull_request"] = {
+        carried_pointer = {
             **binding_summary(current_binding),
             "provider_repository_id": current_binding.provider_repository_id,
             "provider_pr_node_id": current_binding.provider_pr_node_id,
         }
+        if carried_pointer != envelope["bound_pull_request"]:
+            raise ValueError("carried PR differs from the committed dispatch assignment")
 
     # Activate only after gateway, worker, migration and signing material have
     # been verified. The assignment commits atomically with this exact dispatch.
     from .report_dispatch import reporting_enabled
 
-    if binding_required and reporting_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+    if binding_required and reporting_enabled() and (shared_continuation or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"):
         from .run_reports import prepare_run_report
 
         await prepare_run_report(session, envelope)
@@ -1344,19 +1385,37 @@ class _AdmissionRefusedError(Exception):
 
 
 async def _shared_continuation(session, node) -> bool:
-    if (
-        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
-        or os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").lower() != "true"
-    ):
-        return False
+    from .models import OrchestrationAcceptedPlan
     from .review_cycle import CycleBlockedError
     from .shared_policy import shared_inputs
 
-    try:
-        await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
-        return True
-    except CycleBlockedError:
+    plan = await session.scalar(
+        select(OrchestrationAcceptedPlan).where(
+            OrchestrationAcceptedPlan.org_id == node.org_id,
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    if plan is None or (plan.plan_document or {}).get("execution_continuation") is None:
         return False
+    try:
+        # Accepted mode wins even when protected authority is enabled globally.
+        # An invalid/disabled shared contract is a refusal, never a fallback.
+        await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
+        from .report_dispatch import reporting_enabled
+
+        if not reporting_enabled():
+            raise CycleBlockedError("shared_run_reporting_disabled")
+        return True
+    except CycleBlockedError as exc:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="platform-operator",
+                required_input="restore the accepted shared continuation transport or explicitly amend the plan",
+                detail=exc.reason,
+            )
+        ) from None
 
 
 async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None:
@@ -1368,7 +1427,7 @@ async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None
         from .repository_evaluation import observe_repository_evaluation
 
         accepted = await accepted_evaluation(session, node)
-        if accepted is not None and accepted[1].evidence_schema == "repository-evaluation/v1":
+        if accepted is not None and accepted[1].evidence_schema in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
             if not report._repository_evaluation_attempted:
                 report._repository_evaluation_attempted = True
                 await observe_repository_evaluation(session, node)
@@ -1454,6 +1513,8 @@ async def _dispatch_one(session, node, *, config, report) -> None:
 
     # Capture scalar identity before any savepoint rollback expires the ORM node.
     node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
+    if await flow_is_paused(session, org_id=org_id, flow_id=flow_id, lock=True):
+        return
     inputs = await load_in_force_policy(session, org_id=org_id, flow_id=flow_id)
     scope = {
         "attempt": node.attempts,
@@ -1594,7 +1655,14 @@ async def run_dispatch_pass(
             logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
             report.record(org_id, "errors")
 
+    from .protected_dispatch_recovery import recover_pending_protected
     from .report_dispatch import recover_pending_reports
+
+    try:
+        await recover_pending_protected(session, config=cfg, report=report)
+    except Exception:
+        logger.exception("orchestration dispatch: protected outbox could not be recovered")
+        report.errors += 1
 
     try:
         await recover_pending_reports(session, config=cfg, report=report)
@@ -1682,6 +1750,9 @@ async def prepare_pending(
 
     prepared: list[PendingPublish] = []
     for pending in report.pending:
+        if pending.envelope.get("execution_continuation") and pending.envelope.get("run_report"):
+            prepared.append(pending)
+            continue
         invocation_id = pending.invocation_id()
         try:
             # Blocking DynamoDB writes: off the event loop so a slow round trip
@@ -1755,7 +1826,8 @@ def publish_pending(
 
     for pending in report.pending:
         envelope = pending.envelope
-        protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        shared = bool(envelope.get("execution_continuation") and envelope.get("run_report"))
+        protected = not shared and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
         if protected:
             try:
                 from src.agentauth.engine import get_engine_authority_writer

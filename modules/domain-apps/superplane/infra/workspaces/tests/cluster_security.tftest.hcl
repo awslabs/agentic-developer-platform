@@ -452,6 +452,13 @@ run "the_cluster_security_group_admits_nothing_from_outside_the_vpc" {
     condition     = aws_vpc_security_group_egress_rule.cluster_all.ip_protocol == "-1"
     error_message = "Egress must be explicit (a security group with no rules allows nothing out, which breaks image pulls). Ingress — the direction that admits an attacker — is empty."
   }
+  assert {
+    condition = (
+      length(aws_vpc_security_group_egress_rule.cluster_all.description) < 256 &&
+      length(regexall("[^a-zA-Z0-9. _:/()#,@\\[\\]+=&;{}!$*-]", aws_vpc_security_group_egress_rule.cluster_all.description)) == 0
+    )
+    error_message = "EC2 security-group rule descriptions must use the API's allowed characters; apostrophes cause a live apply failure."
+  }
 }
 
 run "supplied_kms_wrong_region_is_refused" {

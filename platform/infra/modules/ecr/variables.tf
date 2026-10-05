@@ -3,6 +3,12 @@ variable "environment" {
   description = "Environment name (dev, test, prod)"
 }
 
+variable "manage_registry_scanning" {
+  description = "Own registry-wide BASIC scanning. Disable when organization/Inspector or another state owns scanning."
+  type        = bool
+  default     = true
+}
+
 variable "name_prefix" {
   type        = string
   description = "Name prefix used by the registry scanning rule filter"
@@ -40,7 +46,7 @@ variable "common_tags" {
 variable "image_tag_mutability" {
   type        = string
   description = "ECR image tag mutability"
-  default     = "MUTABLE"
+  default     = "IMMUTABLE"
   validation {
     condition     = contains(["MUTABLE", "IMMUTABLE"], var.image_tag_mutability)
     error_message = "ECR image tag mutability must be MUTABLE or IMMUTABLE."

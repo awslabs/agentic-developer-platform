@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -128,13 +129,20 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
         shutil.copyfile(overlay, target)
     # Evaluate the actual input files through the wrapper with provider-free
     # Terraform. Every declared variable remains production-owned.
-    shutil.copyfile(SCRIPTS.parent / "infra/variables.tf", infra / "variables.tf")
+    # Variables are also declared alongside their owning resources. Copy every
+    # production declaration into the provider-free fixture, so an environment
+    # overlay is checked against the real input surface regardless of file layout.
+    declarations = []
+    for source in sorted((SCRIPTS.parent / "infra").glob("*.tf")):
+        declarations.extend(re.findall(r'^variable "[^\"]+" \{.*?^\}', source.read_text(), re.MULTILINE | re.DOTALL))
+    (infra / "variables.tf").write_text("\n\n".join(declarations) + "\n")
     real_terraform = shutil.which("terraform")
     assert real_terraform
     (root / "bin/terraform").write_text(
         '#!/usr/bin/env bash\nshift\nexec "$REAL_TERRAFORM" console -no-color "$@"\n'
     )
-    env.update(ADP_ENV=selected, REAL_TERRAFORM=real_terraform)
+    env.update(ADP_ENV=selected, REAL_TERRAFORM=real_terraform,
+               TF_VAR_agent_image="123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:" + "0" * 64)
     result = subprocess.run(
         ["bash", str(scripts / "terraform-webhook.sh"), "plan"],
         env=env,
@@ -143,8 +151,11 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.lstrip().startswith('"'), result.stdout
-    assert json.loads(json.loads(result.stdout)) == {
+    # Console writes warnings about unrelated/deprecated overlay inputs before
+    # the evaluated value. Verify that value without treating stdout as an API.
+    value = result.stdout.strip().splitlines()[-1]
+    assert value.startswith('"'), result.stdout
+    assert json.loads(json.loads(value)) == {
         "persona_mapping": True,
         "reserved": selected != "dev",
         "adversarial": selected == "dev",
@@ -177,7 +188,6 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
                 "AGENT_RUN_CREDENTIAL_KEY",
                 "AGENT_CONTROL_ENVELOPE_SIGNING_KEY",
                 "ADP_MARKER_SIGNING_KEY",
-                "ADP_DOOR_SERVICE_KEY",
             )
         ],
     ],
@@ -201,7 +211,7 @@ if 'get' in sys.argv:
     if 'secret' in sys.argv:
         if os.environ['UNAVAILABLE'] == 'missing-secret': sys.exit(1)
         if os.environ['UNAVAILABLE'] not in ('missing-key', 'empty-key'):
-            print('run-credential-key\\nenvelope-signing-key\\nmarker-signing-key\\ninternal-api-key')
+            print('run-credential-key\\nenvelope-signing-key\\nmarker-signing-key')
     else:
         print(os.environ['SECRET_REFS'] if 'secretKeyRef' in sys.argv[-1] else os.environ['CONFIG_REFS'])
 """

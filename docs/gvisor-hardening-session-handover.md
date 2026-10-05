@@ -70,7 +70,7 @@ Files in #2558:
 
 ---
 
-## Live cluster snapshot (dev, account 879318057152, profile `embark1`)
+## Live cluster snapshot (dev, account 000000000101, profile `example-profile`)
 
 - NodePools: `general-purpose` (NodeClass `default`, 1 node, 74d — standard workloads) and `gvisor` (NodeClass `default`, 0 nodes — the #2524 fence; **currently non-functional** because it points at Bottlerocket, fixed by #2558).
 - `karpenter.sh` CRDs owned by Auto Mode's embedded controller.
@@ -83,7 +83,7 @@ Files in #2558:
 **File a from-scratch validation issue** modeled on **[#1320](https://github.com/aws-e/adp/issues/1320)** (the fresh-account, phase-by-phase, account-guarded, long-running-orchestrator deploy runbook). Goal: stand up a clean cluster in an **isolated account**, apply the #2558 dual-Karpenter substrate there, and prove it (a) coexists with Auto Mode without CRD interference, and (b) provisions a real AL2023 gVisor node where a `runtimeClassName: gvisor` pod runs and `cat /proc/version` shows `4.19.0-gvisor`, surviving node recycle.
 
 **Blocked on two decisions from the user** (asked, not yet answered):
-1. **Target account** — reuse `968027867250` (existing #1320 test account, vault label `adp-test-968027867250`, verified assumable role; may carry leftover state) **or** a brand-new account (user supplies account ID / vault label / user-id / assumable role).
+1. **Target account** — reuse `000000000234` (existing #1320 test account, vault label `adp-test-000000000234`, verified assumable role; may carry leftover state) **or** a brand-new account (user supplies account ID / vault label / user-id / assumable role).
 2. **Scope depth** — platform infra only (Phases 1–3 of #1320: bootstrap + preflight + `platform-infra-apply` → VPC + EKS Auto Mode; enough to prove the substrate) **or** full ADP deploy + a live agent under `runtimeClassName: gvisor` end-to-end.
 
 Once those are answered: file the issue (five-section convention; account-guard hard rule; per-phase in-account validation; child-issue protocol for every manual fix; the #2558 apply + dual-Karpenter validation as the final phase), verify the body has **zero stray `@agent-` tokens**, then dispatch `@agent-operations` via a comment mention.
@@ -93,7 +93,7 @@ Once those are answered: file the issue (five-section convention; account-guard 
 ## Operating conventions used this session (keep these)
 
 - **Trigger agents via comment mention** (`@agent-operations` / `@agent-architect`), NOT labels. Issue *bodies* must contain **zero `@agent-` tokens** (the mention parser routes to the first one it sees) — verify with `grep -oE '@agent-[a-z]+'` before dispatch.
-- **AWS profile `embark1`** (account 879318057152) for the live dev cluster. Never hardcode/echo/log credentials.
+- **AWS profile `example-profile`** (account 000000000101) for the live dev cluster. Never hardcode/echo/log credentials.
 - **Dispatch briefs** carry: session-extension recipe (IRSA refresh), a scope fence, convergence guardrails (single hypothesis, 2-attempts-then-status, no architecture pivots), and a HARD validation gate (`kubectl --dry-run=server` for heredoc YAML — terraform plan does NOT validate it).
 - **The flip (#2376) requires explicit human confirmation** — never auto-dispatch it. Revert is sub-minute (one `runtimeClassName` field).
 - `platform/infra/` is **manual-apply only**; a second controller on a shared cluster is a weighty action — apply only with the user watching.

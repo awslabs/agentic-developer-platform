@@ -779,12 +779,27 @@ class TestAReplanChangesNoPromotionState:
 
 
 class TestSavedAuthoringModel:
+    @pytest.mark.parametrize("protected", [False, True])
     @pytest.mark.parametrize("unavailable", [False, True])
-    async def test_replan_selects_for_requester_and_remains_retryable(self, session, monkeypatch, unavailable):
-        from src.admin.persona_models import dispatch_selection
+    async def test_replan_selects_for_requester_and_remains_retryable(self, session, monkeypatch, unavailable, protected):
+        from src.agentauth import launch_configuration as dispatch_selection
 
         monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
-        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        provisioned = []
+        if protected:
+
+            def provision(pending):
+                provisioned.append(pending.envelope)
+                assert pending.envelope["model_resolved"] == "author-model"
+                return pending.envelope
+
+            writer = SimpleNamespace(provision_authoring=provision, store=object())
+            monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: writer)
+            monkeypatch.setattr(
+                "src.agentauth.model_policy.ensure_snapshot_report_only",
+                AsyncMock(return_value={"status": "available"}),
+            )
         flow_id = await flow_with_asker(session)
         report = EngineCommandReport()
         await replan(session, report, flow_id=flow_id)
@@ -800,6 +815,7 @@ class TestSavedAuthoringModel:
         sqs = FakeSQS()
         await flush(session, report, sqs, monkeypatch)
         assert selected == [(ORG_A, ASKER, AUTHORING_PERSONA)]
+        assert len(provisioned) == int(protected and not unavailable)
         rows = await requests(session)
         if unavailable:
             assert not sqs.calls

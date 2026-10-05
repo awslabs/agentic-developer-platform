@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bootstrap.schema.json",
+  "title": "Task worker bootstrap and attempt contract v1",
+  "description": "What the worker host sends to claim its assignment and what the gateway returns. The request carries only verified workload evidence and the acquired envelope digest; every authority value in the response is gateway-derived. That asymmetry is the contract: a worker cannot name its own owner, generation, model or limits, so a compromised or buggy worker cannot widen its own authority. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design sections 7 and 12.",
+  "$defs": {
+    "bootstrap_request": {
+      "type": "object",
+      "description": "POST /internal/v1/agent/task/bootstrap. Requires IAM transport and a live TokenReview binding, validated outside this body.",
+      "additionalProperties": false,
+      "required": ["schema_version", "task_id", "invocation_id", "envelope_digest", "workload"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "envelope_digest": {
+          "$ref": "common.schema.json#/$defs/sha256_digest",
+          "description": "Compared against the committed envelope digest before binding."
+        },
+        "workload": { "$ref": "bootstrap.schema.json#/$defs/workload_identity" }
+      },
+      "not": {
+        "description": "No caller-selected owner, authority or limits. The gateway derives all of these.",
+        "anyOf": [
+          { "required": ["owner"] },
+          { "required": ["canonical_principal"] },
+          { "required": ["tenant"] },
+          { "required": ["generation"] },
+          { "required": ["model_id"] },
+          { "required": ["limits"] },
+          { "required": ["run_credential"] }
+        ]
+      }
+    },
+
+    "workload_identity": {
+      "type": "object",
+      "description": "Kubernetes workload-instance evidence. Termination is proven from this, not from a reusable pod name or a missing heartbeat.",
+      "additionalProperties": false,
+      "required": ["pod_uid", "namespace"],
+      "properties": {
+        "pod_uid": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "job_uid": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "namespace": { "type": "string", "minLength": 1, "maxLength": 63 },
+        "pod_name": {
+          "type": "string",
+          "maxLength": 253,
+          "description": "Diagnostic only. A pod name is reusable and never proves identity or termination."
+        }
+      }
+    },
+
+    "bootstrap_response": {
+      "type": "object",
+      "allOf": [
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
+      "description": "Task-scoped run credential plus immutable bindings. Existing service principals are denied until an explicit task policy exists.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "invocation_id",
+        "generation",
+        "persona",
+        "run_credential",
+        "run_credential_expires_at",
+        "input",
+        "model_binding",
+        "limits"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "generation": {
+          "$ref": "common.schema.json#/$defs/generation",
+          "description": "Conditionally bound to the verified Pod/Job UID."
+        },
+        "persona": { "$ref": "common.schema.json#/$defs/persona" },
+        "run_credential": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Opaque task-scoped credential. Fixtures use an explicit non-secret sentinel."
+        },
+        "run_credential_expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "input": { "$ref": "bootstrap.schema.json#/$defs/immutable_input" },
+        "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "tool_grants": {
+          "description": "Frozen host-provided permissions for selecting Task tools; gateway authorization remains authoritative.",
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$" }
+        },
+        "harness": { "$ref": "codex-harness.schema.json#" },
+        "limits": { "$ref": "bootstrap.schema.json#/$defs/run_limits" },
+        "capabilities": {
+          "type": "array",
+          "items": { "enum": ["input", "cancel"] },
+          "description": "Only implemented capabilities are advertised. v1 has no pause or resume."
+        }
+      }
+    },
+
+    "immutable_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instructions", "input_digest"],
+      "properties": {
+        "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+        "inputs": { "type": "object" },
+        "acceptance_criteria": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "maxLength": 1000 },
+          "description": "Task content, not authority."
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifact_id", "version", "content_sha256", "content_type"],
+            "properties": {
+              "artifact_id": { "$ref": "common.schema.json#/$defs/artifact_id" },
+              "version": { "type": "integer", "minimum": 1 },
+              "content_sha256": { "$ref": "common.schema.json#/$defs/sha256_digest" },
+              "content_type": { "$ref": "common.schema.json#/$defs/content_type" }
+            }
+          }
+        },
+        "input_digest": { "$ref": "common.schema.json#/$defs/sha256_digest" }
+      }
+    },
+
+    "model_binding": {
+      "type": "object",
+      "description": "Resolved at admission with versions saved against the run grant. The worker cannot choose a fallback or bypass the gateway.",
+      "additionalProperties": false,
+      "required": ["model_id", "transport", "model_policy_version", "request_shape_version", "pricing_evidence_version", "invocability_verified"],
+      "properties": {
+        "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "transport": {
+          "enum": ["anthropic_messages", "openai_responses"],
+          "description": "The admitted Messages or bounded Codex Responses transport; never selected or overridden by the child."
+        },
+        "model_policy_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "request_shape_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pricing_evidence_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "invocability_verified": {
+          "const": true,
+          "description": "A missing eligible model blocks readiness rather than allowing a fallback."
+        }
+      }
+    },
+
+    "run_limits": {
+      "type": "object",
+      "description": "Immutable per-run bounds derived from the fixed pilot limits and any stricter tenant policy.",
+      "additionalProperties": false,
+      "required": ["max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"],
+      "properties": {
+        "max_turns": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "max_usd": { "type": "number", "minimum": 0, "maximum": 1000 },
+        "max_provider_operation_seconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "max_events": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "max_result_artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "heartbeat_interval_seconds": { "type": "integer", "minimum": 1, "maximum": 30 },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+
+    "attempt_request": {
+      "type": "object",
+      "description": "POST /internal/v1/agent/task/attempt. Atomically replaces the current attempt after the old endpoint is invalidated.",
+      "additionalProperties": false,
+      "required": ["schema_version", "task_id", "invocation_id", "generation", "runtime_attempt_id", "protocol_version", "capabilities", "old_attempt_invalidated"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "generation": { "$ref": "common.schema.json#/$defs/generation" },
+        "runtime_attempt_id": {
+          "$ref": "common.schema.json#/$defs/uuid4",
+          "description": "A fresh in-process attempt UUID. Replacing an attempt never increments the generation."
+        },
+        "protocol_version": { "const": 1 },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["input", "cancel"] }
+        },
+        "old_attempt_invalidated": {
+          "const": true,
+          "description": "Replacement invalidates old run credentials and attempt endpoints first; stale callbacks are discarded."
+        }
+      }
+    },
+
+    "control_response": {
+      "type": "object",
+      "description": "GET-like poll result from /internal/v1/agent/task/control, polled every second while active. Returns durable state, never arbitrary signed control authority.",
+      "additionalProperties": false,
+      "required": ["schema_version", "task_id", "cancel_requested", "pending_input_count"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "cancel_requested": { "type": "boolean" },
+        "cancel_command_id": {
+          "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/command_id" }]
+        },
+        "pending_input_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "last_receipt_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" },
+        "attempt_valid": {
+          "type": "boolean",
+          "description": "False tells a superseded attempt to stop; it cannot append further reports."
+        }
+      },
+      "not": {
+        "description": "The control response never conveys transferable authority.",
+        "anyOf": [
+          { "required": ["signed_authority"] },
+          { "required": ["run_credential"] },
+          { "required": ["token"] }
+        ]
+      }
+    }
+  }
+}

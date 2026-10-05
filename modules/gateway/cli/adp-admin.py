@@ -45,6 +45,24 @@ def parser():
         commands.add_parser("bedrock", help="Connect and verify Bedrock destinations; inspect routing")
     if Path(__file__).with_name("adp-github-admin.py").is_file():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
+    commands.add_parser("access-request", help="Review and decide exact tenant access requests")
+    commands.add_parser("session", help="Inspect and revoke applicable gateway token families")
+
+
+    commands.add_parser("ratelimit", help="Inspect or manage scoped rate-limit overrides")
+    for area in ("org", "department", "team", "member", "tenant"):
+        commands.add_parser(area, help="Scoped hierarchy and membership administration")
+
+    commands.add_parser("models", help="Platform model defaults and runtime posture")
+
+    for area in ("service-account", "agent", "service-principal"):
+        commands.add_parser(area, help="Explicit machine identity lifecycle")
+
+    commands.add_parser("indexing", help="Inspect canonical indexing runs")
+
+    commands.add_parser("gitlab", help="Manage deployment-approved GitLab integration")
+    commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
+    commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
 
 
@@ -146,6 +164,57 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     as_json = "--json" in argv
     try:
+        if argv and argv[0] in {"access-request", "session"}:
+            module = common.load_provider("adp-access.py")
+            if not module:
+                raise common.CliError("Access helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
+
+
+        if argv and argv[0] == "ratelimit":
+            module = common.load_provider("adp-ratelimit.py")
+            if not module:
+                raise common.CliError("Rate-limit helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "ratelimit", *argv[1:]])
+        if argv and argv[0] in {"org", "department", "team", "member", "tenant"}:
+            module = common.load_provider("adp-hierarchy.py")
+            if not module:
+                raise common.CliError("Hierarchy helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
+
+        if argv and argv[0] == "models":
+            module = common.load_provider("adp-model-policy.py")
+            if module is None:
+                raise common.CliError("Model policy helper missing; run adp update.", "unavailable")
+            return module.main(argv[1:])
+
+        if argv and argv[0] in {"service-account", "agent", "service-principal"}:
+            module = common.load_provider("adp-machine.py")
+            if not module:
+                raise common.CliError("Machine identity helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
+
+        if argv and argv[0] == "indexing":
+            module = common.load_provider("adp-knowledge.py")
+            if not module:
+                raise common.CliError("Knowledge helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "indexing", *argv[1:]])
+
+        if argv and argv[0] == "gitlab":
+            module = common.load_provider("adp-gitlab.py")
+            if not module:
+                raise common.CliError("GitLab helper missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "gitlab", *argv[1:]])
+        if argv and argv[0] == "budget":
+            module = common.load_provider("adp-budget.py")
+            if not module:
+                raise common.CliError("Budget helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "budget", *argv[1:]])
+        if argv and argv[0] == "usage":
+            module = common.load_provider("adp-usage.py")
+            if not module:
+                raise common.CliError("Usage helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "usage", *argv[1:]])
         # Area registration is explicit and only exposed when its helper ships.
         areas = {"bedrock": ("adp-bedrock.py", "Model access setup"), "github": ("adp-github-admin.py", "GitHub App setup")}
         if argv and argv[0] in areas:

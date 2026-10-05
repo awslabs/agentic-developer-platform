@@ -31,43 +31,26 @@ locals {
   agent_authority_key_id = local.agent_authority_provisioned ? substr(sha256(local.agent_control_active_key.public_key_pem), 0, 16) : ""
   # Reporting needs the existing gateway endpoint in both IAM modes. The
   # authority flag and pod-proof fields remain protected-mode only.
-  agent_authority_env_block = var.agent_authority_enabled ? join("\n", [
-    "                  - name: ADP_AGENT_AUTHORITY_ENABLED",
-    "                    value: \"true\"",
+  # Shared with the disposable evaluation worker: preparation must not require
+  # activating the ordinary ScaledJob just to obtain its protected pod fields.
+  agent_authority_pod = jsondecode(file("${path.module}/protected-worker-pod.json"))
+  agent_authority_env_block = var.agent_authority_enabled ? "                  ${indent(18, yamlencode(concat(local.agent_authority_pod.container.env, [
+    { name = "ADP_AGENT_CONTROL_ENDPOINT", value = "${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent" },
+    { name = "ADP_CONTROL_ENVELOPE_KEYS", value = jsonencode(local.agent_control_verification_keys) },
+    ], var.task_api_worker_enabled ? [
+    { name = "ADP_TASK_API_WORKER_ENABLED", value = "true" },
+    ] : [])))}" : join("\n", concat([
     "                  - name: ADP_AGENT_CONTROL_ENDPOINT",
     "                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent",
+    ], var.task_api_worker_enabled ? [
+    "                  - name: ADP_TASK_API_WORKER_ENABLED",
+    "                    value: \"true\"",
     "                  - name: ADP_WORKLOAD_TOKEN_FILE",
     "                    value: /var/run/adp-workload/token",
-    "                  - name: ADP_CONTROL_ENVELOPE_KEYS",
-    "                    value: '${jsonencode(local.agent_control_verification_keys)}'",
-    "                  - name: ADP_CONTROL_ENVELOPE_KEYS_FILE",
-    "                    value: /var/run/adp-control-keys/keys.json",
-    ]) : join("\n", [
-    "                  - name: ADP_AGENT_CONTROL_ENDPOINT",
-    "                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent",
-  ])
-  agent_authority_mount_block = var.agent_authority_enabled ? join("\n", [
-    "                volumeMounts:",
-    "                  - name: adp-workload-identity",
-    "                    mountPath: /var/run/adp-workload",
-    "                    readOnly: true",
-    "                  - name: adp-control-verification-keys",
-    "                    mountPath: /var/run/adp-control-keys",
-    "                    readOnly: true",
-  ]) : ""
-  agent_authority_volume_block = var.agent_authority_enabled ? join("\n", [
-    "            volumes:",
-    "              - name: adp-workload-identity",
-    "                projected:",
-    "                  sources:",
-    "                    - serviceAccountToken:",
-    "                        audience: adp-agent-bootstrap",
-    "                        expirationSeconds: 3600",
-    "                        path: token",
-    "              - name: adp-control-verification-keys",
-    "                configMap:",
-    "                  name: adp-control-verification-keys",
-  ]) : ""
+  ] : []))
+  agent_authority_mount_block  = var.agent_authority_enabled ? "                ${indent(16, yamlencode({ volumeMounts = local.agent_authority_pod.container.volumeMounts }))}" : var.task_api_worker_enabled ? "                ${indent(16, yamlencode({ volumeMounts = [local.agent_authority_pod.container.volumeMounts[0]] }))}" : ""
+  agent_authority_volume_block = var.agent_authority_enabled ? "            ${indent(12, yamlencode({ volumes = local.agent_authority_pod.volumes }))}" : var.task_api_worker_enabled ? "            ${indent(12, yamlencode({ volumes = [local.agent_authority_pod.volumes[0]] }))}" : ""
+
 }
 
 resource "kubernetes_secret" "agent_authority" {
@@ -82,6 +65,10 @@ resource "kubernetes_secret" "agent_authority" {
     envelope-signing-key = local.agent_control_active_key.private_key_pem
   } : {})
   lifecycle {
+    precondition {
+      condition     = !var.task_api_worker_enabled || local.agent_authority_provisioned
+      error_message = "Task workers require agent_authority_prepared=true (or enabled) to provision gateway workload verification RBAC. Generic authority may remain disabled."
+    }
     precondition {
       condition     = !var.agent_authority_enabled || length(var.agent_authority_worker_image_digests) > 0
       error_message = "Enabling agent authority requires approved worker image digests."
@@ -132,7 +119,10 @@ resource "kubernetes_role" "gateway_agent_pod_read" {
   rule {
     api_groups = [""]
     resources  = ["pods"]
-    verbs      = ["get"]
+    # Abort recovery retains exact pods with a finalizer, discovers pending
+    # reports even without SQL work claims, then removes its own finalizer.
+    # The gateway tests UID and resourceVersion on every JSON patch.
+    verbs = ["get", "list", "patch"]
   }
   # The owning Job's deadline includes bootstrap and previous pod attempts.
   # No worker receives Kubernetes API permissions or a caller-selected lookup.
@@ -169,6 +159,9 @@ resource "aws_ssm_parameter" "agent_authority_enabled" {
 }
 
 resource "aws_ssm_parameter" "agent_authority_worker_images" {
+  # Preserve approved images across rolling upgrades; the catalog can exceed 4 KiB.
+  # Keep the tier stable: AWS cannot downgrade an Advanced parameter in place.
+  tier   = "Advanced"
   name   = "/adp/${var.environment}/gateway/agent-authority-worker-images"
   type   = "SecureString"
   key_id = aws_kms_key.dynamodb.arn

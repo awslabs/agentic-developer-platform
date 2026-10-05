@@ -1,0 +1,95 @@
+[
+  {
+    "job": "probe-writer-rollback",
+    "logs": "{\"mode\": \"writer\", \"uid\": 10001, \"gid\": 10001, \"filesystem_type\": \"fuse\", \"filesystem_source\": \"mountpoint-s3\", \"acceptance_scope\": \"live-csi-mount\", \"readonly_mount\": false, \"result\": \"pass\"}\n",
+    "pods": [
+      {
+        "namespace": "security-s15-probe-c1155bf2eed8",
+        "name": "probe-writer-rollback-d7wkr",
+        "uid": "70821436-4c05-41ff-bcd5-29da6ead6bdf",
+        "node": "i-0000000000000001a",
+        "phase": "Succeeded",
+        "containers": [
+          {
+            "name": "probe",
+            "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "ready": false,
+            "restartCount": 0,
+            "state": {
+              "terminated": {
+                "containerID": "containerd://41d3464be91ed04dc583b6d3ae8ca0bc27069d7986f30d5f62ef65d66bc6c2db",
+                "exitCode": 0,
+                "finishedAt": "2026-09-27T18:08:41Z",
+                "reason": "Completed",
+                "startedAt": "2026-09-27T18:08:40Z"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "job": "probe-reader-rollback",
+    "logs": "{\"mode\": \"reader\", \"uid\": 0, \"gid\": 10001, \"filesystem_type\": \"fuse\", \"filesystem_source\": \"mountpoint-s3\", \"acceptance_scope\": \"live-csi-mount\", \"readonly_mount\": true, \"result\": \"pass\"}\n",
+    "pods": [
+      {
+        "namespace": "security-s15-probe-c1155bf2eed8",
+        "name": "probe-reader-rollback-xzdrm",
+        "uid": "36382320-d5be-41ca-921c-3a0001c4169b",
+        "node": "i-0000000000000001a",
+        "phase": "Succeeded",
+        "containers": [
+          {
+            "name": "probe",
+            "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "ready": false,
+            "restartCount": 0,
+            "state": {
+              "terminated": {
+                "containerID": "containerd://20a7a4eb6c58334edcdc1591bb3fc2c3de4db6028c6e028830d8eab9143e162b",
+                "exitCode": 0,
+                "finishedAt": "2026-09-27T18:08:48Z",
+                "reason": "Completed",
+                "startedAt": "2026-09-27T18:08:48Z"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "job": "probe-outsider-rollback",
+    "logs": "{\"mode\": \"outsider\", \"uid\": 2002, \"gid\": 2002, \"filesystem_type\": \"fuse\", \"filesystem_source\": \"mountpoint-s3\", \"acceptance_scope\": \"live-csi-mount\", \"readonly_mount\": true, \"result\": \"pass\"}\n",
+    "pods": [
+      {
+        "namespace": "security-s15-probe-c1155bf2eed8",
+        "name": "probe-outsider-rollback-599h5",
+        "uid": "3949c1e0-9fae-4dbe-b67a-733d2ddce296",
+        "node": "i-0000000000000001a",
+        "phase": "Succeeded",
+        "containers": [
+          {
+            "name": "probe",
+            "image": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
+            "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+            "ready": false,
+            "restartCount": 0,
+            "state": {
+              "terminated": {
+                "containerID": "containerd://a2e20089e092195ac5c70bce3faa379112b3eb5d348f8f2a792eb60474cacd93",
+                "exitCode": 0,
+                "finishedAt": "2026-09-27T18:08:56Z",
+                "reason": "Completed",
+                "startedAt": "2026-09-27T18:08:56Z"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

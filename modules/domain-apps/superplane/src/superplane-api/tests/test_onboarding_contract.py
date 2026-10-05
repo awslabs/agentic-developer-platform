@@ -35,6 +35,26 @@ def _generator():
 
 
 class TestTheContractIsCurrent:
+    def test_mounted_routes_cannot_shadow_another_authority_handler(self):
+        """OpenAPI hides duplicate routes while requests use the first handler.
+
+        A merge once restored the legacy capability handler beside the governed
+        onboarding handler. Check the actual mounted routes, not OpenAPI's map.
+        """
+        from collections import Counter
+
+        from fastapi.routing import APIRoute
+
+        from app.main import app
+
+        routes = Counter(
+            (method, route.path)
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            for method in route.methods
+        )
+        assert {key: count for key, count in routes.items() if count > 1} == {}
+
     def test_it_is_checked_in(self):
         """#5730 builds against this file, so it must exist in the tree."""
         assert CONTRACT.exists(), (

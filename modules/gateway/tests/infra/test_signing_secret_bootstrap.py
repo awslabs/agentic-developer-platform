@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import stat
 import subprocess
 from pathlib import Path
 
@@ -19,7 +20,10 @@ def commands(monkeypatch):
     calls = []
 
     def run(args, **kwargs):
-        calls.append((args, kwargs))
+        payload_path = Path(args[args.index("--cli-input-json") + 1].removeprefix("file://"))
+        assert stat.S_IMODE(payload_path.stat().st_mode) == 0o600
+        assert "input" not in kwargs
+        calls.append((args, {**kwargs, "payload": json.loads(payload_path.read_text()), "payload_path": payload_path}))
         status, output = responses.pop(0)
         stderr = f"An error occurred ({output}) when calling the operation" if status else ""
         return subprocess.CompletedProcess(args, status, json.dumps(output) if not status else "", stderr)
@@ -54,7 +58,8 @@ def test_missing_key_is_created_without_secret_in_arguments(commands):
         assert args[args.index("--region") + 1] == "eu-west-2"
         assert "candidate-test-key" not in " ".join(args)
         assert kwargs["capture_output"] is True
-    assert json.loads(calls[1][1]["input"])["SecretString"] == "candidate-test-key"
+    assert calls[1][1]["payload"]["SecretString"] == "candidate-test-key"
+    assert all(not kwargs["payload_path"].exists() for _, kwargs in calls)
 
 
 def test_concurrent_creation_reuses_the_winners_key(commands):
@@ -87,11 +92,35 @@ def test_empty_or_invalid_existing_value_requires_operator_repair(commands, valu
     assert len(calls) == 1
 
 
-def test_deployment_paths_use_the_same_nonrotating_bootstrap():
+def test_operator_deployment_bootstraps_and_ci_only_reads_signing_secrets():
     root = SCRIPT.parents[3]
-    for path in [root / ".github/workflows/gateway-deploy.yml", root / "platform/scripts/deploy-all.sh"]:
-        source = path.read_text()
-        assignment = source.split("MAGIC_LINK_SECRET=$(", 1)[1].split("\n\n", 1)[0]
-        assert "ensure-signing-secret.py" in assignment
-        assert '--region "$AWS_REGION"' in assignment
-        assert "put-secret-value" not in assignment
+    operator = (root / "platform/scripts/deploy-all.sh").read_text()
+    assignment = operator.split("MAGIC_LINK_SECRET=$(", 1)[1].split(")", 1)[0]
+    assert "ensure-signing-secret.py" in assignment
+    assert '--region "$AWS_REGION"' in assignment
+    assert "put-secret-value" not in assignment
+
+    workflow = (root / ".github/workflows/gateway-deploy.yml").read_text()
+    for variable in ("TOKEN_SECRET", "INTERNAL_API_KEY", "MAGIC_LINK_SECRET"):
+        retrieval = workflow.split(f"{variable}=$(", 1)[1].split(")", 1)[0]
+        assert "aws secretsmanager get-secret-value" in retrieval
+        assert "--query SecretString --output text" in retrieval
+    for mutation in ("create-secret", "put-secret-value", "update-secret", "ensure-signing-secret.py"):
+        assert mutation not in workflow
+
+
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("aws", 60), OSError("command unavailable")])
+def test_private_payload_is_removed_when_command_raises(monkeypatch, error):
+    paths = []
+
+    def run(args, **kwargs):
+        path = Path(args[args.index("--cli-input-json") + 1].removeprefix("file://"))
+        paths.append(path)
+        assert json.loads(path.read_text()) == {"SecretString": "test-key"}
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        raise error
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+    with pytest.raises(type(error)):
+        bootstrap.request("create-secret", "us-east-1", {"SecretString": "test-key"})
+    assert len(paths) == 1 and not paths[0].exists()

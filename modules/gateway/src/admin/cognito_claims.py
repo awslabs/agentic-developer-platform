@@ -78,7 +78,7 @@ def sync_cognito_role_claims(
     only_if_current_org: bool = False,
     previous_role: str | None = None,
     workspace_roles: dict[str, str] | None = None,
-) -> None:
+) -> bool:
     """Write role/org/team onto the Cognito user's custom: attributes.
 
     The pre-token-generation Lambda copies custom:role / custom:org_id /
@@ -89,7 +89,9 @@ def sync_cognito_role_claims(
     Setting the attributes here makes a fresh login mint a correct token.
 
     Best-effort + idempotent: logs + emits a metric on failure rather than
-    rolling back the (already-committed) caller transaction.
+    rolling back the (already-committed) caller transaction. Returns false when
+    synchronization could not complete, and true on success or an intentional
+    current-workspace no-op. Callers can record reconciliation separately.
 
     Username handling: AdminUpdateUserAttributes takes a *Username*, which is
     only equal to the user's `sub` for email-signup users (Cognito assigns them
@@ -121,7 +123,7 @@ def sync_cognito_role_claims(
     if not pool_id:
         logger.warning("Cannot sync Cognito role claims: no BG_COGNITO_USER_POOL_ID / COGNITO_USER_POOL_ID set")
         emit_metric(metric_namespace, f"{metric_prefix}.CognitoClaimSyncSkipped")
-        return
+        return False
     attrs = [
         {"Name": "custom:role", "Value": role},
         {"Name": "custom:org_id", "Value": org_id},
@@ -152,15 +154,15 @@ def sync_cognito_role_claims(
                 effective_role = (workspace_roles or {}).get(current_org, "member")
             elif current.get("custom:role") in platform_roles:
                 # Editing an org-local member role cannot revoke global admin.
-                return
+                return True
             elif current_org != org_id:
-                return
+                return True
             else:
                 effective_role = role
             client.admin_update_user_attributes(
                 UserPoolId=pool_id, Username=users[0]["Username"], UserAttributes=[{"Name": "custom:role", "Value": effective_role}]
             )
-            return
+            return True
         try:
             client.admin_update_user_attributes(
                 UserPoolId=pool_id,
@@ -168,7 +170,7 @@ def sync_cognito_role_claims(
                 UserAttributes=attrs,
             )
             logger.info("Synced Cognito role claims for sub=%s (role=%s org=%s)", cognito_sub, role, org_id)
-            return
+            return True
         except Exception as e:
             error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
             if error_code != "UserNotFoundException":
@@ -184,7 +186,7 @@ def sync_cognito_role_claims(
                     cognito_sub,
                 )
                 emit_metric(metric_namespace, f"{metric_prefix}.CognitoClaimSyncFailure")
-                return
+                return False
             client.admin_update_user_attributes(
                 UserPoolId=pool_id,
                 Username=username,
@@ -200,3 +202,6 @@ def sync_cognito_role_claims(
     except Exception:
         logger.exception("Failed to sync Cognito role claims for sub=%s", cognito_sub)
         emit_metric(metric_namespace, f"{metric_prefix}.CognitoClaimSyncFailure")
+
+        return False
+    return True

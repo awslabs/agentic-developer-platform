@@ -17,7 +17,7 @@ import json
 import urllib.error
 import urllib.request
 
-from . import cases, config
+from . import cases, cleanup, config
 
 
 class PreflightError(RuntimeError):
@@ -54,6 +54,32 @@ def http_json(url, *, token=None, timeout=60, expect=200):
         return json.loads(body)
     except ValueError:
         raise PreflightError(f"{url} did not return JSON") from None
+
+
+def http_status(url, *, timeout=60):
+    """The status code alone, with no body read and no token sent.
+
+    Separate from `http_json` rather than a mode of it: that function's contract is
+    "the body, having required an exact status", and every caller relies on the
+    require(). A probe that cares only whether a route is mounted needs the
+    opposite — no expected status and no body at all — and expressing it as
+    `expect=None` would make the require() compare against None and fail on every
+    reachable URL.
+    """
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args, **_kwargs):
+            raise PreflightError(f"{url} redirected; refusing to follow")
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url), timeout=timeout) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        # An error status IS the answer here: 401 proves the route is mounted.
+        return exc.code
+    except urllib.error.URLError as exc:
+        raise PreflightError(f"{url} is unreachable: {type(exc).__name__}") from None
 
 
 # The document `cli/bg-cognito-auth.sh` actually fetches before it has a token.
@@ -126,6 +152,7 @@ def check_unauthenticated_discovery(cfg, record, *, discovery=UNFETCHED):
     # Not secret: the client_id ships to every browser as VITE_COGNITO_CLIENT_ID
     # and the app client is created with generate_secret = false.
     record["discovery_user_pool_id"] = discovery["user_pool_id"]
+    record["discovery_cli_client_id"] = discovery["cli_client_id"]
     record["discovery_region"] = discovery["region"]
     require(
         discovery["user_pool_id"] == cfg["cognito_user_pool_id"],
@@ -204,10 +231,20 @@ def check_served_cli_hashes(cfg, expected_hashes, record, *, fetch=None):
         payload = read(url)
         # A misrouted request returns the SPA's index.html with HTTP 200, which
         # would otherwise hash cleanly as "some file we served".
-        require(
-            isinstance(payload, bytes) and payload.startswith(b"#!"),
-            f"{url} did not return a script; the release route is misconfigured",
-        )
+        if name.endswith(".json"):
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, TypeError):
+                parsed = None
+            require(
+                isinstance(parsed, dict),
+                f"{url} did not return a JSON release artifact",
+            )
+        else:
+            require(
+                isinstance(payload, bytes) and payload.startswith(b"#!"),
+                f"{url} did not return a script; the release route is misconfigured",
+            )
         served[name] = hashlib.sha256(payload).hexdigest()
 
     from . import release
@@ -388,8 +425,34 @@ def check_deployment_bindings(cfg, record, *, fetch=None):
     return len(reachable) >= config.REQUIRED_DEPLOYMENTS
 
 
+def check_superplane_domain(cfg, record, *, probe=None):
+    """#5637: keep E18 blocked until durable mutation recovery is implemented.
+
+    There is deliberately no configuration switch that claims this capability.
+    An unauthenticated 401/403 only proves gateway authentication answered; it
+    cannot establish domain readiness or the missing cleanup producer. Keep the
+    existing probe argument for the stage's interface, but do not use network
+    reachability as permission to execute this incomplete journey.
+    """
+    superplane = cfg.get("superplane") or {}
+    base = str(superplane.get("base_path") or "").rstrip("/")
+    record["superplane"] = {
+        "configured": bool(base),
+        "durable_recovery": False,
+        "blocker": "superplane_durable_recovery_unimplemented",
+        "problem": cleanup.SUPERPLANE_RECOVERY_BLOCKER,
+    }
+    return False
+
+
 def evaluate_fixtures(
-    cfg, *, github_available=None, hosted_available=None, deployments_available=None
+    cfg,
+    *,
+    github_available=None,
+    hosted_available=None,
+    deployments_available=None,
+    capability_contrast_available=None,
+    superplane_available=None,
 ):
     """Decide which fixture classes are genuinely usable for this run.
 
@@ -407,6 +470,8 @@ def evaluate_fixtures(
         ("github_available", github_available),
         ("hosted_available", hosted_available),
         ("deployments_available", deployments_available),
+        ("capability_contrast_available", capability_contrast_available),
+        ("superplane_available", superplane_available),
     ):
         if callable(value):
             raise PreflightError(
@@ -427,6 +492,21 @@ def evaluate_fixtures(
     # E16/E17 rather than letting them fail inside the journey.
     if cases.THREE_DEPLOYMENTS in available and not deployments_available:
         available.discard(cases.THREE_DEPLOYMENTS)
+    if cases.CAPABILITY_CONTRAST in available and not capability_contrast_available:
+        available.discard(cases.CAPABILITY_CONTRAST)
+    # No supplied boolean can manufacture the missing E18 recovery producer.
+    # Remove this guard only alongside its implemented durable recovery path.
+    available.discard(cases.SUPERPLANE_DOMAIN)
+    tenants = (cfg.get("tenant_isolation") or {}).get("tenant_ids") or []
+    if (
+        isinstance(tenants, list)
+        and len(tenants) == 2
+        and all(isinstance(t, str) and t for t in tenants)
+        and len(set(tenants)) == 2
+    ):
+        available.add(cases.TENANT_ISOLATION)
+    else:
+        available.discard(cases.TENANT_ISOLATION)
     return available
 
 
@@ -437,10 +517,17 @@ def missing_fixture_report(cfg, available):
     go and create the fixture, instead of a bare 'blocked'.
     """
     names = {
+        cases.ASSISTANT_LEDGER: "implemented and deployed installation upgrade ledger (#6896/#6927); cannot be supplied by a mock or config flag",
+        cases.ASSISTANT_USERS: "wss:// assistant endpoint and three separate ordinary-user fixture references (assistant_users.a1/a2/b1); A1/A2 in tenant A and B1 in tenant B, no admin credentials",
+        cases.SUPERPLANE_RESEARCH: "an existing Superplane domain selected for read-only checks (research_readback=true); actual CLI reads must establish readiness",
         cases.DESTINATION: "cross-account destination and provisioner roles (config destination_role_arn + provisioner_role_arn)",
         cases.GITHUB_APP: "an isolated GitHub App fixture (config github.org + github.app_fixture/existing_app_fixture)",
         cases.GITHUB_REPO: "a dedicated evaluation repository (config github.repo)",
         cases.SECOND_DESTINATION: "a second destination AWS account (config second_destination_account)",
+        cases.HUMAN_TASK_CHAT: "explicit bounded human chat fixture (human_task_chat)",
+        cases.HIERARCHY_LIFECYCLE: "explicit independent hierarchy fixture",
+        cases.VAULT_LIFECYCLE: "explicit owned vault fixture (vault_lifecycle)",
+        cases.HUMAN_TASK_CODING: "explicit human Task repository/model enrollment and shared-budget authorization (human_task_coding)",
         cases.HOSTED: "hosted dispatch configuration (config websocket_url + hosted_tasks_queue_url)",
         cases.THREE_DEPLOYMENTS: (
             "three separately reachable ADP deployments, each with its own sign-in "
@@ -452,6 +539,21 @@ def missing_fixture_report(cfg, available):
             "implementation of hard Codex output limits (at most 256 tokens per "
             "request) and an aggregate 48-request ceiling before inference; "
             "E16/E17 model execution is disabled until these limits are enforced"
+        ),
+        cases.CAPABILITY_CONTRAST: (
+            "a deployment exhibiting the contrast E18 measures: at least one module "
+            "intentionally DISABLED alongside one enabled, plus an ordinary "
+            "non-admin sign-in fixture holding fewer permissions than the admin one "
+            "(config capability_contrast: disabled_feature, enabled_feature, the three "
+            "operation IDs, ordinary_fixture_name and a foreign request ID). The harness creates separate ordinary/admin identities. A fully-enabled platform with "
+            "only an admin identity cannot demonstrate 'switched off' or 'not "
+            "permitted', so every answer would be 'available' and the case would "
+            "pass with all four capability axes collapsed into one"
+        ),
+        cases.TENANT_ISOLATION: "two existing memberships for the installed human fixture (tenant_isolation.tenant_ids); no membership grant is performed",
+        cases.SUPERPLANE_DOMAIN: (
+            cleanup.SUPERPLANE_RECOVERY_BLOCKER
+            + " A deployed domain and an ordinary-session fixture are also required."
         ),
     }
     absent = {}

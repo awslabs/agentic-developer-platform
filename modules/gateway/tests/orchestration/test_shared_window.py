@@ -11,11 +11,12 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from src.orchestration.compile import ApprovalContext
+from src.orchestration.compile import ApprovalContext, plan_hash
 from src.orchestration.continuation import digest
 from src.orchestration.execution_policy import policy_hash, stamp_policy
 from src.orchestration.models import OrchestrationDecision, OrchestrationExecution
 from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.proposal import LoopProposal
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.shared_amendment import SharedAppendError
 from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase, verified_limits_increased
@@ -366,3 +367,305 @@ def test_wall_clock_request_rejects_invalid_ceiling(value):
             reason="Owner renewal",
             max_wall_clock_seconds=value,
         )
+
+
+@pytest.fixture
+async def protected_window(window, monkeypatch):
+    b = window
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false")
+    policy = b.s.policy.model_copy(deep=True)
+    policy.schema_version = 1
+    policy.user_credentials = None
+    policy.expires_at = datetime.now(UTC) + timedelta(days=7)
+    policy.policy_id = policy.policy_hash = policy.principal_id = None
+    policy = stamp_policy(policy, principal_id=f"sub:{APPROVER}", org_id=b.s.flow.org_id)
+    proposal = LoopProposal(
+        flow_slug=b.s.flow.slug,
+        title=b.s.flow.title,
+        org_id=b.s.flow.org_id,
+        spec_revision="window-regression",
+        execution_policy=policy,
+        description="Owner-authored provenance retained by normal acceptance.",
+    )
+    document = proposal.model_dump(mode="json")
+    b.s.plan.plan_document, b.s.plan.plan_hash = document, plan_hash(proposal)
+    assert b.s.plan.plan_hash != digest(document)
+    started = datetime.now(UTC) - timedelta(seconds=policy.limits.max_wall_clock_seconds + 60)
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=b.s.flow.org_id,
+            flow_id=b.s.flow.id,
+            kind="node_dispatched",
+            actor_kind="service",
+            actor_id="engine",
+            actor_role="service",
+            created_at=started,
+        )
+    )
+    b.s.node.state, b.s.node.attempts = "failed", 1
+    b.execution.status, b.execution.next_check_at = "concluded", None
+    await b.s.session.flush()
+    b.request = b.request.model_copy(
+        update={
+            "expected_plan_hash": b.s.plan.plan_hash,
+            "expires_at": policy.expires_at,
+            "max_wall_clock_seconds": policy.limits.max_wall_clock_seconds + 14400,
+        }
+    )
+    return b
+
+
+async def test_protected_elapsed_window_can_renew_without_changing_expiry_or_failed_attempt(protected_window):
+    from src.orchestration.runtime_policy import flow_started_at
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    started = await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id)
+    deadline = b.execution.deadline_at
+    receipt, request = await accept(b)
+    after = (await effective(b)).policy
+    assert after.expires_at == before.expires_at
+    assert after.limits.max_wall_clock_seconds == request.max_wall_clock_seconds
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert after._shared_window_decision_id == receipt["decision_id"]
+    assert b.s.plan.plan_document == document
+    assert b.s.node.state == "failed" and b.s.node.attempts == 1
+    assert b.execution.status == "concluded" and b.execution.deadline_at == deadline
+    assert await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id) == started
+
+
+@pytest.mark.parametrize("case", ["unchanged", "decrease", "too_large", "other_owner", "expired"])
+async def test_protected_same_expiry_requires_owner_and_positive_bounded_increase(protected_window, case):
+    b = protected_window
+    before = (await effective(b)).policy
+    changes = {
+        "unchanged": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds},
+        "decrease": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds - 1},
+        "too_large": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 86401},
+        "expired": {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
+    }
+    b.request = b.request.model_copy(update=changes.get(case, {}))
+    if case == "other_owner":
+        b.actor = replace(b.actor, actor_id="other-admin")
+    with pytest.raises(WindowRenewalError):
+        await accept(b)
+    assert (await effective(b)).policy == before
+
+
+@pytest.mark.parametrize("case", ["actor", "plan_hash", "wall_clock", "past_acceptance"])
+async def test_protected_receipt_tampering_refuses_admission(protected_window, case):
+    b = protected_window
+    receipt, _ = await accept(b)
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    data = json.loads(row.reason)
+    if case == "plan_hash":
+        data["plan_hash"] = "a" * 64
+    elif case == "wall_clock":
+        data["max_wall_clock_seconds"] = data["before_wall_clock_seconds"]
+    elif case == "past_acceptance":
+        data["accepted_at"] = data["expires_at"]
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=row.org_id,
+            flow_id=row.flow_id,
+            kind=row.kind,
+            actor_id="other-admin" if case == "actor" else row.actor_id,
+            actor_kind=row.actor_kind,
+            actor_role=row.actor_role,
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
+            reason=json.dumps(data),
+        )
+    )
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None
+
+
+@pytest.mark.parametrize("field", ["title", "policy"])
+async def test_protected_window_rejects_changed_executable_document(protected_window, field):
+    b = protected_window
+    document = copy.deepcopy(b.s.plan.plan_document)
+    if field == "title":
+        document["title"] += " changed"
+    else:
+        document["execution_policy"]["limits"]["max_attempts_per_node"] += 1
+    b.s.plan.plan_document = document
+    await b.s.session.flush()
+    with pytest.raises(WindowRenewalError, match="accepted_document_hash_changed"):
+        await preview(b)
+
+
+async def test_protected_window_uses_compiler_provenance_hash_rules(protected_window):
+    b = protected_window
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document["description"] = "Updated provenance, with exactly the same executable plan."
+    b.s.plan.plan_document = document
+    await b.s.session.flush()
+    await accept(b)
+    assert (await effective(b)).policy.limits.max_wall_clock_seconds == b.request.max_wall_clock_seconds
+
+
+async def test_protected_window_receipt_rechecks_canonical_owner(protected_window):
+    from src.shared.models.organization import User
+
+    b = protected_window
+    receipt, _ = await accept(b)
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    assert row.actor_id == APPROVER
+    assert json.loads(row.reason)["principal_id"] == f"sub:{APPROVER}"
+    assert (await effective(b)).policy is not None
+    user = await b.s.session.get(User, APPROVER)
+    user.cognito_sub = "replacement-login-subject"
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None
+
+
+async def test_protected_retry_supplement_preserves_failed_attempt_and_budget(protected_window):
+    from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    request = RetryIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_attempts_per_node=before.limits.max_attempts_per_node + 1,
+        reason="Owner authorizes a replacement review after infrastructure failure.",
+    )
+    preview = await preview_retry_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    receipt = await accept_retry_increase(
+        b.s.session,
+        flow_id=b.s.flow.id,
+        actor=b.actor,
+        request=request.model_copy(update={"expected_snapshot": preview["snapshot"]}),
+    )
+    after = (await effective(b)).policy
+    assert after.limits.max_attempts_per_node == request.max_attempts_per_node
+    assert after._shared_retry_decision_id == receipt["decision_id"]
+    assert after.limits.max_spend_usd == before.limits.max_spend_usd
+    assert after.limits.max_wall_clock_seconds == before.limits.max_wall_clock_seconds
+    assert b.s.plan.plan_document == document
+    assert b.s.node.attempts == 1 and b.s.node.state == "failed"
+    assert b.execution.status == "concluded"
+
+
+async def test_protected_retry_requires_original_owner(protected_window):
+    from src.orchestration.shared_retry import RetryIncreaseError, RetryIncreaseRequest, preview_retry_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    request = RetryIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_attempts_per_node=before.limits.max_attempts_per_node + 1,
+        reason="A different administrator cannot borrow the plan owner authority.",
+    )
+    with pytest.raises(RetryIncreaseError, match="original_principal_required"):
+        await preview_retry_increase(b.s.session, flow_id=b.s.flow.id, actor=replace(b.actor, actor_id="other-owner"), request=request)
+
+
+@pytest.mark.parametrize("keep_expiry", [False, True])
+async def test_owner_can_resume_after_multi_day_gate_wait_without_resetting_work(window, keep_expiry):
+    b = window
+    before = (await effective(b)).policy
+    started = datetime.now(UTC) - timedelta(days=3)
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document["execution_continuation"]["accepted_at"] = started.isoformat()
+    b.s.plan.plan_document = document
+    b.s.plan.plan_hash = digest(document)
+    b.execution.created_at = started
+    b.execution.deadline_at = started + timedelta(seconds=before.limits.max_wall_clock_seconds)
+    await b.s.session.flush()
+    b.request = b.request.model_copy(
+        update={
+            "expected_plan_hash": b.s.plan.plan_hash,
+            "max_wall_clock_seconds": 3 * 86400 + 3600,
+            "resume_expired": True,
+        }
+    )
+    if keep_expiry:
+        b.request = b.request.model_copy(update={"expires_at": before.expires_at})
+    receipt, _ = await accept(b)
+    after = (await effective(b)).policy
+    assert receipt["accepted"]
+    assert after.limits.max_wall_clock_seconds == 3 * 86400 + 3600
+    assert after.limits.max_spend_usd == before.limits.max_spend_usd
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert b.s.node.attempts == b.execution.attempts == 2
+    assert b.s.claim.active_run_id == "run-current"
+    assert b.s.plan.plan_document == document
+
+
+@pytest.mark.parametrize("resume,hours", [(False, 1), (True, 25)])
+def test_long_expired_window_cannot_be_silently_or_excessively_renewed(resume, hours):
+    from src.orchestration.shared_window import valid_wall_clock
+
+    now = datetime.now(UTC)
+    assert not valid_wall_clock(3600, 3 * 86400 + hours * 3600, now, started=now - timedelta(days=3), resume_expired=resume)
+
+
+async def test_protected_concurrency_supplement_preserves_work_and_budgets(protected_window):
+    from src.orchestration.shared_budget import financial_limits
+    from src.orchestration.shared_concurrency import ConcurrencyIncreaseRequest, accept_concurrency_increase, preview_concurrency_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    request = ConcurrencyIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_concurrent_actions=3,
+        reason="Owner authorizes three concurrent workers on the protected plan.",
+    )
+    preview = await preview_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    request = request.model_copy(update={"expected_snapshot": preview["snapshot"]})
+    receipt = await accept_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    after = (await effective(b)).policy
+    assert after.limits.max_concurrent_actions == 3
+    assert after._shared_concurrency_decision_id == receipt["decision_id"]
+    assert financial_limits(after) == financial_limits(before)
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert after.expires_at == before.expires_at
+    assert b.s.plan.plan_document == document
+    assert b.s.node.attempts == 1 and b.s.node.state == "failed"
+    assert b.execution.status == "concluded"
+    replay = await accept_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    assert not replay["created"]
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=row.org_id,
+            flow_id=row.flow_id,
+            kind=row.kind,
+            actor_id="other-owner",
+            actor_kind=row.actor_kind,
+            actor_role=row.actor_role,
+            reason=row.reason,
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    )
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None
+
+
+@pytest.mark.parametrize("fault", ["owner", "document"])
+async def test_protected_concurrency_refuses_changed_owner_or_document(protected_window, fault):
+    from src.orchestration.shared_concurrency import ConcurrencyIncreaseError, ConcurrencyIncreaseRequest, preview_concurrency_increase
+
+    b = protected_window
+    request = ConcurrencyIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_concurrent_actions=3,
+        reason="An increase must preserve the accepted document and its owner.",
+    )
+    actor = b.actor
+    if fault == "owner":
+        actor = replace(actor, actor_id="other-owner")
+    else:
+        document = copy.deepcopy(b.s.plan.plan_document)
+        document["flow_slug"] = "changed-scope"
+        b.s.plan.plan_document = document
+        await b.s.session.flush()
+    with pytest.raises(ConcurrencyIncreaseError, match="original_principal_required|accepted_document_hash_changed"):
+        await preview_concurrency_increase(b.s.session, flow_id=b.s.flow.id, actor=actor, request=request)

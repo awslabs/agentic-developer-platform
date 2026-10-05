@@ -180,6 +180,7 @@ class PlatformVerification(BaseModel):
 class GitHubConnectionItem(BaseModel):
     """A single GitHub App installation connected to the caller's ADP tenant."""
 
+    revocation_pending: bool = False
     provider: str = Field(default="github")
     installation_id: int
     account_login: str = Field(..., description="GitHub org or user login")
@@ -256,8 +257,15 @@ class SwitchTenantResponse(BaseModel):
 
 
 class DeleteConnectionResponse(BaseModel):
+    """Local denial is durable; provider uninstall and cleanup can remain pending."""
+
     deleted: bool
     installation_id: int
+    local_revoked: bool = True
+    provider_uninstall_requested: bool = False
+    provider_revoked: bool = False
+    residual: list[str] = Field(default_factory=list)
+    warning: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +341,17 @@ class RegisterAppStartResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # App lifecycle (Issue #2595)
 # ---------------------------------------------------------------------------
+
+
+class AppSetupGuideResponse(BaseModel):
+    """Public configuration values for manually creating an App; never credentials."""
+
+    homepage_url: str
+    callback_url: str
+    setup_url: str
+    webhook_url: str
+    permissions: dict[str, str]
+    events: list[str]
 
 
 class AppStatusResponse(BaseModel):

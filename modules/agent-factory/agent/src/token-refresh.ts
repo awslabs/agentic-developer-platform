@@ -111,9 +111,10 @@ export function canInitTokenManager(env: NodeJS.ProcessEnv = process.env): boole
   return Boolean(privateKey && (owner || installationId));
 }
 
-/**
- * Initialize the token manager with GitHub App credentials
- */
+/** Reuse captured manager credentials after signing aliases leave process.env. */
+export function isTokenManagerInitialized(): boolean { return config !== null; }
+
+/** Initialize the token manager with GitHub App credentials. */
 export function initTokenManager(options: TokenManagerConfig): void {
   if (process.env.ADP_TOKEN_MODE === 'pat') {
     throw new Error('PAT execution cannot initialize GitHub App renewal');
@@ -256,7 +257,10 @@ async function generateNewToken(): Promise<TokenInfo> {
     installationId,
   });
 
-  const installationAuth = await auth({ type: 'installation' });
+  const installationAuth = await auth({
+    type: 'installation',
+    ...(config.repo ? { repositoryNames: [config.repo] } : {}),
+  });
 
   const tokenInfo: TokenInfo = {
     token: installationAuth.token,
@@ -334,7 +338,7 @@ function publishToken(next: TokenInfo): void {
 }
 
 /** Use the same manager from posting helpers and the proactive refresh timer. */
-export async function getRuntimeGitHubToken(): Promise<string> {
+export async function getRuntimeGitHubToken(force = false): Promise<string> {
   if (process.env.ADP_TOKEN_MODE === 'pat') {
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (!token) throw new Error('PAT credential unavailable; reconnect the GitHub credential');
@@ -357,7 +361,7 @@ export async function getRuntimeGitHubToken(): Promise<string> {
     });
     adoptBootstrapToken();
   }
-  return getToken();
+  return force ? forceRefresh() : getToken();
 }
 
 /** Unknown bootstrap expiry triggers a mint; it never becomes a guessed hour. */

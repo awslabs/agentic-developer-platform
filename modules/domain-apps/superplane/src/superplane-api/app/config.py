@@ -1,6 +1,8 @@
 """Application settings loaded from environment variables."""
 
-from pydantic import field_validator
+from typing import Literal
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -24,6 +26,27 @@ class Settings(BaseSettings):
     superplane_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
+    # Deployment-owned tenant/target policy; never accepted from HTTP input.
+    superplane_lifecycle_config_file: str = ""
+    superplane_controller_profiles_file: str = ""
+    superplane_operation_gateway_url: str = ""
+    superplane_operation_gateway_region: str = ""
+    # Omission preserves existing operation hosts; staged installs set false.
+    superplane_operation_dispatch_enabled: bool = True
+    # Deployment selection, never supplied by an admission request.
+    superplane_paid_worker_mode: Literal["legacy", "native-controller"] = "legacy"
+
+    @field_validator("superplane_operation_dispatch_enabled", mode="before")
+    @classmethod
+    def strict_dispatch_enabled(cls, value):
+        if type(value) is bool:
+            return value
+        if value in ("true", "false"):
+            return value == "true"
+        raise ValueError("SUPERPLANE_OPERATION_DISPATCH_ENABLED must be true or false")
+
+    controller_status_url: str = ""
+    controller_registry_credential: str = ""
 
     # AWS
     aws_region: str = "us-east-1"
@@ -34,21 +57,26 @@ class Settings(BaseSettings):
     cognito_app_client_id: str = ""
     cognito_app_client_secret: str = ""
 
-    # Domain auth enforcement (issue #5055, U14 — R5/R6).
-    #
-    # `domain_auth_enforced` is the switch, and it is OFF by default here on
-    # purpose. Retiring the legacy self-signed JWT path is U21's conditional
-    # story, so this story adds the strict path beside it rather than deleting
-    # the old one. What the flag does NOT do is soften the strict path: when it
-    # is on there is no fallback to the legacy validator, because a permissive
-    # alternate validator that answers the same question is a bypass.
-    #
-    # There is deliberately no default issuer or client allowlist. An empty
-    # allowlist is indistinguishable from having no policy at all, so
-    # `build_domain_policy()` refuses to start with enforcement on and either
-    # value unset (see app/auth.py) instead of quietly admitting every client
-    # in the user pool.
-    domain_auth_enforced: bool = False
+    # Production is strict by default. Legacy authentication is available only
+    # through an explicit development profile and explicit enforcement opt-out.
+    superplane_security_profile: Literal["production", "development"] = "production"
+    domain_auth_enforced: bool = True
+    # Additive current-identity integration, not a switch for existing JWT/grant
+    # enforcement. Enable only with the protected ADP reader composed in API and
+    # worker processes. Existing releases retain their signed-token/live-grant path.
+    current_identity_enforced: bool = False
+
+    @model_validator(mode="after")
+    def require_production_auth(self):
+        if (
+            not self.domain_auth_enforced
+            and self.superplane_security_profile != "development"
+        ):
+            raise ValueError(
+                "DOMAIN_AUTH_ENFORCED=false requires SUPERPLANE_SECURITY_PROFILE=development"
+            )
+        return self
+
     cognito_issuer: str = ""
     cognito_jwks_url: str = ""
     domain_auth_allowed_client_ids: list[str] = []
@@ -59,6 +87,20 @@ class Settings(BaseSettings):
     # inference that criterion forbids. Asserted by the deployment, reported by
     # GET /health so a reader can observe it rather than assume it.
     cognito_enabled: bool = False
+
+    # Audit read coverage (issue #5673, A17).
+    #
+    # Mutating requests are ALWAYS audited and this flag does not affect them. It controls
+    # only whether reads of tenant data are recorded too.
+    #
+    # OFF by default, deliberately. Reads are the bulk of traffic, so enabling this
+    # multiplies audit row volume and puts a database write on the hot path of every GET;
+    # that is a storage and latency decision each environment should make explicitly
+    # rather than inherit from a code default. It also bounds an amplification risk: now
+    # that refused attempts are recorded, a caller able to generate rejected reads can
+    # drive audit writes, and a per-environment switch is what allows shedding that volume
+    # without a code change.
+    audit_read_coverage: bool = False
 
     # JWT Auth
     #

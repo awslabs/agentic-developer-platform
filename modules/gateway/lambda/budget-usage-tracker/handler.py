@@ -15,6 +15,7 @@ Environment Variables:
     AWS_REGION: AWS region (default: us-east-1)
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -311,7 +312,9 @@ def upsert_budget_usage(
         )
 
 
-def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_key: str | None = None) -> bool:
+def bridge_cost_to_usage_logs(
+    conn, request_id: str, cost: Decimal, chat_log_s3_key: str | None = None, *, org_id: str, user_id: str, atomic: bool = False
+) -> bool:
     """
     Bridge calculated cost back to the usage_logs table.
 
@@ -339,9 +342,10 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_
                 UPDATE usage_logs
                 SET cost_usd = CASE WHEN cost_usd = 0 THEN %s ELSE cost_usd END,
                     chat_log_s3_key = COALESCE(chat_log_s3_key, %s)
-                WHERE request_id = %s AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
+                WHERE request_id = %s AND org_id = %s AND user_id = %s
+                  AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
                 """,
-                (cost, chat_log_s3_key, request_id),
+                (cost, chat_log_s3_key, request_id, org_id, user_id),
             )
             updated = cur.rowcount > 0
             if updated:
@@ -354,6 +358,8 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_
         # The failed statement aborted the transaction — roll back so
         # subsequent statements on this connection don't fail with
         # InFailedSqlTransaction.
+        if atomic:
+            raise
         conn.rollback()
         return False
 
@@ -379,10 +385,11 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
             way they were obtained implies (issue #4969)
         chat_log_s3_key: Optional S3 object key for the chat log payload
     """
+    if type(chat_log.get("settlement_version")) is not int or chat_log["settlement_version"] != 1:
+        raise ValueError("Legacy transcript requires explicit settlement reconciliation")
     parsed = parse_chat_log(chat_log)
     if not parsed:
-        logger.warning("Skipping invalid chat log")
-        return
+        raise ValueError("Invalid chat log cannot be settled")
 
     org_id = parsed["org_id"]
     user_id = parsed["user_id"]
@@ -393,12 +400,15 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
     # Issue #1486: Extract prompt-cache token counts
     cache_read_input_tokens = parsed.get("cache_read_input_tokens", 0)
     cache_creation_input_tokens = parsed.get("cache_creation_input_tokens", 0)
-    timestamp = parsed["timestamp"]
+    timestamp = datetime.fromisoformat(chat_log["timestamp"].replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        raise ValueError("Settlement timestamp requires an explicit timezone")
+    timestamp = timestamp.astimezone(UTC)
     request_id = parsed.get("request_id")
 
     # Issue #249: Agent-specific fields
     account_type = parsed.get("account_type")
-    agent_id = parsed.get("agent_id")
+    agent_id = parsed.get("agent_id") or (user_id if account_type == "service" else None)
 
     # Issue #4300: the human who initiated this agent chain, if any.
     root_human_id = parsed.get("root_human_id")
@@ -446,15 +456,6 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
         f"cost=${cost}"
     )
 
-    # Issue #1074: Bridge cost to usage_logs for dashboard visibility
-    # Issue #1616: Also bridge the S3 key for per-run traceability
-    if request_id and (cost > 0 or chat_log_s3_key):
-        bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key)
-        # Commit the bridge on its own: a later budget_usage failure must not
-        # roll back the per-run cost (the int32 overflow incident zeroed
-        # Agent Activity costs for days this way).
-        conn.commit()
-
     # Get period starts
     periods = get_period_starts(timestamp)
 
@@ -468,6 +469,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
     # Add team if present
     if team_id:
         entities.append(("team", team_id))
+
+    if chat_log.get("department_id"):
+        entities.append(("department", chat_log["department_id"]))
 
     # Issue #249: Add agent entity if this is an IAM-authenticated agent request
     if account_type == "service" and agent_id:
@@ -515,6 +519,37 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
     if root_human_id and unqualify_root_principal_id(root_human_id) != user_id:
         entities.append((_ROOT_USER_ENTITY_TYPE, root_human_id))
         logger.info(f"Including root-human entity: {root_human_id}")
+
+    entities = sorted(set(entities))
+    day = timestamp.astimezone(UTC).date()
+    allocation_key = hashlib.sha256(json.dumps([day.isoformat(), entities], separators=(",", ":")).encode()).hexdigest()
+    if not request_id:
+        raise ValueError("Legacy log has no settlement identity; explicit reconciliation required")
+    # Claim and ALL additive debits share the caller's transaction. A failed fanout
+    # rolls back the claim, so redelivery can finish without losing/doubling spend.
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO budget_settlement_receipts
+            (org_id, request_id, user_id, cost_usd, total_tokens, allocation_key)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (org_id, request_id) DO NOTHING RETURNING request_id""",
+            (org_id, request_id, user_id, cost, total_tokens, allocation_key),
+        )
+        if cur.fetchone() is None:
+            cur.execute(
+                """SELECT user_id, cost_usd, total_tokens, allocation_key FROM budget_settlement_receipts
+                WHERE org_id = %s AND request_id = %s""",
+                (org_id, request_id),
+            )
+            existing = cur.fetchone()
+            if existing != (user_id, cost, total_tokens, allocation_key):
+                raise ValueError("Conflicting settlement replay")
+            if cost > 0 or chat_log_s3_key:
+                bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
+            return
+
+    if cost > 0 or chat_log_s3_key:
+        bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
 
     for entity_type, entity_id in entities:
         for period_type, period_start in periods.items():
@@ -572,6 +607,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         error_count += 1
                         continue
 
+                    from urllib.parse import unquote_plus
+
+                    key = unquote_plus(key)
                     # Skip non-JSON files
                     if not key.endswith(".json"):
                         logger.info(f"Skipping non-JSON file: {key}")
@@ -579,10 +617,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                     logger.info(f"Processing s3://{bucket}/{key}")
 
-                    # Read chat log from S3
-                    response = s3_client.get_object(Bucket=bucket, Key=key)
+                    version_id = s3_info.get("object", {}).get("versionId")
+                    # Versioned notifications must read exactly their own object.
+                    response = s3_client.get_object(Bucket=bucket, Key=key, **({"VersionId": version_id} if version_id else {}))
                     body = response["Body"].read().decode("utf-8")
                     chat_log = json.loads(body)
+                    expected_prefix = f"{chat_log.get('org_id')}/{chat_log.get('user_id') or 'anonymous'}/"
+                    if not key.startswith(expected_prefix):
+                        raise ValueError("Transcript key does not match settlement owner")
+                    if chat_log.get("request_id") and key.rsplit("/", 1)[-1] != f"{chat_log['request_id']}.json":
+                        raise ValueError("Transcript key does not match settlement request")
 
                     # Process the chat log (issue #1616: pass S3 key for traceability)
                     process_chat_log(conn, chat_log, rate_source, chat_log_s3_key=key)
@@ -620,10 +664,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Database connection error: {e}", exc_info=True)
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)}),
-        }
+        raise
+
+    if error_count:
+        # S3 invokes Lambda asynchronously: returning HTTP 500 still acknowledges
+        # the event. Raise so failed records retry; successful receipts deduplicate.
+        raise RuntimeError(f"{error_count} settlement records failed; {processed_count} committed")
 
     result = {
         "statusCode": 200,

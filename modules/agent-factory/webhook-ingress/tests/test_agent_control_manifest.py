@@ -382,32 +382,16 @@ class TestPodIpIsSuppliedForAnExplicitBind:
 class TestFlagAndPortPropagation:
     """What the pod is told, and when (AC-F2)."""
 
-    def test_the_flag_is_only_set_when_enabled(self, scaledjob: str):
-        """Off means the variable is absent, not present-and-false.
+    def test_listener_env_requires_read_or_mutation_enablement(self, scaledjob: str):
+        assert "(var.agent_control_enabled || var.agent_explanations_enabled) ?" in scaledjob
+        assert ': ""' in scaledjob
 
-        Both leave the feature off — the worker's reader is strict — but an absent
-        variable cannot be misread, and `kubectl describe pod` then shows plainly
-        that this deployment has no control channel.
-        """
-        assert 'var.agent_control_enabled ? join("\\n", [' in scaledjob or (
-            "var.agent_control_enabled ?" in scaledjob
-        ), "The control env block must be conditional on var.agent_control_enabled."
-        assert ': ""' in scaledjob, "The disabled branch must render an empty block."
-
-    def test_the_flag_value_is_the_exact_string_true(self, scaledjob: str):
-        """The worker compares byte-exactly. "True" or "1" leaves it off."""
-        gated = scaledjob[
-            scaledjob.index("agent_control_env_block = ") : scaledjob.index(
-                "keda_trigger_auth_yaml"
-            )
-        ]
-        assert "FEATURE_AGENT_CONTROL_ENABLED" in gated
-        assert re.search(
-            r'FEATURE_AGENT_CONTROL_ENABLED[^\n]*\n[^\n]*value:\s*\\"true\\"', gated
-        ), (
-            'The flag must be the exact lowercase string "true". The worker\'s '
-            "reader is byte-exact, so any other casing silently disables control."
-        )
+    def test_read_and_mutation_flags_use_independent_booleans(self, scaledjob: str):
+        gated = scaledjob[scaledjob.index("agent_control_env_block = "):scaledjob.index("keda_trigger_auth_yaml")]
+        for flag, variable in (("CONTROL", "agent_control_enabled"), ("EXPLANATIONS", "agent_explanations_enabled")):
+            lines = gated.splitlines()
+            index = next(i for i, line in enumerate(lines) if f"FEATURE_AGENT_{flag}_ENABLED" in line)
+            assert "${var." + variable + "}" in lines[index + 1]
 
     def test_the_port_is_passed_from_the_variable(self, scaledjob: str):
         gated = scaledjob[

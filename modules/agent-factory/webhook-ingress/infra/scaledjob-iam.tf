@@ -16,7 +16,7 @@
 #   - DynamoDB: update correlation pointers (UpdateItem, not PutItem — #1716)
 #   - KMS: decrypt the marker-signing key only (condition-scoped — #4028)
 #   - CloudWatch Logs: agent execution + bootstrap logging
-#   - S3: beads state + url-analysis evidence + agent-run-logs
+#   - S3: beads state + domain app artifacts + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
 # Issue: #346, #1204, #4028, #4130
@@ -64,6 +64,54 @@ locals {
       ]
       Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
     }
+  ]
+  # The item-action denies also cover TransactWriteItems. AWS IAM has no
+  # dynamodb:TransactWriteItems action; batch writes remain explicitly denied.
+  agent_task_protection_deny = [
+    {
+      Sid    = "DenyTaskRecordWrites"
+      Effect = "Deny"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+      ]
+      Resource = "arn:aws:dynamodb:*:*:table/adp-*-webhook-events"
+      Condition = {
+        "ForAnyValue:StringLike" = {
+          "dynamodb:LeadingKeys" = [
+            "TASK#*",
+            "TASK_RUN#*",
+            "TASK_EVENTS#*",
+            "TASK_COMMANDS#*",
+            "TASK_TURNS#*",
+            "TASK_OPS#*",
+            "TASK_IDEMP#*",
+            "TASK_WORK#*",
+            "TASK_REPORT#*",
+            "TASK_ARTIFACT#*",
+          ]
+        }
+      }
+    },
+    {
+      Sid    = "DenyTaskAuthorityWrites"
+      Effect = "Deny"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+      ]
+      Resource = "arn:aws:dynamodb:*:*:table/adp-*-agent-authority"
+    },
+    {
+      Sid      = "DenyDirectTaskArtifacts"
+      Effect   = "Deny"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = "arn:aws:s3:::adp-*-chat-artifacts-*/tasks/*"
+    },
   ]
 }
 
@@ -121,7 +169,7 @@ locals {
     Version = "2012-10-17"
     # concat, so the webhook-events write grant can be dropped entirely rather
     # than narrowed in place (#5028 AC4 — see local.agent_worker_events_write).
-    Statement = concat(local.agent_worker_events_write, [
+    Statement = concat(local.agent_worker_events_write, local.agent_task_protection_deny, [
       {
         Sid    = "BedrockModelInvoke"
         Effect = "Allow"
@@ -283,11 +331,10 @@ locals {
           "s3:GetObject",
           "s3:PutObject"
         ]
-        Resource = [
+        Resource = concat([
           "arn:aws:s3:::adp-*-agent-beads-state-*/*",
           "arn:aws:s3:::adp-*-agent-run-logs-*/*",
-          "arn:aws:s3:::adp-*-url-analysis-evidence-v2-*/*"
-        ]
+        ], local.domain_worker_artifact_resources)
       },
       {
         Sid    = "SecretsManagerOps"
@@ -336,6 +383,20 @@ locals {
             "kms:EncryptionContext:SecretARN" = aws_secretsmanager_secret.marker_signing_key.arn
           }
         }
+      },
+      {
+        Sid    = "DenyInternalAuthoritySecrets"
+        Effect = "Deny"
+        Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource = [
+          "arn:aws:secretsmanager:*:${local.account_id}:secret:adp/*/gateway/*",
+        ]
+      },
+      {
+        Sid      = "DenyInternalAuthorityParameters"
+        Effect   = "Deny"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Resource = ["arn:aws:ssm:*:${local.account_id}:parameter/adp/*/gateway/*"]
       },
       {
         # Cross-tenant vault lockout (issue #4130, #4073 finding #4).

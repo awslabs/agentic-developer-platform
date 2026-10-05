@@ -8,3 +8,8 @@ agent/coverage/
 !rules/
 !rules/personas/
 !rules/personas/**
+# Canonical issue-authoring contracts copied explicitly by the runtime stage.
+!rules/agents/
+!rules/agents/issue-authoring.md
+!rules/templates/
+!rules/templates/developer-issue.md

@@ -12,7 +12,6 @@ on:
       - 'modules/harness/jobs/harness_jobs/identity.py'
       - 'modules/gateway/scripts/stage-contracts.sh'
       - 'modules/gateway/k8s/**'
-      - 'modules/gateway/frontend/**'
       - 'modules/gateway/alembic/versions/**'
       - 'modules/gateway/lambda/budget-usage-tracker/**'
       - 'modules/gateway/lambda/pricing-refresh/**'
@@ -20,6 +19,7 @@ on:
       - 'modules/gateway/lambda/shared/*.py'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
       # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
@@ -31,6 +31,13 @@ on:
       - '.github/workflows/pricing-finalize.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'modules/gateway/pyproject.toml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:
@@ -47,6 +54,11 @@ on:
         default: ''
       adp_definition_revision:
         description: 'Expected workflow revision; checked before deployment.'
+        required: false
+        type: string
+        default: ''
+      adp_approved_revision:
+        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
         required: false
         type: string
         default: ''
@@ -84,8 +96,8 @@ env:
   EKS_CLUSTER: adp-dev-eks-cluster
 jobs:
   # Detect which parts of the gateway changed so we can skip the unrelated
-  # build/deploy job on frontend-only or backend-only pushes. workflow_dispatch
-  # always runs both (so humans can force a full redeploy).
+  # build/deploy job on backend-only pushes. Frontend pushes use the dedicated
+  # gateway-frontend-deploy.yml publisher; workflow_dispatch still runs both.
   changes:
     name: Detect changes
     runs-on: arc-runner-org
@@ -131,7 +143,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine)\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
@@ -162,14 +174,16 @@ jobs:
           echo "budget_lambdas=$BUDGET_LAMBDAS" >> "$GITHUB_OUTPUT"
 
   deploy-backend:
+    outputs:
+      release_digest: ${{ steps.release.outputs.digest }}
     name: Build and Deploy Backend
     runs-on: arc-runner-org
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
-    outputs:
-      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
-    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
+    # AWS authority comes from the protected deployment environment.
     permissions:
+      id-token: write
       contents: read
       actions: write  # Required by "Trigger gateway-infra re-apply" step (gh workflow run)
 
@@ -177,6 +191,48 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Resolve last successfully deployed revision
+        id: deployed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A run is only a deployment when the job carrying the guard actually
+          # ran and succeeded; runs whose deploy job was skipped do not count.
+          baseline=""
+          while read -r run_id head_sha; do
+            deployed=$(gh api "repos/${{ github.repository }}/actions/runs/${run_id}/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.name == "Build and Deploy Backend" and .conclusion == "success")] | length')
+            if [ "$deployed" -gt 0 ]; then baseline="$head_sha"; break; fi
+          done < <(gh api "repos/${{ github.repository }}/actions/workflows/gateway-deploy.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
+          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard assistant auto-deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: gateway
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+          ADP_DEPLOYED_BASELINE: ${{ steps.deployed.outputs.baseline }}
+        run: bash scripts/check-assistant-deploy-boundary.sh
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -257,7 +313,11 @@ jobs:
           poll_interval: '10'
 
       - name: Export image tag
-        run: echo "IMAGE_TAG=${{ inputs.adp_source_revision || github.sha }}" >> $GITHUB_ENV
+        env:
+          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
+        run: |
+          echo "IMAGE_TAG=${ADP_INPUT_3965067AD6}" >> $GITHUB_ENV
+
 
       - name: Upload CFN templates to S3
         # Issue #562: the AWS connect flow pre-signs a GET URL on these objects.
@@ -286,7 +346,7 @@ jobs:
       - name: Ensure namespace and render K8s prerequisites
         run: |
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
+          aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region ${AWS_REGION}
 
           # --- Namespace prerequisite ---
           # Namespace lifecycle and Pod Security Admission labels are deliberately
@@ -294,8 +354,8 @@ jobs:
           # namespaced edit access only and must never create or patch namespaces.
           # Fresh-account deployments create the namespace in deploy-all.sh before
           # this workflow can run.
-          if ! kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
-            echo "::error::Namespace ${{ env.NAMESPACE }} is missing. Run the platform deployment prerequisite first."
+          if ! kubectl get serviceaccount default -n "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "::error::Namespace ${NAMESPACE} is missing. Run the platform deployment prerequisite first."
             exit 1
           fi
 
@@ -396,11 +456,6 @@ jobs:
           # is safe — registry routes still mount; dispatch returns 503 until set.
           INGESTION_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" "")
 
-          # #3182/#3477: Credential binding enforcement flag. Default "true" (safe-by-default
-          # for fresh clones). Existing deployments pin via SSM param; dev stays in shadow
-          # mode via /adp/dev/gateway/enforce-credential-binding=false.
-          ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "true")
-
           # #4075: Budget enforcement fail mode. Default "closed" (safe-by-default:
           # a failed budget check must not admit uncapped spend). A bounded, alarmed
           # 30s grace window keeps transient DB blips from downing inference.
@@ -466,6 +521,18 @@ jobs:
           ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
           AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
           WEBHOOK_EVENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+          ADP_TASK_API_ADMISSION_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-admission-enabled" "false")
+          ADP_TASK_API_READ_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-read-enabled" "false")
+          ADP_TASK_API_WORKER_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-worker-enabled" "false")
+          ADP_TASK_API_RECOVERY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-recovery-enabled" "false")
+          TASK_ARTIFACT_BUCKET_NAME=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-artifact-bucket-name" "")
+          ADP_TASK_API_QUEUE_URL=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-queue-url" "")
+          ADP_TASK_ADMISSION_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-admission-producer-roles" "")
+          ADP_TASK_DISPATCH_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-dispatch-producer-roles" "")
+          ADP_TASK_RECOVERY_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-recovery-producer-roles" "")
+          ADP_TASK_QUALIFICATION_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-qualification-id" "")
+          ADP_TASK_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-image-digests" "disabled")
+          ADP_TASK_WORKER_SERVICE_ACCOUNT=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-service-account" "agent-scaledjob-sa")
           AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
           BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
           AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
@@ -524,7 +591,6 @@ jobs:
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
-              -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
@@ -537,6 +603,18 @@ jobs:
               -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
               -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
               -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+              -e "s|__ADP_TASK_API_ADMISSION_ENABLED__|${ADP_TASK_API_ADMISSION_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_READ_ENABLED__|${ADP_TASK_API_READ_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_WORKER_ENABLED__|${ADP_TASK_API_WORKER_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_RECOVERY_ENABLED__|${ADP_TASK_API_RECOVERY_ENABLED}|g" \
+              -e "s|__TASK_ARTIFACT_BUCKET_NAME__|${TASK_ARTIFACT_BUCKET_NAME}|g" \
+              -e "s|__ADP_TASK_API_QUEUE_URL__|${ADP_TASK_API_QUEUE_URL}|g" \
+              -e "s|__ADP_TASK_ADMISSION_PRODUCER_ROLES__|${ADP_TASK_ADMISSION_PRODUCER_ROLES}|g" \
+              -e "s|__ADP_TASK_DISPATCH_PRODUCER_ROLES__|${ADP_TASK_DISPATCH_PRODUCER_ROLES}|g" \
+              -e "s|__ADP_TASK_RECOVERY_PRODUCER_ROLES__|${ADP_TASK_RECOVERY_PRODUCER_ROLES}|g" \
+              -e "s|__ADP_TASK_QUALIFICATION_ID__|${ADP_TASK_QUALIFICATION_ID}|g" \
+              -e "s|__ADP_TASK_WORKER_IMAGE_DIGESTS__|${ADP_TASK_WORKER_IMAGE_DIGESTS}|g" \
+              -e "s|__ADP_TASK_WORKER_SERVICE_ACCOUNT__|${ADP_TASK_WORKER_SERVICE_ACCOUNT}|g" \
               -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
               -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
               -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
@@ -553,54 +631,35 @@ jobs:
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---
-          # Generate the token secret in Secrets Manager if it doesn't exist yet.
+          # Stable signing material is provisioned by the operator. A release
+          # may read it but must never create or rotate it.
           SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
           TOKEN_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "$SM_SECRET_NAME" \
-            --query SecretString --output text 2>/dev/null || echo "")
-          if [ -z "$TOKEN_SECRET" ] || [ "$TOKEN_SECRET" = "None" ]; then
-            TOKEN_SECRET=$(openssl rand -hex 32)
-            aws secretsmanager create-secret \
-              --name "$SM_SECRET_NAME" \
-              --secret-string "$TOKEN_SECRET" \
-              --description "JWT token signing key for Bedrock Gateway" \
-              --region "${AWS_REGION}" 2>/dev/null || \
-            aws secretsmanager put-secret-value \
-              --secret-id "$SM_SECRET_NAME" \
-              --secret-string "$TOKEN_SECRET" \
-              --region "${AWS_REGION}"
-          fi
+            --query SecretString --output text)
+          test -n "$TOKEN_SECRET" && test "$TOKEN_SECRET" != None
 
-          # Generate the internal API key for /internal/v1/* shared-secret fallback.
+          # Read the internal API key for /internal/v1/* shared-secret fallback.
           # TEMPORARY — auth_deps.py:43 prefers IRSA via API GW. This fallback path
           # is what unblocks Phase 1 apply of EPIC #1107 and is removed by Phase 3
           # (#1110) once both clients use SigV4.
           INTERNAL_API_SM_NAME="adp/${ENVIRONMENT}/gateway/internal-api-key"
           INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
             --secret-id "$INTERNAL_API_SM_NAME" \
-            --query SecretString --output text 2>/dev/null || echo "")
-          if [ -z "$INTERNAL_API_KEY" ] || [ "$INTERNAL_API_KEY" = "None" ]; then
-            INTERNAL_API_KEY=$(openssl rand -hex 32)
-            aws secretsmanager create-secret \
-              --name "$INTERNAL_API_SM_NAME" \
-              --secret-string "$INTERNAL_API_KEY" \
-              --description "Shared secret for /internal/v1/* fallback auth (temporary; removed in EPIC #1107 Phase 3)" \
-              --region "${AWS_REGION}" 2>/dev/null || \
-            aws secretsmanager put-secret-value \
-              --secret-id "$INTERNAL_API_SM_NAME" \
-              --secret-string "$INTERNAL_API_KEY" \
-              --region "${AWS_REGION}"
-          fi
+            --query SecretString --output text)
+          test -n "$INTERNAL_API_KEY" && test "$INTERNAL_API_KEY" != None
 
           # Issue #5656 (A05): dedicated signing key for single-use identity-linking
           # ("magic link") tokens. src/shared/config.py no longer falls back to the
           # session-signing key, so this must exist for those endpoints to work —
           # and because it is separate, it can be replaced without signing every
-          # user out. Generate-if-absent, same pattern as the keys above; never
-          # echoed. Rotation: docs/runbooks/gateway-secret-rotation.md
+          # user out. The operator provisions it; this release only reads it.
+          # Rotation: docs/runbooks/gateway-secret-rotation.md
           MAGIC_LINK_SM_NAME="adp/${ENVIRONMENT}/gateway/magic-link-secret"
-          MAGIC_LINK_SECRET=$(python3 modules/gateway/scripts/ensure-signing-secret.py \
-            --name "$MAGIC_LINK_SM_NAME" --region "$AWS_REGION")
+          MAGIC_LINK_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "$MAGIC_LINK_SM_NAME" \
+            --query SecretString --output text)
+          test -n "$MAGIC_LINK_SECRET" && test "$MAGIC_LINK_SECRET" != None
 
           APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
@@ -615,7 +674,7 @@ jobs:
             --from-literal=internal-api-key="$INTERNAL_API_KEY" \
             --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
             --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
-            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+            -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
           # --- Render and apply ServiceAccount (Section 3) ---
           sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
@@ -626,37 +685,40 @@ jobs:
             case "$(basename "$f")" in
               configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
             esac
-            # Namespace resources are cluster-scoped even when -n is supplied.
-            # Detect by rendered Kind rather than filename so a future rename or
-            # additional namespace manifest cannot broaden this runner's scope.
+            # Namespace and IngressClass are platform-owned cluster resources,
+            # even when -n is supplied. Detect by rendered Kind so a rename
+            # cannot make this namespaced deploy attempt a cluster-wide apply.
             if kubectl create --dry-run=client --validate=false -f "$f" \
                  -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
-                 | grep -qx Namespace; then
-              echo "Skipping platform-owned Namespace manifest: $f"
+                 | grep -Eq '^(Namespace|IngressClass)$'; then
+              echo "Skipping platform-owned cluster-scoped manifest: $f"
               continue
             fi
-            kubectl apply -f "$f" -n ${{ env.NAMESPACE }}
+            kubectl apply -f "$f" -n "${NAMESPACE}"
           done
 
       - name: Migrate schema then roll out new image
+        id: release
+        env:
+          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
           RENDERED_DEPLOYMENT=$(mktemp)
           trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          RELEASE_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py \
+            "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}")
+          echo "digest=${RELEASE_IMAGE##*@}" >> "$GITHUB_OUTPUT"
 
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
 
-          # Issue #4209 / D-R20: the orchestration graph UI is opt-in PER
-          # ENVIRONMENT. deployment.yaml is one file applied to whichever
-          # environment this workflow targets, so the value cannot live in it —
-          # a literal "true" would arm prod on the next deploy too.
-          #
-          # Absent parameter => "false". `_is_enabled_strict` only accepts the
-          # literal "true", so a missing or malformed value leaves the engine UI
-          # invisible rather than guessing.
-          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+          # Deployment defaults enable orchestration. SSM provides explicit
+          # per-environment overrides for orchestration and optional menu entries.
+          FEATURE_KNOWLEDGE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-knowledge" "true")
+          FEATURE_INDEXING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-indexing" "true")
+          FEATURE_TENANT_ORG_LINKS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-tenant-org-links" "false")
+          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "true")
           if [ -z "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" ] || [ "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" = "None" ]; then
             FEATURE_ORCHESTRATION_ENGINE_ENABLED="false"
           fi
@@ -671,6 +733,7 @@ jobs:
           # Absent parameter => "false", and `_is_enabled_strict` accepts only the
           # literal "true", so a missing or malformed value leaves the control path
           # closed rather than guessing.
+          FEATURE_AGENT_EXPLANATIONS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-explanations" "false")
           FEATURE_AGENT_CONTROL_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
           if [ -z "$FEATURE_AGENT_CONTROL_ENABLED" ] || [ "$FEATURE_AGENT_CONTROL_ENABLED" = "None" ]; then
             FEATURE_AGENT_CONTROL_ENABLED="false"
@@ -706,6 +769,10 @@ jobs:
           # Render then apply, so changes to probes, env, resource limits, volume
           # mounts, etc. actually propagate.
           sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+              -e "s|__FEATURE_KNOWLEDGE_ENABLED__|${FEATURE_KNOWLEDGE_ENABLED}|g" \
+              -e "s|__FEATURE_INDEXING_ENABLED__|${FEATURE_INDEXING_ENABLED}|g" \
+              -e "s|__FEATURE_TENANT_ORG_LINKS_ENABLED__|${FEATURE_TENANT_ORG_LINKS_ENABLED}|g" \
+              -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
@@ -715,46 +782,26 @@ jobs:
           # A bounded lock/index failure leaves the previous release serving.
           python3 modules/gateway/scripts/migrate-before-rollout.py \
             --manifest "$RENDERED_DEPLOYMENT" \
-            --image "${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}" \
+            --image "$RELEASE_IMAGE" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}|g" \
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
             "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
-          # Stamp the image tag for this build. The manifest has a generic
-          # placeholder; this line pins to the commit SHA for audit.
+          # Keep the workload pinned to the same immutable image used by migrations.
           kubectl set image deployment/bedrockgateway \
-            bedrockgateway=${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }} \
+            "bedrockgateway=${RELEASE_IMAGE}" \
             -n ${{ env.NAMESPACE }}
 
-          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
-
+          # HPA may add replicas during rollout, and each replacement needs its
+          # readiness probe before the previous pod can drain.
+          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=600s
       - name: Update the scheduled orchestration engine
-        # The engine runs in Lambda using this same image. An EKS rollout alone
-        # leaves ticks on the previous digest indefinitely (#4575).
         env:
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
         run: |
-          set -euo pipefail
-          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
-          if ! aws lambda get-function --function-name "$ENGINE_FUNCTION" \
-              --query Configuration.FunctionName --output text >/dev/null 2>/tmp/engine-function-error; then
-            if grep -q 'ResourceNotFoundException' /tmp/engine-function-error; then
-              echo "::notice::The orchestration engine is not provisioned in this environment."
-              exit 0
-            fi
-            cat /tmp/engine-function-error >&2
-            exit 1
-          fi
-          ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
-            --image-ids imageTag="${{ inputs.adp_source_revision || github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
-          ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
-          aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
-            --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
-          aws lambda wait function-updated-v2 --function-name "$ENGINE_FUNCTION"
-          ENGINE_LIVE_IMAGE=$(aws lambda get-function --function-name "$ENGINE_FUNCTION" \
-            --query Code.ResolvedImageUri --output text)
-          test "$ENGINE_LIVE_IMAGE" = "$ENGINE_PINNED_IMAGE"
-          echo "Scheduled engine now uses ${ENGINE_LIVE_IMAGE}"
+          python3 modules/gateway/scripts/sync-gateway-engine.py \
+            --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --environment "$ENVIRONMENT" --namespace "$NAMESPACE"
 
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
         id: wire_alb
@@ -855,13 +902,17 @@ jobs:
           # ALB was just wired this run; gateway-infra needs a re-apply so
           # CloudFront picks up the ALB ARN from SSM and creates the /api/*
           # ordered_cache_behavior (enable_vpc_origin flips from false to true).
+          # Preserve this release's reviewed source. If main has advanced, the
+          # infra workflow must reject the stale pin before acquiring authority.
           gh workflow run gateway-infra-apply.yml \
+            --field reviewed_source_sha="$REVIEWED_SOURCE_SHA" \
             --field customer_account_id="${CUSTOMER_ACCOUNT_ID}" \
             --field customer_aws_label="${CUSTOMER_AWS_LABEL}" \
             --field customer_user_id="${CUSTOMER_USER_ID}" \
             --field environment="${ENVIRONMENT}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEWED_SOURCE_SHA: ${{ inputs.adp_source_revision || github.sha }}
           CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
           CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
           CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
@@ -903,6 +954,14 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment || 'dev' }}
           NAMESPACE: ${{ env.NAMESPACE }}
 
+      - name: Verify gateway and engine release parity
+        env:
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
+        run: |
+          python3 modules/gateway/scripts/sync-gateway-engine.py \
+            --verify-only --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --environment "$ENVIRONMENT" --namespace "$NAMESPACE"
+
       - name: Record gateway-backend build evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
@@ -921,19 +980,41 @@ jobs:
   deploy-frontend:
     name: Build and Deploy Frontend
     runs-on: arc-runner-org
+    environment: adp-frontend-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, deploy-backend]
     # Backend job is optional — run the frontend even when backend is skipped.
     # `always()` lets us bypass the default "cancelled if any dependency was
     # skipped" behavior; we still require the backend success if it did run.
     if: |
+      github.ref == 'refs/heads/main' && (
       always() &&
+      github.event_name == 'workflow_dispatch' &&
       needs.changes.outputs.frontend == 'true' &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+      )
+
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_FRONTEND_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -1051,6 +1132,10 @@ jobs:
 
   run-migrations:
     name: Run Pending Migrations
+    # A reusable workflow cannot elevate the caller's token permissions.
+    permissions:
+      contents: read
+      id-token: write
     needs: [changes, deploy-backend]
     # Issue #2918: Run migrations when new alembic files detected (push) OR on
     # workflow_dispatch (fresh-account deploys need migrations to run unconditionally).
@@ -1063,7 +1148,10 @@ jobs:
       adp_correlation: ${{ inputs.adp_correlation || '' }}
       adp_source_revision: ${{ inputs.adp_source_revision || '' }}
       adp_definition_revision: ${{ inputs.adp_definition_revision || '' }}
-      expected_image: ${{ needs.deploy-backend.outputs.release_image }}
+      # GitHub suppresses job outputs containing the masked AWS account ID.
+      # Pass only the deployed digest; the called job reconstructs the URI
+      # using its trusted account config.
+      expected_image_digest: ${{ needs.deploy-backend.outputs.release_digest }}
       account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
@@ -1073,12 +1161,31 @@ jobs:
   finalize-pricing:
     name: Verify and activate daily pricing
     needs: [deploy-backend, run-migrations]
-    if: needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success'
+    if: github.ref == 'refs/heads/main' && (needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success')
     runs-on: arc-runner-org
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
@@ -1089,22 +1196,30 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
       - name: Verify release pricing and enable the schedule
         env:
-          PRICING_RELEASE_IMAGE: ${{ needs.deploy-backend.outputs.release_image }}
+          PRICING_RELEASE_DIGEST: ${{ needs.deploy-backend.outputs.release_digest }}
+          ADP_KNOWN_PRICING_GAP: ${{ vars.ADP_KNOWN_PRICING_GAP || '' }}
         run: |
           set -euo pipefail
-          if ! command -v kubectl >/dev/null; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
+          command -v kubectl >/dev/null
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          [[ "$PRICING_RELEASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Missing valid deployed release digest"; exit 1; }
+          PRICING_RELEASE_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_RELEASE_DIGEST}"
+          PRICING_RECOVERY_ARGS=()
+          case "$ADP_KNOWN_PRICING_GAP" in
+            "") ;;
+            claude-widget-2026-09-24) PRICING_RECOVERY_ARGS=(--allow-known-claude-gap) ;;
+            *) echo "::error::Unrecognized pricing source gap"; exit 1 ;;
+          esac
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
-            --expected-image "$PRICING_RELEASE_IMAGE"
+            --expected-image "$PRICING_RELEASE_IMAGE" "${PRICING_RECOVERY_ARGS[@]}"
           # First rollout requires reviewed budget-lambda infra. If this gate
           # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
           # at this release ref. The schedule stays disabled on failure.
-
   smoke-test:
+    permissions:
+      contents: read
+      id-token: write
     name: Post-deploy Smoke Test
     needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]
     # Issue #3031: Real-token smoke against the deployed gateway.

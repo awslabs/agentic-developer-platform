@@ -1,5 +1,5 @@
 import { ControlStateStore } from './control-state';
-import type { QueuedAuthorization } from './control-authorization';
+import type { QueuedAuthorization, RevalidationOutcome } from './control-authorization';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,33 @@ jest.mock('@aws-sdk/credential-provider-web-identity', () => ({ fromTokenFile: (
 
 const proof: QueuedAuthorization = { envelope: 'signed-proof', action: 'steer', command_id: 'command', body_base64: 'e30=' };
 
-function journal(revalidate?: (p: Readonly<QueuedAuthorization>, generation: number) => Promise<boolean>) {
+/**
+ * The transport's decision, reduced to the boolean these tests are about.
+ *
+ * `revalidateQueuedCommand` returns a {@link RevalidationOutcome} since #3963: an
+ * abort decision has to carry the gateway's signed acceptance receipt back to the
+ * process that finalizes the run, because that process is not this one and would
+ * otherwise have to trust a field the pod wrote about itself (review finding 1).
+ *
+ * Every assertion below predates that and is about whether the command may proceed,
+ * so the shape is normalized here rather than restated at ~20 call sites. Receipt
+ * carriage gets its own tests at the end of this block — asserting `.toBe(false)` on
+ * the object form would have passed trivially and hidden both behaviours.
+ */
+async function allowed(
+  outcome: Promise<RevalidationOutcome>,
+): Promise<boolean> {
+  const result = await outcome;
+  return typeof result === 'object' && result !== null ? result.allowed : result;
+}
+
+/** The receipt a decision carried, if any. */
+async function receiptOf(outcome: Promise<RevalidationOutcome>): Promise<string | null> {
+  const result = await outcome;
+  return typeof result === 'object' && result !== null ? result.abortReceipt ?? null : null;
+}
+
+function journal(revalidate?: (p: Readonly<QueuedAuthorization>, generation: number) => Promise<RevalidationOutcome>) {
   const store = new ControlStateStore({ generation: 7, supportedActions: new Set(['steer']), revalidate });
   store.submit('steer', 'command', 'digest', proof);
   return store;
@@ -102,7 +128,7 @@ describe('worker online transport', () => {
     rmSync(directory, { recursive: true, force: true });
   });
   test('signs both identity headers and rereads rotated credentials', async () => {
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(true);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(true);
     const first = send.mock.calls[0][1];
     expect(first.redirect).toBe('error');
     expect(first.body).toBe(JSON.stringify(proof));
@@ -112,12 +138,19 @@ describe('worker online transport', () => {
     expect(first.headers['X-Adp-Run-Credential']).toBe('credential-one');
     writeFileSync(process.env.ADP_RUN_CREDENTIAL_FILE!, 'credential-two\n');
     writeFileSync(process.env.ADP_WORKLOAD_TOKEN_FILE!, 'pod-two\n');
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(true);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(true);
     expect(send.mock.calls[1][1].headers['X-Adp-Run-Credential']).toBe('credential-two');
     expect(send.mock.calls[1][1].headers['X-Adp-Workload-Token']).toBe('pod-two');
   });
+  test('private verified attribution does not change the gateway wire schema', async () => {
+    expect(await allowed(revalidateQueuedCommand({ ...proof, principal: 'verified-actor',
+      authorityKind: 'human_session' }, 7))).toBe(true);
+    const sent = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(JSON.parse(sent.body)).toEqual(proof);
+  });
+
   test('proof content cannot select the HTTP destination', async () => {
-    expect(await revalidateQueuedCommand({ ...proof, envelope: 'https://169.254.169.254/' }, 7)).toBe(true);
+    expect(await allowed(revalidateQueuedCommand({ ...proof, envelope: 'https://169.254.169.254/' }, 7))).toBe(true);
     expect(String(send.mock.calls[0][0])).toBe(
       'https://example.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent/revalidate',
     );
@@ -128,7 +161,7 @@ describe('worker online transport', () => {
     if (kind === 'missing') delete process.env.ADP_RUN_CREDENTIAL_FILE;
     else if (kind === 'directory') process.env.ADP_RUN_CREDENTIAL_FILE = directory;
     else writeFileSync(file, kind === 'empty' ? '' : kind === 'whitespace' ? 'two tokens' : 'x'.repeat(20000));
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(false);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
     expect(send).not.toHaveBeenCalled();
   });
   test.each(['disabled', 'no-endpoint', 'http', 'credentials', 'query', 'fragment'])('refuses %s configuration', async (kind) => {
@@ -138,7 +171,7 @@ describe('worker online transport', () => {
     if (kind === 'credentials') process.env.ADP_AGENT_CONTROL_ENDPOINT = 'https://user:password@gateway.test';
     if (kind === 'query') process.env.ADP_AGENT_CONTROL_ENDPOINT += '?key=value';
     if (kind === 'fragment') process.env.ADP_AGENT_CONTROL_ENDPOINT += '#fragment';
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(false);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
     expect(send).not.toHaveBeenCalled();
   });
   test.each([
@@ -152,7 +185,7 @@ describe('worker online transport', () => {
     'https://api.execute-api.us-east-1.amazonaws.com/dev/internal/v1/%61gent',
   ])('refuses a destination outside the platform IAM route: %s', async (endpoint) => {
     process.env.ADP_AGENT_CONTROL_ENDPOINT = endpoint;
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(false);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
     expect(send).not.toHaveBeenCalled();
   });
   test.each(['unavailable', 'wrong-command', 'wrong-generation', 'denied', 'timeout', 'malformed'])('refuses %s response', async (kind) => {
@@ -162,6 +195,77 @@ describe('worker online transport', () => {
       return { allowed: kind !== 'denied', command_id: kind === 'wrong-command' ? 'another' : 'command',
         generation: kind === 'wrong-generation' ? 8 : 7, max_round_trip_ms: 1000 };
     }} as Response);
-    expect(await revalidateQueuedCommand(proof, 7)).toBe(false);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
+  });
+
+  /**
+   * The gateway's abort receipt survives the transport — Issue #3963 finding 1.
+   *
+   * The receipt is the gateway's own signed statement that it accepted this abort,
+   * minted only after durable abort intent was persisted. The process that reports
+   * the terminal outcome and deletes the queue message is a different one, so if the
+   * receipt is dropped here that process has nothing to check and must fall back to
+   * believing a field the pod wrote about itself.
+   *
+   * That is the bug these tests exist for: the response was previously reduced to a
+   * boolean and the receipt discarded, so the sentinel writer stamped an unsigned
+   * `delivery: "accepted"` literal instead — which any code in the pod could write,
+   * since the agent holds a `Bash` tool.
+   */
+  const RECEIPT = 'adpe1.eyJhY3Rpb24iOiJhYm9ydF9hY2NlcHRlZCJ9.cmVjZWlwdC1zaWduYXR1cmU';
+
+  /** Respond as the gateway does, with whatever receipt value the case needs. */
+  const respondWith = (fields: Record<string, unknown>) => {
+    send.mockResolvedValue({ ok: true, json: async () => ({
+      allowed: true, command_id: 'command', generation: 7, max_round_trip_ms: 1000, ...fields,
+    }) } as Response);
+  };
+
+  test('carries an accepted abort receipt back verbatim', async () => {
+    respondWith({ abort_receipt: RECEIPT });
+    // Verbatim, and judged nowhere in this process: the bytes are what the signature
+    // covers, so normalizing or re-encoding them here could only invalidate the one
+    // artifact the pod cannot manufacture.
+    expect(await receiptOf(revalidateQueuedCommand(proof, 7))).toBe(RECEIPT);
+  });
+
+  test.each([
+    ['absent', {}],
+    ['empty', { abort_receipt: '' }],
+    ['a non-string', { abort_receipt: { token: RECEIPT } }],
+    ['a number', { abort_receipt: 42 }],
+    ['null', { abort_receipt: null }],
+  ])('reports no receipt when the gateway sends %s', async (_label, fields) => {
+    respondWith(fields);
+    // Exactly `null`, so "the gateway did not attest an acceptance" is one state
+    // rather than several shapes the sentinel writer would have to classify. The
+    // decision itself still stands — a pause has no receipt and needs none.
+    expect(await receiptOf(revalidateQueuedCommand(proof, 7))).toBeNull();
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(true);
+  });
+
+  test('never surfaces a receipt alongside a refusal', async () => {
+    // A contradiction the gateway does not produce, refused anyway. Passing it
+    // through would hand the sentinel writer acceptance proof for a command that was
+    // just denied — the precise outcome the receipt exists to make impossible.
+    send.mockResolvedValue({ ok: true, json: async () => ({
+      allowed: false, command_id: 'command', generation: 7, max_round_trip_ms: 1000,
+      abort_receipt: RECEIPT,
+    }) } as Response);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
+    expect(await receiptOf(revalidateQueuedCommand(proof, 7))).toBeNull();
+  });
+
+  test('drops the receipt when the decision arrives too late to be trusted', async () => {
+    // A stale-generation response is refused, and a refusal carries no receipt. The
+    // receipt must not outlive the decision it belongs to: the finalizer would
+    // otherwise hold gateway-signed acceptance for a command this run was told it
+    // could not apply.
+    send.mockResolvedValue({ ok: true, json: async () => ({
+      allowed: true, command_id: 'command', generation: 8, max_round_trip_ms: 1000,
+      abort_receipt: RECEIPT,
+    }) } as Response);
+    expect(await allowed(revalidateQueuedCommand(proof, 7))).toBe(false);
+    expect(await receiptOf(revalidateQueuedCommand(proof, 7))).toBeNull();
   });
 });

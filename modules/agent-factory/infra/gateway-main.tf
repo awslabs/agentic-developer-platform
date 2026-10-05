@@ -34,11 +34,14 @@ module "gateway_sessions" {
 # the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
-  source                        = "./modules/lambda-gateway"
-  model_policy_enabled          = var.chat_model_policy_enabled
-  persona_model_mapping_enabled = var.persona_model_mapping_enabled && var.gateway_deployed
-  model_control_endpoint        = local.persona_model_control_endpoint
-  model_root_admission_arn      = local.persona_model_root_admission_arn
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/lambda-gateway"
+  model_policy_enabled                = var.chat_model_policy_enabled
+  persona_model_mapping_enabled       = var.persona_model_mapping_enabled && var.gateway_deployed
+  model_control_endpoint              = local.persona_model_control_endpoint
+  identity_resolver_url               = var.gateway_deployed ? data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value : ""
+  identity_registry_table             = var.gateway_deployed ? data.aws_ssm_parameter.agent_registry_table.value : ""
+  model_root_admission_arn            = local.persona_model_root_admission_arn
 
   webhook_events_table_name  = local.chat_webhook_events_table
   webhook_events_table_arn   = local.chat_webhook_events_table == "" ? "" : "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.chat_webhook_events_table}"
@@ -227,7 +230,7 @@ resource "aws_iam_role_policy" "keda_operator_gateway_sqs" {
         Sid      = "AssumeWorkloadRole"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
-        Resource = aws_iam_role.gateway_agent.arn
+        Resource = [aws_iam_role.gateway_agent.arn, aws_iam_role.chat_worker.arn]
       }
     ]
   })
@@ -258,7 +261,7 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
 # =============================================================================
 # Gateway Agent IAM Role (IRSA) — for SQS consumer pods in adp-gateway-agents
 # =============================================================================
-# This role is assumed by the `adp-agent` service account in the
+# This role is assumed by the `adp-gateway-worker` service account in the
 # `adp-gateway-agents` namespace. It grants the worker pods permissions to:
 #   - Invoke Bedrock models (foundation-model + inference-profile ARNs)
 #   - Consume from the tasks SQS queue and send to the responses queue
@@ -269,7 +272,8 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
 # =============================================================================
 
 resource "aws_iam_role" "gateway_agent" {
-  name = "adp-${var.environment}-gateway-agent-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "adp-${var.environment}-gateway-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -283,7 +287,7 @@ resource "aws_iam_role" "gateway_agent" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-agent"
+            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-gateway-worker"
             "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
           }
         }
@@ -416,10 +420,10 @@ resource "aws_iam_role_policy" "gateway_agent_secrets" {
 }
 
 # =============================================================================
-# Kubernetes Service Account — adp-agent in adp-gateway-agents namespace
+# Chat service account — retain adp-agent for gateway workload verification
 # =============================================================================
-# IRSA-annotated service account for the gateway worker pods. Referenced by
-# the KEDA ScaledJob (keda-scaledjob.yaml) as serviceAccountName: adp-agent.
+# IRSA-annotated chat service account. Its name remains stable for gateway
+# workload verification; the Python consumer has a separate service account.
 #
 # This was previously created by deploy-gateway.sh via kubectl apply of
 # k8s/serviceaccount.yaml. Now Terraform-managed so it survives destroy/apply.
@@ -431,7 +435,7 @@ resource "kubernetes_service_account" "gateway_agent" {
     namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.gateway_agent.arn
+      "eks.amazonaws.com/role-arn" = aws_iam_role.chat_worker.arn
     }
 
     labels = {
@@ -501,7 +505,7 @@ resource "kubernetes_config_map" "agent_gateway_config" {
 # Setup failures are diagnosable after the pod is GC'd by KEDA.
 #
 # SCOPE: this grant covers aws_iam_role.gateway_agent only — service account
-# "adp-agent" in the gateway namespace. It does NOT cover the KEDA agent-worker
+# "adp-gateway-worker" in the gateway namespace. It does NOT cover the KEDA agent-worker
 # (SA "agent-scaledjob-sa" in adp-agents), which assumes a separate role defined
 # in webhook-ingress/infra/scaledjob-iam.tf. #1690 landed this grant on this role
 # alone, so the KEDA worker's bootstrap logging was silently denied until #4028
@@ -547,50 +551,9 @@ resource "aws_iam_role_policy" "gateway_agent_execute_api" {
   })
 }
 
-# --- Extend runner IAM with gateway permissions ---
-
-resource "aws_iam_role_policy" "runner_gateway_sqs" {
-  name = "gateway-sqs"
-  role = module.runner_iam.runner_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]
-        Resource = module.gateway_sqs.input_queue_arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-        Resource = module.gateway_sqs.response_queue_arn
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "runner_gateway_dynamodb" {
-  name = "gateway-dynamodb"
-  role = module.runner_iam.runner_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-        Resource = [module.gateway_sessions.table_arn, "${module.gateway_sessions.table_arn}/index/*"]
-      },
-      {
-        Sid      = "DynamoDBKMSAccess"
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-        Resource = [aws_kms_key.dynamodb.arn]
-      }
-    ]
-  })
-}
+# Shared runners use only the runner-runtime-policy grants. Direct gateway SQS,
+# session DynamoDB and DynamoDB KMS access belongs to the gateway workloads;
+# adding it here is redundant with (and denied by) the shared runtime boundary.
 
 # Basic saved-model lookup shares the existing gateway deployment. Derive its
 # endpoint from that deployment so a dev apply cannot erase manually supplied

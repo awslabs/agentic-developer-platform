@@ -15,6 +15,7 @@ import os
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -22,6 +23,33 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_operator_configuration(tmp_path, monkeypatch):
+    """Never inherit an operator's pinned login, configuration or token stores."""
+    for key in list(os.environ):
+        if key.startswith(("ADP_", "HERMES_")) or key in {
+            "BG_CONFIG_DIR",
+            "BG_AWS_PROFILE",
+            "BG_AWS_RETIRED_PROFILES",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "KIMI_HOME",
+        }:
+            monkeypatch.delenv(key, raising=False)
+    for module in list(sys.modules.values()):
+        observations = vars(module).get("_capability_preflight") if module is not None else None
+        if isinstance(observations, dict):
+            observations.clear()
+        # In-process helpers must resolve a fresh deployment for each test.
+        if Path(getattr(module, "__file__", "") or "").name == "adp_common.py":
+            monkeypatch.setattr(module, "_deployment", module._UNRESOLVED)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+        directory = tmp_path / key.lower()
+        directory.mkdir(mode=0o700)
+        monkeypatch.setenv(key, str(directory))
 
 
 @pytest.fixture
@@ -203,7 +231,12 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "adp-github.py",
         "adp-github-admin.py",
         "adp-superplane.py",
+        # The onboarding surface is a sibling helper that `adp-superplane.py`
+        # delegates to, so an installed prefix without it has no onboarding verbs.
+        "adp-superplane-onboarding.py",
         "adp-models.py",
+        # Issue #5621: capability discovery and diagnosis.
+        "adp-doctor.py",
     ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())
@@ -217,16 +250,17 @@ def run_adp(adp_bin: Path, adp_home: Path):
 
     PATH deliberately does NOT contain the install dir: `adp` must resolve its
     core helper as a sibling of itself, not via a PATH lookup that could find an
-    unrelated copy.
+    unrelated copy. ADP_TEST_BASH can select an older Bash for compatibility checks.
     """
 
     def _run(args: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
+        # A developer's active deployment must not override the sandboxed HOME.
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("ADP_", "BG_"))}
         env["HOME"] = str(adp_home)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            ["bash", str(adp_bin / "adp"), *args],
+            [os.environ.get("ADP_TEST_BASH", "bash"), str(adp_bin / "adp"), *args],
             capture_output=True,
             text=True,
             env=env,

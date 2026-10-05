@@ -516,6 +516,11 @@ class TestUnavailableInputsAreRefusedByName:
         self, tmp_path: Path
     ) -> None:
         lock = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))
+        lock["images"].pop("superplane-api", None)
+        lock["image_sources"].pop("superplane-api", None)
+        lock.setdefault("pending_images", {})["superplane-api"] = {
+            "blocked_by": "source_access",
+        }
         lock["schema"]["single_head"] = True
         lock["schema"]["status"] = "verified"
         result = _contract(lock=_write_lock(tmp_path, lock))

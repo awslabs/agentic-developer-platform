@@ -1,15 +1,17 @@
-"""Unprivileged client for the guarded URL-analysis browser broker."""
+"""Direct AgentCore browser client; explicit broker mode supports legacy rollouts."""
 
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from case_contract import MAX_RESPONSE_BYTES
 from browser_guard import DestinationRefused
+from agentcore_tools.browser_runtime.errors import BrowserBrokerError as BrowserBrokerError
+from case_contract import MAX_RESPONSE_BYTES
 from denylist import DenylistResult
 
 DEFAULT_BROKER_URL = (
@@ -19,8 +21,6 @@ DEFAULT_TIMEOUT_SECONDS = 360
 MAX_ERROR_BYTES = 64 * 1024
 
 
-class BrowserBrokerError(RuntimeError):
-    """Raised when the trusted browser broker cannot complete an analysis."""
 
 
 def _decode_json(payload: bytes) -> dict[str, Any]:
@@ -38,13 +38,13 @@ def _decode_json(payload: bytes) -> dict[str, Any]:
 def analyze_url(
     url: str,
     *,
-    wait_until: str = "networkidle",
+    wait_until: str = "domcontentloaded",
     timeout_ms: int = 30_000,
     ignore_https_errors: bool = False,
     broker_url: str | None = None,
     request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Analyze ``url`` through the broker that exclusively owns browser access."""
+    """Analyze a URL in an ephemeral AgentCore session."""
     return _request(
         "analyze",
         {
@@ -67,7 +67,7 @@ def capture_url(
     broker_url: str | None = None,
     request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Collect a versioned research bundle through the guarded broker."""
+    """Collect a versioned research bundle with direct AgentCore browsing."""
     return _request(
         "capture",
         {
@@ -81,8 +81,46 @@ def capture_url(
     )
 
 
+def investigation_request(operation, payload, *, broker_url=None):
+    """One reasoning-selected operation; never replay a timed-out browser action."""
+    if operation not in {"start", "step", "close"}:
+        raise ValueError("Unsupported investigation operation")
+    if (
+        broker_url is None
+        and os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "native"
+    ):
+        from local_browser import investigation_request as direct_request
+
+        return direct_request(operation, payload)
+    token = payload.get("session_token", "")
+    if operation != "start" and "~" in token:
+        owner, capability = token.split("~", 1)
+        address = ipaddress.IPv4Address(owner)
+        if (
+            not address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_unspecified
+        ):
+            raise ValueError("Invalid broker session owner")
+        # Only the fixed broker port; worker NetworkPolicy restricts it to broker pods.
+        broker_url = f"http://{address}:8765"
+        payload = {**payload, "session_token": capability}
+    from runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
+
+    budget = STARTUP_SECONDS if operation == "start" else ACTION_SECONDS
+    return _request("investigation/" + operation, payload, broker_url, budget + 20)
+
+
 def _request(operation, payload, broker_url, request_timeout_seconds):
-    url = payload["url"]
+    if (
+        broker_url is None
+        and os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "native"
+    ):
+        from direct_capture import capture
+
+        return capture(operation, payload)
+    url = payload.get("url", "")
     endpoint = (
         broker_url
         or os.environ.get("URL_ANALYSIS_BROWSER_BROKER")
@@ -109,9 +147,19 @@ def _request(operation, payload, broker_url, request_timeout_seconds):
                 reason=str(payload.get("reason", "destination refused")),
                 reason_code=str(payload.get("reason_code", "blocked_address")),
             )
-            raise DestinationRefused(url, decision) from error
+            refusal = DestinationRefused(url, decision)
+            refusal.browser_start_unattempted = (
+                payload.get("browser_start_unattempted") is True
+            )
+            raise refusal from error
         message = str(payload.get("message") or "browser broker request failed")
-        raise BrowserBrokerError(message) from error
+        raise BrowserBrokerError(
+            message,
+            code=payload.get("error", "broker_unavailable"),
+            retry_after=payload.get("retry_after_seconds"),
+            cleanup=payload.get("cleanup"),
+            browser_start_unattempted=payload.get("browser_start_unattempted") is True,
+        ) from error
     except (URLError, TimeoutError) as error:
         raise BrowserBrokerError("browser broker is unavailable") from error
 

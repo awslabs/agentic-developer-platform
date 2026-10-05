@@ -69,7 +69,7 @@ Real example (condensed from EPIC #3557):
 >
 > **Why**: Today GitLab sits behind an internal ALB reachable only via an SSM port-forward and a hosts-file hack — fine for a demo, not a product surface.
 >
-> **Constraints**: CloudFront VPC origin onto the existing internal ALB; the ALB must NOT become internet-facing. Environment: dev / embark1 (879318057152, cred label `adp-embark1`). Out of scope: git-over-SSH, per-tenant instances.
+> **Constraints**: CloudFront VPC origin onto the existing internal ALB; the ALB must NOT become internet-facing. Environment: dev / example-profile (000000000101, cred label `example-profile`). Out of scope: git-over-SSH, per-tenant instances.
 >
 > **Definition of done**: A dashboard user clicks the GitLab link, gets a valid cert, lands signed in via SSO, and the agent round-trip plus E2E suite stay green with the old workarounds removed.
 

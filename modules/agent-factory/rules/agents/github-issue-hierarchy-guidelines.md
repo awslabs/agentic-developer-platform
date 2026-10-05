@@ -190,7 +190,7 @@ An Epic is a GitHub Issue with the `type: epic` label that contains a Tasklist o
 1. Create the epic issue FIRST, before creating child stories.
 2. Apply labels: `type: epic`, `phase: inception`, relevant `area:` labels.
 3. After creating child stories, EDIT the epic body to add story issue numbers to the Tasklist.
-4. Epic titles: `Epic {N}: {Title}` (e.g., `Epic 1: MCP Agent Mail Deployment`).
+4. Epic titles: `Epic {N}: {Title}` (e.g., `Epic 1: MCP Gateway Deployment`).
 5. Create Beads epic: `bd create "Epic N: Title" -t epic -p 1 --json`
 
 ---
@@ -280,12 +280,12 @@ gh label create "type: unit" --color "1D76DB" --repo "$REPO" || true
 
 # 2. Create Epic
 EPIC_NUM=$(gh issue create --repo "$REPO" \
-  --title "Epic 1: MCP Agent Mail Deployment" \
+  --title "Epic 1: MCP Gateway Deployment" \
   --label "type: epic,phase: inception" \
   --body "$EPIC_BODY" | grep -oE '[0-9]+$')
 
 # 3. Create Beads epic
-bd create "Epic 1: MCP Agent Mail Deployment" -t epic -p 1 --json
+bd create "Epic 1: MCP Gateway Deployment" -t epic -p 1 --json
 ```
 
 ### Step 2: Inception - Create Stories
@@ -293,7 +293,7 @@ bd create "Epic 1: MCP Agent Mail Deployment" -t epic -p 1 --json
 ```bash
 # Create Story under Epic
 STORY_NUM=$(gh issue create --repo "$REPO" \
-  --title "US-1.1: Deploy Agent Mail to K8s" \
+  --title "US-1.1: Deploy MCP Gateway to K8s" \
   --label "type: story,phase: inception" \
   --body "$STORY_BODY" | grep -oE '[0-9]+$')
 
@@ -353,7 +353,7 @@ bd close bd-abc.1 --reason "PR #123 merged"
 
 | Level | Pattern | Example |
 |-------|---------|---------|
-| Epic | `Epic {N}: {Title}` | `Epic 1: MCP Agent Mail Deployment` |
+| Epic | `Epic {N}: {Title}` | `Epic 1: MCP Gateway Deployment` |
 | Story | `US-{Epic}.{Story}: {Title}` | `US-1.2: Configure Authentication` |
 | Unit | `Unit {Epic}-{Seq}: {Title}` | `Unit 1-3: Create Ingress Rules` |
 | Task | `Task: {Title}` | `Task: Update documentation` |

@@ -60,8 +60,14 @@ def only_files(directory: Path, pattern: str) -> set[str]:
 
 
 def validate_findings(root: Path, expected_images: set[str]):
+    # Pinned Checkov emits results_sarif.sarif inside its output directory;
+    # the publisher flattens that directory. Also accept the historical name,
+    # but never choose between competing reports or silently skip an extra one.
+    checkov_files = only_files(root / "checkov", "*.sarif")
+    if len(checkov_files) != 1 or not checkov_files <= {"checkov-results.sarif", "results_sarif.sarif"}:
+        raise ValueError("Checkov must supply exactly one recognized SARIF report")
+    require_sarif(root / "checkov" / next(iter(checkov_files)))
     sarif_reports = {
-        "checkov": "checkov-results.sarif",
         "semgrep": "semgrep-results.sarif",
         "bandit": "bandit-results.sarif",
     }
@@ -74,6 +80,11 @@ def validate_findings(root: Path, expected_images: set[str]):
     secret_audit = load_json(root / "detect-secrets" / "detect-secrets-audit.json")
     if not isinstance(secret_audit, dict) or not isinstance(secret_audit.get("results"), list):
         raise ValueError("detect-secrets audit lacks a results list")
+
+    if (secret_scan.get("repository_matcher_policy")
+            or secret_audit.get("schema_version") == "adp.detect-secrets.audit/v2"):
+        from run_detect_secrets import validate_audit_coverage
+        validate_audit_coverage(secret_scan, secret_audit)
 
     cfn = load_json(root / "cfn-nag" / "cfn-nag-results.json")
     if not isinstance(cfn, list):
@@ -147,13 +158,51 @@ def observed_results(evidence_root: Path, provenance_output: Path, source_revisi
         for tool, digest in digests.items():
             path = evidence_root / tool / "provenance" / f"{name}.json"
             provenance = load_json(path)
-            if provenance != {
-                "artifact_sha256": coverage[tool][name].get("artifact_sha256"),
+            item = coverage[tool][name]
+            expected = {
+                "artifact_sha256": item.get("artifact_sha256"),
                 "digest": digest,
                 "name": name,
                 "source_revision": source_revision,
                 "tool": tool,
-            } or not re.fullmatch(r"[0-9a-f]{64}", provenance["artifact_sha256"] or ""):
+            }
+            evidence_suffixes = {
+                "raw_artifact_sha256": ".raw.sarif",
+                "suppression_summary_sha256": ".suppression-summary.json",
+                "scanner_metadata_sha256": ".scanner-metadata.json",
+            }
+            extended = {"build_args", *evidence_suffixes}
+            if not isinstance(provenance, dict):
+                raise ValueError(f"invalid {tool} provenance for {name}")
+            # Preserve legacy receipts, but require the complete extended schema
+            # whenever either coverage or provenance claims the newer evidence.
+            if extended.intersection(provenance) or extended.intersection(item):
+                build_args = item.get("build_args")
+                if not isinstance(build_args, dict) or any(
+                    not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key)
+                    or not isinstance(value, str)
+                    or not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}", value)
+                    or value.endswith("sha256:" + "0" * 64)
+                    for key, value in build_args.items()
+                ):
+                    raise ValueError(f"invalid {tool} build inputs for {name}")
+                expected["build_args"] = build_args
+                for field, suffix in evidence_suffixes.items():
+                    checksum = item.get(field)
+                    expected[field] = checksum
+                    if tool == "syft":
+                        if checksum is not None:
+                            raise ValueError(f"unexpected Syft {field} for {name}")
+                        continue
+                    artifact_path = evidence_root / tool / "artifacts" / f"{name}{suffix}"
+                    if (
+                        not isinstance(checksum, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+                        or not artifact_path.is_file()
+                        or hashlib.sha256(artifact_path.read_bytes()).hexdigest() != checksum
+                    ):
+                        raise ValueError(f"invalid {tool} {field} evidence for {name}")
+            if provenance != expected or not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("artifact_sha256", ""))):
                 raise ValueError(f"invalid {tool} provenance for {name}")
             suffix = ".sarif" if tool == "grype" else ".cdx.json"
             artifact = evidence_root / tool / "artifacts" / f"{name}{suffix}"
@@ -187,6 +236,8 @@ def sanitize_summary(summary_path: Path, output: Path, source_revision: str, cor
             key: result.get(key, 0)
             for key in ("new_count", "resolved_count", "new_unrated_count")
         }
+        if "legacy_partial_identity_count" in result:
+            tools[tool]["legacy_partial_identity_count"] = result["legacy_partial_identity_count"]
         if any(type(value) is not int or value < 0 for value in tools[tool].values()):
             raise ValueError(f"summary counts for {tool} are invalid")
     output.write_text(json.dumps({
@@ -216,13 +267,15 @@ def cleanup_children(state_dir: Path, expected_children: set[str], region: str, 
             state = load_json(state_path)
             build_id = state.get("build_id")
             source_key = state.get("source_key")
-            if not isinstance(source_key, str) or not re.fullmatch(r"codebuild/src/[0-9a-f]{40}-[0-9]+-[0-9]+-[A-Za-z0-9_-]+\.zip", source_key):
+            if not isinstance(source_key, str) or not re.fullmatch(r"codebuild/src/adp-[A-Za-z0-9_-]+-(?:grype|syft)-scan/[0-9a-f]{40}-[0-9]+-[0-9]+-[A-Za-z0-9_-]+\.zip", source_key):
                 raise ValueError("state lacks an invocation-owned source key")
             if not isinstance(build_id, str) or not build_id:
                 aws(["s3api", "delete-object", "--bucket", state_bucket, "--key", source_key, "--region", region])
                 result["children"][name] = {"build_id": None, "terminal_status": "UNPROVEN", "source_removed": True}
                 result["errors"].append(f"{name}: build start was not proven and no build ID was recorded")
                 continue
+            if build_id.split(":", 1)[0] != source_key.split("/")[2]:
+                raise ValueError("child project does not own the recorded source")
             status = None
             for _ in range(21):
                 response = aws(["codebuild", "batch-get-builds", "--ids", build_id, "--region", region])

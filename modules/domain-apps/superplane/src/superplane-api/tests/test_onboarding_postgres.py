@@ -1,8 +1,10 @@
 """Onboarding against real PostgreSQL: zero workspaces, denial, restart. Issue #5535.
 
-Set ``SUPERPLANE_TEST_POSTGRES_URL`` to a disposable postgresql+asyncpg URL. Each
-test creates and drops its own random schema. No provider, cloud or vault is
-contacted.
+The shared installation fixture starts disposable pgserver unless an explicit
+``SUPERPLANE_TEST_POSTGRES_URL`` is supplied. Each test applies the real Alembic
+chain in its own random schema and drops that schema afterwards. CI must run
+these cases: a missing PostgreSQL dependency fails rather than skipping them.
+No provider, cloud or vault is contacted.
 
 WHY REAL POSTGRESQL RATHER THAN THE SUITE'S SQLITE DOUBLE
 --------------------------------------------------------
@@ -27,10 +29,15 @@ routing and the session are all real.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
-from app.database import Base, get_session
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from app.database import get_session
 from app.main import app
 from app.middleware.auth import create_access_token
 from app.models.organization import Organization
@@ -39,10 +46,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
+from tests.test_installation_postgres import (
+    installation_postgres_url as installation_postgres_url,
 )
+from tests.test_installation_postgres import pytestmark as postgres_available
+
+pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 def _auth(org_id: uuid.UUID) -> dict[str, str]:
@@ -89,8 +98,8 @@ class _Database:
 
 
 @pytest.fixture
-async def database():
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+async def database(installation_postgres_url):  # noqa: F811 - pytest fixture injection
+    url = installation_postgres_url
     schema = "onboarding_" + uuid.uuid4().hex
     admin = create_async_engine(url)
     async with admin.begin() as connection:
@@ -98,8 +107,32 @@ async def database():
 
     handle = _Database(url, schema)
     try:
+        # Use the same migration entry point as installation acceptance. Model
+        # create_all cannot establish that a freshly deployed schema supports
+        # these routes, constraints and restart reads.
+        root = Path(__file__).resolve().parents[1]
+        migrated = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=root,
+            env=dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert migrated.returncode == 0, migrated.stderr
+        config = Config(str(root / "alembic.ini"))
+        config.set_main_option("script_location", str(root / "alembic"))
         async with handle.engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            versions = (
+                (
+                    await connection.execute(
+                        text("SELECT version_num FROM alembic_version")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert versions == ScriptDirectory.from_config(config).get_heads()
         yield handle
     finally:
         await handle.engine.dispose()

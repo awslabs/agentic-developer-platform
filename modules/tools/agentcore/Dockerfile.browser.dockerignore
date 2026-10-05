@@ -1,0 +1,16 @@
+**
+!modules/
+!modules/gateway/
+!modules/gateway/security/
+!modules/gateway/security/stdlib/
+!modules/gateway/security/stdlib/**
+!modules/tools/
+!modules/tools/adp_tools/
+!modules/tools/adp_tools/**
+!modules/tools/agentcore/
+!modules/tools/agentcore/agentcore_tools/
+!modules/tools/agentcore/agentcore_tools/**
+!modules/tools/agentcore/browser-requirements.txt
+**/__pycache__
+**/*.pyc
+**/.env*

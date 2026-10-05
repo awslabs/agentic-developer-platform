@@ -1,0 +1,50 @@
+{
+  "captured_at": "2026-09-25T05:47:34.373319+00:00",
+  "reviewer": "t5_runtime independent of runtime_contracts implementation",
+  "source_sha": "423188d97090f2646e43ed6fa72dea8f0976639a",
+  "worktree_clean": true,
+  "outcome": "PASS",
+  "commands": [
+    {
+      "command": "PYTHONPATH=modules/gateway /tmp/adp-5911-venv/bin/python -m pytest -q modules/gateway/tests/tasks/test_response.py modules/gateway/tests/tasks/test_routes.py modules/gateway/tests/tasks/test_streaming.py",
+      "exit_status": 0,
+      "passed": 76,
+      "failed": 0
+    },
+    {
+      "command": "PYTHONPATH=modules/gateway /tmp/adp-5911-venv/bin/python scripts/task-api/verify-stream-send-bound.py",
+      "exit_status": 0,
+      "lane": "real TCP with actual response/stream implementation and controlled store"
+    }
+  ],
+  "tcp_result": {
+    "production_send_timeout_seconds": 10,
+    "slow_close_seconds": 10.03938649999327,
+    "slow_reason": "slow_consumer",
+    "slow_resume_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:52",
+    "producer_terminal_commit_seconds": 0.13229575799778104,
+    "relay_reason": "client_disconnected",
+    "replayed_events": 2049,
+    "terminal_recovered": true,
+    "all_streams_released": true,
+    "shared_writes": 0,
+    "model_calls": 0
+  },
+  "assessment": [
+    "Actual blocked start/body/end sends exercise ASGI2.3 and2.4 branches.",
+    "Response-level finally releases even when body generator never starts.",
+    "Generator close propagates to underlying event iterator.",
+    "Cursor bookkeeping remains after successful transport send; failed frame is not claimed delivered.",
+    "No production buffer queue introduced; pulls one frame at a time."
+  ],
+  "limitations": [
+    "Local real TCP fixture uses controlled InMemoryTaskStore and does not exercise public API Gateway.",
+    "Built image/public transport qualification is separate and pending rollout."
+  ],
+  "source_hashes": {
+    "modules/gateway/src/tasks/response.py": "a1e9859a1843cfcc226367411f9a7896b74daadc2b973002744b6739b208c012",
+    "modules/gateway/src/tasks/routes.py": "dcda25894be55fbde1a0930678b1e3ca8af13a522bdf5c79c4ac606710c95fc3",
+    "modules/gateway/tests/tasks/test_response.py": "b70fb9259ac0a3b4f2954bc7f4a3189aee23155647ca3d67da6d05df3617f64f",
+    "scripts/task-api/verify-stream-send-bound.py": "9d24886087bad08a57a5f5c2375d3bc21dbba7bb7e783d70da7d2c1ac282779b"
+  }
+}

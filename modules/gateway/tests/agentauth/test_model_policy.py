@@ -103,7 +103,7 @@ def snapshot(**changes) -> ModelPolicySnapshot:
     contracts = {
         persona: {
             "compatibility_class": "claude-agent-sdk",
-            "harness_contract_revision": "0.3.220",
+            "harness_contract_revision": "0.3.283",
         }
         for persona in ("architect", "developer", "reviewer")
     }
@@ -119,7 +119,7 @@ def snapshot(**changes) -> ModelPolicySnapshot:
                 "revision": 7,
                 "posture": "report_only",
                 "posture_revision": 2,
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         "persona_contracts": contracts,
@@ -135,6 +135,26 @@ def snapshot(**changes) -> ModelPolicySnapshot:
     }
     values.update(changes)
     return ModelPolicySnapshot(**values)
+
+
+@pytest.mark.parametrize(
+    "persona,model,compatibility,revision",
+    [
+        ("developer", SONNET, "claude-agent-sdk", "0.3.283"),
+        ("agent-codex-developer", "openai.gpt-6-sol", "codex-sdk", "0.155.1"),
+        ("agent-codex-reviewer", "openai.gpt-6-sol", "codex-sdk", "0.155.1"),
+    ],
+)
+def test_published_contract_resolves_the_personas_native_model(persona, model, compatibility, revision):
+    contracts, _ = model_policy_module._contract_maps()
+    frozen = snapshot(
+        persona_contracts=contracts,
+        mappings={persona: model},
+        class_defaults={compatibility: {"model_id": None, "posture": "enforcing", "posture_revision": 1}},
+    )
+    decision = resolve_decision(frozen, invocation_id="run-native", persona=persona, now=NOW)
+    assert decision.resolved_model_id == model
+    assert decision.harness_contract_revision == revision
 
 
 def live_snapshot(**changes) -> ModelPolicySnapshot:
@@ -518,7 +538,7 @@ async def test_real_root_admission_creates_and_binds_snapshot_before_publication
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -599,7 +619,7 @@ async def test_snapshot_admission_latency_stays_well_inside_webhook_budget(
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -683,11 +703,21 @@ class _UnavailablePreferenceSession:
             return SimpleNamespace(id="cache-user", team_id="team-a")
         if "FROM service_principals" in rendered:
             return SimpleNamespace(status="active")
+        if "FROM teams" in rendered:
+            return SimpleNamespace(id="team-a", department_id="department-a")
         raise AssertionError(f"unexpected scalar query: {rendered}")
+
+    async def execute(self, query):
+        if "FROM users" in str(query):
+            user = SimpleNamespace(id="cache-user", team_id="team-a")
+            return SimpleNamespace(scalar_one_or_none=lambda: user, one_or_none=lambda: (user, False))
+        raise AssertionError(f"unexpected execute query: {query}")
 
     async def scalars(self, query):
         if "FROM service_principal_aliases" in str(query):
             return []
+        if "FROM team_memberships" in str(query):
+            return SimpleNamespace(all=lambda: [])
         raise OperationalError("preferences unavailable", {}, RuntimeError("offline"))
 
 
@@ -724,7 +754,7 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=4,
             posture_revision=2,
@@ -772,7 +802,7 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
     }
     assert built.persona_contracts["developer"] == {
         "compatibility_class": "claude-agent-sdk",
-        "harness_contract_revision": "0.3.220",
+        "harness_contract_revision": "0.3.283",
     }
 
 
@@ -846,7 +876,7 @@ async def test_report_only_mapping_snapshot_does_not_require_unproven_active_def
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=None,
             revision=1,
             posture_revision=1,
@@ -910,7 +940,7 @@ async def test_service_root_resolves_verified_alias_to_canonical_principal(db_se
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -998,7 +1028,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=8,
             posture_revision=3,
@@ -1091,7 +1121,7 @@ async def test_lkg_refuses_when_active_allowlist_revision_changed(
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -1490,7 +1520,7 @@ def test_resolution_accepts_a_snapshot_up_to_but_not_including_its_expiry(policy
     assert exact.value.reason == "snapshot_expired"
 
 
-def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
+def _live_policy_record(policy_store, policy: ModelPolicySnapshot, *, persona="developer"):
     raw = canonical_json(policy.to_dict()).decode()
     digest = policy_digest(policy.to_dict())
     _put(
@@ -1500,7 +1530,7 @@ def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
             "sk": {"S": "EXEC#run-live-developer"},
             "tenant_id": {"S": "tenant-a"},
             "status": {"S": "active"},
-            "persona": {"S": "developer"},
+            "persona": {"S": persona},
             "model_policy_snapshot": {"S": raw},
             "model_policy_snapshot_digest": {"S": digest},
         },
@@ -1536,7 +1566,7 @@ async def _add_live_posture_setting(db_session, *, posture: str = "report_only",
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=posture_revision,
@@ -2085,3 +2115,223 @@ def test_issued_decision_retains_canonical_owner_for_shadow_evidence(owner_kind,
     decision = resolve_decision(frozen, invocation_id="run-review", persona="reviewer", now=NOW).to_dict()
     assert decision["principal_kind"] == owner_kind
     assert decision["principal_id"] == owner_id
+
+
+def test_native_codex_contract_does_not_use_claude_sdk_revision():
+    from src.admin.persona_models.catalogue import persona_harness_contract_revision
+
+    contracts, _ = model_policy_module._contract_maps()
+    assert contracts["agent-codex-reviewer"]["harness_contract_revision"] == persona_harness_contract_revision("agent-codex-reviewer")
+    assert contracts["agent-codex-reviewer"]["harness_contract_revision"] != HARNESS_CONTRACT_REVISION
+
+
+@pytest.mark.parametrize("mapping", ["openai.gpt-6-sol", None])
+def test_legacy_codex_snapshot_keeps_explicit_model_and_requires_verified_live_posture(mapping):
+    from dataclasses import replace
+
+    from src.admin.persona_models.catalogue import persona_harness_contract_revision
+    from src.agentauth.runtime_posture import LivePosture
+
+    inherited = snapshot(
+        mappings={"agent-codex-reviewer": mapping} if mapping else {},
+        persona_contracts={"agent-codex-reviewer": {"compatibility_class": "codex-sdk", "harness_contract_revision": HARNESS_CONTRACT_REVISION}},
+    )
+    original_digest = policy_digest(inherited.to_dict())
+    with pytest.raises(ModelPolicyError, match="class_default_unavailable"):
+        resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW)
+    live = LivePosture("codex-sdk", "enforcing", 2, NOW, NOW + timedelta(seconds=30), "live")
+    if mapping is None:
+        with pytest.raises(ModelPolicyError, match="class_default_unavailable"):
+            resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=live)
+        return
+    result = resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=live)
+    assert result.resolved_model_id == mapping and result.resolution_source == "principal-mapping"
+    assert result.harness_contract_revision == persona_harness_contract_revision("agent-codex-reviewer")
+    assert result.runtime_posture == "enforcing" and result.posture_revision == 2
+    assert result.snapshot_runtime_posture is None and result.snapshot_posture_revision is None
+    assert result.snapshot_digest == original_digest == policy_digest(inherited.to_dict())
+    with pytest.raises(ModelPolicyError, match="persona_incompatible"):
+        resolve_decision(
+            inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=replace(live, compatibility_class="claude-agent-sdk")
+        )
+
+
+def test_persona_default_precedence_and_snapshot_roundtrip():
+    from dataclasses import replace
+
+    defaults = {"developer": {"model_id": OPUS, "revision": 1, "compatibility_class": "claude-agent-sdk", "harness_contract_revision": "0.3.283"}}
+    frozen = snapshot(schema_version=2, mappings={}, persona_defaults=defaults)
+    restored = ModelPolicySnapshot.from_dict(frozen.to_dict())
+    assert restored.to_dict() == frozen.to_dict()
+    assert resolve_decision(restored, invocation_id="child", persona="developer", now=NOW).resolved_model_id == OPUS
+    mapped = replace(restored, mappings={"developer": HAIKU})
+    assert resolve_decision(mapped, invocation_id="child", persona="developer", now=NOW).resolved_model_id == HAIKU
+    reset = replace(restored, persona_defaults={"developer": {**defaults["developer"], "model_id": None}})
+    assert resolve_decision(reset, invocation_id="child", persona="developer", now=NOW).resolved_model_id == SONNET
+    assert policy_digest(restored.to_dict()) != policy_digest(reset.to_dict())
+    assert resolve_decision(restored, invocation_id="later-child", persona="developer", now=NOW).resolved_model_id == OPUS
+    with pytest.raises(ModelPolicyError, match="snapshot_unsupported_revision"):
+        ModelPolicySnapshot.from_dict({**frozen.to_dict(), "schema_version": 1})
+
+
+@pytest.mark.asyncio
+async def test_database_persona_defaults_are_frozen_at_root(db_session):
+    from src.shared.models.persona_models import PersonaPlatformDefault
+
+    db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="a@example.test", cognito_sub="human-sub"))
+    row = PersonaPlatformDefault(
+        persona_key="developer", compatibility_class="claude-agent-sdk", harness_contract_revision="0.3.283", canonical_model_id=OPUS, revision=1
+    )
+    db_session.add(row)
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            harness_contract_revision="0.3.283",
+            active_default_model_id=SONNET,
+            revision=1,
+            posture_revision=1,
+            enforcement_posture="report_only",
+        )
+    )
+    await db_session.flush()
+
+    async def build():
+        return await build_root_snapshot(
+            db_session,
+            store=_RootStore({"authority_kind": {"S": "github_event"}, "human_id": {"S": "human-sub"}}),
+            invocation_id="root-a",
+            tenant_id="tenant-a",
+            execution={"flow_id": {"S": "chain-a"}},
+            grant=_grant("github_event"),
+            now=NOW,
+        )
+
+    first = await build()
+    row.canonical_model_id = HAIKU
+    row.revision = 2
+    await db_session.flush()
+    second = await build()
+    assert first.schema_version == second.schema_version == 2
+    assert first.policy_revision != second.policy_revision
+    assert resolve_decision(first, invocation_id="child", persona="developer", now=NOW).resolved_model_id == OPUS
+    assert resolve_decision(second, invocation_id="child", persona="developer", now=NOW).resolved_model_id == HAIKU
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-codex-architect",
+        "agent-codex-product",
+        "agent-codex-pm",
+        "agent-codex-intent-refinement",
+    ],
+)
+@pytest.mark.parametrize("posture", ["report_only", "enforcing"])
+@pytest.mark.parametrize("evidence", ["missing", "expired", "refused"])
+async def test_codex_report_admission_does_not_require_probe_cache(
+    db_session,
+    policy_store,
+    monkeypatch,
+    persona,
+    posture,
+    evidence,
+):
+    await _exercise_codex_report_admission(db_session, policy_store, monkeypatch, persona=persona, posture=posture, evidence=evidence)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,patterns,reason",
+    [
+        ("openai.gpt-6-astra", ["anthropic.*"], "not_permitted"),
+        (SONNET, None, "harness_incompatible"),
+        ("unknown.model", None, "model_unavailable"),
+    ],
+)
+async def test_codex_report_admission_still_checks_policy_and_compatibility(
+    db_session,
+    policy_store,
+    monkeypatch,
+    model,
+    patterns,
+    reason,
+):
+    await _exercise_codex_report_admission(db_session, policy_store, monkeypatch, model=model, patterns=patterns, reason=reason)
+
+
+async def _exercise_codex_report_admission(
+    db_session,
+    policy_store,
+    monkeypatch,
+    *,
+    persona="agent-codex-architect",
+    posture="report_only",
+    evidence="missing",
+    model="openai.gpt-6-astra",
+    patterns=None,
+    reason=None,
+):
+    current = datetime.now(UTC)
+    policy = snapshot(
+        issued_at=current - timedelta(minutes=1),
+        expires_at=current + timedelta(hours=2),
+        mappings={persona: model},
+        persona_contracts={persona: {"compatibility_class": "codex-sdk", "harness_contract_revision": "0.155.1"}},
+        class_defaults={
+            "codex-sdk": {"model_id": model, "revision": 1, "posture": posture, "posture_revision": 1, "harness_contract_revision": "0.155.1"}
+        },
+    )
+    record = _live_policy_record(policy_store, policy, persona=persona)
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="codex-sdk",
+            harness_contract_revision="0.155.1",
+            active_default_model_id="openai.gpt-6-astra",
+            revision=1,
+            posture_revision=1,
+            enforcement_posture=posture,
+        )
+    )
+    db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="report-probe@example.test", cognito_sub="report-probe-sub"))
+    if evidence != "missing":
+        db_session.add(
+            ModelInvocabilityEvidence(
+                account_id="111111111111",
+                region="us-east-1",
+                canonical_model_id=model,
+                compatibility_class="codex-sdk",
+                harness_contract_revision="0.155.1",
+                request_shape_sha256=compute_request_shape_sha256(model, persona),
+                outcome="refused" if evidence == "refused" else "proven",
+                provider_request_id="fixture-provider-request",
+                verified_at=current - timedelta(days=2),
+                expires_at=current - timedelta(days=1),
+                updated_at=current,
+            )
+        )
+    await db_session.commit()
+    if patterns is not None:
+        monkeypatch.setenv("BG_MODEL_ALLOWED_MODELS_CONFIG", json.dumps({"tenant-a": patterns}))
+    monkeypatch.setattr(
+        bedrock_routing_resolver, "resolve", AsyncMock(return_value=BedrockTarget(account_id="111111111111", region="us-east-1", rung="user"))
+    )
+    private = Ed25519PrivateKey.generate()
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()
+    ).decode()
+    result = await bootstrap_model_policy_live(
+        db_session,
+        store=policy_store,
+        record=record,
+        grant=_grant("github_event"),
+        env={SIGNING_KEY_ENV: pem, SIGNING_KEY_ID_ENV: "policy-key"},
+    )
+    if reason:
+        assert result["status"] == "unavailable"
+        assert result["reason"] == reason
+    else:
+        assert result["status"] == "proposed", result
+        assert result["decision"]["resolved_model_id"] == model
+        assert result["decision"]["runtime_posture"] == posture
+        assert result["decision"]["evidence_verified_at"] is None

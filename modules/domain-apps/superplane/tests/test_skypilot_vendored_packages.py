@@ -219,7 +219,7 @@ def test_the_record_describes_the_locked_image(record, locked_digest):
     assert DIGEST_RE.match(locked_digest), (
         f"lock digest is malformed: {locked_digest!r}"
     )
-    observations = [record, record["candidate"]]
+    observations = [record, record["candidate"], *record.get("observations", [])]
     matching = [
         item for item in observations if item["observed_in_digest"] == locked_digest
     ]
@@ -227,6 +227,11 @@ def test_the_record_describes_the_locked_image(record, locked_digest):
         "skypilot_vendored_packages.json must contain exactly one complete package observation "
         f"for the locked digest {locked_digest}; found {len(matching)}"
     )
+    assert {item["advisory"] for item in matching[0]["findings"]} == REPORTED_ADVISORIES
+    for item in matching[0]["findings"]:
+        assert item["package"] and item["version"]
+        if item["bundled"]:
+            assert item["bundled_in"]["name"] and item["bundled_in"]["version"]
 
 
 def test_candidate_has_exact_digest_build_scan_and_inventory_provenance(record):

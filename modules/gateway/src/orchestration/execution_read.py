@@ -83,7 +83,7 @@ no revocation path.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -113,7 +113,8 @@ from .execution_state import (
 from .execution_store import _decode_gates
 from .merge_controller import bounded_receipt_summary
 from .merge_evidence import bounded_merge_summary
-from .models import OrchestrationAction, OrchestrationExecution
+from .models import OrchestrationAction, OrchestrationExecution, OrchestrationNode
+from .stage_attempts import stage_counts
 
 logger = get_logger(__name__)
 
@@ -329,6 +330,7 @@ class ExecutionView:
     # silently truncated: a capped list presented as complete would let an operator
     # conclude a step never happened.
     action_overflow: bool
+    stage_attempts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -619,7 +621,17 @@ async def load_flow_execution_view(
         for action in action_rows:
             actions_by_execution.setdefault(action.execution_id, []).append(action)
 
-    views = tuple(view for view in (_execution_view(row, actions_by_execution.get(row.id, [])) for row in rows) if view is not None)
+    counts = await stage_counts(session, org_id=org_id, node_ids=[row.node_id for row in rows]) if rows else {}
+    if rows:
+        nodes = (await session.scalars(select(OrchestrationNode).where(OrchestrationNode.org_id == org_id, OrchestrationNode.id.in_(counts)))).all()
+        for node in nodes:
+            stage = "develop" if node.kind == "story" else "evaluate" if node.kind == "eval" else node.kind
+            counts[node.id][stage] = counts[node.id].get(stage, 0) + node.attempts
+    views = tuple(
+        replace(view, stage_attempts=counts.get(view.node_id, {}))
+        for view in (_execution_view(row, actions_by_execution.get(row.id, [])) for row in rows)
+        if view is not None
+    )
 
     return FlowExecutionView(
         flow_id=flow_id,

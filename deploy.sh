@@ -5,8 +5,8 @@ set -euo pipefail
 # deploy.sh — End-to-end ADP deployment (gateway + webhook agents)
 # =============================================================================
 # A single script that deploys ADP from zero to a working platform with agents.
-# Wraps deploy-all.sh (Phases 1-8: infra, gateway, frontend, ALB wire, broker,
-# admin bootstrap) + webhook-ingress (Phase 9).
+# Wraps deploy-all.sh for infrastructure, gateway, frontend, broker, admin
+# bootstrap and the webhook/agent-factory stack, with shared recovery checkpoints.
 #
 # GitHub App registration is handled via the platform UI after deployment:
 #   Settings → Connections → 'Set up GitHub App'
@@ -16,6 +16,13 @@ set -euo pipefail
 #   ./deploy.sh [options]
 #
 # Options:
+#   --aws-profile PROFILE  AWS named profile (overrides inherited credentials)
+#   --confirm-destructive  Authorize destructive plans (requires --update)
+#   --allow-known-claude-gap  Accept only the reviewed Claude pricing source gap
+#   --resume               Resume this checkout’s interrupted deployment
+#   --from PHASE           Rerun a named phase and all later phases
+#   --update               Upgrade an existing deployment (no fresh setup)
+#   --release VERSION      Install or upgrade a published aws-e/adp GitHub Release tag
 #   --env ENV              Environment (default: dev)
 #   --region REGION        Target AWS region (default: us-east-1, or AWS_REGION env)
 #   --local                Use local Docker builds instead of CodeBuild
@@ -32,6 +39,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
 PLATFORM_SCRIPTS="$ROOT_DIR/platform/scripts"
+source "$PLATFORM_SCRIPTS/deploy-prerequisites.sh"
 
 DEPLOY_START=$(date +%s)
 echo "============================================================================="
@@ -42,9 +50,32 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 LOCAL_MODE=false
 SKIP_AGENTS=false
 DRY_RUN=false
+UPDATE_MODE=false
+RELEASE=""
+EXTRA_ARGS=()
+RESUME=false
+CONFIRM_DESTRUCTIVE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --aws-profile)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--aws-profile requires a profile name" >&2; exit 2; }
+      export AWS_PROFILE="$2" AWS_DEFAULT_PROFILE="$2"
+      # Environment credentials otherwise take precedence in AWS CLI/SDKs.
+      # Only clear them when the operator explicitly selects a named profile.
+      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+      unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_SESSION_NAME
+      shift 2 ;;
+    --confirm-destructive) CONFIRM_DESTRUCTIVE=true; EXTRA_ARGS+=("$1"); shift ;;
+    --allow-known-claude-gap) EXTRA_ARGS+=("$1"); shift ;;
+    --resume) RESUME=true; EXTRA_ARGS+=("$1"); shift ;;
+    --from)
+      [ "$#" -ge 2 ] && [[ "$2" != -* ]] || { echo "--from requires a phase" >&2; exit 2; }
+      RESUME=true; EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
+    --update)        UPDATE_MODE=true; shift ;;
+    --release)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--release requires a release tag" >&2; exit 2; }
+      RELEASE="$2"; shift 2 ;;
     --env)           ENVIRONMENT="$2"; shift 2 ;;
     --region)        AWS_REGION="$2"; shift 2 ;;
     --local)         LOCAL_MODE=true; shift ;;
@@ -54,10 +85,41 @@ while [[ $# -gt 0 ]]; do
       [ "$#" -ge 2 ] || { echo "--anthropic-use-case requires a JSON file" >&2; exit 2; }
       export ADP_BEDROCK_USE_CASE_FILE="$2"
       shift 2 ;;
-    -h|--help)       sed -n '4,26p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '/# deploy.sh/,/# The script/p' "$0"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$CONFIRM_DESTRUCTIVE" = true ] && [ "$UPDATE_MODE" = false ]; then
+  echo "--confirm-destructive requires --update" >&2; exit 2
+fi
+if [ "$RESUME" = true ] && [ -n "$RELEASE" ]; then
+  echo "Resume from the retained release checkout with ./deploy.sh [--update] --resume and the original options" >&2; exit 2
+fi
+
+# Selected releases run entirely from their own checkout. Updates must bypass
+# all fresh-install mutations below (including tfvars and IAM).
+if [ "$UPDATE_MODE" = true ] || [ -n "$RELEASE" ] || [ "$RESUME" = true ]; then
+  UPDATE_ARGS=(--env "$ENVIRONMENT" --region "$AWS_REGION" "${EXTRA_ARGS[@]}")
+  [ "$UPDATE_MODE" = false ] || UPDATE_ARGS+=(--update)
+  [ "$LOCAL_MODE" = false ] || UPDATE_ARGS+=(--local)
+  [ "$SKIP_AGENTS" = false ] || UPDATE_ARGS+=(--gateway-only)
+  export AWS_REGION ENVIRONMENT AWS_PAGER=""
+  if [ -n "$RELEASE" ]; then
+    [ "$DRY_RUN" = false ] || UPDATE_ARGS+=(--dry-run)
+    # The release runner changes working directory before invoking its scripts.
+    if [ -n "${ADP_BEDROCK_USE_CASE_FILE:-}" ]; then
+      ADP_BEDROCK_USE_CASE_FILE=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$ADP_BEDROCK_USE_CASE_FILE")
+      export ADP_BEDROCK_USE_CASE_FILE
+    fi
+    exec python3 "$PLATFORM_SCRIPTS/upgrade-github-release.py" --release "$RELEASE" "${UPDATE_ARGS[@]}"
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    printf 'Would run:'; printf ' %q' bash "$PLATFORM_SCRIPTS/deploy-all.sh" "${UPDATE_ARGS[@]}"; printf '\n'
+    exit 0
+  fi
+  exec bash "$PLATFORM_SCRIPTS/deploy-all.sh" "${UPDATE_ARGS[@]}"
+fi
 
 # =============================================================================
 # Interactive prompts for required arguments not provided
@@ -176,36 +238,12 @@ else
 fi
 
 # =============================================================================
-# Phase 1-8: deploy-all.sh --gateway-only
+# Deploy all requested components through the checkpointed orchestrator.
 # =============================================================================
-step "Phases 1-8: Platform + Gateway (deploy-all.sh --gateway-only)"
-
-DEPLOY_FLAGS="--gateway-only"
-[ "$LOCAL_MODE" = true ] && DEPLOY_FLAGS="$DEPLOY_FLAGS --local"
-
-# Clear stale .terraform state from prior deployments
-echo "Clearing stale .terraform backend configs..."
-find "$ROOT_DIR" -path "*/.terraform/terraform.tfstate" -delete 2>/dev/null || true
-
-# The wrapper performs one verification after its final agent deployment.
-export ADP_BEDROCK_VERIFY_DEFERRED=true
-run "bash '$PLATFORM_SCRIPTS/deploy-all.sh' $DEPLOY_FLAGS"
-ok "Phases 1-8 complete (platform + gateway infra + backend + frontend + ALB wire + broker + admin bootstrap)"
-
-# =============================================================================
-# Phase 9: Webhook agent stack (optional)
-# =============================================================================
-if [ "$SKIP_AGENTS" = true ]; then
-  warn "Skipping agent stack (--skip-agents)"
-else
-  step "Phase 9: Webhook agent stack (Lambda + SQS + KEDA + agent-runtime image)"
-
-  # Note: deploy-webhook-ingress.sh handles fresh-account absences itself
-  # (missing gitlab.zip / internal-api-key secret → features auto-disabled
-  # via terraform var overrides; see PRs #3492/#3504).
-  run "bash '$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh' --env '$ENVIRONMENT' --region '$AWS_REGION'"
-  ok "Webhook ingress stack deployed"
-fi
+DEPLOY_ARGS=(--env "$ENVIRONMENT" --region "$AWS_REGION" "${EXTRA_ARGS[@]}")
+[ "$LOCAL_MODE" = false ] || DEPLOY_ARGS+=(--local)
+[ "$SKIP_AGENTS" = false ] || DEPLOY_ARGS+=(--gateway-only)
+bash "$PLATFORM_SCRIPTS/deploy-all.sh" "${DEPLOY_ARGS[@]}"
 
 # =============================================================================
 # Verification

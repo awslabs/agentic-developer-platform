@@ -15,6 +15,8 @@ from decimal import Decimal
 from .policy import RateRow
 
 CARD_SLUGS = {
+    "openai.gpt-6-sol": "gpt-6-sol",
+    "openai.gpt-6-luna": "gpt-6-luna",
     "openai.gpt-6-astra": "gpt-6-astra",
     "openai.gpt-5.6-sol": "gpt-56-sol",
     "openai.gpt-5.6-terra": "gpt-56-terra",
@@ -65,13 +67,14 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
     pricing = re.split(r"(?m)^## ", sections[1], maxsplit=1)[0]
     if not re.search(r"per 1 million tokens", pricing, re.I):
         raise SourceValidationError("card does not declare USD per million tokens")
-    if "Standard tier" not in pricing:
+    if "Standard tier" not in pricing and not (model_id == "openai.gpt-6-astra" and "### Standard — Commercial Regions," in pricing):
         raise SourceValidationError("card tier is not recognizable")
     digest = hashlib.sha256(content).hexdigest()
     model_templates = tuple(row for row in templates if row.model_id == model_id)
     if not model_templates:
         raise SourceValidationError(f"no reviewed endpoint manifest for {model_id}")
     scope, context = "commercial", None
+    service_tier = "standard"
     header, separator, table_rows = False, False, 0
     parsed: dict = {}
     tables = 0
@@ -84,6 +87,14 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         line = raw.strip()
         label = re.sub(r"^[#*\s]+|[*\s]+$", "", line).lower()
         if line.startswith(("###", "**")) and not line.startswith("|:"):
+            if label == "note":
+                finish_table()
+                header, separator, table_rows = False, False, 0
+                continue
+            # AWS Astra cards now contain separately labelled Standard and
+            # Ultrafast tables. Validate both, but publish only reviewed tiers.
+            if model_id == "openai.gpt-6-astra" and label.startswith(("standard — ", "ultrafast — ")):
+                service_tier, label = label.split(" — ", 1)
             recognized = label.startswith(("short context", "long context", "commercial regions", "aws govcloud"))
             if not recognized:
                 raise SourceValidationError(f"unrecognized pricing scope {line!r}")
@@ -109,7 +120,8 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         cells = [cell.strip().replace("**", "") for cell in line.strip("|").split("|")]
         if cells[0] == "Inference option":
             finish_table()
-            if cells != ["Inference option", "Input", "Input — 30m cache write", "Input — cache read", "Output"]:
+            write_heading = "Input — cache write" if model_id in {"openai.gpt-6-sol", "openai.gpt-6-luna"} else "Input — 30m cache write"
+            if cells != ["Inference option", "Input", write_heading, "Input — cache read", "Output"]:
                 raise SourceValidationError("unrecognized pricing table columns")
             header, separator, table_rows = True, False, 0
             tables += 1
@@ -123,10 +135,19 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
             raise SourceValidationError("price row outside a complete recognized table")
         geography_map = {
             "In-Region": ("in_region",),
+            "Mantle in-Region": ("in_region",),
+            "US Geo CRIS": ("geo_cris",),
             "Geo CRIS": ("geo_cris",),
             "Global CRIS": ("global_cris",),
             "In-Region / Geo CRIS": ("in_region", "geo_cris"),
         }
+        if service_tier == "ultrafast":
+            geography_map = {
+                "In-Region (us-east-1)": ("in_region",),
+                "Geo CRIS (US)": ("geo_cris",),
+                "Global CRIS (pricing reference)": ("global_cris",),
+                "Global CRIS": ("global_cris",),
+            }
         geographies = geography_map.get(cells[0])
         if geographies is None:
             raise SourceValidationError(f"unrecognized inference option {cells[0]!r}")
@@ -149,7 +170,7 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         if read != input_rate * Decimal("0.10"):
             raise SourceValidationError("published cache-read rate is not 0.10x input")
         tier = context or "flat"
-        matching = [row for row in model_templates if row.geography in geographies and row.service_tier == "standard" and row.context_tier == tier]
+        matching = [row for row in model_templates if row.geography in geographies and row.service_tier == service_tier and row.context_tier == tier]
         for template in matching:
             row = replace(
                 template,

@@ -91,6 +91,7 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem"
@@ -326,17 +327,58 @@ resource "aws_iam_role_policy" "gateway_activity_read" {
 #
 # No worker role appears here, and no worker statement names this table. That
 # absence is the boundary — see the comment on aws_dynamodb_table.agent_authority.
+# DynamoDB transactions authorize their constituent item actions;
+# TransactWriteItems is an API operation, not a valid IAM action.
 resource "aws_iam_role_policy" "lambda_agent_authority" {
   name = "adp-${var.environment}-policy-ingress-agent-authority"
   role = aws_iam_role.lambda_execution.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "TrustedIngressAuthorityWrites"
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
-      Resource = [aws_dynamodb_table.agent_authority.arn]
-    }]
+    Statement = [
+      {
+        Sid      = "TrustedIngressAuthorityWrites"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        # The legacy ingress role must not become a deputy for task records,
+        # including when one reserved key is hidden in a mixed batch/transaction.
+        Sid      = "DenyTaskRequestWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
+        Resource = [aws_dynamodb_table.webhook_events.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = {
+            "dynamodb:LeadingKeys" = [
+              "TASK#*",
+              "TASK_RUN#*",
+              "TASK_EVENTS#*",
+              "TASK_COMMANDS#*",
+              "TASK_TURNS#*",
+              "TASK_OPS#*",
+              "TASK_IDEMP#*",
+              "TASK_WORK#*",
+              "TASK_REPORT#*",
+              "TASK_ARTIFACT#*",
+            ]
+          }
+        }
+      },
+      {
+        # Task work IDs are resolved and authorized by the gateway.  The shared
+        # ingress Lambda retains its pre-existing legacy authority writes, but it
+        # can neither create nor retarget a TASK_WORK_ID locator, including as
+        # one member of a future mixed batch/transaction.
+        Sid      = "DenyTaskWorkLocatorWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      },
+    ]
   })
 }
 
@@ -356,11 +398,24 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
         ]
-        # No /index/* entry: the store performs single-item GetItem calls only.
-        # There is no Query grant either, deliberately — a Query could match more
-        # than one item, and every authorization lookup here must resolve to the
-        # exact principal or invocation the verified credential named.
+        # Authorization reads remain exact GetItem calls. Activity discovery
+        # has a separate tenant-partition Query grant below; its locators never
+        # grant authority without reauthorizing the canonical Task.
         Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskActivityDiscovery"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAllValues:StringLike" = {
+            "dynamodb:LeadingKeys" = ["TENANT#*"]
+          }
+          "Null" = {
+            "dynamodb:LeadingKeys" = "false"
+          }
+        }
       },
       {
         # The table is encrypted with the customer-managed CMK, so the dynamodb
@@ -380,6 +435,73 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
       },
     ]
   })
+}
+
+# Task persistence spans the existing request and protected authority tables in
+# one transaction.  Lambda receives no corresponding task grant; the gateway is
+# the only principal that can bind a request-table envelope to a locator.
+# Reuse the gateway's managed-policy rollout switch so this new grant does not
+# exceed the role's aggregate inline-policy quota on upgraded installations.
+locals {
+  gateway_task_storage_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TaskRequestRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.webhook_events.arn,
+          "${aws_dynamodb_table.webhook_events.arn}/index/task-work-index",
+        ]
+      },
+      {
+        Sid    = "TaskAuthorityRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskLocatorRetentionDelete"
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "gateway_task_storage" {
+  count  = var.gateway_authority_managed_policies ? 0 : 1
+  name   = "adp-${var.environment}-policy-gateway-task-storage"
+  role   = "adp-${var.environment}-role-gateway-service"
+  policy = local.gateway_task_storage_policy
+}
+
+resource "aws_iam_policy" "gateway_task_storage" {
+  count  = var.gateway_authority_managed_policies ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-task-storage"
+  policy = local.gateway_task_storage_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_task_storage" {
+  count      = var.gateway_authority_managed_policies ? 1 : 0
+  role       = "adp-${var.environment}-role-gateway-service"
+  policy_arn = aws_iam_policy.gateway_task_storage[0].arn
 }
 
 # -----------------------------------------------------------------------------

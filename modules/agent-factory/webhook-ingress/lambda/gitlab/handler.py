@@ -80,7 +80,7 @@ def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_token(headers: dict[str, str]) -> bool:
+def _validate_token(headers: dict[str, str], *, secret: str | None = None) -> bool:
     """Validate the X-Gitlab-Token header against the stored secret.
 
     GitLab sends the configured secret token in the X-Gitlab-Token header.
@@ -92,7 +92,7 @@ def _validate_token(headers: dict[str, str]) -> bool:
         logger.warning("Missing X-Gitlab-Token header")
         return False
 
-    secret = _resolve_webhook_secret()
+    secret = _resolve_webhook_secret() if secret is None else secret
     if not secret:
         logger.error("No GitLab webhook secret configured")
         return False
@@ -107,41 +107,66 @@ def _validate_token(headers: dict[str, str]) -> bool:
     return hmac.compare_digest(token, secret)
 
 
-def _registered_project(headers: dict) -> dict | None:
-    """A secret is scoped to one immutable project on one trusted instance.
+def _project_registry(rows: Any) -> list[dict]:
+    """Validate the complete operator registry before authenticating any token."""
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise ValueError("Invalid project registry")
+    tokens = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid project registration")
+        token = row.get("token")
+        if (
+            not isinstance(token, str)
+            or len(token) < 32
+            or token == PLACEHOLDER_WEBHOOK_SECRET
+            or token in tokens
+            or type(row.get("project_id")) is not int
+            or row["project_id"] < 1
+            or not isinstance(row.get("instance"), str)
+            or not row["instance"].startswith("https://")
+        ):
+            raise ValueError("Invalid project registration")
+        tokens.add(token)
+    return rows
 
-    Protected mode stores a JSON list in the existing webhook secret. Reusing
-    the global token across projects cannot authenticate their tenant roots.
-    """
+
+def _registered_project(headers: dict, rows: list[dict] | None = None) -> dict | None:
+    """Authenticate one project; a shared scalar never establishes a root."""
     try:
-        rows = json.loads(_resolve_webhook_secret())
+        rows = _project_registry(json.loads(_resolve_webhook_secret()) if rows is None else rows)
         token = headers.get("x-gitlab-token", "")
-        if not token or not isinstance(rows, list) or len(rows) > 100:
+        if not isinstance(token, str) or not token:
             return None
-        matches = []
-        tokens = []
-        for row in rows:
-            secret = row["token"]
-            if (
-                not isinstance(secret, str)
-                or len(secret) < 32
-                or secret == PLACEHOLDER_WEBHOOK_SECRET
-            ):
-                return None
-            if secret in tokens:
-                return None
-            tokens.append(secret)
-            if hmac.compare_digest(token, secret):
-                if (
-                    not isinstance(row["project_id"], int)
-                    or row["project_id"] < 1
-                    or not row["instance"].startswith("https://")
-                ):
-                    return None
-                matches.append(row)
+        matches = [row for row in rows if hmac.compare_digest(token, row["token"])]
         return matches[0] if len(matches) == 1 else None
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
+
+
+def _mixed_registry() -> tuple[str, list[dict]] | None:
+    """Explicit v1 envelope opts projects in while retaining the legacy secret.
+
+    Old scalars and globally protected JSON lists retain their existing modes.
+    A malformed envelope fails closed rather than falling back to its shared token.
+    """
+    if os.environ.get("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "false").lower() != "true":
+        return None
+    document = json.loads(_resolve_webhook_secret())
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"version", "legacy_token", "projects"}
+        or type(document["version"]) is not int
+        or document["version"] != 1
+        or not isinstance(document["legacy_token"], str)
+        or not document["legacy_token"]
+        or document["legacy_token"] == PLACEHOLDER_WEBHOOK_SECRET
+    ):
+        raise ValueError("Invalid mixed project registry")
+    rows = _project_registry(document["projects"])
+    if any(hmac.compare_digest(document["legacy_token"], row["token"]) for row in rows):
+        raise ValueError("Shared token cannot authenticate protected projects")
+    return document["legacy_token"], rows
 
 
 def _build_sqs_message(parsed_event) -> dict[str, Any]:
@@ -222,10 +247,24 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     headers = event.get("headers") or {}
     headers = {k.lower(): v for k, v in headers.items()}
 
-    # Validate token
+    # The global protected rollout remains strict. The explicit mixed envelope
+    # opts in individual projects without granting shared tokens protected roots.
     protected = os.environ.get("ADP_GITLAB_MODEL_POLICY_ENABLED", "false").lower() == "true"
-    registration = _registered_project(headers) if protected else None
-    if (protected and registration is None) or (not protected and not _validate_token(headers)):
+    try:
+        mixed = _mixed_registry()
+    except (ValueError, TypeError, AttributeError):
+        return _response(401, {"error": "Invalid webhook authentication configuration"})
+    registrations = mixed[1] if mixed is not None else []
+    registration = (
+        _registered_project(headers, registrations)
+        if mixed is not None
+        else _registered_project(headers)
+        if protected
+        else None
+    )
+    if registration is not None:
+        protected = True
+    elif protected or not _validate_token(headers, secret=mixed[0] if mixed is not None else None):
         logger.warning("GitLab webhook token validation failed")
         return _response(401, {"error": "Invalid or missing token"})
 
@@ -246,7 +285,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         return _response(400, {"error": "Invalid webhook body"})
-    if protected and payload.get("project", {}).get("id") != registration["project_id"]:
+    project = payload.get("project", {})
+    if not isinstance(project, dict):
+        return _response(400, {"error": "Invalid webhook project"})
+    if (mixed is not None or protected) and (
+        type(project.get("id")) is not int or project["id"] < 1
+    ):
+        return _response(400, {"error": "Immutable numeric project ID required"})
+    if not protected and any(project.get("id") == row["project_id"] for row in registrations):
+        return _response(403, {"error": "Project requires its registered webhook token"})
+    if protected and project.get("id") != registration["project_id"]:
         return _response(403, {"error": "Webhook project does not match registration"})
 
     # Parse the event

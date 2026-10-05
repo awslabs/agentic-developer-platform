@@ -36,6 +36,7 @@
  */
 
 import { Link } from 'react-router-dom';
+import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
@@ -115,13 +116,13 @@ function railDescription(flow: FlowSummary): string {
   // server. Deliberately not parsed out of the ref: nothing constrains `wave_ref`
   // to `wave-<n>` (`wave-as` is legal), so "wave 10 of 14" cannot come from the
   // name.
-  const index = flow.waves.findIndex((wave) => wave.wave_ref === flow.current_wave_ref);
+  const index = flow.waves.findIndex((wave) => wave.wave_ref === flow.current_wave_ref && !isFinished(wave));
   if (flow.current_wave_ref === null || index < 0) {
     return `All ${flow.wave_count} ${flow.wave_count === 1 ? 'wave' : 'waves'} complete.`;
   }
 
   const wave = flow.waves[index];
-  return `Now on ${wave.wave_ref} — wave ${index + 1} of ${flow.wave_count}, ${wave.done} of ${wave.total} steps done.`;
+  return `Now on ${wave.title || wave.wave_ref} — wave ${index + 1} of ${flow.wave_count}, ${wave.done} of ${wave.total} steps done.`;
 }
 
 /**
@@ -134,6 +135,7 @@ function railDescription(flow: FlowSummary): string {
  */
 function WaveRail({ flow }: { flow: FlowSummary }) {
   const description = railDescription(flow);
+  const currentWave = flow.waves.find((wave) => wave.wave_ref === flow.current_wave_ref && !isFinished(wave));
 
   return (
     <div className="space-y-1">
@@ -150,7 +152,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
         className={`flex ${WAVE_RAIL_HEIGHT_CLASS} w-full items-end gap-0.5`}
       >
         {flow.waves.map((wave) => {
-          const current = wave.wave_ref === flow.current_wave_ref;
+          const current = wave === currentWave;
           const finished = isFinished(wave);
           return (
             <div
@@ -158,7 +160,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
               data-testid={`wave-segment-${wave.epic_ref}-${wave.wave_ref}`}
               data-current={current ? 'true' : 'false'}
               aria-hidden="true"
-              title={`${wave.epic_ref} · ${wave.wave_ref} — ${wave.done} of ${wave.total} done`}
+              title={`${wave.epic_ref} · ${wave.title || wave.wave_ref} — ${wave.done} of ${wave.total} done${wave.description ? '. ' + wave.description : ''}`}
               // Width flexes, height does not: `flex-1` narrows segments as waves
               // multiply, which is what keeps 20 waves the same height as 3.
               className={`flex-1 rounded-sm ${
@@ -179,6 +181,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
       <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="wave-rail-caption">
         {description}
       </p>
+      {currentWave?.description && <p className="text-sm text-gray-600 dark:text-gray-400">{currentWave.description}</p>}
     </div>
   );
 }
@@ -309,11 +312,11 @@ function DesignStrip({ history }: { history: DesignHistory | null }) {
  */
 function FlowCard({ flow }: { flow: FlowSummary }) {
   return (
-    <li>
+    <li className="blueprint-flow-card overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
       <Link
         to={`/flows/${flow.id}`}
         data-testid={`flow-card-${flow.id}`}
-        className="block rounded-lg border border-gray-200 p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
+        className="block p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -379,7 +382,7 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
 
         <div className="mt-3 space-y-3">
           {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && (
-            <PlanSummary stories={flow.story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
+            <PlanSummary stories={flow.story_count} evaluationStories={flow.eval_story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
           )}
           {(flow.changes_requested_count ?? 0) > 0 && (
             <p className="text-sm text-orange-800 dark:text-orange-200" data-testid="changes-requested-summary">
@@ -393,8 +396,12 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           <RollupBar
             counts={flow.display_counts}
             total={flow.total_nodes}
+            storyScope={flow.eval_story_count !== undefined && flow.completed_eval_story_count !== undefined ? 'all' : 'implementation'}
             stories={flow.completed_story_count !== undefined && flow.story_count !== undefined
-              ? { complete: flow.completed_story_count, total: flow.story_count }
+              ? {
+                complete: flow.completed_story_count + (flow.eval_story_count !== undefined ? flow.completed_eval_story_count ?? 0 : 0),
+                total: flow.story_count + (flow.completed_eval_story_count !== undefined ? flow.eval_story_count ?? 0 : 0),
+              }
               : undefined}
           />
           <WaveRail flow={flow} />
@@ -404,6 +411,9 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           <DesignStrip history={flow.design_history} />
         </div>
       </Link>
+      <div className="border-t border-gray-200 px-4 py-3 dark:border-gray-700">
+        <FlowExecutionControl flowId={flow.id} paused={flow.execution_paused} compact />
+      </div>
     </li>
   );
 }
@@ -446,7 +456,7 @@ export function FlowsList() {
   const filtered = hasActiveFilters(filters);
 
   return (
-    <div className="space-y-4 p-6">
+    <div className="space-y-4">
       <header className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

@@ -18,7 +18,7 @@ atomically.
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ from .progress_projection import node_progress_rows
 FLOW_SORTS: tuple[str, ...] = ("created", "updated", "stalled")
 
 KIND_COUNTS = {"story_count": "story", "gate_count": "gate", "eval_count": "eval"}
+FLOW_COUNT_FIELDS = (*KIND_COUNTS, "changes_requested_count", "completed_story_count", "eval_story_count", "completed_eval_story_count")
 
 
 def _kind_count_columns(nodes):
@@ -113,6 +114,9 @@ class FlowAggregate:
     eval_count: int = 0
     changes_requested_count: int = 0
     completed_story_count: int = 0
+    # Additive presentation counts; preserve the existing engine-kind counts.
+    eval_story_count: int = 0
+    completed_eval_story_count: int = 0
     waves: tuple[WaveAggregate, ...] = field(default_factory=tuple)
 
     @property
@@ -296,9 +300,13 @@ class OrchestrationRepository:
 
     # -- flows list page (derived aggregates) ---------------------------------
 
-    def _node_agg(self, *, org_id: str):
+    async def _node_agg(self, *, org_id: str):
         """Aggregate current display buckets in SQL, without per-flow reads."""
-        nodes = node_progress_rows(org_id=org_id)
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id)
+        nodes = node_progress_rows(org_id=org_id, preserved_executions=preserved)
+        evaluation_story = and_(nodes.c.kind == "eval", func.trim(nodes.c.issue_ref) != "", nodes.c.state != "superseded")
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         return (
             select(
@@ -307,6 +315,8 @@ class OrchestrationRepository:
                 *_kind_count_columns(nodes),
                 func.count().filter(nodes.c.state == "rejected_at_gate").label("changes_requested_count"),
                 func.count().filter(nodes.c.kind == "story", nodes.c.state == "passed").label("completed_story_count"),
+                func.count().filter(evaluation_story).label("eval_story_count"),
+                func.count().filter(evaluation_story, nodes.c.state == "passed").label("completed_eval_story_count"),
             )
             .group_by(nodes.c.flow_id)
             .subquery()
@@ -314,10 +324,13 @@ class OrchestrationRepository:
 
     async def node_display_states(self, *, org_id: str, flow_id: str) -> dict[str, str | None]:
         """The graph uses exactly the same projection as list and wave counts."""
-        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id])
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=[flow_id])
+        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id], preserved_executions=preserved)
         return dict((await self._session.execute(select(nodes.c.node_id, nodes.c.display_state))).all())
 
-    def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
+    async def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
         """`orchestration_flows` LEFT JOINed to current node aggregates, org-filtered.
 
         LEFT, not inner: a flow with zero nodes must still appear (as
@@ -329,11 +342,11 @@ class OrchestrationRepository:
         query and the (unfiltered) chip query share one definition of them rather
         than each having its own copy to drift.
         """
-        node_agg = self._node_agg(org_id=org_id)
+        node_agg = await self._node_agg(org_id=org_id)
 
         derived: dict[str, Any] = {display.value: func.coalesce(getattr(node_agg.c, display.value), 0) for display in DisplayState}
         derived["stalled_count"] = derived["stalled"]
-        for name in (*KIND_COUNTS, "changes_requested_count", "completed_story_count"):
+        for name in FLOW_COUNT_FIELDS:
             derived[name] = func.coalesce(getattr(node_agg.c, name), 0)
 
         base = select(OrchestrationFlow).outerjoin(node_agg, node_agg.c.flow_id == OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id)
@@ -375,12 +388,12 @@ class OrchestrationRepository:
         if sort not in FLOW_SORTS:
             raise ValueError(f"unknown sort {sort!r}; expected one of {FLOW_SORTS}")
 
-        base, derived = self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id)
 
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
-            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count", "completed_story_count")),
+            *(derived[name].label(name) for name in FLOW_COUNT_FIELDS),
             # The honest filtered total, from the same pass as the rows.
             func.count().over().label("total_matching"),
         )
@@ -430,6 +443,8 @@ class OrchestrationRepository:
                     eval_count=agg.eval_count,
                     changes_requested_count=agg.changes_requested_count,
                     completed_story_count=agg.completed_story_count,
+                    eval_story_count=agg.eval_story_count,
+                    completed_eval_story_count=agg.completed_eval_story_count,
                     waves=tuple(waves_by_flow.get(agg.flow.id, ())),
                 )
                 for agg in aggregates
@@ -450,7 +465,7 @@ class OrchestrationRepository:
             flow=row[0],
             display_counts=counts,
             stalled_count=stalled_count,
-            **{name: int(getattr(row, name) or 0) for name in (*KIND_COUNTS, "changes_requested_count", "completed_story_count")},
+            **{name: int(getattr(row, name) or 0) for name in FLOW_COUNT_FIELDS},
             status=derive_flow_status(
                 queued=counts.queued,
                 in_progress=counts.in_progress,
@@ -528,11 +543,11 @@ class OrchestrationRepository:
         on this endpoint. If it ever hurts: **cache it, do not filter it.**
         Filtering it would change what it means.
         """
-        base, derived = self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id)
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
-            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count", "completed_story_count")),
+            *(derived[name].label(name) for name in FLOW_COUNT_FIELDS),
         )
 
         counts: dict[FlowStatus, int] = dict.fromkeys(FlowStatus, 0)
@@ -566,7 +581,10 @@ class OrchestrationRepository:
             # rather than emitting a `WHERE flow_id IN ()`.
             return {}
 
-        nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids)
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=flow_ids)
+        nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids, preserved_executions=preserved)
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         stmt = (
             select(nodes.c.flow_id, nodes.c.epic_ref, nodes.c.wave_ref, *columns, *_kind_count_columns(nodes))
@@ -657,6 +675,23 @@ class OrchestrationRepository:
         return list((await self._session.execute(stmt)).scalars().all())
 
     # -- accepted plans -----------------------------------------------------
+
+    async def display_metadata_for_flows(self, *, org_id: str, flow_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
+        """One tenant-scoped read of current display text for the whole page."""
+        if not flow_ids:
+            return {}
+        rows = await self._session.execute(
+            select(
+                OrchestrationAcceptedPlan.flow_id,
+                OrchestrationAcceptedPlan.plan_document["wave_metadata"],
+                OrchestrationAcceptedPlan.plan_document["epic_metadata"],
+            ).where(
+                OrchestrationAcceptedPlan.org_id == org_id,
+                OrchestrationAcceptedPlan.flow_id.in_(flow_ids),
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+        )
+        return {flow_id: {"wave_metadata": waves or [], "epic_metadata": epics or []} for flow_id, waves, epics in rows}
 
     async def record_accepted_plan(
         self,

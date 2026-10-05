@@ -3,7 +3,7 @@
 # ============================================================================
 
 # Stage 1: Build the Go binary
-FROM public.ecr.aws/docker/library/golang:1.23-alpine AS builder
+FROM public.ecr.aws/docker/library/golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
@@ -57,18 +57,20 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # moved them. Per-advisory analysis: docs/security/runs/2026-09-21/S01-disposition.md.
 #
 # WHAT REMAINS AND WHY: ca-certificates supplies the trust store for outbound HTTPS (the
-# control-plane API URL is operator-supplied and may be https). bash and curl are retained
-# as the operator debugging surface the e2e check and runbooks rely on; curl is the only
-# reason c-ares is still present, now at a fixed version.
+# control-plane API URL is operator-supplied and may be https). bash remains available
+# for operator diagnostics. The e2e health checks use BusyBox wget, which is already
+# in Alpine; they do not require curl. Avoid retaining curl and its zlib dependency
+# (CVE-2026-85091) in a static Go service that starts no subprocess.
 FROM public.ecr.aws/docker/library/alpine:3.24
 
 RUN apk add --no-cache \
     ca-certificates \
-    bash \
-    curl
+    bash
 
 # Create non-root user
 RUN adduser -D -u 65532 controller
+# Finish package installation before removing the unused package-manager runtime.
+RUN apk del --purge apk-tools libapk zlib
 USER 65532:65532
 
 WORKDIR /

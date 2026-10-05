@@ -1,0 +1,73 @@
+name: Shared AgentCore tools CI
+on:
+  pull_request:
+    paths:
+      - 'modules/tools/adp_tools/**'
+      - 'modules/tools/agentcore/**'
+      - 'modules/gateway/security/stdlib/**'
+      - 'modules/tools/task-sdk/**'
+      - 'modules/agent-factory/agent-worker-image/Dockerfile'
+      - 'modules/agent-factory/agent-worker-image/lib/task_run_client.py'
+      - '.github/workflows/shared-agentcore-tools-ci.yml'
+      - '.github/workflows/shared-agentcore-tools-deploy.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shared-tools-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install offline-test dependencies
+        run: python -m pip install boto3==1.43.103 requests==2.34.2 fastapi==0.136.3 pydantic==2.12.5 rfc8785==0.1.4 'moto[dynamodb,s3,sqs]==5.0.27' pytest==9.0.3 ruff==0.9.6 httpx==0.28.1 PyYAML==6.0.3 Pillow
+      - name: Shared source, transport and package tests
+        env:
+          PYTHONPATH: modules/tools/agentcore:modules/tools:modules/agent-factory/agent-worker-image
+          ADP_TASK_TOOL_ROUTES: '{}'
+          ADP_TASK_TOOL_CLEANUP: '[]'
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: |
+          export BG_CONFIG_DIR="$(mktemp -d)"
+          trap 'rm -rf "$BG_CONFIG_DIR"' EXIT
+          ruff check modules/tools/agentcore/agentcore_tools modules/tools/agentcore/tests
+          python -m pytest -q modules/tools/agentcore/tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify shared Task SDK protocol
+        run: node --test modules/tools/task-sdk/test/*.test.mjs
+      - name: Compile shared Python packages without Docker or provider access
+        run: python -m compileall -q modules/tools/agentcore/agentcore_tools
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+      - name: Validate isolated infrastructure with mock providers
+        working-directory: modules/tools/agentcore/infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+      - name: Verify independent Docker contexts and scripts
+        run: |
+          bash -n modules/tools/agentcore/infra/build-image.sh modules/tools/agentcore/infra/deploy.sh
+          # The source test permits only the exact stdlib maintenance bundle;
+          # gateway application sources and runtime dependencies remain forbidden.
+          test -z "$(rg -l 'COPY modules/domain-apps/cyber' modules/tools/agentcore/Dockerfile*)"

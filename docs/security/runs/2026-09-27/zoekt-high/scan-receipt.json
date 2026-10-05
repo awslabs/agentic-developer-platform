@@ -1,0 +1,15 @@
+{
+  "image": "security27/zoekt:high-fixed",
+  "docker_root_descriptor": "sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f",
+  "config_digest": "sha256:699f8d0274a252cd2930e13859bd9a0ddff32eae02e8858863a31e11c5ee8965",
+  "time": "2026-09-27T20:12:32.033894+00:00",
+  "packages": 216,
+  "native_counts": {
+    "Medium": 1,
+    "Low": 4,
+    "Unknown": 3
+  },
+  "sbom_sha256": "8ec246b8810ca25e211677ef56a30a8edbdbd82d0a8c3901289c310cd3e98522",
+  "grype_sha256": "60c33acc6b30ba023ec2fd9f5f5da7e4066bcb8aa9e6ee9a42d51173678bcf60",
+  "archive_sha256": "53f9a46f3fab30436cd3633a5cff33d97b52fa74f2e4689b171fdacf7dc8075d"
+}

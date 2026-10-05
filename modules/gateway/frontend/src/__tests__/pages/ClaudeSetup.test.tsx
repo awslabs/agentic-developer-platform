@@ -64,7 +64,7 @@ describe('ClaudeSetup', () => {
     expect(screen.getByRole('heading', { name: 'CLI Setup' })).toBeInTheDocument();
   });
 
-  it('names both tools in the subtitle rather than Claude Code alone', () => {
+  it('names all supported tools in the subtitle', () => {
     // The old title, "Claude Code Setup", made Codex users think the page was
     // not for them (Issue #4159).
     render(<ClaudeSetup />);
@@ -72,7 +72,7 @@ describe('ClaudeSetup', () => {
     expect(
       screen.queryByRole('heading', { name: 'Claude Code Setup' })
     ).not.toBeInTheDocument();
-    expect(document.body.textContent ?? '').toContain('Use Claude Code or Codex on your machine');
+    expect(document.body.textContent ?? '').toContain('Use Claude Code, Codex, Hermes or Kimi Code on your machine');
   });
 
   it('shows the approval note explaining the 409', () => {
@@ -115,7 +115,7 @@ describe('ClaudeSetup', () => {
     expect(screen.getAllByText('bg-gateway-proxy.py').length).toBeGreaterThan(0);
   });
 
-  it('offers both tool tabs, defaulting to Claude Code', () => {
+  it('offers all four tool tabs, defaulting to Claude Code', () => {
     render(<ClaudeSetup />);
 
     expect(screen.getByRole('tab', { name: 'Claude Code' })).toHaveAttribute(
@@ -123,6 +123,8 @@ describe('ClaudeSetup', () => {
       'true'
     );
     expect(screen.getByRole('tab', { name: 'Codex' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Hermes' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Kimi Code' })).toBeInTheDocument();
   });
 
   // --- Troubleshooting matrix ------------------------------------------------
@@ -163,12 +165,20 @@ describe('ClaudeSetup', () => {
     expect(screen.queryByText(needle)).not.toBeInTheDocument();
   });
 
-  it('describes the 401 fix for both tools, not Claude Code only', () => {
+  it('describes the shared login recovery for all four tools', () => {
     render(<ClaudeSetup />);
 
     expect(document.body.textContent ?? '').toContain(
-      'This applies to both Claude Code and Codex'
+      'Code, Codex, Hermes and Kimi Code'
     );
+  });
+
+  it('explains how to resolve a missing Kimi adapter', () => {
+    render(<ClaudeSetup />);
+    const troubleshooting = within(getTroubleshootingCard());
+
+    expect(troubleshooting.getByText('Kimi ADP adapter is not installed')).toBeInTheDocument();
+    expect(troubleshooting.getByText('adp kimi --version')).toBeInTheDocument();
   });
 
   it('no longer references the deprecated bg-auth script', async () => {

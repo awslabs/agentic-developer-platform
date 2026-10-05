@@ -38,11 +38,18 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "brain_repo" {
 # ECR repository for gbrain container image
 resource "aws_ecr_repository" "gbrain" {
   name                 = var.name_prefix
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
+  }
+
+  lifecycle {
+    postcondition {
+      condition     = self.image_tag_mutability == "IMMUTABLE"
+      error_message = "gbrain ECR repository must use IMMUTABLE image tags (CKV_AWS_51)."
+    }
   }
 }
 

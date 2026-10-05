@@ -1,0 +1,9 @@
+{
+  "desired_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+  "test_job_containers": [
+    {
+      "image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+      "exit_code": 0
+    }
+  ]
+}

@@ -81,12 +81,24 @@ env:
 
 jobs:
   smoke:
+    if: github.ref == 'refs/heads/main'
+    environment: adp-checks-${{ inputs.environment || 'dev' }}
     name: Post-deploy smoke (real token)
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume gateway checks identity
+        uses: aws-e/adp/.github/actions/trusted-checks@main
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -97,26 +109,19 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
-      - name: Stage 1 runtime readback
-        if: github.event_name == 'workflow_dispatch' && inputs.stage1_readback
-        run: python3 modules/gateway/scripts/stage1-runtime-readback.py
-
-      - name: Set up Terraform for Stage 1 prerequisite plan
-        if: github.event_name == 'workflow_dispatch' && inputs.stage1_authority_plan
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.14.3'
-          terraform_wrapper: false
-
-      - name: Plan Stage 1 authority prerequisites
-        if: github.event_name == 'workflow_dispatch' && inputs.stage1_authority_plan
-        run: python3 modules/gateway/scripts/stage1-authority-plan.py
-
       - name: Read refresh token from Secrets Manager
         id: token
+        env:
+          SMOKE_REFRESH_TOKEN_ARN: ${{ vars.ADP_SMOKE_REFRESH_TOKEN_ARN }}
         run: |
           set -e
-          SECRET_NAME="adp/${ENVIRONMENT}/gateway/smoke-user-refresh-token"
+          if [ -z "$SMOKE_REFRESH_TOKEN_ARN" ]; then
+            echo "::warning::No smoke token is configured for this environment."
+            echo "token_available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$SMOKE_REFRESH_TOKEN_ARN" =~ ^arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:adp/${ENVIRONMENT}/gateway/smoke-user-refresh-token-[A-Za-z0-9]{6}$ ]]
+          SECRET_NAME="$SMOKE_REFRESH_TOKEN_ARN"
 
           # Only ResourceNotFoundException may skip gracefully. Other errors
           # (AccessDenied, throttle, network) must fail the job so operators
@@ -328,3 +333,33 @@ jobs:
             echo "- /api/access/status → HTTP ${{ steps.access_status.outputs.status_code }}" >> "$GITHUB_STEP_SUMMARY"
             echo "- /api/admin/connections → HTTP ${{ steps.connections.outputs.status_code }}" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  stage1_diagnostics:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.stage1_readback || inputs.stage1_authority_plan)
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v7
+    - name: Verify source belongs to reviewed main history
+      shell: bash
+      run: 'set -euo pipefail
+
+        git fetch --no-tags origin "$GITHUB_SHA"
+
+        git merge-base --is-ancestor HEAD FETCH_HEAD
+
+        '
+    - name: Establish trusted deployment identity
+      uses: ./.github/actions/trusted-deployment
+      with:
+        role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+    - name: Stage 1 runtime readback
+      if: inputs.stage1_readback
+      run: python3 modules/gateway/scripts/stage1-runtime-readback.py
+    - name: Plan Stage 1 authority prerequisites
+      if: inputs.stage1_authority_plan
+      run: python3 modules/gateway/scripts/stage1-authority-plan.py

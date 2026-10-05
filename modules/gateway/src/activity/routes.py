@@ -15,6 +15,7 @@ import re
 from typing import Annotated, Literal
 
 import boto3
+import httpx
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -108,10 +109,10 @@ async def get_my_stats(
     Cost enrichment: graceful degradation — if Postgres fails, spend is null.
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    result = stats_service.get_stats_by_user(user_id=canonical_user_id, days=days)
+    result = stats_service.get_stats_by_user(user_id=canonical_user_id, tenant_id=current_user.org_id, days=days)
 
     # Enrich with cost data from Postgres (cross-store pattern)
-    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days)
+    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days, tenant_id=current_user.org_id)
     return result
 
 
@@ -135,12 +136,10 @@ async def get_admin_stats(
     any tenant_id. days=N means the N calendar days ending today (UTC).
     Same aggregation + cost enrichment as the user endpoint.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     result = stats_service.get_stats_by_tenant(tenant_id=effective_tenant_id, days=days)
 
@@ -157,6 +156,7 @@ async def _enrich_stats_with_cost(
     days: int,
     *,
     is_tenant: bool = False,
+    tenant_id: str | None = None,
 ) -> StatsResponse:
     """Enrich stats response with cost data from Postgres.
 
@@ -178,6 +178,7 @@ async def _enrich_stats_with_cost(
         items = stats_service._fetch_items_merged(
             user_id=scope_id,
             days=days,
+            tenant_id=tenant_id,
         )
 
     run_ids = [item.get("event_id", "") for item in items if item.get("event_id")]
@@ -389,6 +390,7 @@ async def get_my_invocations(
         if view == "chains":
             chain_result = service.query_chains_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -403,6 +405,7 @@ async def get_my_invocations(
         else:
             result = service.query_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -453,16 +456,10 @@ async def get_admin_invocations(
     status no_op or webhook_received are excluded. An explicit status filter
     takes precedence.
     """
-    # Permission check — reuses USAGE_READ which all admin roles have
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    # Determine which tenant to query
-    if current_user.is_admin and tenant_id:
-        # Platform admin may specify any tenant
-        effective_tenant_id = tenant_id
-    else:
-        # Org admins are pinned to their own org (org_id == tenant_id in this product)
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
     since = _expand_date_bound(since, end=False)
@@ -515,6 +512,7 @@ async def get_my_invocation_chain(
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
         include_non_triggering=include_non_triggering,
     )
     return await _enrich_chain_with_cost(db, chain)
@@ -527,9 +525,32 @@ async def get_my_invocation_chain(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/me/agent-invocations/tasks", response_model=InvocationListResponse)
+async def get_my_task_invocations(
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page_size: Annotated[int, Query(ge=1, le=20)] = 20,
+    last_key: Annotated[str | None, Query(max_length=80)] = None,
+) -> InvocationListResponse:
+    """Owner-only canonical Task projection, independently paginated from native runs."""
+    from src.activity import task_readthrough
+
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    return await task_readthrough.list_owned(
+        request,
+        db,
+        canonical_user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
+        page_size=page_size,
+        after=last_key,
+    )
+
+
 @router.get("/me/agent-invocations/{invocation_id}", response_model=InvocationItem)
 async def get_my_invocation_detail(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch detail for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -543,9 +564,14 @@ async def get_my_invocation_detail(
     Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        item = task_readthrough.detail(task_record, request)
 
     # Enrich with cost data
     try:
@@ -589,12 +615,10 @@ async def get_admin_invocation_chain(
     Issue #3708: When include_non_triggering is False (default), no_op and
     webhook_received items are excluded — same convention as flat list.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     chain = service.get_chain(
         correlation_id=correlation_id,
@@ -622,12 +646,10 @@ async def get_admin_invocation_detail(
 
     Issue #1653: Admin variant scoped by tenant_id.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:
@@ -700,6 +722,7 @@ async def _fetch_transcript(transcript_key: str) -> str:
 @router.get("/me/agent-invocations/{invocation_id}/transcript")
 async def get_my_invocation_transcript(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch transcript for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -710,9 +733,14 @@ async def get_my_invocation_transcript(
     the client), then proxies the S3 object. Returns text/markdown.
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        return PlainTextResponse(content=task_readthrough.report(task_record), media_type="text/markdown")
 
     if not item.transcript_key:
         raise HTTPException(status_code=404, detail="Transcript not available for this invocation")
@@ -740,12 +768,10 @@ async def get_admin_invocation_transcript(
 
     Issue #3069: Admin variant scoped by tenant_id. Same AuthZ as admin detail.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:
@@ -852,6 +878,38 @@ async def get_invocation_agent_state(
         return await control.get_state(invocation_id, user_id=user_id, tenant_id=tenant_id)
     except ControlError as exc:
         _raise_control_error(exc)
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/events")
+async def stream_invocation_explanations(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+):
+    from src.activity.explanation_stream import open_explanation_stream
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+    from src.shared.database import get_session_factory
+
+    if request.query_params:
+        raise HTTPException(400, "event stream accepts no query parameters")
+
+    async def reauthorize():
+        async with get_session_factory()() as db:
+            return await authorize_human_session(current_user, db)
+
+    try:
+        session = await reauthorize()
+        return await open_explanation_stream(
+            control, invocation_id, session=session, reauthorize=reauthorize, cursor=request.headers.get("last-event-id")
+        )
+    except BootstrapRefusedError:
+        raise HTTPException(404, "run not found") from None
+    except ControlError as exc:
+        _raise_control_error(exc)
+    except httpx.HTTPError:
+        raise HTTPException(503, "live explanations unavailable") from None
 
 
 @router.post("/activity/invocations/{invocation_id}/agent/{action}")

@@ -17,7 +17,8 @@ from src.agentauth import runtime_posture as runtime
 from src.agentauth.envelope import MODEL_POLICY_AUDIENCE, SIGNING_KEY_ENV, SIGNING_KEY_ID_ENV, verify_envelope
 from src.proxy.bedrock_routing import BedrockTarget, bedrock_routing_resolver
 from src.shared.models.audit import AuditLog
-from src.shared.models.organization import User
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, Team, TeamMembership, User
 from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence
 from src.shared.models.persona_models import PersonaModelPolicySetting
 from tests.agentauth.test_model_policy import (
@@ -51,7 +52,7 @@ async def test_audited_rollback_changes_signed_hops_without_mutating_snapshot(pg
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with engine.begin() as conn:
-            for model in (PersonaModelPolicySetting, User, ModelInvocabilityEvidence, AuditLog):
+            for model in (PersonaModelPolicySetting, Organization, User, TenantMembership, Team, TeamMembership, ModelInvocabilityEvidence, AuditLog):
                 await conn.run_sync(model.__table__.create)
         async with sessions() as seed:
             seed.add(

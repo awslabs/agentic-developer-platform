@@ -9,7 +9,11 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.database import Base
-from app.models.credential import validate_adp_credential_id
+from app.models.credential import (
+    MAX_ADP_REFERENCE_COUNT,
+    MAX_ADP_REFERENCE_LENGTH,
+    validate_adp_credential_id,
+)
 
 
 class CloudAccount(Base):
@@ -91,9 +95,19 @@ class CloudAccount(Base):
         Raises:
             ValueError: if the value is not a JSON list, or any element is ARN-shaped or
                 looks like secret material.
+
+        At most 64 references of 255 characters each are accepted. The raw JSON cap
+        allows six bytes per escaped ASCII character plus list separators before
+        parsing; the parsed list and each element are then checked independently.
         """
         if value is None:
             return None
+
+        max_json_length = 2 + MAX_ADP_REFERENCE_COUNT * (
+            6 * MAX_ADP_REFERENCE_LENGTH + 4
+        )
+        if not isinstance(value, str) or len(value) > max_json_length:
+            raise ValueError("adp_credential_ids_json exceeds the reference list limit")
 
         try:
             parsed = json.loads(value)
@@ -107,6 +121,10 @@ class CloudAccount(Base):
             raise ValueError(
                 "adp_credential_ids_json must be a JSON *list* of ADP credential IDs, "
                 f"got {type(parsed).__name__}"
+            )
+        if len(parsed) > MAX_ADP_REFERENCE_COUNT:
+            raise ValueError(
+                "adp_credential_ids_json must contain at most 64 references"
             )
 
         for element in parsed:

@@ -95,6 +95,20 @@ describe('token-refresh broker mode', () => {
   }
 
   describe('refresh side effects', () => {
+    it('forces rejected cached credentials through one concurrent broker refresh', async () => {
+      brokerOk();
+      const tr = loadModule();
+      tr.initTokenManager({ appId: '99001', brokerMode: true, owner: 'acme', repo: 'repo', installationId: '55' });
+      await tr.getRuntimeGitHubToken();
+      expect(mockFetchBrokeredToken).toHaveBeenCalledTimes(1);
+      await tr.getRuntimeGitHubToken();
+      expect(mockFetchBrokeredToken).toHaveBeenCalledTimes(1);
+      mockFetchBrokeredToken.mockResolvedValue({ token: 'fresh-token', expiresAt: FAR_FUTURE });
+      expect(await Promise.all([tr.getRuntimeGitHubToken(true), tr.getRuntimeGitHubToken(true)])).toEqual(['fresh-token', 'fresh-token']);
+      expect(mockFetchBrokeredToken).toHaveBeenCalledTimes(2);
+      expect(fs.readFileSync(tokenFile, 'utf-8')).toBe('fresh-token');
+    });
+
     it('sets all three env tokens and rewrites the askpass token file', async () => {
       brokerOk();
       const tr = loadModule();

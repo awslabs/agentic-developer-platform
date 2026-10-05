@@ -7,6 +7,7 @@ resource "aws_eks_addon" "vpc_cni" {
   cluster_name                = aws_eks_cluster.workspace.name
   addon_name                  = "vpc-cni"
   addon_version               = local.node_network_policy.vpc_cni_version
+  configuration_values        = jsonencode({ enableNetworkPolicy = "true" })
   service_account_role_arn    = aws_iam_role.vpc_cni.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"

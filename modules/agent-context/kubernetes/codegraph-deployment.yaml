@@ -1,13 +1,10 @@
-# CodeGraphContext - CLI-based code intelligence tool
-# Note: CGC does not have a published Docker image on ghcr.io.
-# This deployment builds from PyPI using a python base image.
-# CGC is CLI-only (no HTTP server mode). It runs as a persistent pod
-# accessible via `kubectl exec` or as a sidecar in runner pods.
+# Render with scripts/render-codegraph.py --variant legacy and a reviewed image
+# receipt. Do not apply this unrendered template. CGC remains CLI-only.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: codegraph-context
-  namespace: agent-context
+  namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: codegraph
     app.kubernetes.io/part-of: agent-context-platform
@@ -25,65 +22,41 @@ spec:
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: application
     spec:
-      # TODO: bake deps into a custom image so this can be fully hardened.
-      # apt-get install at startup is incompatible with readOnlyRootFilesystem,
-      # runAsNonRoot, and drop ALL capabilities. See architect I2 in #634.
-      automountServiceAccountToken: true
-      serviceAccountName: agent-context-sa
+      automountServiceAccountToken: false
+      serviceAccountName: ${SERVICE_ACCOUNT}
       securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-      - name: install-cgc
-        image: python:3.12.4-slim
-        securityContext:
-          allowPrivilegeEscalation: false
-        command: ["/bin/bash", "-c"]
-        args:
-        - |
-          apt-get update && apt-get install -y git curl gcc g++ make && rm -rf /var/lib/apt/lists/*
-          pip install --no-cache-dir codegraphcontext
-          # Copy installed packages to shared volume
-          cp -r /usr/local/lib/python3.12/site-packages/* /install/site-packages/
-          cp /usr/local/bin/cgc /install/bin/cgc 2>/dev/null || true
-          cp /usr/local/bin/codegraphcontext /install/bin/codegraphcontext 2>/dev/null || true
-          echo "CGC installation complete"
-        volumeMounts:
-        - name: install
-          mountPath: /install
       containers:
       - name: codegraph
-        image: python:3.12.4-slim
+        image: ${CODEGRAPH_IMAGE}
         securityContext:
           allowPrivilegeEscalation: false
-        command: ["/bin/bash", "-c"]
-        args:
-        - |
-          # Install git (required at runtime)
-          apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-          # Copy installed packages from init container
-          cp -r /install/site-packages/* /usr/local/lib/python3.12/site-packages/ 2>/dev/null || true
-          cp /install/bin/cgc /usr/local/bin/cgc 2>/dev/null || true
-          cp /install/bin/codegraphcontext /usr/local/bin/codegraphcontext 2>/dev/null || true
-          chmod +x /usr/local/bin/cgc /usr/local/bin/codegraphcontext 2>/dev/null || true
-          echo "CodeGraphContext ready. Version: $(cgc --version 2>&1 || echo 'unknown')"
-          # Keep running for exec access
-          while true; do sleep 30; done
+          privileged: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        command: ["sleep", "infinity"]
         env:
-        - name: CGC_HOME
-          value: /data/.codegraphcontext
+        - name: HOME
+          value: /data
         - name: GITHUB_TOKEN
           valueFrom:
             secretKeyRef:
               name: agent-context-secrets
               key: github-token
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         - name: data
           mountPath: /data
         - name: workspace
           mountPath: /workspace
-        - name: install
-          mountPath: /install
         resources:
           requests:
             cpu: "1"
@@ -98,16 +71,16 @@ spec:
           periodSeconds: 60
         readinessProbe:
           exec:
-            command: ["python3", "-c", "print('ready')"]
+            command: ["python3", "-c", "import codegraphcontext; print('ready')"]
           initialDelaySeconds: 60
           periodSeconds: 30
       volumes:
+      - name: tmp
+        emptyDir: {}
       - name: data
         persistentVolumeClaim:
           claimName: codegraph-data
       - name: workspace
-        emptyDir: {}
-      - name: install
         emptyDir: {}
 ---
 # Service for CodeGraphContext (placeholder for future HTTP server mode)
@@ -115,7 +88,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: codegraph
-  namespace: agent-context
+  namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: codegraph
     app.kubernetes.io/part-of: agent-context-platform

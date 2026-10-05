@@ -137,6 +137,7 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        department_id: str | None = None,
         pricing_decision: dict[str, Any] | None = None,
         pricing_capture: Any = None,
         only_priced: bool = False,
@@ -166,7 +167,7 @@ class ChatLoggingService:
         """
         if only_priced and (pricing_capture is None or pricing_capture.decision is None):
             return
-        if pricing_capture is not None and pricing_capture.is_claude:
+        if pricing_capture is not None and pricing_capture.routing is not None:
             # Never send a new Claude request down the historical no-decision
             # path after missing usage or a pricing failure.
             if pricing_capture.decision is None:
@@ -192,6 +193,7 @@ class ChatLoggingService:
                 org_id=org_id,
                 user_id=user_id,
                 team_id=team_id,
+                department_id=department_id,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -220,6 +222,7 @@ class ChatLoggingService:
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
         root_human_id: str = "",
+        department_id: str | None = None,
         pricing_decision: dict[str, Any] | None = None,
     ) -> None:
         """Implementation of chat logging.
@@ -302,6 +305,7 @@ class ChatLoggingService:
                 org_id=org_id,
                 user_id=user_id,
                 team_id=team_id,
+                department_id=department_id,
                 root_human_id=root_human_id,
                 pricing_decision=pricing_decision,
                 account_type=account_type,
@@ -367,6 +371,7 @@ class ChatLoggingService:
         pii_types_found: list[str],
         patterns_matched: list[str],
         headers_scrubbed: list[str],
+        department_id: str | None = None,
         pricing_decision: dict[str, Any] | None = None,
         pii_detection_failed: bool = False,
     ) -> ChatLog:
@@ -426,6 +431,7 @@ class ChatLoggingService:
             org_id=org_id,
             user_id=user_id,
             team_id=team_id,
+            department_id=department_id,
             root_human_id=root_human_id,
             account_type=account_type,
             model=model,
@@ -554,6 +560,7 @@ def create_streaming_logging_wrapper(
     headers: dict[str, str] | None,
     start_time: float,
     root_human_id: str = "",
+    department_id: str | None = None,
     pricing_decision: dict[str, Any] | None = None,
     pricing_capture: Any = None,
     only_priced: bool = False,
@@ -644,11 +651,11 @@ def create_streaming_logging_wrapper(
                             logger.exception("Stream usage finalization failed")
                     # A partial stream without final measured usage must never
                     # become a fabricated zero-cost or legacy-priced event.
-                    if pricing_capture is None or not pricing_capture.is_claude or pricing_capture.decision is None:
+                    if pricing_capture is None or pricing_capture.routing is None or pricing_capture.decision is None:
                         return
                 latency_ms = (time.monotonic() - start_time) * 1000
                 reconstructed_response = buffer.reconstruct_response()
-                if pricing_capture is not None and pricing_capture.is_claude:
+                if pricing_capture is not None and pricing_capture.routing is not None:
                     # This buffer saw the raw Bedrock events, including usage that an
                     # OpenAI-format stream omits during translation.
                     reconstructed_response = pricing_capture.buffer.reconstruct_response()
@@ -659,6 +666,7 @@ def create_streaming_logging_wrapper(
                     org_id=org_id,
                     user_id=user_id,
                     team_id=team_id,
+                    department_id=department_id,
                     account_type=account_type,
                     model=model,
                     api_format=api_format,

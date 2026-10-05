@@ -19,6 +19,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.abort_reconciliation import TRANSIENT_REPAIR_FAILURE, AbortRepair, repair_aborted_terminal_status
+from src.agentauth.composition import WEBHOOK_EVENTS_TABLE_ENV
 from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY
 
 from .models import ClaimState, OrchestrationWorkClaim
@@ -310,6 +312,11 @@ async def worker_checkpoint(
 class ClaimRecoveryReport:
     released: int
     next_id: str | None
+    # Aborted runs whose terminal dashboard row this pass repaired (#3963 S4).
+    # Counted separately from `released` because they mean something different to an
+    # operator: a release is routine lifecycle cleanup, while a repair means a run
+    # they deliberately stopped had been showing as live since it died.
+    aborts_repaired: int = 0
 
 
 def cancel_unstarted_claim(store, raw: dict, *, now: datetime) -> bool:
@@ -370,9 +377,16 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         ).all()
     )
     releasable = []
+    repaired = 0
     for row in rows:
         raw = await run_in_threadpool(store._read, f"TENANT#{row.org_id}", f"EXEC#{row.active_run_id}")
         if not raw or raw.get("tenant_id") != {"S": row.org_id}:
+            continue
+        from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+        if is_bootstrap_failure(raw):
+            # The review controller owns this failed startup and reserves its
+            # successor under the same claim and per-stage allowance.
             continue
         name, uid = raw.get("pod_name", {}).get("S"), raw.get("workload_binding", {}).get("S")
         reason = ReleaseReason.ABANDONED
@@ -386,6 +400,42 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
             reason = ReleaseReason.FAILED
         elif name and uid and await run_in_threadpool(workloads.has_exited, name=name, uid=uid):
             evidence = f"kubernetes terminated pod:{uid} run:{row.active_run_id}"
+            # The one branch that reaches here on positive container-exit evidence
+            # rather than on a report the run wrote, which is precisely the case where
+            # an aborted run's terminal row may be missing: the pod died without
+            # managing to write it. Repaired here and nowhere else — the other branches
+            # mean the run DID report, so there is nothing to repair, and a repair
+            # before `has_exited` would assert a stop that has not happened yet
+            # (`record_abort_intent` leaves the execution ACTIVE on purpose, so the
+            # marker alone is acceptance, not quiescence).
+            #
+            # Gated on the marker here as well as inside the repair. The duplication is
+            # deliberate: the overwhelmingly common case is an exited run that was never
+            # aborted, and this keeps that case from reaching the events table at all.
+            # The repair re-checks because it must not depend on a caller's filter for a
+            # condition that decides whether a terminal status gets written.
+            #
+            # Repaired BEFORE the release, and the release is skipped while the repair is
+            # still failing transiently. That ordering is load-bearing, not stylistic:
+            # this query selects `state == HELD`, so releasing first would remove the row
+            # from the only set that ever looks at it again and a failed repair would
+            # never be retried — the permanently-stale row this reconciler exists to
+            # prevent. Leaving the claim held is what makes the next 60s pass re-select
+            # it, so the existing sweep IS the retry, with no attempt counter and no new
+            # state. See `_repair_before_release` for what "transiently" is limited to.
+            if "abort_command_id" in raw:
+                repair = await _repair_before_release(store=store, invocation_id=row.active_run_id, tenant_id=row.org_id, raw=raw)
+                repaired += int(repair.repaired)
+                if repair.reason == TRANSIENT_REPAIR_FAILURE:
+                    # Hold the claim and try again next pass. The cost is that this
+                    # issue's lane stays blocked while the events table is down; the
+                    # alternative is telling the operator their aborted run is still
+                    # running, forever. Bounded to the transient reason precisely so
+                    # anything a retry cannot fix — an unset table name or a tenant
+                    # disagreement, both of which could persist for weeks — falls through
+                    # and releases instead of wedging the lane indefinitely.
+                    logger.warning("holding work claim to retry an aborted run's terminal repair invocation=%s", row.active_run_id)
+                    continue
         else:
             continue
         parent_grant = raw.get("parent_grant_id", {}).get("S")
@@ -405,13 +455,52 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
             session, org_id=row.org_id, claim_id=row.id, generation=row.generation, reason=reason, terminal_evidence=evidence
         )
         released += int(receipt.admitted)
-    return ClaimRecoveryReport(released, rows[-1].id if len(rows) == limit else None)
+    return ClaimRecoveryReport(released, rows[-1].id if len(rows) == limit else None, repaired)
+
+
+async def _repair_before_release(*, store, invocation_id: str, tenant_id: str, raw: dict) -> AbortRepair:
+    """Report an exited aborted run's terminal status, off the event loop.
+
+    Separated from the sweep body so the ordering constraint above has one place to
+    point at, and so the threadpool hop (boto3 is blocking) is not buried mid-branch.
+
+    Never raises. The caller's primary job is releasing work claims, and a repair that
+    could raise would let an events-table outage abandon claim recovery for every
+    tenant — strictly worse than a dashboard row that is another minute late.
+    """
+    return await run_in_threadpool(
+        repair_aborted_terminal_status,
+        authority_client=store.client,
+        events_table=os.environ.get(WEBHOOK_EVENTS_TABLE_ENV, ""),
+        execution=raw,
+        invocation_id=invocation_id,
+        tenant_id=tenant_id,
+    )
 
 
 async def maintain_work_claims() -> None:
     """Lifecycle cleanup in existing gateway processes; no new scheduler."""
     cursor = None
+    retained_cursor = ""
     while True:
+        # Recovery is independent of SQL claims and runs first so a database
+        # outage cannot discard accepted-abort reporting work.
+        try:
+            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+                from src.agentauth.retained_abort_recovery import recover_retained_abort_pods
+                from src.agentauth.routes import get_agent_runtime
+
+                runtime = get_agent_runtime()
+                _, retained_cursor = await run_in_threadpool(
+                    recover_retained_abort_pods,
+                    store=runtime.store,
+                    workloads=runtime.workloads,
+                    events_table=os.environ.get(WEBHOOK_EVENTS_TABLE_ENV, ""),
+                    cursor=retained_cursor,
+                )
+        except Exception:
+            logger.exception("retained abort recovery failed; pod evidence remains")
+            retained_cursor = ""
         try:
             if enabled():
                 require_authority()
@@ -425,6 +514,12 @@ async def maintain_work_claims() -> None:
                 cursor = report.next_id
                 if report.released:
                     logger.info("work_claim_recovery released=%s", report.released)
+                if report.aborts_repaired:
+                    # Its own line, at warning: this is not routine cleanup. Each one
+                    # is a run an operator stopped that has been reporting itself as
+                    # live ever since, so the count is the size of a reporting outage
+                    # and not a throughput statistic.
+                    logger.warning("abort_terminal_repaired count=%s", report.aborts_repaired)
         except Exception:
             logger.exception("work_claim_recovery failed; unresolved claims remain held")
         await asyncio.sleep(60)

@@ -31,7 +31,20 @@ async def verify_shared_review_worker(request):
             ):
                 raise HTTPException(404, "not found")
             await authorize_shared_model(session, row)
-            request.state.agent_installation_binding = InstallationBinding(tenant_id=row.org_id, installation_id=row.installation_id)
+            # Issue #5663 (A09): carry the repository this review assignment is
+            # actually for. `row` is the authenticated run-report row and `row.repo`
+            # was just compared against the request above, so it is server-owned
+            # state, not a caller assertion.
+            #
+            # Omitting it made this legitimate binding look "unbound" to the token
+            # route's repository check, so a valid shared-review mint was refused
+            # under strict denial while every other check on it passed. The
+            # repository is known here and there is no reason to drop it.
+            request.state.agent_installation_binding = InstallationBinding(
+                tenant_id=row.org_id,
+                installation_id=row.installation_id,
+                repo=row.repo,
+            )
             request.state.agent_authorized_action = Action.REVIEW
             request.state.agent_github_permissions = {"contents": "read", "pull_requests": "write", "metadata": "read"}
             request.state.shared_review_identity = True

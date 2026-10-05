@@ -1,0 +1,21 @@
+{
+  "$fixture": {
+    "description": "Typed intentional cancellation delivered to the child. Being typed as intentional is what keeps it out of the generic retry path, so cancellation never starts another attempt (invariant LC-14).",
+    "schema": "process-protocol.schema.json#/$defs/cancel_frame",
+    "expect": "valid",
+    "owner": "T7",
+    "criteria": [
+      "T0-AC02",
+      "T7-AC03",
+      "V0-04",
+      "V3-08"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "cancel",
+  "request_id": "331bac1b-b49e-43bb-b67e-a1f0a1a56755",
+  "task_id": "tsk_9e1b3d5f-7a9c-4e3b-8d7f-9a1c3e5b7d9f",
+  "command_id": "f6071829-3a4b-4c5d-9f70-000000000227",
+  "intentional": true,
+  "reason": "Client no longer needs the investigation."
+}

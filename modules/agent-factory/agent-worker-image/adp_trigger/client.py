@@ -38,14 +38,16 @@ token that fails its MAC check — the key never enters the pod.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import stat
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from lib.authenticated_http import open_authenticated as urlopen
 
 # The header the gateway reads the caller's identity from. Must match
 # ``CREDENTIAL_HEADER`` in ``modules/gateway/src/agentauth/adapter.py``.

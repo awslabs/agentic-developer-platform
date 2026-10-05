@@ -21,6 +21,51 @@
 # =============================================================================
 
 mock_provider "aws" {
+  # The apply-only missing-STS-rule case must reach the actual data-source
+  # postcondition. Random computed strings fail downstream ARN validation first,
+  # and absent computed blocks cannot supply the cluster's OIDC/CA outputs.
+  # These defaults supply provider results; they do not replace the guarded SG
+  # data source or the real node-group dependency on that guard.
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock-workspace-role" }
+  }
+
+  mock_resource "aws_kms_key" {
+    defaults = {
+      arn    = "arn:aws:kms:us-east-1:111122223333:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      key_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    }
+  }
+
+  mock_resource "aws_launch_template" {
+    defaults = { id = "lt-0abcdef1234567890", latest_version = 1 }
+  }
+
+  mock_resource "aws_eks_cluster" {
+    defaults = {
+      arn                   = "arn:aws:eks:us-east-1:111122223333:cluster/mock-workspace"
+      identity              = [{ oidc = [{ issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/TEST" }] }]
+      certificate_authority = [{ data = "TU9DS0VEQ0VSVElGSUNBVEU=" }]
+      vpc_config            = { cluster_security_group_id = "sg-02222222222222222" }
+    }
+  }
+
+  mock_resource "aws_iam_openid_connect_provider" {
+    defaults = { arn = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/TEST" }
+  }
+
+  mock_data "aws_vpc_security_group_rules" {
+    defaults = { ids = ["sgr-0123456789abcdef0"] }
+  }
+
+  mock_data "aws_vpc_endpoint" {
+    defaults = {
+      id                  = "vpce-0123456789abcdef0"
+      private_dns_enabled = true
+      security_group_ids  = ["sg-0123456789abcdef0"]
+    }
+  }
+
   mock_data "aws_route_tables" {
     defaults = { ids = ["rtb-0123456789abcdef0"] }
   }
@@ -121,6 +166,11 @@ variables {
 
 run "supplied_mode_declares_no_network_resource_at_all" {
   command = plan
+
+  assert {
+    condition     = length(aws_default_security_group.workspace) == 0
+    error_message = "Supplied mode must never adopt or revoke rules from the customer's default security group."
+  }
 
   # The core assertion of this file. Each of these is a resource whose destruction would
   # damage a network ADP does not own.
@@ -223,6 +273,16 @@ run "owned_mode_declares_the_network_and_says_so" {
     availability_zones          = ["us-east-1a", "us-east-1b", "us-east-1c"]
     supplied_vpc_id             = ""
     supplied_private_subnet_ids = []
+  }
+
+  assert {
+    condition     = length(aws_default_security_group.workspace) == 1
+    error_message = "Owned mode must adopt exactly one default security group."
+  }
+
+  assert {
+    condition     = length(aws_default_security_group.workspace[0].ingress) == 0 && length(aws_default_security_group.workspace[0].egress) == 0
+    error_message = "Owned default security groups must plan explicit empty ingress and egress sets."
   }
 
   # THE ANTI-VACUOUS HALF. Every assertion in the first run is a count-is-zero check, and all
@@ -390,4 +450,61 @@ run "main_route_table_is_used_without_explicit_association" {
     condition     = data.aws_route_table.supplied_nodes["subnet-0aaaaaaaaaaaaaaa1"].route_table_id == data.aws_route_table.supplied_main[0].id
     error_message = "A subnet without an explicit association must use its VPC main route table."
   }
+}
+
+run "supplied_private_sts_is_retained" {
+  command = plan
+  assert {
+    condition     = length(aws_vpc_endpoint.private_sts) == 0 && length(aws_security_group.private_sts) == 0 && length(aws_vpc_security_group_ingress_rule.private_sts_nodes) == 0
+    error_message = "Supplied private STS and its security group must never be adopted into workspace state."
+  }
+  assert {
+    condition     = output.sts_endpoint_id == "vpce-0123456789abcdef0" && output.sts_endpoint_security_group_id == "sg-0123456789abcdef0"
+    error_message = "Bootstrap must receive the exact supplied private STS identities."
+  }
+}
+
+run "supplied_sts_without_private_dns_is_refused" {
+  command = plan
+  override_data {
+    target = data.aws_vpc_endpoint.supplied_sts[0]
+    values = { private_dns_enabled = false, security_group_ids = ["sg-0123456789abcdef0"] }
+  }
+  expect_failures = [data.aws_vpc_endpoint.supplied_sts]
+}
+
+run "supplied_sts_without_node_ingress_stops_before_nodes" {
+  command = apply
+  override_data {
+    target = data.aws_security_group.supplied_sts[0]
+    values = { arn = "arn:aws:ec2:us-east-1:111122223333:security-group/sg-0123456789abcdef0", id = "sg-0123456789abcdef0", vpc_id = "vpc-0a1b2c3d4e5f67890" }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rules.supplied_sts[0]
+    values = { ids = [] }
+  }
+  expect_failures = [data.aws_security_group.supplied_sts]
+}
+
+
+run "hybrid_ranges_cannot_overlap_a_secondary_supplied_vpc_range" {
+  command = plan
+  variables {
+    hybrid_networks = { node_cidr = "10.100.0.0/24", pod_cidr = "10.101.0.0/16", service_cidr = "172.20.0.0/16" }
+  }
+  override_data {
+    target = data.aws_vpc.supplied[0]
+    values = {
+      id                   = "vpc-0a1b2c3d4e5f67890"
+      cidr_block           = "172.31.0.0/16"
+      enable_dns_support   = true
+      enable_dns_hostnames = true
+      cidr_block_associations = [{
+        association_id = "vpc-cidr-assoc-0123456789abcdef0"
+        cidr_block     = "10.100.0.0/16"
+        state          = "associated"
+      }]
+    }
+  }
+  expect_failures = [aws_eks_cluster.workspace]
 }

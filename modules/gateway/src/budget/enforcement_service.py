@@ -371,7 +371,7 @@ class BudgetEnforcementService:
             from src.shared.config import get_settings
 
             settings = get_settings()
-            if settings.rds_iam_auth and settings.rds_host:
+            if settings.rds_iam_auth and settings.rds_host and settings.rds_pool_enabled is not True:
                 reset_engine()
             factory = get_session_factory()
             async with factory() as session:
@@ -576,7 +576,8 @@ class BudgetEnforcementService:
         exactly the forgery surface #4187/AD-1 closed.
         """
         if context.auth_source == "iam" and (
-            context.user_id == "authority-worker" or (context.user_id == "scaledjob-worker" and context._protected_run_binding is not None)
+            context.agent_registry_id == "authority-worker"
+            or (context.agent_registry_id == "scaledjob-worker" and context._protected_run_binding is not None)
         ):
             binding = context._protected_run_binding
             if binding is None or (run_id is not None and run_id != binding.run_id):
@@ -1031,6 +1032,7 @@ class BudgetEnforcementService:
                             # Issue #4132: ledger partition must match the
                             # attributed tenant whose rows we are checking.
                             context.attributed_org_id,
+                            reference_date=context._budget_request_timestamp.date(),
                         )
 
                         if not result.allowed:
@@ -1115,6 +1117,7 @@ class BudgetEnforcementService:
         # into _handle_check_failure would let a Redis blip burn the DB grace
         # window and then deny all traffic. It degrades instead — see
         # _reserve_or_degrade.
+        context._budget_admission_targets = list(reservation_targets)
         reservation_denial = await self._reserve_or_degrade(
             request_id, estimated_cost, reservation_targets, **({"strict": True} if policy_target is not None else {})
         )
@@ -1134,7 +1137,7 @@ class BudgetEnforcementService:
                 entity_type=entity.value,
                 entity_id=entity_id,
                 period_type=period.value,
-                period_start=get_period_start_end(period)[0].isoformat(),
+                period_start=get_period_start_end(period, reference_date=context._budget_request_timestamp.date())[0].isoformat(),
                 headroom_usd=Decimal(0),
                 # Do not lose an off-mode in-flight marker on the short live
                 # counter TTL before a long provider response settles.
@@ -1147,6 +1150,7 @@ class BudgetEnforcementService:
         if context._policy_flow_target is not None:
             scopes.append(context._policy_flow_target)
         context._run_scope_reservations = scopes
+        context._budget_admission_targets = [*targets, *scopes]
         store = self._get_reservations()
         if not store.enabled or not await store.observe(request_id, targets + scopes):
             # Persist missing observation so a later ON cannot trust stale totals.
@@ -1178,7 +1182,10 @@ class BudgetEnforcementService:
         Returns:
             A denial result, or ``None`` to leave the caller's verdict alone.
         """
-        if not budget_config.budget_reservation_enabled or not targets or request_id is None:
+        if targets and not request_id:
+            # An enabled admission path without its server identity is miswired.
+            return self._policy_budget_unavailable()
+        if not budget_config.budget_reservation_enabled or not targets:
             return self._policy_budget_unavailable() if strict else None
 
         store = self._get_reservations()
@@ -1268,6 +1275,7 @@ class BudgetEnforcementService:
         output_tokens: int,
         actual_cost_usd: Decimal | None = None,
         usage_known: bool = True,
+        retain_failed_bound: bool = False,
     ) -> None:
         """Adjust this request's reservation from estimate to settled actual (#4287).
 
@@ -1315,7 +1323,7 @@ class BudgetEnforcementService:
                 entity_type=entity_type.value,
                 entity_id=entity_id,
                 period_type=period_type.value,
-                period_start=get_period_start_end(period_type)[0].isoformat(),
+                period_start=get_period_start_end(period_type, reference_date=context._budget_request_timestamp.date())[0].isoformat(),
                 # Unused on the reconcile path: the script overwrites an existing
                 # amount and never re-evaluates headroom.
                 headroom_usd=Decimal("0"),
@@ -1334,13 +1342,28 @@ class BudgetEnforcementService:
         # this request touches only this request's field, even in the chain key
         # the two siblings share.
         targets.extend(context._run_scope_reservations)
+        if context._budget_admission_targets is not None:
+            # Reconcile the exact admission keys even if a call crossed midnight.
+            targets = list(context._budget_admission_targets)
 
         if not usage_known or actual_cost_usd is None:
             # Policy totals require a trusted price receipt. A failed upstream
             # call or missing usage must not turn its estimate into zero spend.
             unresolved = [target for target in targets if target.require_initialization]
             for target in unresolved:
+                # A provider failure can retry against the full server-admitted
+                # quote. No actual usage is invented and no headroom released.
+                if retain_failed_bound and context._policy_quote is not None and await store.retain_failed_bound(request_id, target):
+                    logger.warning(
+                        "Provider failure retained at full admitted bound; no usage settled",
+                        extra={"request_id": request_id, "budget_scope": target.entity_type},
+                    )
+                    continue
                 await store.mark_unknown(request_id, target)
+            if not usage_known:
+                # Retain ordinary estimates too: an ambiguous provider outcome
+                # is not evidence that its reserved spend was zero.
+                return
             targets = [target for target in targets if not target.require_initialization]
 
         await store.reconcile(request_id, actual_cost, targets)
@@ -1353,6 +1376,7 @@ class BudgetEnforcementService:
         period_type: PeriodType,
         estimated_cost: Decimal,
         org_id: str,
+        reference_date=None,
     ) -> tuple[EnforcementResult, ReservationTarget | None]:
         """
         Check budget for a specific entity and period.
@@ -1391,7 +1415,7 @@ class BudgetEnforcementService:
             return EnforcementResult(allowed=True), None
 
         # Get current usage
-        period_start, period_end = get_period_start_end(period_type)
+        period_start, period_end = get_period_start_end(period_type, reference_date=reference_date)
         usage_result = await session.execute(
             select(BudgetUsage).where(
                 and_(
@@ -1917,7 +1941,7 @@ class BudgetEnforcementService:
         # named in the denial is stable rather than an accident of dict order.
         for limit in sorted(limits.values(), key=lambda item: item.period_type):
             period_type = PeriodType(limit.period_type)
-            period_start, _ = get_period_start_end(period_type)
+            period_start, _ = get_period_start_end(period_type, reference_date=context._budget_request_timestamp.date())
 
             # The cross-org denominator: the SAME predicate, over a widened key
             # and partition set. `_read_person_partition_spend` is the read
@@ -2151,7 +2175,7 @@ class BudgetEnforcementService:
             if limit.enforcement_mode != EnforcementMode.HARD.value:
                 continue
             period_type = PeriodType(limit.period_type)
-            period_start, period_end = get_period_start_end(period_type)
+            period_start, period_end = get_period_start_end(period_type, reference_date=context._budget_request_timestamp.date())
             total = Decimal("0")
             for org_id in partitions:
                 cloud, direct = await read_person_partition_spend(session, org_id, person_user_ids, person_subs, period_type, period_start)
@@ -2254,7 +2278,7 @@ class BudgetEnforcementService:
 
                     for budget in budgets:
                         period_type = PeriodType(budget.period_type)
-                        period_start, period_end = get_period_start_end(period_type)
+                        period_start, period_end = get_period_start_end(period_type, reference_date=context._budget_request_timestamp.date())
 
                         # Get current usage for THIS period's window
                         usage_result = await session.execute(
@@ -2461,6 +2485,7 @@ async def reconcile_budget_reservation(
     output_tokens: int,
     actual_cost_usd: Decimal | None = None,
     usage_known: bool = True,
+    retain_failed_bound: bool = False,
 ) -> None:
     """Metering-side entry point for reservation reconciliation (Issue #4287).
 
@@ -2486,6 +2511,7 @@ async def reconcile_budget_reservation(
             output_tokens=output_tokens,
             **({"actual_cost_usd": actual_cost_usd} if actual_cost_usd is not None else {}),
             **({"usage_known": False} if not usage_known else {}),
+            **({"retain_failed_bound": True} if retain_failed_bound else {}),
         )
     except Exception as exc:
         logger.warning(f"Budget reservation reconcile failed: {exc}")

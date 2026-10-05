@@ -38,12 +38,12 @@ import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import anyio
 import boto3
 import httpx
 
@@ -419,13 +419,16 @@ class MantlePassthroughService:
     ) -> MantleResponse:
         start = time.monotonic()
         status_code = 502
+        explicit_server_failure = False
         usage: dict[str, Any] = {}
         metadata: dict[str, str] = {}
         headers = self._headers(body, routed)
         client = self._client()
         try:
+            context._budget_provider_started = True
             resp = await client.post(routed.upstream_url, content=body, headers=headers)
             status_code = resp.status_code
+            explicit_server_failure = 500 <= status_code < 600
             metadata["provider_request_id"] = resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")
             content = resp.content
             # Only extract usage on success bodies; upstream errors pass through untouched.
@@ -451,6 +454,7 @@ class MantlePassthroughService:
                 request_id,
                 agent_run_id,
                 routing_decision=routed.decision,
+                **({"retain_failed_bound": True} if explicit_server_failure else {}),
             )
 
     async def _stream(
@@ -477,7 +481,26 @@ class MantlePassthroughService:
         # status, and guarantees the failure is logged (#3897).
         try:
             upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers, timeout=self._stream_timeout)
+            context._budget_provider_started = True
             resp = await client.send(upstream_request, stream=True)
+        except asyncio.CancelledError:
+            # A caller deadline can expire before upstream headers arrive.
+            # Preserve the full admitted cost even though no receipt exists.
+            with anyio.CancelScope(shield=True):
+                if owns_client:
+                    await client.aclose()
+                await self._log_usage(
+                    context,
+                    model,
+                    {},
+                    int((time.monotonic() - start) * 1000),
+                    499,
+                    request_id,
+                    agent_run_id,
+                    routing_decision=routed.decision,
+                    retain_failed_bound=True,
+                )
+            raise
         except httpx.HTTPError as exc:
             if owns_client:
                 await client.aclose()
@@ -510,7 +533,18 @@ class MantlePassthroughService:
                 latency_ms,
                 error_body[:512].decode("utf-8", errors="replace"),
             )
-            await self._log_usage(context, model, {}, latency_ms, status_code, request_id, agent_run_id, routing_decision=routed.decision)
+            metadata = {"provider_request_id": resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")}
+            await self._log_usage(
+                context,
+                model,
+                self._capture_usage({}, body, model, metadata, base_url=routed.base_url),
+                latency_ms,
+                status_code,
+                request_id,
+                agent_run_id,
+                routing_decision=routed.decision,
+                **({"retain_failed_bound": True} if 500 <= status_code < 600 else {}),
+            )
             raise MantleUpstreamError(
                 status_code,
                 error_body,
@@ -568,39 +602,49 @@ class MantlePassthroughService:
                 result_status = 499
                 raise
             finally:
-                sniffer.finish()
-                await resp.aclose()
-                if owns_client:
-                    await client.aclose()
-                latency_ms = (time.monotonic() - start) * 1000
-                if sniffer.terminal_event:
-                    outcome = sniffer.terminal_event.removeprefix("response.")
-                    result_status = 502 if sniffer.terminal_event in {"error", "response.failed"} else status_code
-                logger.log(
-                    logging.WARNING if result_status >= 400 else logging.INFO,
-                    "mantle stream %s (model=%s request_id=%s latency_ms=%d)",
-                    outcome,
-                    model,
-                    request_id,
-                    int(latency_ms),
-                    extra={
-                        "stream_outcome": outcome,
-                        "terminal_event": sniffer.terminal_event,
-                        "stream_read_timeout_seconds": self._stream_timeout.read,
-                        "upstream_status": status_code,
-                        "status_code": result_status,
-                    },
-                )
-                await self._log_usage(
-                    context,
-                    model,
-                    self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
-                    int(latency_ms),
-                    result_status,
-                    request_id,
-                    agent_run_id,
-                    routing_decision=routed.decision,
-                )
+                # Starlette's disconnect cancellation must not interrupt
+                # closing the upstream or preserving this request's spend.
+                with anyio.CancelScope(shield=True):
+                    sniffer.finish()
+                    await resp.aclose()
+                    if owns_client:
+                        await client.aclose()
+                    latency_ms = (time.monotonic() - start) * 1000
+                    if sniffer.terminal_event:
+                        outcome = sniffer.terminal_event.removeprefix("response.")
+                        result_status = 502 if sniffer.terminal_event in {"error", "response.failed"} else status_code
+                    logger.log(
+                        logging.WARNING if result_status >= 400 else logging.INFO,
+                        "mantle stream %s (model=%s request_id=%s latency_ms=%d)",
+                        outcome,
+                        model,
+                        request_id,
+                        int(latency_ms),
+                        extra={
+                            "stream_outcome": outcome,
+                            "terminal_event": sniffer.terminal_event,
+                            "stream_read_timeout_seconds": self._stream_timeout.read,
+                            "upstream_status": status_code,
+                            "status_code": result_status,
+                        },
+                    )
+                    await self._log_usage(
+                        context,
+                        model,
+                        self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
+                        int(latency_ms),
+                        result_status,
+                        request_id,
+                        agent_run_id,
+                        routing_decision=routed.decision,
+                        # An interrupted stream has no final receipt. Keep its full
+                        # admitted bound, as for HTTP 5xx, so affordable retries work.
+                        **(
+                            {"retain_failed_bound": True}
+                            if outcome in {"read_timeout", "transport_error", "premature_eof", "client_cancelled"}
+                            else {}
+                        ),
+                    )
 
         return _passthrough()
 
@@ -727,6 +771,7 @@ class MantlePassthroughService:
         agent_run_id: str | None,
         *,
         routing_decision: RoutingDecision | None = None,
+        retain_failed_bound: bool = False,
     ) -> None:
         """Write a usage_logs row for this passthrough call.
 
@@ -799,56 +844,6 @@ class MantlePassthroughService:
                 extra={"request_id": request_id, "model": model, "reason": trusted.reason},
             )
 
-        await reconcile_budget_reservation(
-            context=context,
-            request_id=request_id,
-            model_id=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            actual_cost_usd=cost_usd,
-            usage_known=decision is not None and trusted.known,
-        )
-
-        # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event
-        # consumed by budget-usage-tracker settles that ledger; writing the row
-        # below alone leaves Codex spend invisible once its reservation expires.
-        # Emit once from this common streaming/non-streaming completion hook.
-        # Usage-only payload: no prompt, response text, or credentials are needed
-        # for settlement. Missing usage is not a measured zero.
-        if decision is not None:
-            try:
-                if self._chat_logger is None:
-                    self._chat_logger = ChatLoggingService()
-                self._chat_logger.log_chat_async(
-                    request_id=request_id or str(uuid4()),
-                    timestamp=datetime.now(UTC),
-                    org_id=context.attributed_org_id,
-                    user_id=context.user_id,
-                    team_id=context.team_id,
-                    root_human_id=context.attributed_user_id,
-                    account_type="service" if context.account_type == "service" else "human",
-                    model=model,
-                    api_format="openai",
-                    latency_ms=latency_ms,
-                    request_body={},
-                    response_body={
-                        "model": model,
-                        "usage": {
-                            "input_tokens": decision.usage["total_input_tokens"],
-                            "output_tokens": output_tokens,
-                            "cache_read_input_tokens": decision.usage["cache_read_input_tokens"]
-                            if decision.usage["raw"]["cache_read_input_tokens"] is not None
-                            else None,
-                            "cache_creation_input_tokens": decision.usage["cache_creation_input_tokens"]
-                            if decision.usage["raw"]["cache_creation_input_tokens"] is not None
-                            else None,
-                        },
-                    },
-                    pricing_decision=decision.to_dict(),
-                )
-            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
-                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})
-
         try:
             # Issue #2792: compute real cost via the shared pricing table instead
             # of the previous hardcoded 0.0. Unknown models fall back to the
@@ -877,8 +872,69 @@ class MantlePassthroughService:
                     client_tool=_current_client_tool.get(),
                     bedrock_account_id=routing_decision.target.account_id if routing_decision and routing_decision.target else None,
                     pricing_decision=decision,
+                    reservation_usage_known=decision is not None and trusted.known,
                     provider_request_id=getattr(usage, "provider_request_id", None),
                     destination_region=evidence.endpoint_region if evidence else None,
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})
+            await reconcile_budget_reservation(
+                context=context,
+                request_id=request_id,
+                model_id=model,
+                input_tokens=0,
+                output_tokens=0,
+                actual_cost_usd=Decimal("0"),
+                usage_known=False,
+                **({"retain_failed_bound": True} if retain_failed_bound else {}),
+            )
+        else:
+            await reconcile_budget_reservation(
+                context=context,
+                request_id=request_id,
+                model_id=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                actual_cost_usd=cost_usd,
+                usage_known=decision is not None and trusted.known,
+                **({"retain_failed_bound": True} if retain_failed_bound else {}),
+            )
+
+        # Optional transcript emission shares the already-committed SQL receipt.
+        # The tracker can recover a failed SQL write without duplicating a debit.
+        # Usage-only payload: no prompt, response text, or credentials are needed
+        # for settlement. Missing usage is not a measured zero.
+        if decision is not None:
+            try:
+                if self._chat_logger is None:
+                    self._chat_logger = ChatLoggingService()
+                self._chat_logger.log_chat_async(
+                    request_id=request_id or str(uuid4()),
+                    timestamp=context._budget_request_timestamp,
+                    org_id=context.attributed_org_id,
+                    user_id=context.user_id,
+                    team_id=context.team_id,
+                    department_id=context.department_id,
+                    root_human_id=context.attributed_user_id,
+                    account_type="service" if context.account_type == "service" else "human",
+                    model=model,
+                    api_format="openai",
+                    latency_ms=latency_ms,
+                    request_body={},
+                    response_body={
+                        "model": model,
+                        "usage": {
+                            "input_tokens": decision.usage["total_input_tokens"],
+                            "output_tokens": output_tokens,
+                            "cache_read_input_tokens": decision.usage["cache_read_input_tokens"]
+                            if decision.usage["raw"]["cache_read_input_tokens"] is not None
+                            else None,
+                            "cache_creation_input_tokens": decision.usage["cache_creation_input_tokens"]
+                            if decision.usage["raw"]["cache_creation_input_tokens"] is not None
+                            else None,
+                        },
+                    },
+                    pricing_decision=decision.to_dict(),
+                )
+            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
+                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})

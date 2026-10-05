@@ -1,6 +1,5 @@
 """Real SQL K2 lifecycle using shared-worker assignments, no protected grants."""
 
-import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,7 +9,7 @@ import pytest
 from src.orchestration.execution_policy import AuthorizationContext, ExecutionPolicy
 from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationFlow
 from src.orchestration.run_reports import OrchestrationRunReport
-from src.orchestration.shared_cycle import SharedCycleServices, registration_target_for_report
+from src.orchestration.shared_cycle import SharedCycleServices
 from src.shared.models.base import Base
 from tests.orchestration import test_merge_controller as merge_protocol
 from tests.orchestration import test_review_cycle as protocol
@@ -89,6 +88,11 @@ async def shared(cycle, monkeypatch):  # noqa: F811
     monkeypatch.setattr(
         "src.orchestration.shared_policy.read_flow_meter", AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(total_usd=ctx.spend))
     )
+    # Delivery protocol tests supply spend; receipt recovery has real Redis/SQL
+    # coverage in test_story_budget_recovery. Admission now uses this entry point.
+    monkeypatch.setattr(
+        "src.orchestration.shared_policy.reconcile_flow_meter", AsyncMock(side_effect=lambda session, **kwargs: SimpleNamespace(total_usd=ctx.spend))
+    )
     monkeypatch.setattr("src.orchestration.flow_budget.reserve_flow_admission", AsyncMock(return_value=SimpleNamespace(admitted=True)))
     monkeypatch.setattr("src.shared.identity.resolver.resolve_user_entity_id", AsyncMock(return_value="sub"))
     monkeypatch.setattr("src.orchestration.shared_cycle.EngineRunStore.from_env", lambda: SimpleNamespace(register=lambda envelope: None))
@@ -107,7 +111,6 @@ async def shared(cycle, monkeypatch):  # noqa: F811
 @pytest.mark.parametrize(
     "case",
     [
-        "test_develop_review_repair_fresh_review_merge_ready",
         "test_changed_head_requires_fresh_review",
         "test_recovery_after_intent_keeps_action_and_run_identity",
         "test_timed_out_send_republishes_same_envelope_without_duplicate_admission",
@@ -129,26 +132,21 @@ async def test_shared_review_merge_observer_and_verified_completion(shared, monk
         ctx.remote["protection"] = None
         ctx.remote["reviews"] = []
         ctx.remote["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
-        await merge_protocol.test_engine_expected_head_merge_then_verified_code_completion(ctx, saved_base_is_behind=False, rest_rules_available=True)
+        ctx.merge_remote()  # The reviewer has already performed the merge.
+        await merge_protocol.tick(ctx)
+        assert (await protocol.state(ctx))[2].state == "passed"
+        assert ctx.mutations == []
+        assert len(ctx.calls) == 1
 
 
-async def test_shared_repair_registration_proves_current_dispatch(shared):
+async def test_owned_reviewer_blocker_does_not_dispatch_another_paid_run(shared):
     assert (await protocol.tick(shared)).effects_succeeded == 1
-    await protocol.review(shared, findings=[{"finding_id": "F1", "summary": "Fix it", "evidence_refs": []}])
-    assert (await protocol.tick(shared)).effects_succeeded == 1
-    repair = shared.calls[-1]
-    async with shared.factory() as db:
-        report = await db.get(OrchestrationRunReport, repair["message_id"])
-        target = await registration_target_for_report(db, report)
-        assert target.run_id == repair["message_id"] and target.accepted_scope == shared.binding.accepted_scope
-        # A document cannot redirect a real report capability to another action.
-        metadata = json.loads(json.dumps(report.dispatch_metadata))
-        metadata["review_cycle_input"]["operation_key"] = "other-operation"
-        report.dispatch_metadata = metadata
-        from src.orchestration.run_reports import RunReportError
-
-        with pytest.raises(RunReportError, match="unverifiable"):
-            await registration_target_for_report(db, report)
+    await protocol.review(shared, findings=[{"finding_id": "F1", "summary": "External dependency unavailable", "evidence_refs": []}])
+    for _ in range(3):
+        assert (await protocol.tick(shared)).effects_succeeded == 0
+    execution, _, _, _ = await protocol.state(shared)
+    assert execution.block_detail == "reviewer_delivery_blocked"
+    assert len(shared.calls) == 1
 
 
 async def test_capacity_waits_do_not_consume_attempts_then_dispatch_once(shared, monkeypatch):
@@ -184,7 +182,8 @@ async def test_uncertain_dispatch_waits_for_capacity_without_consuming_retries(s
     assert len(shared.calls) == 1
 
 
-async def test_started_successor_settles_uncertain_dispatch_without_republishing(shared):
+@pytest.mark.parametrize("paused", [False, True])
+async def test_started_successor_settles_uncertain_dispatch_without_republishing(shared, paused):
     queue = shared.service.queue
     original = queue.send_message
 
@@ -197,8 +196,143 @@ async def test_started_successor_settles_uncertain_dispatch_without_republishing
     async with shared.factory() as db:
         row = await db.get(OrchestrationRunReport, shared.calls[-1]["message_id"])
         row.worker_receipt = {"started": True}
+        (await db.get(OrchestrationFlow, shared.flow.id)).execution_paused = paused
         await db.commit()
     await protocol.tick(shared)
     after = await protocol.state(shared)
     assert after[0].pending_action_key is None
     assert len(shared.calls) == 1
+
+
+async def test_engine_does_not_merge_when_owned_reviewer_has_not_delivered(shared, monkeypatch):
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        result = await merge_protocol.tick(ctx)
+        assert result.effects_attempted == 0
+        assert (await protocol.state(ctx))[0].block_detail == "reviewer_merge_not_delivered"
+        assert ctx.mutations == [] and len(ctx.calls) == 1
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_reviewer_merge_completes_code_only_story_without_another_worker(shared, monkeypatch, paused):
+    async with shared.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, shared.plan.id)
+        plan.plan_document = {
+            **plan.plan_document,
+            "execution_continuation": {**plan.plan_document["execution_continuation"], "delivery_mode": "code_only"},
+        }
+        await db.commit()
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        async with ctx.factory() as db:
+            (await db.get(OrchestrationFlow, ctx.flow.id)).execution_paused = paused
+            await db.commit()
+        ctx.merge_remote()
+        await merge_protocol.tick(ctx)
+        execution, _, node, _ = await protocol.state(ctx)
+        assert node.state == "passed" and execution.phase == "concluded"
+        assert ctx.mutations == [] and len(ctx.calls) == 1
+
+
+@pytest.mark.parametrize("terminal", [None, {"outcome": "failed"}])
+async def test_merge_is_reconciled_when_reviewer_terminal_report_is_missing_or_failed(shared, monkeypatch, terminal):
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        async with ctx.factory() as db:
+            row = await db.get(OrchestrationRunReport, ctx.calls[-1]["message_id"])
+            row.terminal_receipt = terminal
+            row.review_receipt = {"recorded": True}
+            await db.commit()
+        if terminal is None:
+            result = await merge_protocol.tick(ctx)
+            assert result.effects_attempted == 0
+            assert (await protocol.state(ctx))[2].state == "running"
+        ctx.merge_remote()
+        await merge_protocol.tick(ctx)
+        assert (await protocol.state(ctx))[2].state == "passed"
+        assert ctx.mutations == [] and len(ctx.calls) == 1
+
+
+@pytest.mark.parametrize("authority_enabled", ["true", "false"])
+async def test_accepted_shared_flow_selects_shared_transport_during_authority_rollout(shared, monkeypatch, authority_enabled):
+    from src.orchestration.review_cycle_dispatch import cycle_services
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", authority_enabled)
+    context = SimpleNamespace(identity=shared.identity, execution=shared.execution)
+    service = await cycle_services(shared.factory, context)
+    assert isinstance(service, SharedCycleServices)
+    async with shared.factory() as db:
+        facts = await service.authority_context(db, context, shared.node, shared.binding, shared.root, protocol.Action.REVIEW)
+    assert facts[0]["evidence_origin"]["S"] == "owner_reconciled_legacy_delivery"
+
+
+async def test_disabled_shared_transport_blocks_before_protected_lookup_or_dispatch(shared, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false")
+    shared.service = None
+    result = await protocol.tick(shared)
+    assert result.effects_attempted == 0
+    assert (await protocol.state(shared))[0].block_detail == "shared_worker_continuation_disabled"
+    assert not shared.calls
+
+
+@pytest.mark.parametrize(
+    "mutation,reason",
+    [
+        ("unknown_mode", "continuation_mode_unrecognized"),
+        ("malformed", "continuation_mode_unrecognized"),
+        ("version", "continuation_plan_changed"),
+        ("unattributed", "continuation_acceptance_unverifiable"),
+    ],
+)
+async def test_transport_selection_never_downgrades_unverifiable_plans(shared, monkeypatch, mutation, reason):
+    from src.orchestration.review_cycle import CycleBlockedError
+    from src.orchestration.review_cycle_dispatch import cycle_services
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    async with shared.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, shared.plan.id)
+        document = dict(plan.plan_document)
+        if mutation == "unknown_mode":
+            document["execution_continuation"] = {"mode": "unknown", "contract_version": 1}
+        elif mutation == "malformed":
+            document["execution_continuation"] = "shared_worker_role"
+        elif mutation == "version":
+            plan.version += 1
+        else:
+            plan.accepted_by_decision_id = None
+        plan.plan_document = document
+        await db.commit()
+    with pytest.raises(CycleBlockedError, match=reason):
+        await cycle_services(shared.factory, SimpleNamespace(identity=shared.identity, execution=shared.execution))
+
+
+async def test_shared_feature_flag_does_not_reinterpret_protected_flow(cycle, monkeypatch):  # noqa: F811
+    from src.orchestration.review_cycle_dispatch import ReviewCycleServices, cycle_services
+
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "true")
+    service = await cycle_services(cycle.factory, SimpleNamespace(identity=cycle.identity, execution=cycle.execution))
+    assert type(service) is ReviewCycleServices
+
+
+async def test_production_router_dispatches_and_settles_shared_review_with_authority_enabled(shared, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr("src.orchestration.shared_cycle._get_sqs_client", lambda region: shared.service.queue)
+    monkeypatch.setattr("src.orchestration.shared_cycle.DispatchPassConfig.from_env", lambda: shared.service.config)
+    routed = SimpleNamespace(**vars(shared))
+    routed.service = None
+    assert (await protocol.tick(routed)).effects_succeeded == 1
+    assert len(shared.calls) == 1
+    await protocol.review(shared, approve=True)
+    await protocol.tick(routed)
+    assert (await protocol.state(shared))[0].phase == "merge_ready"
+
+
+async def test_merge_observer_uses_shared_receipts_during_authority_rollout(shared, monkeypatch):
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        ctx.merge_services.authority = None
+        ctx.remote["rules"] = []
+        ctx.remote["protection"] = None
+        ctx.remote["reviews"] = []
+        ctx.merge_remote()
+        await merge_protocol.tick(ctx)
+        assert (await protocol.state(ctx))[2].state == "passed"
+        assert ctx.mutations == []

@@ -154,7 +154,7 @@ class TestEnums:
         assert set(IdentityProvider) == {"cognito", "slack", "github", "gitlab", "teams", "discord", "email", "whatsapp", "directory"}
 
     def test_verification_method_values(self):
-        assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual"}
+        assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual", "admin_attested"}
 
     def test_credential_type_values(self):
         expected = {"api_key", "oauth_token", "basic_auth", "bearer", "ssh_key", "certificate", "config_file", "aws_role"}

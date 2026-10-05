@@ -25,6 +25,13 @@ from lib.sts_assume import assume_customer_role
 
 # --- Fixtures ---
 
+@pytest.fixture(autouse=True)
+def stub_agent_process(monkeypatch):
+    # Entrypoint tests stub execution; process-tree deadlines have real-process tests.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
 
 def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     """Default subprocess.run side_effect for tests simulating a fresh issue.
@@ -156,12 +163,20 @@ class TestPersonaRuntimeRouting:
             "--embedded",
         ]
 
+    def test_codex_developer_uses_native_sdk(self):
+        from entrypoint import persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-developer") == "codex"
+        assert worker_command("agent-codex-developer") == [
+            "node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"
+        ]
+
     def test_future_codex_personas_are_explicitly_fail_closed(self):
         from entrypoint import persona_runtime, worker_command
 
-        assert persona_runtime("agent-codex-architect") == "codex"
+        assert persona_runtime("agent-codex-unknown") == "codex"
         with pytest.raises(ValueError, match="not packaged yet"):
-            worker_command("agent-codex-architect")
+            worker_command("agent-codex-unknown")
 
 
 # --- Test: vault_client ---
@@ -718,6 +733,11 @@ class TestEntrypointMain:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
 
         # create_check_run raises — should be silently swallowed
         mock_create_cr.side_effect = RuntimeError("API down")
@@ -2242,8 +2262,11 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
         monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
 
+        recovery = {"previous_run_id": "orch:prior", "previous_attempt": 1} if protected else None
+        monkeypatch.setenv("ADP_DEVELOPER_RECOVERY_CONTEXT", "stale prior task")
         mock_receive_msg.return_value = (
-            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model}),
+            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model,
+                        "orchestration": {"developer_recovery": recovery}}),
             "receipt-gw1",
         )
         mock_vault = MagicMock()
@@ -2251,6 +2274,11 @@ class TestBedrockViaGateway:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Proxy starts successfully
@@ -2273,6 +2301,7 @@ class TestBedrockViaGateway:
         assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == f"http://127.0.0.1:{port or '9090'}"
         assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
         assert agent_env["ANTHROPIC_MODEL"] == selected_model
+        assert agent_env["ADP_DEVELOPER_RECOVERY_CONTEXT"] == (json.dumps(recovery) if recovery else "")
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
         if protected:
@@ -2463,6 +2492,11 @@ class TestGhAppCredentialsExported:
         }
         mock_mint.return_value = "ghs_test_token"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -2898,6 +2932,11 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -3013,6 +3052,11 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # _delete_message raises an exception (e.g., expired credentials)
@@ -3176,6 +3220,11 @@ class TestIdempotencyGuard:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Idempotency guard returns False (no merged PR — fresh run)
@@ -3823,10 +3872,10 @@ class TestZeroTokenFailureDetection:
     @patch("entrypoint._post_comment")
     @patch("entrypoint._write_outbound_correlation")
     @patch("entrypoint.run_cmd")
-    def test_handle_success_with_diff_never_checks_metadata(
+    def test_handle_success_with_diff_preserves_unvalidated_checkpoint(
         self, mock_run_cmd, mock_write_corr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """A run that produced a diff → success path unchanged (PR created)."""
+        """Leftover work is preserved without claiming a ready PR."""
         import entrypoint
 
         # Non-empty diff/status → has_uncommitted True; gh pr list returns no PR.
@@ -3848,9 +3897,10 @@ class TestZeroTokenFailureDetection:
             "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
         )
 
-        assert rc == 0
-        assert mock_post.call_args[0][3] == "completed"
-        assert "PR opened" in mock_post.call_args[0][4]
+        assert rc == 1
+        assert mock_post.call_args[0][3] == "failed"
+        assert "Incomplete work preserved" in mock_post.call_args[0][4]
+        assert not any(call.args[0][:3] == ["gh", "pr", "create"] for call in mock_run_cmd.call_args_list)
 
 
 # =============================================================================
@@ -4028,7 +4078,7 @@ class TestHandleGitLabMention:
         monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_happy_path_ack_comment_and_branch(
         self,
@@ -4121,7 +4171,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_already_exists_tolerated(
         self,
@@ -4187,7 +4237,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_ack_comment_failure_returns_1_but_still_deletes_message(
         self,
@@ -4256,7 +4306,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_missing_trusted_gitlab_url_fails_before_token_read(
         self,
@@ -4283,7 +4333,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_envelope_gitlab_url_is_ignored(
         self,
@@ -4340,7 +4390,7 @@ class TestHandleGitLabMention:
         assert "attacker.example" not in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_configured_url_used_when_legacy_envelope_url_empty(
         self,
@@ -4407,7 +4457,7 @@ class TestHandleGitLabMention:
         assert "override-gitlab.internal" in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_invalid_ref_returns_1(
         self,
@@ -4473,7 +4523,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_default_branch_resolved_from_project_api(
         self,
@@ -4787,3 +4837,65 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
     monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
     assert entrypoint.main() == agent_exit
     assert events == ["agent", "upload", "terminal"]
+
+
+def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
+    import entrypoint
+
+    status = MagicMock()
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    monkeypatch.setattr(entrypoint, "_post_comment", MagicMock())
+    assert entrypoint._handle_failure("org/repo", 7, "developer", "run", "now", 1,
+                                     failure_error="Agent developer exit 1: budget_exceeded") == 1
+    status.assert_called_once_with("run", "now", "failed", summary="Agent `developer` failed with exit code 1.",
+                                   error_message="Agent developer exit 1: budget_exceeded")
+
+
+@pytest.mark.parametrize("persona", ["product", "pm", "intent-refinement"])
+def test_shared_codex_persona_uses_packaged_host(persona):
+    from entrypoint import worker_command
+    assert worker_command(f"agent-codex-{persona}") == ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
+
+
+@pytest.mark.parametrize("mode", ["complete", "missing", "wrong-run", "wrong-issue", "unpublished"])
+def test_shared_codex_report_finalization_never_commits_or_opens_pr(tmp_path, monkeypatch, mode):
+    import entrypoint
+    path = tmp_path / "result.json"
+    metadata = {"session_completed": True, "codex_persona_report": True, "codex_persona_invocation": "run-a",
+                "outcome_comment_url": "https://github.com/owner/repo/issues/12#issuecomment-42"}
+    if mode == "wrong-run":
+        metadata["codex_persona_invocation"] = "another-run"
+    elif mode == "wrong-issue":
+        metadata["outcome_comment_url"] = "https://github.com/owner/repo/issues/99#issuecomment-42"
+    elif mode == "unpublished":
+        metadata["session_completed"] = False
+    if mode != "missing":
+        path.write_text(json.dumps(metadata))
+    monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(path))
+    status = MagicMock()
+    command = MagicMock(side_effect=AssertionError("report finalization cannot run shell or git"))
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    monkeypatch.setattr(entrypoint, "run_cmd", command)
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: False)
+    assert entrypoint._handle_success("owner/repo", 12, "main", "agent-codex-product", "run-a", "now") == (0 if mode == "complete" else 1)
+    assert status.call_args.args[2] == ("complete" if mode == "complete" else "failed")
+    command.assert_not_called()
+
+
+@pytest.mark.parametrize("protected", ["true", "false"])
+def test_all_workers_drop_broad_internal_credentials(monkeypatch, protected):
+    import entrypoint
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", protected)
+    names = ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY",
+             "GATEWAY_INTERNAL_API_KEY", "ADP_DOOR_API_KEY_SECRET")
+    for name in names:
+        monkeypatch.setenv(name, "synthetic-secret")
+    with patch.object(entrypoint.boto3, "client", side_effect=AssertionError("worker attempted to fetch shared authority")):
+        entrypoint._load_door_api_key("us-east-1")
+    assert not any(name in os.environ for name in names)
+
+
+def test_codex_architect_uses_native_workspace_and_pr_lifecycle():
+    import entrypoint
+    assert entrypoint.worker_command("agent-codex-architect") == entrypoint.worker_command("agent-codex-developer")
+    assert "agent-codex-architect" not in entrypoint.SHARED_CODEX_PERSONAS

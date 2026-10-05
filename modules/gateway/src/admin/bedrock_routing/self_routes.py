@@ -77,7 +77,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,7 +91,7 @@ from src.shared.schemas.auth import TokenContext
 from src.shared.services.routing_probe import ROUTING_REASON_USER_PINNED
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
-from . import service
+from . import revisions, service
 from .schemas import EffectiveMappingResponse, MySelectionRequest, MySelectionResponse, SelectableConnection
 
 logger = logging.getLogger("bedrockgateway.bedrock_routing.self")
@@ -130,6 +130,8 @@ async def _caller_id(db: AsyncSession, current_user: TokenContext) -> str:
     """
     from src.proxy.bedrock_principal import routing_user
 
+    if current_user.account_type != "human":
+        raise HTTPException(status_code=403, detail="Human account required")
     user = await routing_user(db, current_user.user_id)
     return user.id if user else current_user.user_id
 
@@ -218,7 +220,7 @@ async def _compose_selection(db: AsyncSession, user_id: str) -> MySelectionRespo
 
     connections = [_describe_connection(credential) for credential in await _own_connections(db, user_id)]
 
-    return MySelectionResponse(
+    result = MySelectionResponse(
         effective=EffectiveMappingResponse(**effective),
         own_selection_destination_id=own_destination.id if own_destination else None,
         own_selection_account_id=own_destination.account_id if own_destination else None,
@@ -231,6 +233,9 @@ async def _compose_selection(db: AsyncSession, user_id: str) -> MySelectionRespo
         pinned_by_platform_admin=pinned,
         connections=sorted(connections, key=lambda c: c.label),
     )
+
+    result.revision = revisions.digest(result.model_dump(exclude={"revision"}))
+    return result
 
 
 @router.get("/selection", response_model=MySelectionResponse)
@@ -275,6 +280,7 @@ async def put_my_selection(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     secrets: Annotated[SecretsManagerHelper, Depends(get_secrets_manager)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> MySelectionResponse:
     """Point the caller's own Bedrock traffic at one of their own AWS accounts (§6.4).
 
@@ -321,11 +327,16 @@ async def put_my_selection(
             ``422`` for any gate above — nothing is written in any of those cases, and
             the detail carries a stable ``reason``.
     """
+    await revisions.serialize_writes(db)
     user_id = await _caller_id(db, current_user)
+    if expected_revision is not None:
+        before = await _compose_selection(db, user_id)
+        revisions.require_revision(expected_revision, before.revision)
 
     try:
         credential = await db.scalar(
-            select(UserCredential).where(
+            select(UserCredential)
+            .where(
                 UserCredential.id == request.credential_id,
                 # The ownership boundary. Not a comparison after the fact: a connection
                 # belonging to anybody else does not match, so there is no state to leak
@@ -334,12 +345,17 @@ async def put_my_selection(
                 UserCredential.service == "aws",
                 UserCredential.credential_type == "aws_role",
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if credential is None:
             raise service.MappingRejectedError(
                 "connection_not_found",
                 "No AWS connection of yours has that id. Connect the account first, or refresh the page.",
             )
+
+        if request.expected_account_id is not None and (credential.scopes or {}).get("account_id") != request.expected_account_id:
+            raise HTTPException(409, detail={"reason": "connection_account_changed"})
 
         mapping = await service.load_self_selection(db, user_id)
         # Before the probe: see the docstring. A pinned caller is refused for a reason
@@ -423,6 +439,7 @@ async def put_my_selection(
 async def delete_my_selection(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> MySelectionResponse:
     """Stop routing the caller's Bedrock calls to their own account (§6.4).
 
@@ -447,7 +464,11 @@ async def delete_my_selection(
             ``401`` when unauthenticated;
             ``422`` when a platform admin has pinned the caller.
     """
+    await revisions.serialize_writes(db)
     user_id = await _caller_id(db, current_user)
+    if expected_revision is not None:
+        before = await _compose_selection(db, user_id)
+        revisions.require_revision(expected_revision, before.revision)
 
     mapping = await service.load_self_selection(db, user_id)
     try:

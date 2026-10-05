@@ -444,7 +444,7 @@ async def test_ac02_save_and_list(client: AsyncClient):
     assert entries["architect"]["source"] == "system-default"
     assert entries["architect"]["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert entries["architect"]["compatibility_class"] == "claude-agent-sdk"
-    assert entries["architect"]["harness_contract_revision"] == "0.3.220"
+    assert entries["architect"]["harness_contract_revision"] == "0.3.283"
     assert entries["architect"]["effective_is_candidate"] is False
     assert entries["architect"]["class_default_status"] == "proven"
     assert entries["agent-codex-reviewer"]["compatibility_class"] == "codex-sdk"
@@ -469,7 +469,7 @@ async def test_class_candidate_is_visible_but_never_reported_as_proven(client: A
     assert resp.status_code == 200
     architect = next(entry for entry in resp.json()["entries"] if entry["persona_key"] == "architect")
     assert architect["compatibility_class"] == "claude-agent-sdk"
-    assert architect["harness_contract_revision"] == "0.3.220"
+    assert architect["harness_contract_revision"] == "0.3.283"
     assert architect["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert architect["effective_is_candidate"] is True
     assert architect["class_default_status"] == "candidate"
@@ -875,7 +875,7 @@ async def test_ac08_reset_and_audit_survives(client: AsyncClient, engine):
     assert data["source"] == "system-default"
     assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert data["compatibility_class"] == "claude-agent-sdk"
-    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["harness_contract_revision"] == "0.3.283"
     assert data["effective_is_candidate"] is False
     assert data["class_default_status"] == "proven"
 
@@ -922,7 +922,7 @@ async def test_reset_response_names_candidate_class_default(client: AsyncClient,
     assert data["source"] == "system-default"
     assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert data["compatibility_class"] == "claude-agent-sdk"
-    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["harness_contract_revision"] == "0.3.283"
     assert data["effective_is_candidate"] is True
     assert data["class_default_status"] == "candidate"
 
@@ -2745,7 +2745,7 @@ async def test_cross_namespace_misbinding_is_refused_end_to_end(engine):
 
 
 class TestRealIamAgentRegistryAuth:
-    """Prove Agent Registry / SigV4 auth stamps ``agent_registry`` and uses ``agent_name``.
+    """Prove Agent Registry / SigV4 auth stamps ``agent_registry`` and uses the immutable agent ID.
 
     The request path is: X-Caller-Identity header → parse_assumed_role_arn →
     registry lookup → agent_entry_to_token_context → _stamp_trusted_alias_source.
@@ -2775,6 +2775,7 @@ class TestRealIamAgentRegistryAuth:
         """After the real get_current_user IAM path, canonical_alias_source is agent_registry."""
         entry = {
             "agent_name": "my-worker-agent",
+            "agent_id": "worker-immutable-id",
             "org_id": TEST_ORG_A,
             "team_id": "team-1",
             "scope": "",
@@ -2795,7 +2796,8 @@ class TestRealIamAgentRegistryAuth:
 
         assert ctx.account_type == "service"
         assert ctx.auth_source == "iam"
-        assert ctx.user_id == "my-worker-agent"
+        assert ctx.user_id == "iam-agent:worker-immutable-id"
+        assert ctx.agent_registry_id == "worker-immutable-id"
         assert ctx.canonical_alias_source == "agent_registry"
 
     @pytest.mark.asyncio
@@ -2963,6 +2965,7 @@ class TestRealCognitoM2MAuth:
         with (
             patch("src.auth.dependencies.get_settings", return_value=settings),
             patch("src.auth.dependencies._get_cognito_validator", return_value=validator),
+            patch("src.admin.membership_revocation.require_not_revoked_context", new=AsyncMock()),
         ):
             ctx = await get_current_user(self._request(), authorization="Bearer fake-m2m-token")
 
@@ -3469,3 +3472,45 @@ async def test_empty_cost_routes_retain_class_default_context(cost_client, manag
     assert result["preferences"]
     assert all(entry["compatibility_class"] and entry["source"] == "system-default" for entry in result["preferences"])
     assert all("class_default_status" in entry for entry in result["preferences"])
+
+
+@pytest.mark.asyncio
+async def test_cli11_registration_receipt_and_revision_readback(client: AsyncClient, engine):
+    _set_context(client, _admin_context())
+    body = {
+        "display_name": "CLI fixture",
+        "alias_source": "eventbridge",
+        "alias_id": "fixture-event",
+        "operation_id": "56240000-0000-4000-8000-000000000001",
+    }
+    first = await client.post("/service-principals/register", json=body)
+    assert first.status_code == 200, first.text
+    retry = await client.post("/service-principals/register", json=body)
+    assert retry.status_code == 200 and retry.json() == first.json()
+    changed = await client.post("/service-principals/register", json={**body, "display_name": "Changed"})
+    assert changed.status_code == 409
+    principal = first.json()["canonical_service_principal_id"]
+    path = f"/service-principals/{principal}"
+    before = (await client.get(path + "/identity")).json()
+    linked = await client.post(
+        path + "/aliases", json={"alias_source": "github_actions", "alias_id": "second", "expected_revision": before["revision"]}
+    )
+    assert linked.status_code == 200, linked.text
+    stale = await client.patch(path + "/status", json={"status": "retired", "expected_revision": before["revision"]})
+    assert stale.status_code == 409
+    after = (await client.get(path + "/identity")).json()
+    retired = await client.patch(path + "/status", json={"status": "retired", "expected_revision": after["revision"]})
+    assert retired.status_code == 200
+    assert (await client.get(path + "/identity")).json()["status"] == "retired"
+    # A later replay cannot remint or reactivate the retired canonical identity.
+    replay = await client.post("/service-principals/register", json=body)
+    assert replay.status_code == 200 and replay.json()["canonical_service_principal_id"] == principal
+    assert (await client.get(path + "/identity")).json()["status"] == "retired"
+
+
+@pytest.mark.asyncio
+async def test_cli11_identity_snapshot_requires_human_admin_and_tenant(client: AsyncClient):
+    _set_context(client, _service_context())
+    assert (await client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/identity")).status_code == 403
+    _set_context(client, _admin_context(org_id="foreign"))
+    assert (await client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/identity")).status_code in {403, 404}

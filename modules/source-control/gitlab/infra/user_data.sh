@@ -19,7 +19,23 @@ apt-get install -y curl openssh-server ca-certificates tzdata perl postfix
 # -----------------------------------------------------------------------------
 # Install GitLab CE Omnibus repository
 # -----------------------------------------------------------------------------
-curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
+# The endpoint is mutable. Pin reviewed content locally and refuse execution if
+# GitLab changes it; updating this digest requires reviewing the new script.
+GITLAB_REPO_SHA256="3f6a403e8564c5c2d6d02d6deb3ba8af7a47ab0df986f86e1c4c327162e8d30b"
+GITLAB_REPO_SCRIPT=$(mktemp /tmp/gitlab-repo-setup.XXXXXX)
+trap 'rm -f "$GITLAB_REPO_SCRIPT"' EXIT
+if ! curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh -o "$GITLAB_REPO_SCRIPT"; then
+  echo "ERROR: Failed to download GitLab repository setup script" >&2
+  rm -f "$GITLAB_REPO_SCRIPT"
+  exit 1
+fi
+if ! printf '%s  %s\n' "$GITLAB_REPO_SHA256" "$GITLAB_REPO_SCRIPT" | sha256sum --check --status; then
+  echo "ERROR: GitLab repository installer checksum mismatch; refusing execution" >&2
+  rm -f "$GITLAB_REPO_SCRIPT"
+  exit 1
+fi
+bash "$GITLAB_REPO_SCRIPT"
+rm -f "$GITLAB_REPO_SCRIPT"
 
 # -----------------------------------------------------------------------------
 # Install GitLab CE

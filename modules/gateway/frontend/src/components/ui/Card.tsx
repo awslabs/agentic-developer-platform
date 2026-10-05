@@ -16,7 +16,7 @@ export function Card({ children, className = '', padding = 'md' }: CardProps) {
 
   return (
     <div
-      className={`bg-white dark:bg-gray-800 rounded-lg shadow ${paddingStyles[padding]} ${className}`}
+      className={`blueprint-card bg-white dark:bg-gray-800 rounded-lg shadow ${paddingStyles[padding]} ${className}`}
     >
       {children}
     </div>

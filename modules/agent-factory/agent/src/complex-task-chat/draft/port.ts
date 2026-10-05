@@ -21,6 +21,10 @@
 export interface IntentDraft {
   /** One or two sentences: the outcome the user wants. */
   intent?: string;
+  /** Model-authored name and purpose for the initial delivery wave. */
+  waveDisplay?: { title: string; description: string };
+  /** Model-authored capability, motivation and boundaries for the epic. */
+  epicDisplay?: { title: string; description: string };
   /** Why they want it — the problem solved or the cost of not having it. */
   motivation?: string;
   /** Concrete, observable results that mean this worked. */

@@ -7,21 +7,34 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import AdminRole
 from src.admin.routes import get_access_control, get_admin_service, get_current_user, router
 from src.admin.schemas import OrganizationResponse, PoolAccountResponse, PoolStatusResponse
 from src.admin.service import AdminService
+from src.shared.database import get_db
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 
 
+@pytest.fixture(autouse=True)
+def _isolate_unit_test_audit_sink(monkeypatch):
+    # These service/response unit tests use fake database sessions. Keep the
+    # route's audit staging and permission gates; durable SQL is exercised by
+    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+
+
 @pytest.fixture
-def app():
+def app(mock_db):
     """Create a test FastAPI app."""
     app = FastAPI()
     app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     # Add exception handler for BedrockGatewayError (same as in app.py)
     @app.exception_handler(BedrockGatewayError)
@@ -35,9 +48,18 @@ def app():
 
 
 @pytest.fixture
-def mock_admin_service():
+def mock_db():
+    db = AsyncMock(spec=AsyncSession)
+    db.get.return_value = None
+    return db
+
+
+@pytest.fixture
+def mock_admin_service(mock_db):
     """Create a mock admin service."""
     service = MagicMock(spec=AdminService)
+    service.db = mock_db
+    service.resolve_budget_target = AsyncMock(side_effect=lambda org, kind, key: (key, None))
     return service
 
 
@@ -1167,3 +1189,31 @@ class TestCognitoDepartmentListEndpoint:
         data = response.json()
         assert data["total"] == 0
         assert len(data["items"]) == 0
+
+
+def test_exact_budget_delete_requires_revision(client, mock_admin_service):
+    response = client.delete("/admin/organizations/org1/budget/org/org1/daily/revision")
+    assert response.status_code == 422
+    mock_admin_service.delete_exact_budget.assert_not_called()
+
+
+def test_exact_budget_rejects_unsupported_period(client, mock_admin_service):
+    response = client.get("/admin/organizations/org1/budget/org/org1/lifetime")
+    assert response.status_code == 422
+    mock_admin_service.exact_budget.assert_not_called()
+
+
+def test_exact_budget_get_returns_missing_as_null(client, mock_admin_service):
+    mock_admin_service.exact_budget = AsyncMock(return_value=None)
+    response = client.get("/admin/organizations/org1/budget/org/org1/daily")
+    assert response.status_code == 200
+    assert response.json() is None
+    mock_admin_service.exact_budget.assert_awaited_once_with("org1", "org", "org1", "daily")
+
+
+def test_exact_budget_delete_forwards_only_selected_period(client, mock_admin_service):
+    mock_admin_service.delete_exact_budget = AsyncMock()
+    revision = datetime.now(UTC)
+    response = client.delete("/admin/organizations/org1/budget/org/org1/weekly/revision", params={"expected_revision": revision.isoformat()})
+    assert response.status_code == 204
+    mock_admin_service.delete_exact_budget.assert_awaited_once_with("org1", "org", "org1", "weekly", revision)

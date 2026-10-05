@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Index, Numeric, String, UniqueConstraint, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Date, DateTime, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -231,3 +231,34 @@ class PersonBudgetDefault(Base):
             name="ck_person_budget_default_hard",
         ),
     )
+
+
+class BudgetSettlementReceipt(Base):
+    """Claim and all budget debits commit together; historical rows are not inferred."""
+
+    __tablename__ = "budget_settlement_receipts"
+    # Present only when the proxy verified provider usage for these exact scopes.
+    # Legacy receipts and diagnostic pricing decisions cannot release a hold.
+    reservation_scope_keys: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    allocation_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class BudgetPricingCorrection(Base):
+    """One audited incident credit per request; original debit stays replayable."""
+
+    __tablename__ = "budget_pricing_corrections"
+    org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    correction_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    credit_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
+    original_decision: Mapped[dict] = mapped_column(JSON, nullable=False)
+    corrected_decision: Mapped[dict] = mapped_column(JSON, nullable=False)
+    allocation_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

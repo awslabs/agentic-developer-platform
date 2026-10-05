@@ -1,6 +1,7 @@
 """Provider-shaped workflow evidence and bounded scoped dispatch."""
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -279,3 +280,25 @@ async def test_automatic_run_may_use_approved_default_connection_inputs(provider
         inputs={"environment": "dev", "customer_account_id": ctx.target.account_id},
     )
     assert result.run_id == 42
+
+
+async def test_github_gzip_response_is_decoded_once_and_keeps_response_metadata():
+    payload = b'{"id":17,"default_branch":"main"}'
+    compressed = gzip.compress(payload)
+
+    def respond(request):
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip", "content-length": str(len(compressed)), "x-github-request-id": "request-1"},
+            stream=httpx.ByteStream(compressed),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = WorkflowProvider(client=client)
+        response = await provider.request(None, "GET", "/repos/org/repo", token="test-token")
+        assert response.json() == {"id": 17, "default_branch": "main"}
+        assert response.headers["x-github-request-id"] == "request-1"
+        assert "content-encoding" not in response.headers
+        assert int(response.headers["content-length"]) == len(payload)
+        with pytest.raises(CycleBlockedError, match="deployment_provider_response_limit"):
+            await provider.request(None, "GET", "/repos/org/repo", token="test-token", max_bytes=len(payload) - 1)

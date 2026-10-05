@@ -83,10 +83,24 @@ class FakeApi:
             return {"credential_id": row["id"], "launch_url": "must-never-open-a-browser"}
         if path == cli.CONNECT + "/import":
             if self.import_reuses:
-                return {"credential_id": self.rows[0]["id"], "account_id": body["account_id"], "role_arn": body["role_arn"], "reused": True}
+                return {
+                    "credential_id": self.rows[0]["id"],
+                    "account_id": body["account_id"],
+                    "role_arn": body["role_arn"],
+                    "reused": True,
+                    "external_id": EXTERNAL,
+                    "trust_policy": {"Version": "2012-10-17"},
+                }
             row = self._row(body["nickname"], body["account_id"], source="imported_role")
             row["scopes"]["role_arn"] = body["role_arn"]
-            return {"credential_id": row["id"], "account_id": body["account_id"], "role_arn": body["role_arn"], "reused": False}
+            return {
+                "credential_id": row["id"],
+                "account_id": body["account_id"],
+                "role_arn": body["role_arn"],
+                "reused": False,
+                "external_id": EXTERNAL,
+                "trust_policy": {"Version": "2012-10-17"},
+            }
         if path == cli.CONNECT + "/verify":
             row = next(row for row in self.rows if row["id"] == body["credential_id"])
             assert body["fresh"] is True, "adp aws verify must not accept a replayed verdict"
@@ -310,63 +324,24 @@ def existing_role_arguments(*extra):
     return cli.parser().parse_args(["connect", "--account", ACCOUNT, "--role-arn", EXISTING_ARN, "--yes", *extra])
 
 
-def test_existing_role_is_registered_and_then_proved(environment, tmp_path, monkeypatch):
+def test_existing_role_returns_server_generated_trust_setup(environment, monkeypatch):
     api, _ = environment
-    monkeypatch.setattr(cli, "Aws", lambda *args: pytest.fail("Registering an existing role must not invoke the AWS CLI"))
-    secret_file = tmp_path / "private" / "external.json"
-    cli.common.write_json(secret_file, {"external_id": EXTERNAL})
-
-    result = cli.run(existing_role_arguments("--external-id-file", str(secret_file)), api)
-
-    assert result["verified"] is True
-    assert result["role_arn"] == EXISTING_ARN
-    imported = next(call for call in api.calls if call[1] == cli.CONNECT + "/import")
-    assert imported[2]["external_id"] == EXTERNAL
-    # Registering is not verifying: the import call is followed by a real check.
-    assert [call[1] for call in mutations(api)] == [cli.CONNECT + "/import", cli.CONNECT + "/verify"]
+    monkeypatch.setattr(cli, "Aws", lambda *args: pytest.fail("Import must not modify AWS"))
+    result = cli.run(existing_role_arguments(), api)
+    assert result["verified"] is False
+    assert result["external_id"] == EXTERNAL
+    assert result["trust_policy"]
+    assert "adp aws verify" in result["next_step"]
+    assert [call[1] for call in mutations(api)] == [cli.CONNECT + "/import"]
+    assert "external_id" not in mutations(api)[0][2]
 
 
-def test_existing_role_external_id_never_reaches_process_arguments(environment, tmp_path):
+@pytest.mark.parametrize("flags", [["--no-external-id"], ["--external-id-stdin"], ["--external-id-file", "/does/not/exist"]])
+def test_legacy_external_id_flags_are_refused_before_registration(environment, flags):
     api, _ = environment
-    secret_file = tmp_path / "private" / "external.json"
-    cli.common.write_json(secret_file, {"external_id": EXTERNAL})
-    argv = ["connect", "--account", ACCOUNT, "--role-arn", EXISTING_ARN, "--external-id-file", str(secret_file), "--yes"]
-    assert EXTERNAL not in " ".join(argv)
-    cli.run(cli.parser().parse_args(argv), api)
-    # And no flag exists that would accept it directly.
-    assert "--external-id " not in cli.parser().format_help()
-
-
-def test_external_id_may_be_supplied_on_stdin(environment, monkeypatch):
-    api, _ = environment
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps({"external_id": EXTERNAL})))
-    result = cli.run(existing_role_arguments("--external-id-stdin"), api)
-    assert result["verified"]
-
-
-def test_world_readable_external_id_file_is_refused(environment, tmp_path):
-    api, _ = environment
-    directory = cli.common.private_directory(tmp_path / "private")
-    secret_file = directory / "external.json"
-    secret_file.write_text(json.dumps({"external_id": EXTERNAL}))
-    secret_file.chmod(0o644)
-    with pytest.raises(cli.CliError, match="0600"):
-        cli.run(existing_role_arguments("--external-id-file", str(secret_file)), api)
+    with pytest.raises(cli.CliError, match="ADP now generates"):
+        cli.run(existing_role_arguments(*flags), api)
     assert not mutations(api)
-
-
-def test_registering_without_an_external_id_must_be_explicit(environment, monkeypatch):
-    """A role that trusts ADP with no confused-deputy guard is legitimate, but
-    silently registering one would weaken the connection unnoticed."""
-    api, _ = environment
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
-    with pytest.raises(cli.CliError, match="--no-external-id"):
-        cli.run(existing_role_arguments(), api)
-    assert not mutations(api)
-
-    result = cli.run(existing_role_arguments("--no-external-id"), api)
-    assert "external_id" not in next(call for call in api.calls if call[1] == cli.CONNECT + "/import")[2]
-    assert result["verified"]
 
 
 def test_role_arn_from_another_account_is_refused_locally(environment):
@@ -388,9 +363,9 @@ def test_non_role_arns_are_refused(environment, value):
 
 def test_repeat_registration_reuses_the_same_connection(environment, monkeypatch):
     api, _ = environment
-    first = cli.run(existing_role_arguments("--no-external-id"), api)
+    first = cli.run(existing_role_arguments(), api)
     api.import_reuses = True
-    second = cli.run(existing_role_arguments("--no-external-id"), api)
+    second = cli.run(existing_role_arguments(), api)
     assert second["connection_id"] == first["connection_id"]
     assert second["reusing"] is True
     assert len(api.rows) == 1
@@ -628,7 +603,7 @@ def test_verify_proves_the_connection_now_rather_than_replaying(environment, cap
     cli.run(arguments(), api)
     api.calls.clear()
 
-    result = cli.run(cli.parser().parse_args(["verify", NAME]), api)
+    result = cli.run(cli.parser().parse_args(["verify", NAME, "--yes"]), api)
     assert result["verified"] is True
     assert [call[1] for call in mutations(api)] == [cli.CONNECT + "/verify"]
     cli.display(result, False, "verify")
@@ -642,11 +617,35 @@ def test_verify_reports_a_broken_connection_as_failed(environment, monkeypatch, 
     api.reason = "The role's trust policy rejected the assume request."
     monkeypatch.setattr(cli, "Api", lambda: api)
 
-    code = cli.main(["verify", NAME, "--json"])
+    code = cli.main(["verify", NAME, "--yes", "--json"])
     assert code == 5
     envelope = json.loads(capsys.readouterr().out)
     assert envelope["status"] == "failed"
     assert envelope["error"]["code"] == "not_verified"
+
+
+def test_verify_dry_run_does_not_probe_or_change_stored_evidence(environment):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+
+    result = cli.run(cli.parser().parse_args(["verify", NAME, "--dry-run"]), api)
+
+    assert result["action"] == "refresh_verification_evidence"
+    assert result["dry_run"] is True
+    assert not mutations(api)
+
+
+def test_verify_requires_confirmation_before_the_probe(environment, monkeypatch):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
+
+    with pytest.raises(cli.CliError, match="--yes"):
+        cli.run(cli.parser().parse_args(["verify", NAME]), api)
+
+    assert not mutations(api)
 
 
 def test_verify_and_disconnect_resolve_by_name_or_id(environment):
@@ -809,3 +808,14 @@ def test_help_lists_the_aws_commands(run_adp):
     result = run_adp(["help"])
     assert "aws connect" in result.stdout
     assert "aws disconnect" in result.stdout
+
+
+def test_import_output_reports_pending_setup(environment, capsys):
+    api, _ = environment
+    result = cli.run(existing_role_arguments(), api)
+    cli.display(result, False, "connect")
+    output = capsys.readouterr().out
+    assert "trust setup and verification are still required" in output
+    assert "and verified it" not in output
+    envelope = cli.result_envelope(result, "connect")
+    assert envelope["status"] == "pending"

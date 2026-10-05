@@ -135,3 +135,24 @@ class TestArtifactBucketVersioning:
 
         assert "dynamodb:GetItem" in granted, granted
         assert "dynamodb:TransactWriteItems" in granted, granted
+
+    def test_transaction_guard_is_authorized_only_on_context_table(self, tf_source: str):
+        block = _block(
+            tf_source, 'resource "aws_iam_role_policy" "session_sweeper_dynamodb"'
+        )
+        guard = re.search(
+            r'Sid\s*=\s*"CheckCurrentSessionHeader"(.*?)\n\s*\}',
+            block,
+            re.DOTALL,
+        )
+        assert guard, "transaction ConditionCheck requires a context-table grant"
+        statement = guard.group(1)
+        assert re.search(r'Effect\s*=\s*"Allow"', statement)
+        actions = re.search(r'Action\s*=\s*\[(.*?)\]', statement, re.DOTALL)
+        assert actions
+        assert re.findall(r'"([^"]+)"', actions.group(1)) == [
+            "dynamodb:ConditionCheckItem"
+        ]
+        resource = re.search(r'Resource\s*=\s*([^\n]+)', statement)
+        assert resource
+        assert resource.group(1).strip() == "aws_dynamodb_table.chat_context.arn"

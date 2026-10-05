@@ -51,6 +51,11 @@ on:
         required: false
         default: true
         type: boolean
+      image_only:
+        description: 'Update existing SkyPilot and authentication containers to reviewed release-lock images'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: superplane-k8s-deploy-${{ inputs.environment }}
@@ -63,9 +68,12 @@ env:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     name: Roll out Superplane manifests
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
+    environment: adp-skypilot-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     env:
@@ -75,21 +83,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install AWS CLI + kubectl
+      - name: Verify source belongs to reviewed main history
+        shell: bash
         run: |
-          set -e
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
-          aws --version
-          kubectl version --client
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws kubectl jq python3; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+      - name: Prepare manifest parser
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/skypilot-python"
+          "$RUNNER_TEMP/skypilot-python/bin/python" -m pip install --quiet PyYAML==6.0.3
+          echo "$RUNNER_TEMP/skypilot-python/bin" >> "$GITHUB_PATH"
 
       - name: Preflight — are there manifests to apply?
         # U3 owns the manifests, and at the time this lane was written there are none: the
@@ -282,7 +300,16 @@ jobs:
           set -euo pipefail
           CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
           aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "$CLUSTER_NAME"
-          kubectl cluster-info
+          kubectl get deployment -n skypilot
+
+      - name: Detect installer-owned authenticated runtime
+        id: runtime
+        env:
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+        run: |
+          set -euo pipefail
+          MODE=$(python3 modules/domain-apps/superplane/infra/scripts/skypilot_release.py inspect --namespace "$SP_SKYPILOT_NAMESPACE")
+          echo "image_only=$MODE" >> "$GITHUB_OUTPUT"
 
       - name: Render manifests
         # Rendered to a directory first, then guarded, then applied. cyber pipes `sed`
@@ -301,24 +328,18 @@ jobs:
         # They are now passed as `env:` variables and substituted by a Python string
         # operation — data at every layer, parsed as neither shell nor sed.
         env:
-          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
           SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
-          SP_CONTROL_PLANE_ROLE_ARN: ${{ steps.config.outputs.control_plane_role_arn }}
           SP_SKYPILOT_ROLE_ARN: ${{ steps.config.outputs.skypilot_role_arn }}
           SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
-          SP_DATABASE_SECRET_NAME: ${{ steps.config.outputs.database_secret_name }}
-          SP_JWT_SECRET_NAME: ${{ steps.config.outputs.jwt_secret_name }}
           SP_AWS_REGION: ${{ steps.config.outputs.aws_region }}
           SP_SOURCE_DIR: ${{ env.MANIFEST_DIR }}
           SP_LOCK_FILE: ${{ env.LOCK_FILE }}
         run: |
           set -euo pipefail
-          # --lock-file is not optional: the renderer reads it to decide whether a value that
-          # no manifest consumes is expected (its component is still `pending_images`, so
-          # there are no manifests for it yet) or a defect (the lock resolved it, so the
-          # manifests that consume it are now owed). Without it a renamed placeholder would
-          # render successfully while silently dropping an identity.
+          # Artifact publication does not expand this lane's SkyPilot-only object set.
+          # Reject extraneous inputs and control-plane placeholders before any cluster call.
           python3 modules/domain-apps/superplane/infra/scripts/render_manifests.py \
+            --lane skypilot \
             --source-dir "$SP_SOURCE_DIR" \
             --output-dir /tmp/rendered \
             --lock-file "$SP_LOCK_FILE"
@@ -365,23 +386,64 @@ jobs:
             --environment "$SP_ENVIRONMENT"
 
       - name: Server-side dry run
+        if: inputs.image_only != true
         # Always runs, including before a real apply: it is the only check that the rendered
         # objects are valid against the cluster's actual schemas and admission controllers.
+        env:
+          PRESERVE_RUNTIME: ${{ steps.runtime.outputs.image_only }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
         run: |
           set -euo pipefail
+          if [ "$PRESERVE_RUNTIME" = "true" ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py \
+              --namespace "$SP_SKYPILOT_NAMESPACE" --image "$SP_SKYPILOT_IMAGE" --dry-run
+            exit 0
+          fi
           for f in /tmp/rendered/*; do
             echo "=== Validating $(basename "$f") ==="
             kubectl apply --dry-run=server -f "$f"
           done
 
       - name: Apply
-        if: inputs.dry_run == false
+        if: inputs.dry_run == false && inputs.image_only != true
+        env:
+          PRESERVE_RUNTIME: ${{ steps.runtime.outputs.image_only }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
         run: |
           set -euo pipefail
+          if [ "$PRESERVE_RUNTIME" = "true" ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py \
+              --namespace "$SP_SKYPILOT_NAMESPACE" --image "$SP_SKYPILOT_IMAGE"
+            exit 0
+          fi
           for f in /tmp/rendered/*; do
             echo "=== Applying $(basename "$f") ==="
             kubectl apply -f "$f"
           done
+
+      - name: Update existing SkyPilot image
+        if: inputs.image_only == true
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_IMAGE: ${{ steps.config.outputs.skypilot_image }}
+          SP_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          transport_image=$(python3 - <<'PYTHON'
+          import yaml
+          from pathlib import Path
+          lock = yaml.safe_load(Path("modules/domain-apps/superplane/releases/superplane.lock.yaml").read_text())
+          source = lock["image_sources"]["superplane-api"]
+          print(source["registry"] + "/" + source["repository"] + "@" + lock["images"]["superplane-api"])
+          PYTHON
+          )
+          args=(--namespace "$SP_NAMESPACE" --image "$SP_IMAGE" --transport-image "$transport_image")
+          python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}" --dry-run
+          if [ "$SP_DRY_RUN" = false ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}"
+          fi
 
       - name: Summary
         if: always()
@@ -392,6 +454,7 @@ jobs:
           # does not exist, so the summary reported "Mode:" with nothing after it. Deriving it
           # from the input that actually gates the apply step keeps the summary and the
           # behaviour in agreement.
+          SP_IMAGE_ONLY: ${{ steps.runtime.outputs.image_only }}
           SP_MODE: ${{ inputs.dry_run == false && 'apply' || 'dry-run (no changes applied)' }}
           SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
           SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
@@ -400,13 +463,13 @@ jobs:
             echo "## Superplane K8s rollout"
             echo "- **Environment**: ${SP_ENVIRONMENT}"
             echo "- **Mode**: ${SP_MODE}"
+            echo "- **Preserve installed authenticated runtime**: ${SP_IMAGE_ONLY:-false}"
             echo "- **SkyPilot image**: \`${SP_SKYPILOT_IMAGE}\`"
             echo "- **Namespace**: \`${SP_NAMESPACE}\`"
             echo "- **Status**: ${{ job.status }}"
             echo ""
             echo "### Not rolled out by this lane"
             echo "- \`superplane-api\`, \`superplane-controller\`, \`superplane-platform-monitor\`"
-            echo "  — recorded as pending in the release lock with no digest (blocked by"
-            echo "  \`source_access\`). The preflight refuses any manifest referencing them."
+            echo "  — outside this SkyPilot-only deployment lane, regardless of artifact publication."
             echo "- Schema migrations — \`superplane-migrate.yml\`, blocked on #5045 (U13)."
           } >> "$GITHUB_STEP_SUMMARY"

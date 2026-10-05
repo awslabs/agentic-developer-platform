@@ -1,0 +1,585 @@
+[
+  {
+    "type": "missing_runtime_digest",
+    "pod": "bedrockgateway-6f99b6487-5z4jc",
+    "namespace": "adp-gateway",
+    "container": "bedrockgateway",
+    "active_pod": true
+  },
+  {
+    "type": "missing_runtime_digest",
+    "pod": "bedrockgateway-6f99b6487-5z4jc",
+    "namespace": "adp-gateway",
+    "container": "opentelemetry-auto-instrumentation-nodejs",
+    "active_pod": true
+  },
+  {
+    "type": "missing_runtime_digest",
+    "pod": "bedrockgateway-6f99b6487-5z4jc",
+    "namespace": "adp-gateway",
+    "container": "opentelemetry-auto-instrumentation-python",
+    "active_pod": true
+  },
+  {
+    "type": "missing_runtime_digest",
+    "pod": "bedrockgateway-6f99b6487-5z4jc",
+    "namespace": "adp-gateway",
+    "container": "opentelemetry-auto-instrumentation-dotnet",
+    "active_pod": true
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-262bb",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-4dkmb",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-5jdqc",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-6sdxz",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-72crq",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-7glkk",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-7ljsh",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-7nd2j",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-7tckk",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-8czlv",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-9prpj",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-bdcpn",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-bj2jb",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-ccdl6",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-d82ws",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-dlq5l",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-ds4c2",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-f7qdx",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-fg8sq",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-fqzf4",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-lkk4g",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-lzfvz",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-njjxt",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-qk7rf",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-sjp8k",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-thhrw",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-tmwn8",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-v62qn",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-vpnbc",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-vqmdn",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-xl662",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-64kbp",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-64kbp",
+      "namespace": "arc-runners",
+      "uid": "e3790253-92ea-4536-a3fe-5d82895a71c3"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-6lts8",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-6lts8",
+      "namespace": "arc-runners",
+      "uid": "de35cce6-e62e-42a0-abcf-29387f64edb9"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-87v7x",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-87v7x",
+      "namespace": "arc-runners",
+      "uid": "19204d9f-0dd1-4a32-ba32-2f04607bee2d"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-9cf9s",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-9cf9s",
+      "namespace": "arc-runners",
+      "uid": "f552329c-9c28-475a-a116-7e49473c1db3"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-hw6hq",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-hw6hq",
+      "namespace": "arc-runners",
+      "uid": "eea37cb0-8e21-4db9-ae44-efcb1b4721a1"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-hx9zp",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-hx9zp",
+      "namespace": "arc-runners",
+      "uid": "2ab6dbca-6add-4ec7-8834-9072fefeb088"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-kmlsw",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-kmlsw",
+      "namespace": "arc-runners",
+      "uid": "b5cb34cc-2af1-49a3-b04a-0de824ea1061"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-kpbln",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-kpbln",
+      "namespace": "arc-runners",
+      "uid": "fa60a633-b190-4758-a901-c41dcb826baa"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-qsnbt",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-qsnbt",
+      "namespace": "arc-runners",
+      "uid": "2f452763-f257-405f-b46a-a13abed4983f"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-vqcwt",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-vqcwt",
+      "namespace": "arc-runners",
+      "uid": "84749b13-3a51-4ff4-bf65-c1add7dde397"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-266mh-runner-zm66t",
+    "nearest_owner": {
+      "kind": "EphemeralRunner",
+      "name": "arc-runner-org-266mh-runner-zm66t",
+      "namespace": "arc-runners",
+      "uid": "ca34c16f-3a7f-48b0-8022-f5fa8f1aa36f"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-agent-5f66b876-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-agent-5f66b876-listener",
+      "namespace": "arc-systems",
+      "uid": "fdf9521f-955a-44a4-a86e-6bc88e34c433"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-cip-744d6f9f-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-cip-744d6f9f-listener",
+      "namespace": "arc-systems",
+      "uid": "76505f2a-2190-49d6-b6d4-7b8dc29c8f57"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-5f66b876-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-org-5f66b876-listener",
+      "namespace": "arc-systems",
+      "uid": "7c289528-d494-4367-9fcc-3d1286c04ae0"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "CronJob",
+      "namespace": "agent-context",
+      "name": "ingestion-refresh",
+      "uid": "b7d46c14-7b07-4a3b-9476-fae7b3457da6"
+    },
+    "container": "refresh",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "CronJob",
+      "namespace": "agent-context",
+      "name": "vuln-scan",
+      "uid": "660b55a8-f6be-4499-ab3e-d99dd1a41b2a"
+    },
+    "container": "vuln-scan",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "adp-gateway-agents",
+      "name": "agent-gateway-worker",
+      "uid": "429aa0b6-2fb0-48f9-9030-b2507d1e2c1a"
+    },
+    "container": "agent-worker",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "adp-gateway-agents",
+      "name": "chat-agent-worker",
+      "uid": "a7450496-1380-40bf-a184-ea34bca20b9b"
+    },
+    "container": "chat-agent",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "agent-context",
+      "name": "ingestion-worker",
+      "uid": "d470c825-5f4f-4c28-983d-959891dce293"
+    },
+    "container": "worker",
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  }
+]

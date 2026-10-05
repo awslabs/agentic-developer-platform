@@ -161,7 +161,9 @@ async def accept(fixture, session, request):
     )
 
 
-async def test_preview_preserves_completed_work_and_human_gates(legacy):
+@pytest.mark.parametrize("limit", [3, 8])
+async def test_preview_preserves_completed_work_and_human_gates(legacy, limit):
+    legacy.request.execution_policy.limits.max_attempts_per_node = limit
     async with legacy.factory() as session:
         result = await preview(legacy, session)
         assert result["ready"]

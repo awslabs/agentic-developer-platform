@@ -11,6 +11,10 @@ on:
         description: 'Required with an existing release ID: its recorded manifest SHA256.'
         type: string
         default: ''
+      allow_partial_pricing_refresh:
+        description: 'Retain reviewed older prices when source gaps prevent a complete pricing refresh.'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -91,3 +95,4 @@ jobs:
       release_id: ${{ needs.release.outputs.release_id }}
       manifest_sha256: ${{ needs.release.outputs.manifest_sha256 }}
       source_sha: ${{ needs.release.outputs.source_sha }}
+      allow_partial_pricing_refresh: ${{ inputs.allow_partial_pricing_refresh }}

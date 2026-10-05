@@ -5,6 +5,38 @@ The initiating human's mapping is resolved at dispatch for direct, delegated,
 chat and AI-DLC invocations. Claude Sonnet 5 is included as
 `global.anthropic.claude-sonnet-5`, with CLI alias `sonnet5`.
 
+## Opus 5.5 and GPT-6 catalogue entries
+
+| Alias | Canonical model ID | Compatible runtime |
+| --- | --- | --- |
+| `opus55` | `global.anthropic.claude-opus-5-5` | Claude Agent SDK |
+| `gpt6-astra` | `openai.gpt-6-astra` | Codex SDK |
+| `gpt6-sol` | `openai.gpt-6-sol` | Codex SDK |
+| `gpt6-luna` | `openai.gpt-6-luna` | Codex SDK |
+
+The native `agent-codex-reviewer` persona uses Codex SDK. The `codex`
+supervisor uses Claude SDK and therefore does not offer GPT-6 as its own model.
+The schema-v1 webhook satellite remains Claude-only; GPT-6 registration does
+not expand its legacy Claude model directives. UI and CLI catalogue reads use
+the gateway authority and filter by the selected persona's runtime.
+
+Bedrock account availability and US/global inference profiles for these models
+were verified on 24 September 2026 in account `000000000101`, `us-east-1`.
+OpenAI canonical IDs stay bare for accounting; the existing Responses proxy
+adds its configured inference-profile prefix when forwarding to Bedrock.
+Opus 5.5 follows the existing global Claude catalogue convention.
+
+Registration does not change persona defaults, prices, or paid-probe settings.
+Opus 5.5 has locally captured Claude SDK request-shape evidence, not a live
+invocation receipt. GPT-6 can be selected through basic mapping for compatible
+personas; protected selection stays unavailable until a Codex-specific probe
+contract and destination evidence are implemented. Claude evidence cannot
+satisfy a Codex model's protected selection gate.
+
+Pricing for Opus 5.5, GPT-6 Sol and Luna and full live execution acceptance remain
+tracked by [epic #5911](https://github.com/aws-e/adp/issues/5911). Catalogue
+publication alone is not certification of billing or end-to-end readiness.
+
 ## Deployment defaults
 
 Basic mapping defaults to enabled in the gateway, webhook and agent-factory

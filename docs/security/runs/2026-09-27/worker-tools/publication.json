@@ -1,0 +1,10 @@
+[
+  {
+    "component": "worker-tools",
+    "source_commit": "b9a830347",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:e92d227572ef97a0cff479f836fddffac52a4ad1af19412ee3e8f72993a3957f",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:security27-b9a830347",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]

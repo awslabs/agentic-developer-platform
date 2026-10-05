@@ -1,0 +1,70 @@
+{
+  "checked_at": "2026-09-28T18:44:50.740212+00:00",
+  "requested_window": {
+    "start": "2026-09-28T16:49:00Z",
+    "deadline": "2026-09-28T18:49:00Z"
+  },
+  "goal_achieved": false,
+  "requirements": [
+    {
+      "requirement": "Verify and deploy merged security source fixes",
+      "status": "partial",
+      "evidence": [
+        "worker-deployment-acceptance.json",
+        "worker-live-acceptance.json",
+        "lambda-closure-config.json",
+        "gateway-source-acceptance.json",
+        "signup-final-acceptance.json"
+      ],
+      "remaining": "Superplane API candidate is not deployed. Namespace access approval is still absent; the current role cannot patch it."
+    },
+    {
+      "requirement": "Finish scanner repairs and verify complete coverage",
+      "status": "partial",
+      "evidence": [
+        "scanner-parity-detailed.json",
+        "scanner-input-restoration-cross-check.json"
+      ],
+      "remaining": "Diagnostic run 36456950756 is in progress with known pre-restoration build failures; follow-up 36461844333 remains pending. Neither full coverage nor zero source findings is proven."
+    },
+    {
+      "requirement": "Refresh inventory and reconcile exact live images",
+      "status": "verified-at-snapshot",
+      "evidence": [
+        "image-counts.json",
+        "remaining-advisory-matrix.json"
+      ],
+      "scope": "18:21 EKS snapshot, 32 active image digests, explicit gaps retained. Not external compute, Lambda package inventory or repository-wide source clearance."
+    },
+    {
+      "requirement": "Remediate remaining High dependencies/components",
+      "status": "incomplete",
+      "evidence": [
+        "remaining-advisory-matrix.json",
+        "debian-supported-release-check.json",
+        "managed-addon-release-check.json"
+      ],
+      "remaining": "71 unique image High advisories remain. Listed stable Debian packages and compatible managed addons are current; further backports/vendor releases are needed. Custom glibc/ncurses/util-linux work remains stopped after automatic review."
+    },
+    {
+      "requirement": "Verify live closure",
+      "status": "partial",
+      "evidence": [
+        "services-1844-status.json",
+        "worker-prepull-final.json",
+        "membership-full-audit-closure.json"
+      ],
+      "remaining": "Readiness, HTTP health, installed synthetic regressions and membership consistency pass. No end-to-end Task or actual OAuth broker canary was exercised; API candidate remains undeployed."
+    },
+    {
+      "requirement": "Preserve explicit blockers and reviewable evidence",
+      "status": "verified",
+      "evidence": [
+        "README.md",
+        "evidence-manifest.json",
+        "source-triage-reviewed.json"
+      ],
+      "scope": "Raw findings retained; exact-source decisions are separate. New Semgrep review queue remains 13 Critical and 11 High. No blanket scanner suppression."
+    }
+  ]
+}

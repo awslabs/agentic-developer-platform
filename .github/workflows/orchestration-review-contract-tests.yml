@@ -18,6 +18,13 @@ on:
       - 'modules/gateway/src/agentauth/artifact_service.py'
       - 'modules/gateway/src/agentauth/review_upload.py'
       - '.github/workflows/orchestration-review-contract-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -35,7 +42,13 @@ on:
       - 'modules/gateway/src/agentauth/artifact_service.py'
       - 'modules/gateway/src/agentauth/review_upload.py'
       - '.github/workflows/orchestration-review-contract-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

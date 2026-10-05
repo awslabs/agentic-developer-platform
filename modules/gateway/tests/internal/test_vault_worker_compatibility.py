@@ -87,16 +87,16 @@ async def vault(db_session, monkeypatch):
         vault_proxy_host_allowlist="api.github.com",
         vault_enforce_credential_host_binding=True,
     )
-    identity = SimpleNamespace(scope="internal", user_id="authority-worker", credential_scopes=["credential:raw-read", "credential:materialize"])
+    identity = SimpleNamespace(
+        scope="internal",
+        user_id="authority-worker",
+        credential_scopes=["credential:raw-read", "credential:materialize", "credential:list", "credential:proxy", "credential:task-session"],
+    )
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: settings)
     monkeypatch.setattr("src.internal.credential_routes.get_settings", lambda: settings)
-    monkeypatch.setattr(
-        "src.internal.credential_routes.resolve_credential_binding",
-        lambda **_: SimpleNamespace(resolved_user_id="vault-user", from_registry=True, drift_detected=False),
-    )
     sm = MagicMock()
     sm.get_secret.return_value = "fixture-api-key"
     app = FastAPI()
@@ -210,7 +210,9 @@ async def test_raw_key_existing_and_protected_refusals_precede_secret_read(vault
     if reason == "disabled":
         vault.settings.vault_raw_read_enabled = False
     elif reason == "missing-scope":
-        headers.pop("X-Agent-Scopes")
+        # Issue #6050: scope gate reads registry credential_scopes, not the
+        # X-Agent-Scopes header. Clear the registry scopes to test denial.
+        vault.identity.credential_scopes = []
     elif reason == "registry-scope":
         vault.identity.credential_scopes = []
     else:
@@ -268,6 +270,7 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
         )
     elif reason == "unprotected":
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        vault.runtime.authenticate = MagicMock(side_effect=BootstrapRefusedError("missing run proof"))
         headers = {key: value for key, value in headers.items() if key.lower() not in {"x-adp-run-credential", "x-adp-workload-token"}}
     elif reason == "caller-policy":
         body["targets"] = ["arn:aws:iam::222222222222:role/customer"]
@@ -279,3 +282,31 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
     assert "source-key" not in response.text and "source-secret" not in response.text
     if reason not in {"revoked", "shortened"}:
         issue.assert_not_called()
+    if reason == "unprotected":
+        vault.runtime.authenticate.assert_called_once_with("", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,method,scope",
+    [
+        ("/internal/v1/user-credentials", "GET", "credential:list"),
+        ("/internal/v1/proxy-request", "POST", "credential:proxy"),
+        ("/internal/v1/worker-task-credentials", "POST", "credential:task-session"),
+    ],
+)
+async def test_real_delivery_route_cannot_use_forged_sibling_scope(vault, path, method, scope):
+    vault.identity.credential_scopes = ["credential:raw-read"]
+    body = dict(vault.body)
+    if "proxy" in path:
+        body.update(method="GET", url="https://api.github.com/user")
+    if "task-credentials" in path:
+        body = {"user_id": "vault-user", "invocation_id": "vault-run"}
+    with patch("src.internal.task_credentials.issue_task_session") as issue:
+        response = vault.client.request(
+            method, path, headers={**vault.headers, "X-Agent-Scopes": scope}, **({"params": body} if method == "GET" else {"json": body})
+        )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["error"] == "insufficient_scope"
+    vault.sm.get_secret.assert_not_called()
+    issue.assert_not_called()

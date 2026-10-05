@@ -1,0 +1,28 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cli-uplift-gateway-observer
+  namespace: adp-gateway
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [bedrockgateway]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [services]
+    resourceNames: [bedrockgateway]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cli-uplift-gateway-observer
+  namespace: adp-gateway
+subjects:
+  - kind: Group
+    name: adp:cli-uplift-gateway-observer
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cli-uplift-gateway-observer
+  apiGroup: rbac.authorization.k8s.io

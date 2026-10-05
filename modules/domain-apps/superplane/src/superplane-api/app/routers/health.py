@@ -16,7 +16,14 @@ router = APIRouter()
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:
         await db.execute(text("SELECT 1"))
-        if management_only() and getattr(request.app.state, "domain_policy", None) is None:
+        if settings.current_identity_enforced and (
+            getattr(request.app.state, "current_identity_reader", None) is None
+        ):
+            raise ValueError("current ADP identity reader unavailable")
+        if (
+            management_only()
+            and getattr(request.app.state, "domain_policy", None) is None
+        ):
             raise ValueError("strict authorization unavailable")
     except Exception:
         raise HTTPException(503, "Management service is not ready") from None
@@ -41,6 +48,10 @@ async def health_check(request: Request) -> HealthResponse:
     """
     return HealthResponse(
         status="healthy",
+        current_identity_required=settings.current_identity_enforced,
+        current_identity_reader_configured=(
+            getattr(request.app.state, "current_identity_reader", None) is not None
+        ),
         version=settings.app_version,
         cognito_enabled=settings.cognito_enabled,
         domain_auth_enforced=getattr(request.app.state, "domain_policy", None)

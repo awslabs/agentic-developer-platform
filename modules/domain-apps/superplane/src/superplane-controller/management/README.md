@@ -28,13 +28,37 @@ For read-only workspace inspections, supply a directory in
 and re-read every cycle. Its single context must name the registered EKS ARN and
 namespace; its TLS endpoint must match the durable registration. Ambient paths,
 exec plugins, authentication providers, proxies, impersonation and insecure TLS
-are refused. Removal/revocation never retains an active target. Namespace and
-namespaced Superplane-resource reads are the only Kubernetes operations.
+are refused. Dedicated registrations retain their historical namespace/fleet reads
+and management-endpoint exclusion.
+
+Shared targets instead require fresh database-selected `membership_credential`
+metadata matching the kubeconfig's `superplane.aws-e/membership` extension exactly:
+organization/workspace/cluster, generation, namespace UID, ServiceAccount UID,
+reader scope, revision and unexpired lifetime. The management endpoint is permitted
+only for an explicitly platform-eligible shared cluster in that same registry
+binding. A file extension or caller-selected endpoint grants no exception.
+
+Shared inspection asks the Kubernetes API for a SelfSubjectReview and verifies the
+actual authenticated ServiceAccount UID and generation/revision-specific username.
+The issuer journal links that UID to the observed namespace UID. Live namespaced
+Pod, Job and SuperplaneNode reads then prove access. This does not trust decoded
+JWT claims, request namespace/fleet privileges or treat omitted observations as
+success. Shared heartbeat collection uses namespaced SuperplaneNodes; cluster
+readiness and native fleet inventory remain cluster-owned observations.
+
+Before registration, only the original live bootstrap claim may expose a projected
+reader revision. Its exact metadata is echoed in the fenced manager observation
+and checked again by the API. It cannot receive execution assignments or use the
+normal workload observation endpoint. Normal discovery selects only active reader
+revisions; lost bindings and revoked/expired credentials fail closed.
+Authenticated `/workload-observation` additionally supports bounded original
+Job/Deployment status and Pod log windows; see
+[the permission and observation contract](../../../executor/WORKLOAD-OBSERVATIONS.md).
 
 This delivers management and target observation, **not governed provisioning**.
 Missing or retired registrations remain explicit; no direct SkyPilot/SDK path is
-activated. Story #5536 remains incomplete until the real operation/credential and
-fenced execution integration is reviewed and passes its workload criteria.
+activated. Governed execution uses the separate trusted execution composition. Management
+observations do not themselves establish successful authenticated workload use.
 
 Verification: `go test ./...` and `go test -race ./management`. The API's
 `test_controller_management.py` and `test_controller_management_postgres.py`

@@ -14,13 +14,14 @@ from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import MemberRemovalConflictError, PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
-from src.admin.installations.guards import assert_new_installation_ids_claimable_by
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by, lock_installation_organization
 from src.admin.memberships import (
     is_admin_level_role,
     project_member_org_ids,
     set_membership_role,
     upsert_tenant_membership,
 )
+from src.shared.identity.verification import PROVEN_METHODS
 
 if TYPE_CHECKING:
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
@@ -146,7 +147,12 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Organization", "name", request.name)
 
+        from src.shared.models.base import new_uuid
+
+        new_org_id = new_uuid()
+        await assert_new_installation_ids_claimable_by(new_org_id, new_ids=list(request.github_installation_ids or []), old_ids=[], db=self.db)
         org = Organization(
+            id=new_org_id,
             name=request.name,
             aws_accounts=request.aws_accounts,
             role_mappings=request.role_mappings,
@@ -290,8 +296,7 @@ class AdminService:
             ResourceNotFoundError: If organization not found
             ResourceConflictError: If new name already exists
         """
-        result = await self.db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
+        org = await lock_installation_organization(self.db, org_id)
 
         if not org:
             raise ResourceNotFoundError("Organization", org_id)
@@ -540,6 +545,113 @@ class AdminService:
 
     # Budget Configuration
 
+    async def resolve_budget_target(self, org_id: str, entity_type: str, entity_id: str) -> tuple[str, str | None]:
+        """Resolve only an existing entity in the selected tenant; return its department."""
+        if entity_type in {"user", "root_user"}:
+            resolved = await self._resolve_person_entity_id(org_id, entity_type, entity_id)
+            # The canonicalizer validates the human's tenant ownership.
+            user = (
+                await self.db.execute(
+                    select(User).where(
+                        User.org_id == org_id,
+                        or_(User.id == entity_id, User.cognito_sub == entity_id, User.id == resolved, User.cognito_sub == resolved),
+                    )
+                )
+            ).scalar_one_or_none()
+            if user is None:
+                raise ResourceNotFoundError("User", entity_id)
+            department = await self.db.scalar(select(Team.department_id).where(Team.id == user.team_id, Team.org_id == org_id))
+            return resolved, department
+        model = {"org": Organization, "department": Department, "team": Team}.get(entity_type)
+        if model is None or (entity_type == "org" and entity_id != org_id):
+            raise ResourceNotFoundError("BudgetTarget", entity_id)
+        query = select(model).where(model.id == entity_id)
+        if entity_type != "org":
+            query = query.where(model.org_id == org_id)
+        target = (await self.db.execute(query)).scalar_one_or_none()
+        if target is None:
+            raise ResourceNotFoundError("BudgetTarget", entity_id)
+        department = entity_id if entity_type == "department" else getattr(target, "department_id", None)
+        return entity_id, department
+
+    async def exact_budget(self, org_id, entity_type, entity_id, period_type, *, lock=False):
+        query = select(BudgetConfig).where(
+            BudgetConfig.org_id == org_id,
+            BudgetConfig.entity_type == entity_type,
+            BudgetConfig.entity_id == entity_id,
+            BudgetConfig.period_type == period_type,
+        )
+        if lock:
+            query = query.with_for_update()
+        return (await self.db.execute(query)).scalar_one_or_none()
+
+    def budget_response(self, budget):
+        updated_at = budget.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+        return BudgetConfigResponse(
+            org_id=budget.org_id,
+            entity_type=budget.entity_type,
+            entity_id=budget.entity_id,
+            period_type=budget.period_type,
+            budget_amount_usd=budget.budget_amount_usd,
+            enforcement_mode=budget.enforcement_mode,
+            updated_at=updated_at,
+        )
+
+    async def delete_exact_budget(self, org_id, entity_type, entity_id, period_type, expected_revision):
+        budget = await self.exact_budget(org_id, entity_type, entity_id, period_type, lock=True)
+        if budget is None:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}/{period_type}")
+        revision = budget.updated_at
+        if revision.tzinfo is None:
+            revision = revision.replace(tzinfo=UTC)
+        if expected_revision.tzinfo is None or expected_revision != revision:
+            raise ResourceConflictError("BudgetConfig", "revision", "changed; inspect before deleting")
+        await self.db.delete(budget)
+        await self.db.commit()
+
+    async def set_exact_budget(self, org_id, entity_type, entity_id, period_type, request):
+        from datetime import UTC
+
+        from sqlalchemy.exc import IntegrityError
+
+        budget = await self.exact_budget(org_id, entity_type, entity_id, period_type, lock=True)
+        if budget is not None:
+            current = budget.updated_at
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=UTC)
+            if (
+                request.expect_absent
+                or request.expected_revision is None
+                or request.expected_revision.tzinfo is None
+                or request.expected_revision != current
+            ):
+                raise ResourceConflictError("BudgetConfig", "revision", "changed; inspect this exact period before retrying")
+            budget.budget_amount_usd = request.budget_amount_usd
+            budget.enforcement_mode = request.enforcement_mode
+        else:
+            if not request.expect_absent or request.expected_revision is not None:
+                raise ResourceConflictError("BudgetConfig", "revision", "absent; inspect this exact period before retrying")
+            budget = BudgetConfig(
+                org_id=org_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                period_type=period_type,
+                budget_amount_usd=request.budget_amount_usd,
+                enforcement_mode=request.enforcement_mode,
+            )
+            self.db.add(budget)
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            raise ResourceConflictError("BudgetConfig", "period", "concurrent creation; inspect the existing cap") from None
+        await self.db.refresh(budget)
+        result = self.budget_response(budget)
+        result.advisory = await self._mis_partitioned_cap_advisory(org_id, entity_type, entity_id)
+        return result
+
     async def get_budget_config(self, org_id: str, entity_type: str, entity_id: str) -> BudgetConfigResponse | None:
         """
         Get budget configuration for an entity.
@@ -579,6 +691,7 @@ class AdminService:
         org_id: str,
         entity_type: str,
         entity_id: str,
+        period_type: str | None = None,
     ) -> BudgetStatusResponse:
         """
         Get budget status with current spend for an entity.
@@ -603,6 +716,7 @@ class AdminService:
                 BudgetConfig.org_id == org_id,
                 BudgetConfig.entity_type == entity_type,
                 BudgetConfig.entity_id == entity_id,
+                *([BudgetConfig.period_type == period_type] if period_type is not None else []),
             )
         )
         config = result.scalar_one_or_none()
@@ -778,6 +892,8 @@ class AdminService:
         Returns:
             Updated rate limit configuration
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         result = await self.db.execute(
             select(RateLimitConfig).where(
                 RateLimitConfig.org_id == org_id,
@@ -842,7 +958,7 @@ class AdminService:
             ResourceConflictError: If department name already exists in org
         """
         # Verify organization exists
-        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id))
+        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id).with_for_update())
         if not org_result.scalar_one_or_none():
             raise ResourceNotFoundError("Organization", org_id)
 
@@ -851,7 +967,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Department", "name", request.name)
 
+        if request.id and await self.db.get(Department, request.id) is not None:
+            raise ResourceConflictError("Department", "id", request.id)
+
         dept = Department(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             name=request.name,
             description=request.description,
@@ -1070,7 +1190,7 @@ class AdminService:
             ResourceConflictError: If team name already exists in department
         """
         # Verify department exists and belongs to org
-        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id))
+        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id).with_for_update())
         if not dept_result.scalar_one_or_none():
             raise ResourceNotFoundError("Department", dept_id)
 
@@ -1079,7 +1199,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Team", "name", request.name)
 
+        if request.id and await self.db.get(Team, request.id) is not None:
+            raise ResourceConflictError("Team", "id", request.id)
+
         team = Team(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             department_id=dept_id,
             name=request.name,
@@ -1471,6 +1595,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1561,6 +1686,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1856,11 +1982,30 @@ class AdminService:
                 "This account also holds membership in another organization. Remove those memberships before deleting this account."
             )
 
-        github_ids = set(
-            (
-                await self.db.execute(select(UserIdentity.provider_user_id).where(UserIdentity.user_id == user_id, UserIdentity.provider == "github"))
-            ).scalars()
-        )
+        # Two snapshots of "this user's GitHub ids", because the two consumers below
+        # ask different questions (#5664, A10).
+        #
+        # `github_ids` is the PROVEN set, and feeds the shared-login removal guard:
+        # "does deleting this account strand another tenant's sign-in?" — an
+        # authority question, so an unproven claim must not be able to block, or to
+        # authorize, a deletion.
+        #
+        # `projected_github_ids` is EVERY GitHub id the user holds, and feeds the
+        # `member_org_ids` projection refresh. Every formerly affected key must be
+        # refreshed, even if this user's claim was unproven, to clear stale orgs.
+        # The recomputation itself includes only proven surviving bindings: the
+        # projected list grants sign-in eligibility and satisfies the webhook's
+        # strict membership policy. A broad refresh set must not become a broad
+        # authority set.
+        identity_rows = (
+            await self.db.execute(
+                select(UserIdentity.provider_user_id, UserIdentity.verification_method).where(
+                    UserIdentity.user_id == user_id, UserIdentity.provider == "github"
+                )
+            )
+        ).all()
+        github_ids = {pid for pid, method in identity_rows if pid and method in PROVEN_METHODS}
+        projected_github_ids = {pid for pid, _ in identity_rows if pid}
         username = user.cognito_username
         if user.cognito_sub:
             from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
@@ -1887,6 +2032,7 @@ class AdminService:
                 .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
                 .where(
                     UserIdentity.provider == "github",
+                    UserIdentity.verification_method.in_(PROVEN_METHODS),
                     UserIdentity.provider_user_id.in_(github_ids),
                     TenantMembership.user_id != user_id,
                 )
@@ -1912,7 +2058,7 @@ class AdminService:
                 "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
             ) from exc
 
-        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids, writer=identity_writer)
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=projected_github_ids, writer=identity_writer)
 
         # Never remove the login for a database deletion that rolled back.
         if cognito_service and username:
@@ -2012,7 +2158,13 @@ class AdminService:
         total = total_result.scalar_one()
 
         # Get paginated results
-        query = select(ServiceAccount).where(ServiceAccount.org_id == org_id).offset(offset).limit(page_size).order_by(ServiceAccount.name)
+        query = (
+            select(ServiceAccount)
+            .where(ServiceAccount.org_id == org_id)
+            .offset(offset)
+            .limit(page_size)
+            .order_by(ServiceAccount.name, ServiceAccount.id)
+        )
         result = await self.db.execute(query)
         sas = result.scalars().all()
 
@@ -2068,6 +2220,7 @@ class AdminService:
         page: int = 1,
         page_size: int | None = None,
         cognito_service: CognitoService | None = None,
+        department_id: str | None = None,
     ) -> BudgetListResponse:
         """
         Get list of all budget configs for an organization with current usage.
@@ -2117,12 +2270,25 @@ class AdminService:
             query = query.where(BudgetConfig.entity_type == entity_type)
             count_query = count_query.where(BudgetConfig.entity_type == entity_type)
 
+        if department_id is not None:
+            teams = select(Team.id).where(Team.org_id == org_id, Team.department_id == department_id)
+            users = select(User.id).where(User.org_id == org_id, User.team_id.in_(teams))
+            subjects = select(User.cognito_sub).where(User.org_id == org_id, User.team_id.in_(teams))
+            allowed = or_(
+                (BudgetConfig.entity_type == "department") & (BudgetConfig.entity_id == department_id),
+                (BudgetConfig.entity_type == "team") & BudgetConfig.entity_id.in_(teams),
+                (BudgetConfig.entity_type == "user") & BudgetConfig.entity_id.in_(subjects),
+                (BudgetConfig.entity_type == "root_user") & BudgetConfig.entity_id.in_(users),
+            )
+            query = query.where(allowed)
+            count_query = count_query.where(allowed)
+
         # Get total count
         total_result = await self.db.execute(count_query)
         total = total_result.scalar_one()
 
         # Get paginated budget configs
-        query = query.offset(offset).limit(page_size).order_by(BudgetConfig.entity_type, BudgetConfig.entity_id)
+        query = query.offset(offset).limit(page_size).order_by(BudgetConfig.entity_type, BudgetConfig.entity_id, BudgetConfig.period_type)
         result = await self.db.execute(query)
         budget_configs = result.scalars().all()
 
@@ -2556,6 +2722,8 @@ class AdminService:
         Raises:
             ResourceConflictError: If rate limit already exists for this entity
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         # Check for existing rate limit with same entity
         existing = await self.db.execute(
             select(RateLimitConfig).where(
@@ -2609,6 +2777,8 @@ class AdminService:
         Raises:
             ResourceNotFoundError: If rate limit not found
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         result = await self.db.execute(
             select(RateLimitConfig).where(
                 RateLimitConfig.org_id == org_id,

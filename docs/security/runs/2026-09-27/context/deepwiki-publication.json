@@ -1,0 +1,10 @@
+[
+  {
+    "component": "deepwiki-final",
+    "source_commit": "5f2d15e93",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki:security27-5f2d15e93",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]

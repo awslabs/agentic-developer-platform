@@ -150,8 +150,16 @@ class ExpectedPrerequisites:
     sts_endpoint_vpc_id: str
     api_server_port: int = 443
     protocol: str = "tcp"
+    retained_sts_rule_id: str | None = None
 
     def __post_init__(self) -> None:
+        if self.retained_sts_rule_id is not None and (
+            not isinstance(self.retained_sts_rule_id, str)
+            or not self.retained_sts_rule_id.startswith("sgr-")
+        ):
+            raise BootstrapRefused(
+                "retained private STS requires its exact reviewed rule identity"
+            )
         for name in (
             "account_id",
             "vpc_id",
@@ -364,7 +372,15 @@ def _verify_rule(
         )
 
     tags = observed.get("tags", {})
-    if (
+    retained = kind == MANAGEMENT_RULE and expected.retained_sts_rule_id is not None
+    if retained and (
+        observed.get("rule_id") != expected.retained_sts_rule_id
+        or observed.get("created_by_bootstrap") is not False
+    ):
+        raise BootstrapRefused(
+            "retained private STS rule identity or ownership changed"
+        )
+    if not retained and (
         not isinstance(tags, Mapping)
         or tags.get("OrgId") != target.org_id
         or tags.get("WorkspaceId") != target.workspace_id

@@ -72,10 +72,13 @@ def _normalize(path_template: str) -> str:
 def _module_constants(tree: ast.Module) -> dict[str, str]:
     constants: dict[str, str] = {}
     for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        if isinstance(node, ast.Assign):
+            value = _render(node.value, {}, constants)
+            if value is None:
+                continue
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    constants[target.id] = node.value.value
+                    constants[target.id] = value
     return constants
 
 
@@ -114,6 +117,15 @@ def cli_endpoints() -> set[tuple[str, str]]:
 
     Locals are resolved per function so a name reused across functions cannot
     leak; the CLI does reuse ``path`` and ``base`` this way.
+
+    Nodes are visited in source order, not ``ast.walk`` order. ``ast.walk`` is
+    breadth-first, so a function that assigns the same local twice on different
+    branches -- as ``cost()`` does, one for the org route and one for the
+    workspace route -- has both assignments visited before either ``request``
+    call. Every call then resolves the name to whichever assignment came last in
+    breadth-first order, so one endpoint is silently attributed to the other's
+    path and the other is never recorded at all. Sorting by position makes each
+    call see the assignment that actually precedes it.
     """
     tree = ast.parse(_CLI.read_text())
     constants = _module_constants(tree)
@@ -123,7 +135,11 @@ def cli_endpoints() -> set[tuple[str, str]]:
         if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         scope: dict[str, str] = {}
-        for node in ast.walk(function):
+        body = sorted(
+            (n for n in ast.walk(function) if isinstance(n, ast.Assign | ast.Call)),
+            key=lambda n: (n.lineno, n.col_offset),
+        )
+        for node in body:
             if isinstance(node, ast.Assign):
                 rendered = _render(node.value, scope, constants)
                 if rendered and "/" in rendered:
@@ -135,6 +151,15 @@ def cli_endpoints() -> set[tuple[str, str]]:
                 path = _render(node.args[1], scope, constants)
                 if method and path and path.startswith(API_PREFIX):
                     found.add((method, _normalize(path)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # Both helpers forward their caller-selected path as a POST.
+                # Resolve that argument at the callsite, not in the helper's
+                # unrelated local scope.
+                path_index = {"replay_safe_create": 2, "deployment_preview": 3}.get(node.func.id)
+                if path_index is not None and len(node.args) > path_index:
+                    path = _render(node.args[path_index], scope, constants)
+                    if path and path.startswith(API_PREFIX):
+                        found.add(("POST", _normalize(path)))
     return found
 
 
@@ -183,7 +208,23 @@ def test_the_extractor_distinguishes_two_locals_with_the_same_name():
     endpoints = cli_endpoints()
 
     assert ("PATCH", f"{API_PREFIX}/workspaces/{PLACEHOLDER}/quota") in endpoints
-    assert ("GET", f"{API_PREFIX}/cost/summary") in endpoints
+    assert ("GET", f"{API_PREFIX}/orgs/cost") in endpoints
+
+
+def test_the_extractor_distinguishes_two_locals_of_the_same_name_in_one_function():
+    """``cost()`` assigns ``path`` twice — once per branch — and both must survive.
+
+    This is the within-function case, and it is the one ``ast.walk`` gets wrong:
+    breadth-first order visits both assignments before either ``request`` call, so
+    both calls resolve to the same branch's path. The org route would be recorded
+    twice and the workspace route never, with no failure anywhere -- the inventory
+    comparison would simply report a missing endpoint the client does call and a
+    stale one it does.
+    """
+    endpoints = cli_endpoints()
+
+    assert ("GET", f"{API_PREFIX}/orgs/cost") in endpoints
+    assert ("GET", f"{API_PREFIX}/workspaces/{PLACEHOLDER}/cost") in endpoints
 
 
 def test_normalizing_keeps_path_depth_significant():
@@ -202,6 +243,9 @@ def test_every_endpoint_the_client_calls_has_a_required_permission():
     assert missing == set(), f"endpoints with no recorded permission: {sorted(missing)}"
 
 
+UNCALLED_BY_DESIGN: set[tuple[str, str]] = set()
+
+
 def test_the_inventory_has_no_endpoints_that_do_not_exist():
     """The other direction: a stale entry is drift too.
 
@@ -209,9 +253,21 @@ def test_the_inventory_has_no_endpoints_that_do_not_exist():
     less reliable description of the surface — and a reader who finds one wrong
     entry stops trusting the rest.
     """
-    stale = inventory_endpoints() - cli_endpoints()
+    stale = inventory_endpoints() - cli_endpoints() - UNCALLED_BY_DESIGN
 
     assert stale == set(), f"inventory entries with no caller: {sorted(stale)}"
+
+
+def test_the_uncalled_endpoints_are_still_inventoried_and_still_enforced():
+    """The exemption must not become a way to drop an endpoint from the inventory.
+
+    Each exempted entry has to be present with a real permission. Otherwise
+    `UNCALLED_BY_DESIGN` would be a place to hide an endpoint that nobody decided,
+    which is the state this file exists to make impossible.
+    """
+    for method, path in UNCALLED_BY_DESIGN:
+        assert (method, path) in inventory_endpoints()
+        assert isinstance(required_permission(method, path.replace(PLACEHOLDER, "{account}")), Permission)
 
 
 def test_every_inventory_entry_resolves_through_the_public_lookup():
@@ -259,32 +315,35 @@ def test_no_endpoint_is_recorded_with_administer():
 
 
 def test_every_mutating_endpoint_requires_more_than_read():
-    """No write is authorized by a read.
+    """Execution and credential writes require more than the read boundary.
 
     Derived from the method rather than listed, so a new mutating endpoint is
-    covered the moment it is added to the inventory.
+    covered the moment it is added to the inventory. Approval requests resolve
+    their target permission from the body in the domain ApprovalService; this
+    organization-scoped inventory entry cannot grant approval or dispatch work.
     """
     for (method, path), permission in ENDPOINT_INVENTORY.items():
+        if (method, path) == ("POST", "/superplane/v1/operation-approvals"):
+            assert permission is Permission.READ
+            continue
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             assert permission is not Permission.READ, f"{method} {path}"
 
 
 def test_reads_require_only_read():
-    """And the converse: no GET is gated behind a mutating permission — except one.
+    """And the converse: no GET is gated behind a mutating permission.
 
-    The kubeconfig endpoint is a ``GET`` that hands out cluster credentials, so it
-    requires PROVISION. It is named explicitly here rather than exempted by a
-    predicate, because "some GETs are privileged" as a general rule would let the
-    next one through unexamined.
+    Kubeconfig used to be that exception. It is a ``POST`` now -- it mints
+    credentials rather than returning a document -- so it is covered by the
+    mutating-endpoint rule above and no ``GET`` exception remains. The assertion
+    that it is still PROVISION stays, because the method changing must not
+    quietly downgrade what it requires.
     """
-    privileged_reads = {("GET", "/superplane/v1/workspaces/{workspace}/kubeconfig")}
-
     for (method, path), permission in ENDPOINT_INVENTORY.items():
-        if method == "GET" and (method, path) not in privileged_reads:
+        if method == "GET":
             assert permission is Permission.READ, f"{method} {path}"
 
-    for endpoint in privileged_reads:
-        assert ENDPOINT_INVENTORY[endpoint] is Permission.PROVISION
+    assert ENDPOINT_INVENTORY[("POST", "/superplane/v1/workspaces/{workspace}/kubeconfig")] is Permission.PROVISION
 
 
 def test_credential_endpoints_require_the_credential_permission():
@@ -294,8 +353,8 @@ def test_credential_endpoints_require_the_credential_permission():
     re-check point: a caller who may create capacity is not thereby allowed to
     rebind the credential that capacity runs on.
     """
-    assert required_permission("POST", "/superplane/v1/providers") is Permission.RENEW_CREDENTIAL
-    assert required_permission("DELETE", "/superplane/v1/providers/{credential}") is Permission.RENEW_CREDENTIAL
+    assert required_permission("POST", "/superplane/v1/vault/credentials") is Permission.RENEW_CREDENTIAL
+    assert required_permission("DELETE", "/superplane/v1/vault/credentials/{credential}") is Permission.RENEW_CREDENTIAL
 
 
 def test_deployment_and_quota_writes_require_spend():

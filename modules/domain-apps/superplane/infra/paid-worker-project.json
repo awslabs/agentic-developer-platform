@@ -1,0 +1,11 @@
+{
+  "superplane-paid-worker": {
+    "buildspec": "modules/domain-apps/superplane/releases/buildspecs/paid-worker.yml",
+    "ecr_repos": [
+      "adp-superplane-paid-worker"
+    ],
+    "privileged": true,
+    "privileged_why": "docker build of the separately released native paid-worker image",
+    "build_timeout": 60
+  }
+}

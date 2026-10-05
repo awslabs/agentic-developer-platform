@@ -1,51 +1,11 @@
 # Agent Instructions — ADP (Agentic Developer Platform)
 
-You are the deployment agent for this platform. Your job is to deploy it end-to-end, keep the user informed, and only ask them when you genuinely need their input. Read this entire file, then execute the deployment.
-
-## Your Behavior
-
-- Run each step yourself. Do not ask the user to run commands — you run them.
-- After each step, verify it succeeded before moving on using the validation commands in `docs/adp-platform-deployment/deployment-manifest.md`.
-- If something fails, diagnose it, attempt a fix, and retry. Only escalate to the user if you cannot resolve it after 2 attempts.
-- Keep the user informed with brief status updates between steps. Do not dump raw command output — summarize results.
-- When you need user input (AWS credentials, GitHub App setup), explain exactly what you need and why.
-- Maintain a deployment state file at `.adp-deploy-state.json` in the repo root. Update it after each phase. If this file exists when you start, resume from the last incomplete phase.
-- Read `docs/adp-platform-deployment/deployment-manifest.md` for the full list of what gets deployed in each module and the exact validation commands.
-
-## Deployment State
-
-Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, update after each phase:
-
-```json
-{
-  "environment": "dev",
-  "account_id": "",
-  "github_org": "",
-  "modules": [],
-  "phases": {
-    "org_setup":        {"status": "pending"},
-    "bootstrap":        {"status": "pending"},
-    "preflight":        {"status": "pending"},
-    "platform_infra":   {"status": "pending"},
-    "gateway_infra":    {"status": "pending"},
-    "gateway_backend":  {"status": "pending"},
-    "gateway_frontend": {"status": "pending"},
-    "agent_factory":    {"status": "pending"},
-    "agent_gateway":    {"status": "pending"},
-    "github_apps":      {"status": "pending"},
-    "verification":     {"status": "pending"}
-  },
-  "outputs": {},
-  "validation": {}
-}
-```
-
-Status values: `pending`, `running`, `complete`, `failed`, `skipped`.
-
-On startup, if this file exists:
-1. Read it and show the user current progress
-2. Resume from the first non-complete, non-skipped phase
-3. If a phase is `failed`, retry it
+For deployment, follow the canonical
+[agent deployment guide](docs/adp-platform-deployment/deploy-with-agent.md).
+It owns account confirmation, phase ordering, private journals, recovery,
+verification and when to request user input. Use the
+[quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for source and
+published-release commands. The references below supplement those instructions.
 
 ## Resource Map
 
@@ -67,46 +27,13 @@ Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
 
 ## Deployment Playbook
 
-> **The canonical agent-deploy guide is
-> [`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)**
-> (the agent-behavior layer — phase table, placeholder-artifact rule, state
-> file, when to call the user). It defers to **[`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)**,
-> the authoritative verified procedure (phase sequence, exact scripts, gotchas;
-> maintained against real end-to-end runs).
-> `docs/adp-platform-deployment/self-managed-deploy.md` is the longer canonical
-> reference; `deployment-manifest.md` is the resource→validation mapping. The
-> notes below are CLAUDE-specific behaviors on top of those docs.
-
-When driving a deployment, your job is to **execute the phases in
-deploy-quickstart.md in order**, verifying each before moving on. Key agent
-behaviors that still apply on top of that doc:
-
-1. **Confirm the target AWS account first.** Everything keys off the account
-   `aws sts get-caller-identity` resolves to (via the active `AWS_PROFILE`).
-   Show the account + ARN and get the user's confirmation before Phase 1. There
-   is **no upfront GitHub setup** — for the webhook agent path GitHub is wired at
-   the END (UI flow: Settings → Connections → "Set up GitHub App"; or CLI
-   fallback `register-github-app.sh`), and gateway-only needs no GitHub at all.
-2. **Maintain `.adp-deploy-state.json`** (see Deployment State above): update it
-   after each phase; on startup, resume from the first non-complete phase.
-   Note: a committed copy from a fresh clone is NOT a record of your deploy —
-   verify against real AWS state, don't trust its statuses.
-3. **Keep the user informed** between phases with brief status; only stop for
-   genuine input (AWS account choice and the GitHub App setup — UI flow
-   preferred, CLI fallback for headless; see the phase numbering in
-   deploy-quickstart.md). Bedrock model access is NOT a stop: it's automated
-   via `platform/scripts/enable-bedrock-models.sh` (CLI-only; runs inside
-   deploy-all.sh and platform-infra-apply.yml).
-4. **The "placeholder artifact" rule:** Terraform ships placeholders for things a
-   separate push-triggered CI workflow normally publishes (broker Lambda code,
-   agent-runtime image, webhook Lambda zip, the ALB-gated API GW body). A fresh
-   manual deploy fires none of those, so the stage-by-stage scripts
-   (`wire-gateway-alb.sh --apply`, `deploy-broker.sh`, `deploy-webhook-ingress.sh`,
-   `register-github-app.sh`) are the manual equivalents. deploy-quickstart.md
-   sequences them; don't skip them.
-
-The phase summary (timing/scope) and per-phase commands, verification, and
-troubleshooting are all in deploy-quickstart.md — do not duplicate them here.
+Follow [deploy-with-agent.md](docs/adp-platform-deployment/deploy-with-agent.md)
+for deployment behavior, account confirmation, journal handling, verification,
+and when to involve the user. Use the
+[quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for the customer
+launcher and the [phase reference](docs/adp-platform-deployment/deployment-reference.md)
+for manual diagnosis. Keep deployment procedures in those documents rather
+than duplicating them here.
 
 > **Deploy-path note:** earlier versions of this file inlined a 10-phase playbook
 > with an upfront "Phase 0: GitHub setup" (`setup-org.sh` + 3 org-owned apps) that
@@ -163,71 +90,15 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 
 ## Destroy / Teardown
 
-### Full teardown (primary)
-
-Two tracks depending on your environment:
-
-| Track | Entry point | When to use |
-|-------|-------------|-------------|
-| Self-managed | `./platform/scripts/undeploy.sh` | Running from your terminal against your own AWS account |
-| ADP-managed | `.github/workflows/undeploy.yml` (workflow_dispatch) | Tearing down via GitHub Actions (CI/CD or operator portal) |
-
-Both destroy modules in reverse dependency order (agent-context → webhook-ingress → agent-factory → gateway → platform), require a **typed 12-digit account ID** as a destruction guard, and support dry-run and phase skipping.
-
-#### Self-managed (`undeploy.sh`)
-
-```bash
-./platform/scripts/undeploy.sh                      # Interactive teardown (typed-account-ID gate)
-./platform/scripts/undeploy.sh --dry-run            # Show what would be destroyed
-./platform/scripts/undeploy.sh --from gateway       # Resume from a specific phase
-./platform/scripts/undeploy.sh --skip agent_context # Skip a phase
-./platform/scripts/undeploy.sh --bootstrap          # Also destroy state backend
-```
-
-Maintains `.adp-undeploy-state.json` for resume. Retries failed phases up to 2×. Pass `--bootstrap` to include the Terraform state backend (prompts separately).
-
-#### ADP-managed (`undeploy.yml`)
-
-Dispatch via GitHub Actions UI or `gh workflow run undeploy.yml`. Inputs:
-- `account_id` (required) — typed 12-digit account ID
-- `dry_run` — plan-only, no destruction
-- `skip_phases` — comma-separated phases to skip
-- `include_bootstrap` — also destroy state backend (irreversible)
-
-### Legacy path (retained)
-
-```bash
-./platform/scripts/deploy-all.sh --destroy          # LEGACY — use undeploy.sh instead
-```
-
-> **Note:** `deploy-all.sh --destroy` is retained for backward compatibility but is no longer the recommended path. It lacks the typed-account-ID gate, dry-run, resume, and the webhook-ingress phase. Prefer `undeploy.sh` or `undeploy.yml` for all new teardowns.
-
-### Resources that survive by design
-
-- **Terraform state backend** (S3 + DynamoDB) — only destroyed with `--bootstrap` / `include_bootstrap`
-- **GitHub App secrets** (`adp/gh-app-*`, `adp/*/gh-app-*` in Secrets Manager) — manual browser step to delete apps
-- **Webhook-ingress GitHub App secrets** (`adp/*/github-app/*` in Secrets Manager) — manual deletion
-- **AWS-managed RDS secrets** (`rds!*`) — AWS handles their lifecycle
-
-### Per-module destroy workflows
-
-Individual module destroy workflows remain available for targeted teardowns:
-
-| Workflow | Destroys | Confirm input |
-|----------|----------|---------------|
-| `.github/workflows/agent-context-infra-destroy.yml` | `modules/agent-context/terraform/` | `agent-context` |
-| `.github/workflows/agent-factory-infra-destroy.yml` | `modules/agent-factory/infra/` | `agent-factory` |
-| `.github/workflows/gateway-infra-destroy.yml` | `modules/gateway/infra/` + pre-cleanup (Ingress/ALB, S3, Secrets, CloudFront) | `gateway` |
-| `.github/workflows/platform-infra-destroy.yml` | `platform/infra/` (run last, after all modules) | `platform` |
-
-### Shared cleanup scripts
-
-| Script | Purpose |
-|--------|---------|
-| `platform/scripts/empty-s3-buckets.sh` | Empties S3 buckets (versioned + non-versioned). Idempotent. |
-| `platform/scripts/delete-ingress-and-wait.sh` | Deletes K8s Ingress, waits for ALB removal. Run before gateway destroy. |
-| `platform/scripts/force-delete-secrets.sh` | Force-deletes secrets by prefix. Protects gh-app-*, github-app/*, and terraform-state-*. |
-| `platform/scripts/bootstrap-destroy.sh` | Destroys Terraform state backend. Prompts for account ID. |
+Use `platform/scripts/undeploy.sh --dry-run` to preview an explicitly authorized
+teardown, then follow the account-confirmation gate and
+[teardown reference](docs/adp-platform-deployment/deployment-reference.md#teardown).
+The shell entrypoint and `.github/workflows/undeploy.yml` use the shared teardown
+engine. It stops on failure and orders factory removal before webhook/KEDA.
+The backend and GitHub credentials/key survive by default. Do not substitute
+`deploy-all.sh --destroy` or manually delete retained resources to force success.
+For reinstallation, follow the canonical guide's
+[retained-resource reconciliation](docs/adp-platform-deployment/deploy-with-agent.md#reinstall-after-teardown).
 
 ## Key Files Reference
 
@@ -235,7 +106,7 @@ Individual module destroy workflows remain available for targeted teardowns:
 |------|---------|
 | `platform/scripts/undeploy.sh` | Primary teardown entry point (typed-account-ID gate, dry-run, resume) |
 | `.github/workflows/undeploy.yml` | ADP-managed teardown workflow (workflow_dispatch) |
-| `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy); `--destroy` flag is legacy |
+| `platform/scripts/deploy-all.sh` | Core orchestrator called by `deploy.sh`; `--destroy` flag is legacy |
 | `platform/scripts/preflight-check.sh` | Environment validation |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
 | `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Register GitHub App (CLI fallback) + post-registration permission validation |
@@ -247,7 +118,7 @@ Individual module destroy workflows remain available for targeted teardowns:
 | `modules/gateway/scripts/deploy-frontend.sh` | Phase 6: build the SPA with the full VITE_* env from SSM, sync to S3 (excluding cfn-templates/*), upload the CFN role template (required for "Add AWS account"), invalidate CloudFront. Manual equivalent of gateway-deploy.yml's frontend job |
 | `platform/scripts/wire-gateway-alb.sh` | Discover internal ALB → SSM; `--apply` re-applies gateway-infra with ALB vars + redeploys API GW stage (gateway second pass — switches API GW from MOCK to real `/{proxy+}` + `/auth/github` routes) |
 | `modules/gateway/scripts/deploy-broker.sh` | Publish the real github-auth-broker Lambda code (terraform ships a 503 placeholder); required for GitHub login |
-| `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Deploy the ARC-free webhook agent path: build agent-runtime image + package/upload webhook Lambda zip + terraform apply (NOT covered by deploy-all.sh) |
+| `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Deploy the ARC-free webhook agent path: build agent-runtime image + package/upload webhook Lambda zip + terraform apply (chained by deploy-all.sh) |
 | `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | CLI fallback for GitHub App registration (the primary path is the UI: Settings → Connections → "Set up GitHub App"); calls wire-github-app.sh; non-interactive flags; private-by-default visibility |
 | `platform/infra/main.tf` | Shared platform Terraform |
 | `platform/infra/modules/codebuild/` | CodeBuild projects (4 docker builds only) |

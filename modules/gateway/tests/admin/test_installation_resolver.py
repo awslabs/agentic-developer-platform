@@ -592,3 +592,23 @@ class TestWritersAgree:
         # The superseded id no longer resolves — one row, one current installation.
         _, stale_state = await resolve_installation_owner(INSTALL_X, db=db_session)
         assert stale_state is OwnerState.NOT_FOUND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_account", [None, "1111"])
+@pytest.mark.parametrize("actual_account,expected", [("2222", OwnerState.RESOLVED), ("9999", OwnerState.AMBIGUOUS)])
+async def test_connection_account_attestation_is_independent_of_adp_org_metadata(db_session, legacy_account, actual_account, expected):
+    await _mk_org(db_session, "sophos-it", github_org_id=legacy_account)
+    db_session.add(
+        ChannelTenantMap(
+            provider="github", provider_scope_id="2222", installation_id=str(INSTALL_X), org_id="sophos-it", install_metadata={"account_id": "2222"}
+        )
+    )
+    await db_session.commit()
+    github = AsyncMock()
+    github.get_installation.return_value = {"id": INSTALL_X, "account": {"id": int(actual_account)}}
+    owner, state = await resolve_installation_owner(INSTALL_X, db=db_session, attest=True, github_client=github)
+    assert state is expected
+    if state is OwnerState.RESOLVED:
+        assert owner.tenant_id == "sophos-it"
+        assert owner.github_account_id == "2222"

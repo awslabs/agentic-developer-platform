@@ -134,10 +134,15 @@ export function ExecutionProgress({
             <dd className="inline">{view.nextCheck}</dd>
           </div>
         )}
-        <div>
-          <dt className="inline">Attempts: </dt>
+        {execution.stage_attempts ? Object.entries(execution.stage_attempts).map(([stage, count]) => (
+          <div key={stage}>
+            <dt className="inline capitalize">{stage} attempts: </dt>
+            <dd className="inline">{count}</dd>
+          </div>
+        )) : <div>
+          <dt className="inline">Total continuation attempts: </dt>
           <dd className="inline">{execution.attempts}</dd>
-        </div>
+        </div>}
       </dl>
 
       {view.evidence.length > 0 && (

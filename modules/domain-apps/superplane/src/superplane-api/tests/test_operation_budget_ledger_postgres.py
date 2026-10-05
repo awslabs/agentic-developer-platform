@@ -68,11 +68,12 @@ from app.models.operation_budget import (
     STATE_RESERVED,
     STATE_RETAINED,
 )
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
+from tests.test_installation_postgres import (
+    installation_postgres_url as installation_postgres_url,
 )
+from tests.test_installation_postgres import pytestmark as postgres_available
+
+pytestmark = [] if os.environ.get("CI") else postgres_available
 
 TABLE = "operation_budget_reservations"
 
@@ -129,7 +130,7 @@ def _apply_migration(schema: str):
 
 
 @pytest.fixture
-async def ledger():
+async def ledger(installation_postgres_url):  # noqa: F811 - pytest fixture injection
     """A ledger over its own schema, plus the means to restart its connections.
 
     Yields ``(ledger, connections, restart)``. ``restart`` closes the current pool
@@ -143,7 +144,7 @@ async def ledger():
     this states the exception locally rather than inheriting the process-wide
     environment variable `conftest` sets for the SQLite double.
     """
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+    url = installation_postgres_url
     schema = "budget_test_" + uuid.uuid4().hex
     dsn = url.replace("postgresql+asyncpg://", "postgresql://", 1)
     admin = create_async_engine(url)
@@ -767,7 +768,11 @@ class TestTheTransportIsClassifiedAsUnavailable:
         with pytest.raises(BudgetUnavailable):
             await getattr(ledger, method)(reservation=reservation, **arguments)
 
-    async def test_no_dsn_fragment_reaches_the_unavailable_message(self, ledger):
+    async def test_no_dsn_fragment_reaches_the_unavailable_message(
+        self,
+        ledger,
+        installation_postgres_url,  # noqa: F811 - pytest fixture injection
+    ):
         """The message reaches a capability readout, so it must carry no target.
 
         An asyncpg connection error quotes the DSN, and a DSN carries a password. So
@@ -775,7 +780,7 @@ class TestTheTransportIsClassifiedAsUnavailable:
         passed through.
         """
         ledger, connections, _ = ledger
-        url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+        url = installation_postgres_url
         await connections.aclose()
 
         with pytest.raises(BudgetUnavailable) as caught:
@@ -841,6 +846,75 @@ class TestWorkspaceLimits:
             await capped.reserve(envelope=envelope(micros=2_000_000), **identity)
 
         assert await count(connections, identity["job_id"]) == 0
+
+    async def test_parallel_distinct_attempts_cannot_oversubscribe_one_workspace(
+        self, ledger
+    ):
+        _, connections, _ = ledger
+        capped = self.capped(connections, max_cost_micros=10)
+        tenant = keys()
+        identities = [
+            dict(keys(), org_id=tenant["org_id"], workspace_id=tenant["workspace_id"])
+            for _ in range(12)
+        ]
+        results = await asyncio.gather(
+            *(
+                capped.reserve(envelope=envelope(micros=6), **identity)
+                for identity in identities
+            ),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(result, Reservation) for result in results) == 1
+        assert sum(isinstance(result, BudgetDenied) for result in results) == 11
+        async with connections.connect() as connection:
+            assert (
+                await connection.fetchval(
+                    f"SELECT SUM(max_cost_micros) FROM {TABLE} WHERE org_id=$1 AND workspace_id=$2",
+                    tenant["org_id"],
+                    tenant["workspace_id"],
+                )
+                == 6
+            )
+
+    async def test_same_workspace_identifier_in_another_org_does_not_consume_cap(
+        self, ledger
+    ):
+        _, connections, _ = ledger
+        capped = self.capped(connections, max_cost_micros=10)
+        first = keys()
+        await capped.reserve(envelope=envelope(micros=10), **first)
+        second = dict(keys(), workspace_id=first["workspace_id"])
+        assert await capped.reserve(envelope=envelope(micros=10), **second)
+
+    async def test_confirm_cannot_expand_budget_after_reservation(self, ledger):
+        current, connections, _ = ledger
+        identity = keys()
+        reservation = await current.reserve(envelope=envelope(micros=10), **identity)
+        with pytest.raises(BudgetDenied):
+            await current.confirm(reservation=reservation, envelope=envelope(micros=11))
+        stored = await row(connections, identity["job_id"], identity["attempt_id"])
+        assert stored["max_cost_micros"] == 10
+        assert stored["state"] == STATE_RESERVED
+
+    @pytest.mark.parametrize("method", ["confirm", "retain", "release"])
+    async def test_attempt_keys_do_not_substitute_for_the_reservation_identity(
+        self, ledger, method
+    ):
+        current, connections, _ = ledger
+        identity = keys()
+        await current.reserve(envelope=envelope(), **identity)
+        forged = Reservation(
+            reservation_id="not-the-reservation",
+            job_id=identity["job_id"],
+            attempt_id=identity["attempt_id"],
+        )
+        arguments = (
+            {"envelope": envelope()} if method == "confirm" else {"reason": "test"}
+        )
+        with pytest.raises(BudgetDenied):
+            await getattr(current, method)(reservation=forged, **arguments)
+        stored = await row(connections, identity["job_id"], identity["attempt_id"])
+        assert stored["state"] == STATE_RESERVED
 
     async def test_a_reservation_over_the_resource_cap_is_denied(self, ledger):
         _ledger, connections, _ = ledger

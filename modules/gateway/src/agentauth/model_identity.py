@@ -20,6 +20,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
 from src.agentauth.grants import (
     AUTHORITY_GATE_DECISION,
+    AUTHORITY_PAID_DOMAIN_OPERATION,
     AUTHORITY_REPLAN_REQUEST,
     AUTHORITY_SERVICE_POLICY,
     RECOGNIZED_AUTHORITY_KINDS,
@@ -215,7 +216,7 @@ class AgentModelIdentityMiddleware:
                     context._policy_scope_caps = (policy._shared_run_spend_usd, policy._shared_chain_spend_usd)
                 context._policy_quote = quote
                 context._policy_estimated_cost = quote.total_usd if quote else None
-                context._policy_request_id = str(uuid4())
+                context._policy_request_id = scope.setdefault("state", {}).get("request_id") or str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
                 remaining_frames = iter(frames)
                 upstream_receive = receive
@@ -256,10 +257,10 @@ class AgentModelIdentityMiddleware:
             await self.app(scope, receive, send)
             return
         context = scope.get("state", {}).get("token_context")
-        if context is not None and context.auth_source == "iam" and context.user_id == "scaledjob-worker":
+        if context is not None and context.auth_source == "iam" and context.agent_registry_id == "scaledjob-worker":
             await self._shared_worker(scope, receive, send, context)
             return
-        if context is None or context.auth_source != "iam" or context.user_id != "authority-worker":
+        if context is None or context.auth_source != "iam" or context.agent_registry_id != "authority-worker":
             await self.app(scope, receive, send)
             return
 
@@ -291,7 +292,7 @@ class AgentModelIdentityMiddleware:
             # budget binding, and `flow_id` dropped from its run binding. That last
             # part is the quiet one: spend still happened, it just was not attributed
             # to the flow that caused it, so it could not be seen or capped.
-            if grant.authority.kind not in RECOGNIZED_AUTHORITY_KINDS:
+            if grant.authority.kind not in RECOGNIZED_AUTHORITY_KINDS or grant.authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
                 raise BootstrapRefusedError("unsupported authority source")
             root = grant.authority.human_id
             if grant.authority.kind != AUTHORITY_SERVICE_POLICY:
@@ -322,6 +323,8 @@ class AgentModelIdentityMiddleware:
                                 raise ModelPolicyRefusedError(decision)
                         if inputs.policy is not None:
                             context._policy_flow_target = meter_target(org_id=caller.tenant_id, flow_id=grant.flow_id, policy=inputs.policy)
+                            if inputs.policy._shared_budget_decision_id:
+                                context._policy_scope_caps = (inputs.policy._shared_run_spend_usd, inputs.policy._shared_chain_spend_usd)
             if context._policy_flow_target is not None:
                 # Buffer only policy-governed requests for a bounded
                 # quote, then replay every original ASGI frame. In
@@ -408,7 +411,7 @@ class AgentModelIdentityMiddleware:
                     raise BootstrapRefusedError("bounded provider quote unavailable") from None
                 # Client IDs are trace hints, not spend idempotency keys. Every
                 # separate upstream submission gets its own reservation id.
-                context._policy_request_id = str(uuid4())
+                context._policy_request_id = scope.setdefault("state", {}).get("request_id") or str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
             # Authenticated registry org remains __platform__. Only attribution
             # and budget binding use the protected run's tenant and principal.

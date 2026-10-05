@@ -454,6 +454,11 @@ async def _destination_external_id(db: AsyncSession, destination: BedrockDestina
     surfaced at save time. Guessing a refusal reason from a bookkeeping gap would be
     less accurate than letting the probe speak.
     """
+    # Platform registration issues the stable trust ID; personal connections
+    # continue to use their separately verified credential trust binding.
+    if destination.is_platform_registered and destination.owner_org_id is None and not destination.credential_id:
+        return f"adp-platform:{destination.id}"
+
     if not destination.credential_id:
         return None
 

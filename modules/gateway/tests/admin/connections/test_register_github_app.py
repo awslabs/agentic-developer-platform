@@ -18,7 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+import src.admin.connections.service as svc
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import RegisterAppStartResponse
 from src.auth.dependencies import get_current_user
@@ -28,6 +30,21 @@ from src.shared.schemas.auth import TokenContext
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_durable_audit_sink(monkeypatch):
+    # Provider/redirect unit tests use fake SQL sessions. Real mounted SQL audit
+    # durability is covered without this stub in test_admin_audit_durability.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+    import boto3
+
+    original_client = boto3.client
+    ssm = MagicMock()
+    ssm.get_parameter.return_value = {"Parameter": {"Value": "https://fixture.execute-api.example.test"}}
+    monkeypatch.setattr(boto3, "client", lambda name, *args, **kwargs: ssm if name == "ssm" else original_client(name, *args, **kwargs))
 
 
 def _make_user(
@@ -47,6 +64,53 @@ def _make_user(
     )
 
 
+def _admin_initiator(mock_db: AsyncMock, *, user_id: str = "user-001") -> MagicMock:
+    """Make `mock_db.get(User, ...)` resolve to a platform-admin initiator.
+
+    Issue #5664: register_app_callback now re-derives platform-admin authority from
+    the user recorded on the state nonce, because the callback is a tokenless
+    browser redirect (no Authorization header, so no claim to read). These
+    mock-DB tests assert redirect/logging/secret-handling behaviour on the SUCCESS
+    path, so they need the authority check to pass — the refusal paths have their
+    own coverage in tests/admin/test_register_app_callback_authority.py.
+    """
+    initiator = MagicMock()
+    initiator.id = user_id
+    initiator.org_id = "org-001"
+    initiator.role = "platform_admin"
+    mock_db.get = AsyncMock(return_value=initiator)
+    return initiator
+
+
+@pytest.fixture(autouse=True)
+def _no_app_registered_yet(monkeypatch):
+    """Secrets Manager reports no GitHub App registered yet.
+
+    Issue #5664 moved the "an App is already registered" guard INTO the callback,
+    before any secret write (it previously ran only in register-start, a different
+    request, so it never protected the write). `_check_existing_app_secret` builds
+    its own boto3 client from ambient config, so on a machine with live AWS
+    credentials — a dev box, or a CI runner with a role attached — it reads the
+    REAL deployment's App id and every success-path test here fails, while the
+    same tests pass on a laptop with no credentials. Autouse-stubbing it makes
+    them hermetic.
+
+    Tests that want the guard's behaviour patch `_check_existing_app_secret`
+    themselves (the inner patch wins); the guard has dedicated coverage in
+    tests/admin/test_register_app_callback_authority.py.
+    """
+    # This file mocks the database to exercise manifest, redirect and secret
+    # handling. Canonical identity resolution is verified with real SQLite and
+    # real authenticated routes in test_setup_identity_binding.py.
+    identity = MagicMock(id="user-001", role="platform_admin", org_id="org-001")
+    monkeypatch.setattr(svc, "_resolve_setup_initiator", AsyncMock(return_value=identity))
+    with patch(
+        "src.admin.connections.service._check_existing_app_secret",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -56,7 +120,7 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return MagicMock()
+    return AsyncMock(spec=AsyncSession)
 
 
 def _make_client(
@@ -629,6 +693,10 @@ class TestRegisterAppCallbackService:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         # Mock the DB query to return a valid nonce
         mock_result = MagicMock()
@@ -651,6 +719,7 @@ class TestRegisterAppCallbackService:
         mock_db.execute = mock_execute
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nSECRET\n-----END RSA PRIVATE KEY-----",
@@ -687,8 +756,8 @@ class TestRegisterAppCallbackService:
         assert "SECRET" not in result
         assert "secret_value" not in result
         # Issue #2952 (D9): Chained onboarding redirect — goes to GitHub install page
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
 
 class TestManifestStructure:
@@ -725,6 +794,8 @@ class TestManifestStructure:
         assert perms["issues"] == "write"
         assert perms["pull_requests"] == "write"
         assert perms["checks"] == "write"
+        assert perms["actions"] == "write"
+        assert perms["workflows"] == "write"
         assert perms["metadata"] == "read"
 
     def test_manifest_events(self):
@@ -960,6 +1031,10 @@ class TestBrokerOAuthWriteThrough:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -979,6 +1054,7 @@ class TestBrokerOAuthWriteThrough:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 99999,
             "slug": "my-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",
@@ -1195,6 +1271,10 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1211,6 +1291,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1239,8 +1320,8 @@ class TestLoginEnabledSignal:
 
         # Issue #2952 (D9): Chained redirect always goes to GitHub install page
         # when slug is present (login_enabled signal is no longer in the URL).
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
     @pytest.mark.asyncio
     async def test_callback_redirect_clean_on_success(self):
@@ -1251,6 +1332,10 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1267,6 +1352,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1294,7 +1380,7 @@ class TestLoginEnabledSignal:
             result = await register_app_callback(code="c", state="s", db=mock_db)
 
         # Issue #2952 (D9): Chained redirect to GitHub install page
-        assert "github.com/apps/test-app/installations/new" in result
+        assert "/settings/connections?github_app=registered" in result
 
     @pytest.mark.asyncio
     async def test_callback_invalidates_login_enabled_cache(self):
@@ -1313,6 +1399,10 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1329,6 +1419,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1451,6 +1542,10 @@ class TestCallbackRedirectRelativePath:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1470,6 +1565,7 @@ class TestCallbackRedirectRelativePath:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 77777,
             "slug": "my-platform-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",
@@ -1503,8 +1599,8 @@ class TestCallbackRedirectRelativePath:
 
         # Issue #2952 (D9): Chained onboarding redirect — now goes to
         # GitHub's install page (external URL) instead of the SPA.
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
 
 class TestCallbackEntryLogging:

@@ -1,26 +1,8 @@
-"""Regression test: install-callback membership survives session close.
-
-Issue #3058: The original bug was that _create_installer_membership called
-db.flush() instead of db.commit(). This made the INSERT visible within the
-same session but caused it to roll back when the request session closed
-(get_db yields a session with no commit at teardown). The 9 existing tests
-in test_install_callback_membership.py cannot catch this bug class because
-they query inside the same still-open session where the flush is visible.
-
-This test exercises the REAL lifecycle:
-  1. Seed org/user/nonce in a committed session.
-  2. Run install_callback inside a second session, then CLOSE that session
-     WITHOUT committing (mirrors get_db teardown behavior).
-  3. Open a THIRD fresh session and assert the TenantMembership row for
-     (user, tenant) exists with role=org_admin (#4006), joined_via=app_install.
-
-This test MUST fail if db.commit() is reverted to db.flush() in
-_create_installer_membership.
-"""
+"""Verify connection setup across fresh sessions: human memberships remain unchanged
+and the bot identity persists in the selected ADP organization."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,23 +12,29 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
-    _PROVIDER_GITHUB_INSTALL,
     install_callback,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
-from src.shared.models.vault import MagicLinkNonce, UserIdentity
+from src.shared.models.vault import UserIdentity
+from tests.admin import install_setup_fixtures as setup_fixtures
+from tests.admin.install_setup_fixtures import (
+    bind_real_org_control,
+    issue_install_nonce,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _configure_github_app(monkeypatch):
+def _configure_github_app(monkeypatch, offline_setup_boundaries):
     """Block Secrets Manager and DDB in unit tests."""
     from src.admin.connections.github_app_provider import _reset_provider_for_testing
 
@@ -106,7 +94,7 @@ def _mock_github_client() -> MagicMock:
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
     client.get_bot_user = AsyncMock(return_value={"id": 424242, "login": "test-adp-agent[bot]", "type": "Bot"})
-    return client
+    return bind_real_org_control(client)
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +144,7 @@ class TestMembershipPersistenceAcrossSessions:
             seed_session.add(user)
             await seed_session.commit()
 
-            nonce = MagicLinkNonce(
-                jti="persist-jti-001",
-                provider=_PROVIDER_GITHUB_INSTALL,
-                provider_user_id="sub-persist-001",
-                channel_context=None,
-                target_user_id="user-persist-001",
-                expires_at=datetime.now(UTC) + timedelta(minutes=15),
-                consumed_at=None,
-            )
-            seed_session.add(nonce)
-            await seed_session.commit()
+            await issue_install_nonce(seed_session, user, jti="persist-jti-001")
 
         # --- Session 2: Run install_callback, then close WITHOUT committing ---
         # This mirrors the real get_db lifecycle: the session is yielded to the
@@ -194,14 +172,7 @@ class TestMembershipPersistenceAcrossSessions:
             )
             membership = (await verify_session.execute(stmt)).scalar_one_or_none()
 
-            assert membership is not None, (
-                "Membership row did not survive session close — "
-                "likely db.flush() instead of db.commit() in "
-                "_create_installer_membership (issue #3058)"
-            )
-            assert membership.role == "org_admin"
-            assert membership.joined_via == "app_install"
-            assert membership.github_org_id == "acme-test"
+            assert membership is None
 
             # The bot's canonical link and minimal membership survive the same
             # callback teardown; its seed must not alter the installer's role.

@@ -74,6 +74,7 @@ COORDINATOR_NODE_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-coordinated"
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["reviewer", "agent-codex-reviewer"])
 @pytest.mark.parametrize(
     ("state", "attempt", "has_history"),
     [
@@ -88,7 +89,7 @@ COORDINATOR_NODE_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-coordinated"
         ("superseded", 1, False),
     ],
 )
-async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_history):
+async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_history, persona):
     from unittest.mock import MagicMock
 
     from src.activity.schemas import InvocationChainItem, InvocationChainResponse
@@ -98,9 +99,7 @@ async def test_story_activity_uses_only_current_committed_dispatch(session, app_
         correlation_id="attempt-1",
         total_count=1,
         items=[
-            InvocationChainItem(
-                invocation_id="review-1", invoked_at="2026-09-15T14:54:00Z", persona="reviewer", status="in_progress", liveness="live"
-            )
+            InvocationChainItem(invocation_id="review-1", invoked_at="2026-09-15T14:54:00Z", persona=persona, status="in_progress", liveness="live")
         ],
     )
     monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: service)
@@ -126,7 +125,7 @@ async def test_story_activity_uses_only_current_committed_dispatch(session, app_
         assert card["execution_history"]["history_complete"] is True
         assert card["execution_history"]["runs"][0]["invocation_id"] == "review-1"
         if state in ("running", "awaiting_merge"):
-            assert card["activity"] == {"invocation_id": "review-1", "persona": "reviewer", "status": "in_progress", "liveness": "live"}
+            assert card["activity"] == {"invocation_id": "review-1", "persona": persona, "status": "in_progress", "liveness": "live"}
         else:
             assert card["activity"] is None
     else:
@@ -449,6 +448,7 @@ class TestTenantIsolation:
 
         assert response.status_code == 200, response.text
         assert response.json()["flow_id"] == flow.id
+        assert response.json()["execution_paused"] is True
 
 
 class TestPermissionGate:

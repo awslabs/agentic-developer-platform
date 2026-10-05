@@ -49,6 +49,7 @@ CLIENT_TOOL_CODEX_CLI = "codex_cli"
 CLIENT_TOOL_CURSOR = "cursor"
 CLIENT_TOOL_WEB_CHAT = "web_chat"
 CLIENT_TOOL_SDK = "sdk"
+CLIENT_TOOL_KIMI_CODE = "kimi_code"
 
 #: Every value this module can persist. Exposed so tests and any future consumer
 #: can assert against one source of truth instead of restating the literals.
@@ -59,6 +60,7 @@ KNOWN_CLIENT_TOOLS: frozenset[str] = frozenset(
         CLIENT_TOOL_CURSOR,
         CLIENT_TOOL_WEB_CHAT,
         CLIENT_TOOL_SDK,
+        CLIENT_TOOL_KIMI_CODE,
     }
 )
 
@@ -75,6 +77,8 @@ KNOWN_CLIENT_TOOLS: frozenset[str] = frozenset(
 _MARKERS: tuple[tuple[str, str], ...] = (
     # Claude Code ships as `claude-cli/<version> (external, cli)`; `claude-code`
     # covers the alternate spelling seen in its own telemetry.
+    ("kimi-code", CLIENT_TOOL_KIMI_CODE),
+    ("kimi-cli", CLIENT_TOOL_KIMI_CODE),
     ("claude-cli", CLIENT_TOOL_CLAUDE_CODE),
     ("claude-code", CLIENT_TOOL_CLAUDE_CODE),
     # Codex CLI's Rust build reports `codex_cli_rs/<version>`; `codex-cli`

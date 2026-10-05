@@ -197,7 +197,7 @@ def test_triage_runs_between_the_scan_and_the_handoff(jobs, triage_job):
         "triage consumes the findings the scan published, so it must depend on it. "
         f"Found {triage_job['needs']!r}"
     )
-    assert jobs["deliver"]["needs"] == ["code-review", "triage"], (
+    assert jobs["deliver"]["needs"] == ["code-review", "scan_gate", "triage"], (
         "deliver must depend on BOTH: `code-review` for the run date it consumes "
         "and `triage` for the markers its barrier joins on. Found "
         f"{jobs['deliver']['needs']!r}"
@@ -332,12 +332,10 @@ def test_the_stage_dispatches_nothing(triage_bodies):
 def test_the_gate_is_unconditional_and_has_no_fallback(triage_steps, triage_bodies):
     """The asymmetry that decides this: a failed night is recoverable by
     re-dispatch and costs one wasted scan, whereas issues filed under a dated EPIC
-    with placeholder sections cannot be recalled. So the gate must not be
-    conditional, and its failure must not be swallowed."""
+    with placeholder sections cannot be recalled. So the gate must share the filing condition, and its failure must not be swallowed.
+    Only verified completed filing may bypass both."""
     index = _steps_invoking(triage_bodies, "triage_group_findings.py", "validate")[0]
-    assert "if" not in triage_steps[index], (
-        "the plan gate is conditional; a gate that can be skipped is not a gate"
-    )
+    assert triage_steps[index]["if"] == "steps.recovery.outputs.resume != 'true'"
     body = triage_bodies[index]
     assert "|| true" not in body and "continue-on-error" not in str(
         triage_steps[index]
@@ -552,11 +550,9 @@ def test_a_quiet_night_still_leaves_the_marker(fake_gh, tmp_path):
 def test_the_filing_step_is_not_conditional(triage_steps, triage_bodies):
     """The marker is what the barrier joins on, and the filing step is what writes
     it -- on both the productive and the quiet path. A condition here is how a
-    quiet night stops signalling."""
+    quiet night stops signalling. Verified recovery already has its marker."""
     index = _steps_invoking(triage_bodies, "triage_group_findings.py", "file")[0]
-    assert "if" not in triage_steps[index], (
-        "the filing step is conditional, so some nights write no marker at all"
-    )
+    assert triage_steps[index]["if"] == "steps.recovery.outputs.resume != 'true'"
 
 
 def test_the_shards_are_persisted_even_when_the_stage_fails(triage_steps):
@@ -774,3 +770,19 @@ def test_this_suite_and_its_subject_are_pinned_into_script_tests():
     assert (
         text.count("- '.github/workflows/security-agent-nightly.yml'") == 2
     ), "the nightly must be in BOTH paths filters (push and pull_request)"
+
+
+def test_recovery_precedes_model_and_filing_and_gates_them_together(triage_steps, triage_bodies):
+    recovery = _steps_invoking(triage_bodies, "resume_filed_triage.py")[0]
+    for script, command in (("author_grouping_plan.py", "--new-findings"), ("triage_group_findings.py", "validate"), ("triage_group_findings.py", "file")):
+        index = _steps_invoking(triage_bodies, script, command)[0]
+        assert recovery < index
+        assert triage_steps[index]["if"] == "steps.recovery.outputs.resume != 'true'"
+    assert "set -o pipefail" in triage_bodies[recovery]
+
+
+def test_processed_scans_can_resume_delivery_without_retriage(jobs):
+    condition = jobs["deliver"]["if"]
+    for guard in ("!cancelled()", "needs.code-review.result == 'success'", "needs.scan_gate.result == 'success'",
+                  "needs.triage.result == 'success'", "needs.triage.result == 'skipped'", "needs.scan_gate.outputs.processed == 'true'"):
+        assert guard in condition

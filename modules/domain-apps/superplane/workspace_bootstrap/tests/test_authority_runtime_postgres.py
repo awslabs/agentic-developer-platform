@@ -240,6 +240,34 @@ class Cloud:
             def get(self, *, name=None, namespace=None):
                 self.check("get" if name else "list", namespace, name)
                 if name is None and self.kind == "Deployment":
+                    if hasattr(cloud.cluster, "components"):
+                        items = []
+                        for (
+                            ns,
+                            deployment,
+                        ), value in cloud.cluster.deployments.items():
+                            body = cloud.cluster.components.get(
+                                ("Deployment", ns, deployment)
+                            )
+                            items.append(
+                                deepcopy(body)
+                                if body
+                                else {
+                                    "apiVersion": "apps/v1",
+                                    "kind": "Deployment",
+                                    "metadata": {"name": deployment, "namespace": ns},
+                                    "spec": {
+                                        "template": {
+                                            "spec": {
+                                                "containers": [
+                                                    {"image": value["image"]}
+                                                ]
+                                            }
+                                        }
+                                    },
+                                }
+                            )
+                        return {"items": items}
                     images = getattr(cloud.cluster, "controller_images", None)
                     if images is None:
                         images = [

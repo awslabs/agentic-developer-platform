@@ -93,7 +93,10 @@ class BuildInputs:
 
     def __post_init__(self) -> None:
         values = {
-            "image": (self.image, r"superplane-(api|controller|platform-monitor)"),
+            "image": (
+                self.image,
+                r"superplane-(api|controller|platform-monitor|executor|paid-worker)",
+            ),
             "origin repository": (
                 self.origin_repository,
                 r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
@@ -101,7 +104,7 @@ class BuildInputs:
             "origin revision": (self.origin_revision, r"[0-9a-f]{40}"),
             "source path": (
                 self.source_path,
-                r"src/superplane-(api|controller|platform-monitor)",
+                r"(?:src/superplane-(api|controller|platform-monitor)|executor)",
             ),
             "ECR repository": (self.ecr_repository, r"adp-superplane-[a-z0-9-]+"),
         }
@@ -109,7 +112,12 @@ class BuildInputs:
             if not re.fullmatch(pattern, value):
                 raise LockError(f"invalid build {name}")
         if (
-            self.source_path != "src/" + self.image
+            self.source_path
+            != (
+                "executor"
+                if self.image in {"superplane-executor", "superplane-paid-worker"}
+                else "src/" + self.image
+            )
             or self.ecr_repository != "adp-" + self.image
         ):
             raise LockError(
@@ -235,7 +243,7 @@ def resolve_build_inputs(image: str, path: Path | None = None) -> BuildInputs:
             + "\n".join(f"  - {m}" for m in mechanisms)
         )
 
-    origin = data["upstream"]
+    origin = entry.get("origin", data["upstream"])
     return BuildInputs(
         image=image,
         origin_repository=str(origin.get("repository", "")),

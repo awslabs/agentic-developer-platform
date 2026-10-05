@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Add lambda root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -620,3 +622,110 @@ class TestSavedPersonaMapping:
         assert not result.success
         assert result.block_reason == "persona_model_selection_unavailable"
         publish.assert_not_called()
+
+
+# --- Write ordering (#5663, A09) ---
+
+
+class TestChainRowPrecedesProvenancePost:
+    """The webhook-events row must exist before provenance is POSTed.
+
+    Issue #5663 (A09). The gateway's /internal/v1/provenance endpoint verifies the
+    attribution a caller asserts against the chain's `webhook-events` origin row,
+    read through the `correlation-index` GSI. `_capture_invocation_event` is what
+    writes that row and `_write_pointer_and_provenance` is what sends the POST, so
+    if the POST runs first a brand-new chain has no row to be checked against and
+    the gateway cannot verify the origin post of ANY new chain.
+
+    Pinned as a test because the defect is pure statement order: both calls are
+    fail-soft, neither returns a value the other uses, and nothing else observable
+    changes if they are swapped back. Ordinary tests — including every other test in
+    this file, which mocks both — stay green either way, so a future refactor could
+    reintroduce it silently. The gateway-side consequence of losing this order is a
+    silent audit gap, because all three provenance producers ignore the response.
+    """
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.sqs_publisher.publish_envelope", return_value="msg-order")
+    def test_the_chain_row_is_written_before_the_provenance_post(
+        self, mock_sqs, mock_metric
+    ):
+        calls = []
+
+        with (
+            patch(
+                "common.spawn_persona._capture_invocation_event",
+                side_effect=lambda **kw: calls.append("chain_row"),
+            ),
+            patch(
+                "common.spawn_persona._write_pointer_and_provenance",
+                side_effect=lambda **kw: calls.append("provenance_post"),
+            ),
+        ):
+            result = spawn_persona(**_spawn_kwargs())
+
+        assert result.success is True
+        assert calls == ["chain_row", "provenance_post"], (
+            "the webhook-events chain row must be written BEFORE provenance is "
+            f"posted, so the gateway can verify the origin post; got {calls}"
+        )
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.sqs_publisher.publish_envelope", return_value="msg-order")
+    def test_both_writes_still_precede_the_sqs_publish(self, mock_sqs, mock_metric):
+        """Reordering must not let a worker start before its lineage row exists.
+
+        The worker reads the chain to decide what authority it holds, so publishing
+        first would race the record the gateway later verifies against.
+        """
+        calls = []
+
+        with (
+            patch(
+                "common.spawn_persona._capture_invocation_event",
+                side_effect=lambda **kw: calls.append("chain_row"),
+            ),
+            patch(
+                "common.spawn_persona._write_pointer_and_provenance",
+                side_effect=lambda **kw: calls.append("provenance_post"),
+            ),
+        ):
+            mock_sqs.side_effect = lambda *a, **k: (
+                calls.append("sqs_publish"),
+                "msg-order",
+            )[1]
+            result = spawn_persona(**_spawn_kwargs())
+
+        assert result.success is True
+        assert calls == ["chain_row", "provenance_post", "sqs_publish"], calls
+
+
+@pytest.mark.parametrize("resolved", [None, "approved-explicit-model"])
+def test_saved_model_selection_preserves_raw_alias(monkeypatch, resolved):
+    monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+    selected = []
+
+    def select(envelope, *, user_id):
+        assert user_id == "user-alice"
+        assert envelope["model_requested"] == resolved
+        selected.append(envelope)
+        return {**envelope, "model_resolved": resolved or "approved-default"}
+
+    with (
+        patch("common.persona_model_client.select_persona_model", side_effect=select),
+        patch(
+            "common.sqs_publisher.publish_envelope", return_value="msg-model"
+        ) as publish,
+        patch("common.spawn_persona._capture_invocation_event"),
+        patch("common.spawn_persona._write_pointer_and_provenance"),
+        patch("common.spawn_persona._emit_metric"),
+    ):
+        result = spawn_persona(
+            **_spawn_kwargs(model_requested="raw-alias", model_resolved=resolved)
+        )
+    assert result.success
+    assert len(selected) == 1
+    queued = publish.call_args.args[0]
+    assert queued["model_requested"] == "raw-alias"
+    assert queued["model_resolved"] == (resolved or "approved-default")

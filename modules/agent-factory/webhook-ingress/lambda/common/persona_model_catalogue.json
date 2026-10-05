@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "compatibility_class": "claude-agent-sdk",
-  "harness_contract_revision": "0.3.220",
+  "harness_contract_revision": "0.3.283",
   "allowed_patterns": [
     "anthropic.claude-*",
     "us.anthropic.claude-*",
@@ -9,6 +9,7 @@
     "global.anthropic.claude-*"
   ],
   "aliases": {
+    "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
@@ -20,6 +21,8 @@
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
   },
   "canonical_model_ids": [
+    "global.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-4-8",
     "global.anthropic.claude-opus-4-7",

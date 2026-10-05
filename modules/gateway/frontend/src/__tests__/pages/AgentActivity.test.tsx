@@ -1152,3 +1152,18 @@ describe('AgentActivity Page', () => {
     });
   });
 });
+
+
+describe('Codex developer activity', () => {
+  it('shows the native developer run and supports selecting its persona', async () => {
+    setupNonAdmin();
+    mockGetMyChains.mockResolvedValue({ chains: [], next_cursor: null, page_size: 20 });
+    mockGetMine.mockResolvedValue({ items: [makeInvocation({ persona: 'agent-codex-developer', topic: 'Codex is implementing the issue', status: 'in_progress' })], next_cursor: null, page_size: 20 });
+    const user = userEvent.setup();
+    await renderAgentActivityFlat(user);
+    expect(await screen.findByText('Codex is implementing the issue')).toBeInTheDocument();
+    const filter = screen.getByRole('combobox', { name: 'Filter by persona' });
+    await user.selectOptions(filter, 'agent-codex-developer');
+    await waitFor(() => expect(mockGetMine).toHaveBeenLastCalledWith(expect.objectContaining({ persona: 'agent-codex-developer' })));
+  });
+});

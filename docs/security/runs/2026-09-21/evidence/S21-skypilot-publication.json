@@ -1,0 +1,9 @@
+{
+  "repository": "adp-superplane-skypilot",
+  "registry": "000000000101.dkr.ecr.us-east-1.amazonaws.com",
+  "digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+  "tag": "s03-f8d893cf",
+  "manifest_byte_identity_verified": true,
+  "layers": 13,
+  "source": "S03 reviewed reproducible OCI recipe"
+}

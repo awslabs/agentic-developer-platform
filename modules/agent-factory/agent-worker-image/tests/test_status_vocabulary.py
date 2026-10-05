@@ -49,6 +49,7 @@ OBSERVED_WRITER_STATUSES = (
     "failed",  # bootstrap failure, zero-token run, non-zero exit, post-agent failure
     "skipped",  # idempotency: redelivery of already-merged work
     "budget_stopped",  # #4187: a spend cap ended the run
+    "aborted",  # #3963: an operator stopped the run and the abort was authorized
 )
 
 

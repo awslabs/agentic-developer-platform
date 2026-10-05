@@ -149,7 +149,7 @@ class TestRankUnderstandResults:
 
         results = [
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "CheckoutService",
                     "file": "src/emailservice/demo_pb2_grpc.py",
@@ -158,7 +158,7 @@ class TestRankUnderstandResults:
                 },
             ),
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "checkoutService",
                     "file": "src/checkoutservice/main.go",
@@ -179,7 +179,7 @@ class TestRankUnderstandResults:
 
         results = [
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "GetQuote",
                     "file": "src/shippingservice/main.go",
@@ -188,7 +188,7 @@ class TestRankUnderstandResults:
                 },
             ),
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "Quote",
                     "file": "src/shippingservice/quote.go",
@@ -209,7 +209,7 @@ class TestRankUnderstandResults:
 
         results = [
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "PlaceOrder",
                     "file": "src/frontend/genproto/demo_pb2_grpc.py",
@@ -218,7 +218,7 @@ class TestRankUnderstandResults:
                 },
             ),
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "PlaceOrder",
                     "file": "src/checkoutservice/main.go",
@@ -238,7 +238,7 @@ class TestRankUnderstandResults:
 
         results = [
             SearchHit(
-                repo_name="microservices-demo",
+                repo_name="GoogleCloudPlatform/microservices-demo",
                 data={
                     "symbol": "CheckoutService",
                     "file": "src/emailservice/demo_pb2_grpc.py",
@@ -284,7 +284,7 @@ class TestCodeIndexRanking:
         # Disable Neptune so we hit the code-index fallback
         with patch("door.neptune_client.neptune_enabled", return_value=False):
             results = await understand(
-                "microservices-demo::checkoutService",
+                "GoogleCloudPlatform/microservices-demo::checkoutService",
                 s3_client=mock_s3_client,
                 bucket="test-bucket",
                 prefix="code-indexes",
@@ -303,7 +303,7 @@ class TestCodeIndexRanking:
         """Quote query should rank Go struct above GetQuote substring match."""
         with patch("door.neptune_client.neptune_enabled", return_value=False):
             results = await understand(
-                "microservices-demo::Quote",
+                "GoogleCloudPlatform/microservices-demo::Quote",
                 s3_client=mock_s3_client,
                 bucket="test-bucket",
                 prefix="code-indexes",
@@ -319,7 +319,7 @@ class TestCodeIndexRanking:
         """PlaceOrder should rank hand-written Go above generated pb2_grpc stub."""
         with patch("door.neptune_client.neptune_enabled", return_value=False):
             results = await understand(
-                "microservices-demo::PlaceOrder",
+                "GoogleCloudPlatform/microservices-demo::PlaceOrder",
                 s3_client=mock_s3_client,
                 bucket="test-bucket",
                 prefix="code-indexes",
@@ -369,7 +369,7 @@ class TestNeptuneResolveSymbolRanking:
         with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
             from door.neptune_client import resolve_symbol
 
-            results = resolve_symbol("microservices-demo", "checkoutService")
+            results = resolve_symbol("GoogleCloudPlatform/microservices-demo", "checkoutService")
 
         assert len(results) == 2
         # Go struct (non-generated) should rank first
@@ -417,7 +417,7 @@ class TestNeptuneResolveSymbolRanking:
         with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
             from door.neptune_client import resolve_symbol
 
-            results = resolve_symbol("microservices-demo", "Quote")
+            results = resolve_symbol("GoogleCloudPlatform/microservices-demo", "Quote")
 
         assert len(results) == 2
         # Exact-name "Quote" (score 200) ranks above substring "GetQuote" (score 100)

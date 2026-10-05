@@ -183,13 +183,15 @@ class TestTokenTtl:
 
 
 class TestSetupAgentControl:
-    def test_authority_mode_starts_rotation_and_closes_it_before_clearing(self, tmp_path):
+    @pytest.mark.parametrize("flag", ["FEATURE_AGENT_CONTROL_ENABLED", "FEATURE_AGENT_EXPLANATIONS_ENABLED"])
+    def test_authority_mode_starts_rotation_and_closes_it_before_clearing(self, tmp_path, flag):
         agent_env = {}
         with (
             patch.dict(
                 os.environ,
                 {
-                    "FEATURE_AGENT_CONTROL_ENABLED": "true",
+                    "FEATURE_AGENT_CONTROL_ENABLED": "false",
+                    flag: "true",
                     "ADP_AGENT_AUTHORITY_ENABLED": "true",
                     "POD_IP": "10.0.1.5",
                     "ADP_CONTROL_ENVELOPE_KEYS_FILE": "/var/run/adp-control-keys/keys.json",

@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "task_id": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+  "invocation_id": "f6239542-784b-44b1-adf0-fde1e8c3a9d5",
+  "persona": "agent-task-investigator",
+  "status": "cancel_requested",
+  "version": 6,
+  "created_at": "2026-09-25T04:49:40Z",
+  "updated_at": "2026-09-25T04:50:19Z",
+  "deadline_at": "2026-09-25T05:19:40Z",
+  "latest_event_cursor": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742:5",
+  "oldest_event_cursor": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742:1",
+  "generation": 1,
+  "runtime_attempt_id": "56faa668-ac61-4059-8e97-75ab3ab3b1a0",
+  "execution_health": "unknown",
+  "recovery_required": false,
+  "result": null,
+  "error": null,
+  "input_request": null,
+  "command_receipts": [
+    {
+      "status": "accepted",
+      "command_id": "e13cbbe7-2c2e-4359-829e-5b15453ad3a7",
+      "turn_id": null,
+      "kind": "cancel",
+      "turn_number": null,
+      "authority_expires_at": "2026-09-25T04:55:31Z",
+      "handoff": "not_started",
+      "command_sequence": 1,
+      "schema_version": "1.0",
+      "accepted_at": "2026-09-25T04:50:19Z"
+    }
+  ],
+  "queue_ack_status": "pending",
+  "request_id": "83261730-097a-4ec0-b772-4c1c7a3b1680",
+  "external_reference": "task-api-5792-20260925-live1-cancel"
+}

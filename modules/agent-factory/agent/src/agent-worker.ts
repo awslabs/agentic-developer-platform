@@ -1,8 +1,10 @@
+import { developerRecoveryContext } from './developer-recovery';
+import { writeFailureReport } from './failure-report';
 import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
 import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
+import { headIsPublished } from './lib/gitPublication';
 import { saveToS3Fallback } from './utils/ghPost';
-import { controlDeadlineAt } from './control-deadline';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
@@ -20,17 +22,18 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
 
 import { loadHumanCommunication } from './human-communication';
 import { assistantText } from './reporting-text';
+import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
+import { ClaudeProgress, claudeTaskChecklist } from './claude-progress';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { TmpSpillStore } from './utils/spill';
 import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
+import { initTokenManager, isTokenManagerInitialized, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
 import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
-import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
-import { resolveAgentLogGroup } from './lib/logGroup';
+import { createWorkerActivityLog } from './worker-activity-log';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -71,6 +74,18 @@ let activeLiveComment: LiveStatusComment | null = null;
 let activeControlRuntime: {
   adapter: ClaudeControlAdapter;
   gate: PauseGate;
+  /**
+   * The run's steering delivery pump — Issue #3965.
+   *
+   * Published here rather than kept in `main()` because two things in
+   * `runAgent()` need it and neither can be reached from there: the query loop's
+   * boundaries, where a completing run must drain or cancel the queue
+   * deterministically, and the re-subscription that follows every retry. It is
+   * part of this object rather than a separate module-scope binding so a run
+   * either has the whole control runtime or none of it — a half-published runtime
+   * would be a steering queue with no attempt to deliver to.
+   */
+  steerQueue: SteerQueue;
 } | null = null;
 
 // Correlation propagation — Phase 2-d (EPIC #779)
@@ -87,21 +102,22 @@ import { CodexEventWatcher } from './components/codexEventWatcher';
 // Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
 // so the control surface is unit-testable without starting a run.
 import { ControlListener } from './control-listener';
-import { revalidateQueuedCommand } from './control-revalidation';
-import { parseVerificationKeys } from './control-envelope';
+import type { ExplanationEvents } from './explanation-events';
+let activeExplanationEvents: ExplanationEvents | undefined;
 import { ControlStateStore, type ControlAction } from './control-state';
+// Issue #5840: the heartbeat/exit-watchdog emitter, shared with the live
+// pause-expiry runner so both describe the same execution and the same gate.
+import { startRunHeartbeat } from './run-heartbeat';
 // Issue #3962: the harness-neutral control contract and its first adapter. The
 // worker composes them; it does not reach past the interface into the SDK.
-import { listenerActionsFor } from './control-runtime';
-import {
-  ClaudeControlAdapter,
-  ClaudeBackgroundWorkObserver,
-} from './harnesses/claude-control';
+import { ClaudeControlAdapter } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
-// Issue #3961: the outcome→journal mapping and the gate/store mirror live in their
-// own module so they can be unit-tested; importing this file from a test pulls the
-// SDK's ESM entry point into Jest and the suite cannot parse.
-import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
+// Issue #5891: the shared composition — see control-runtime-factory.ts for why
+// this replaced an inline assembly of pause gate + adapter + store + queue +
+// listener that only `main()` could build.
+import { startControlRuntime } from './control-runtime-factory';
+import { isControlCancellation } from './control-runtime';
+import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -154,6 +170,8 @@ import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage a
 // Configuration
 // ============================================================================
 
+const runtimeAppAuth = captureRuntimeAppAuth();
+
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER || '';
@@ -203,61 +221,10 @@ const EXIT_RETRYABLE = 75;
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = resolveAgentLogGroup();
-const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
-const cwClient = new CloudWatchLogsClient({ region: AWS_REGION, credentials: workerAwsCredentials() });
-let cwBuffer: { timestamp: number; message: string }[] = [];
-let cwInitialized = false;
-
-async function initCloudWatch(): Promise<void> {
-  try {
-    await cwClient.send(new CreateLogStreamCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-    }));
-    cwInitialized = true;
-    log('INFO', `CloudWatch logging initialized for @agent-${AGENT_TYPE}`);
-  } catch (err: unknown) {
-    if ((err as { name?: string }).name !== 'ResourceAlreadyExistsException') {
-      console.warn('CloudWatch init failed:', (err as Error).message);
-    } else {
-      cwInitialized = true;
-    }
-  }
-}
-
-function log(level: string, message: string, context?: Record<string, unknown>): void {
-  const entry = {
-    level,
-    message,
-    issueNumber: ISSUE_NUMBER,
-    agentType: AGENT_TYPE,
-    ...context,
-    timestamp: new Date().toISOString(),
-  };
-  const line = JSON.stringify(entry);
-
-  const emoji = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : '→';
-  console.log(`${emoji} [${AGENT_TYPE}] ${message}`);
-
-  if (cwInitialized) {
-    cwBuffer.push({ timestamp: Date.now(), message: line });
-  }
-}
-
-async function flushCloudWatch(): Promise<void> {
-  if (!cwInitialized || cwBuffer.length === 0) return;
-  const events = cwBuffer.splice(0, cwBuffer.length);
-  try {
-    await cwClient.send(new PutLogEventsCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-      logEvents: events,
-    }));
-  } catch (err) {
-    console.warn('CloudWatch flush failed:', (err as Error).message);
-  }
-}
+const activityLog = createWorkerActivityLog(AGENT_TYPE, ISSUE_NUMBER);
+const initCloudWatch = activityLog.start;
+const log = activityLog.log;
+const flushCloudWatch = activityLog.flush;
 
 const cwFlushTimer = setInterval(flushCloudWatch, 5000);
 
@@ -458,7 +425,7 @@ async function refreshAppToken(): Promise<void> {
   // in a mediated run means a call that should have gone through the gateway, and
   // re-minting is neither possible nor the fix.
   if (isMediatedRun()) return;
-  if (isBrokerEnabled()) {
+  if (isTokenManagerInitialized() || isBrokerEnabled()) {
     await getRuntimeGitHubToken();
     return;
   }
@@ -836,8 +803,8 @@ function loadRules(): string {
   const phaseMap: Record<string, string[]> = {
     product: ['phases/inception/requirements-analysis.md', 'phases/inception/user-stories.md'],
     architect: ['phases/inception/application-design.md', 'phases/inception/units-generation.md', 'phases/construction/functional-design.md'],
-    developer: ['phases/construction/code-generation.md'],
-    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md'],
+    developer: ['phases/construction/code-generation.md', 'phases/construction/task-breakdown.md'],
+    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md', 'phases/construction/task-breakdown.md'],
     operations: ['phases/operations/deployment.md'],
   };
 
@@ -1045,6 +1012,7 @@ ${MEDIATED_GITHUB_PROMPT}` : ''}
 ---
 
 ## Your Task
+${AGENT_TYPE === 'developer' ? developerRecoveryContext(process.env.ADP_DEVELOPER_RECOVERY_CONTEXT) : ''}
 Process this GitHub issue and complete the assigned work.${mainIssueInfo}
 
 ### Issue #${issue.number}: ${issue.title}
@@ -1166,7 +1134,19 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
-## Pre-submit checks (MANDATORY before requesting review)
+${AGENT_TYPE === 'developer' ? `## Developer delivery and review handoff
+
+Implement the agreed story, including its integration, focused regression tests
+and documentation. Use targeted checks during development where they help solve
+the task; do not run every test in a touched module by default.
+Commit and push the implementation, then open or reuse its ready PR. Do not create
+a draft PR. Disclose checks passed, failed or not run and any incomplete evidence.
+Once that PR is open, stop developer work and return the PR link immediately.
+Do not run further tests, lint, validation-receipt verification, CI polling or
+repair loops after publication. An existing ready PR for the delivered story goes
+directly to handoff. Codex owns review, additional validation, repairs and merge.
+The engine records the PR handoff; development does not declare the story closed.
+` : `## Pre-submit checks (MANDATORY before requesting review)
 
 Do not create draft PRs, even if older task text requests one. Complete the agreed implementation, integration, tests and documentation, then run the linters and tests for the module(s) you touched before opening a ready PR or requesting review. Incomplete branch checkpoints may be pushed with check status disclosed; share commit links and continue working. Reuse any existing PR, marking an existing draft ready only after the same completion checks. Required CI still gates merge.
 
@@ -1187,11 +1167,43 @@ Do not create draft PRs, even if older task text requests one. Complete the agre
 - **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
 - **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
 
+### Final-commit validation and long tests
+
+Commit intended files before final validation. Use \`adp-validate run --cwd <module> --timeout 3600 -- <command> <args>\`
+for each required check. For compound commands use \`-- sh -c 'setup && check'\`.
+The command runs in a disposable detached worktree at HEAD: include dependency
+setup (for example \`npm ci\`) in that command. Do not share mutable node_modules
+or virtualenvs with the author checkout. Long suites must use this isolated runner;
+you may continue editing the author checkout, but any new commit needs fresh checks.
+Receipts and full logs are stored outside the source tree. Successful results are
+reused only for the same commit, command, cwd, timeout and recorded environment.
+Use \`--no-cache\` for checks depending on changing external services or dependencies.
+A receipt is local execution evidence, not proof of complete acceptance coverage.
+
+Immediately before publishing a ready PR/requesting review, run \`adp-validate verify\`.
+If it fails, rerun the recorded commands at the final HEAD and fix or disclose
+failures; do not describe an earlier commit's tests as validating the final commit.
+Do not leave uncommitted implementation for the entrypoint to finish: leftovers
+are preserved as an unvalidated checkpoint, with no ready-for-review handoff.
+If no executable checks apply, explain why in the handoff; do not invent a token check.
+
+### Requirement evidence in the final handoff (report-only)
+
+Re-read the issue and accepted clarifications, including requested amendments to
+an existing PR. In the PR description and final report, include one row per
+requirement: requirement | implementation location | evidence (command and commit,
+or manual observation) | met / partial / unverified / not applicable.
+Explicitly identify production wiring, error paths and documentation where the
+issue requires them. State missing evidence and unmet requirements plainly.
+Passing tests alone do not establish requirement coverage. This checklist reports
+coverage for the reviewer; it does not introduce a new automated acceptance gate.
+
 ### Post-commit sanity
 
 After committing, before pushing, run \`git diff HEAD~1 --stat\` and confirm the files you expected to change are the only ones that changed. If the linter reformatted a file you didn't mean to touch, that's a surgical-changes violation — revert it.
 
-Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.
+Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.`}
+
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
@@ -1473,6 +1485,11 @@ Now, complete the assigned task.`;
       log('INFO', `CheckRunStreamer active for check run ${crId}`);
     }
   }
+  if (!checkRunStreamer) checkRunStreamer = new CheckRunStreamer({
+    checkRunId: 0, repo: `${REPO_OWNER}/${REPO_NAME}`, tokenProvider: () => '',
+    persona: AGENT_TYPE, issueNumber: parseInt(ISSUE_NUMBER) || 0, model: MODEL,
+    log: msg => log('WARN', msg),
+  });
   // ─────────────────────────────────────────────────────────────────────────
 
   // ── Codex Event Watcher ───────────────────────────────────────────────────
@@ -1507,11 +1524,6 @@ Now, complete the assigned task.`;
     let queryCompleted = false;          // tracks whether a 'result' message was received
     let queryCompletedTime: number | null = null; // timestamp when query completed
 
-    // Max time (ms) to wait for the stream to close after query completes.
-    // If the SDK iterator doesn't terminate within this window, the heartbeat
-    // will force-exit the process.  10 minutes is generous — in practice the
-    // stream should close within seconds.
-    const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
     // Issue #4369: watch the stream for the stale-token signature. The failing
     // pushes happen inside the SDK subprocess, so this is the only place the
@@ -1569,59 +1581,30 @@ Now, complete the assigned task.`;
     // Heartbeat: log a "still alive" message if no SDK messages arrive for 60s.
     // Also acts as a safety net: if the query already completed but the stream
     // hasn't closed, force-exit after POST_COMPLETION_TIMEOUT_MS.
-    const heartbeat = setInterval(() => {
-      const silentSec = Math.round((Date.now() - lastActivityTime) / 1000);
-      // Issue #3961: a paused run is silent *on purpose*. Every read below is of
-      // the live gate rather than a captured boolean, because a pause can begin
-      // and end between two ticks of this interval.
-      const gate = activeControlRuntime?.gate;
-      const paused = gate?.isPauseActive() === true;
-
-      // Safety net: force exit if stream hangs after query completion.
-      //
-      // Skipped while paused. This watchdog exists to catch a stream that never
-      // closed, and it cannot distinguish that from a run whose last tool is
-      // parked at the admission barrier — so left unguarded it would kill a
-      // healthy paused run within POST_COMPLETION_TIMEOUT_MS, i.e. an operator
-      // pausing to look at something would come back to a dead pod. The pause has
-      // its own bound (the gate's expiry timer, clamped to the pod deadline), so
-      // skipping here defers to a bound rather than removing one. Note the
-      // condition is only about *starting* the exit: once the pause is released,
-      // the elapsed comparison uses the original completion time, so a stream
-      // that really is hung is still caught on the next tick.
-      if (queryCompleted && queryCompletedTime && !paused) {
-        const elapsed = Date.now() - queryCompletedTime;
-        if (elapsed >= POST_COMPLETION_TIMEOUT_MS) {
-          const msg = `⚠️  Force exit — stream did not close ${Math.round(elapsed / 1000)}s after query completed`;
-          console.log(msg);
-          log('WARN', msg, { phase: 'post-completion-timeout', elapsedMs: elapsed });
-          process.exit(0);
-        }
-      }
-
-      // Visibility is preserved through a pause, not suppressed: the heartbeat
-      // keeps logging, and says *why* it is quiet. An operator watching the log
-      // of a paused run must be able to tell "paused, holding N tools" apart from
-      // "stalled", and a silent log is the one thing that makes those identical.
-      if (silentSec >= 60) {
-        const msg = paused
-          ? `💓 Heartbeat — paused by operator, no SDK messages for ${silentSec}s (turn ${turnCount})`
-          : `💓 Heartbeat — no SDK messages for ${silentSec}s (turn ${turnCount})`;
-        console.log(msg);
-        log('INFO', msg, {
-          phase: 'heartbeat',
-          silentSeconds: silentSec,
-          turn: turnCount,
-          ...(paused
-            ? {
-                controlPhase: gate?.currentPhase(),
-                heldTools: gate?.heldCount(),
-                activeTools: gate?.activeToolCount(),
-              }
-            : {}),
-        });
-      }
-    }, 30_000);
+    //
+    // The decision logic lives in `run-heartbeat.ts` (#5840) so that the live
+    // pause-expiry experiment can run the *same* production emitter against the
+    // gate it is actually pausing. While this was inline, the only heartbeat
+    // records in existence described this worker's own gate, so they were evidence
+    // about a different execution than any experiment's — and W2-05's visibility
+    // claims are precisely that a paused run keeps reporting and says it is paused.
+    // Thresholds, wording, `phase` values and the paused-tick fields are unchanged;
+    // `run-heartbeat.test.ts` pins them.
+    //
+    // Every source below is read live rather than captured, as before: a pause can
+    // begin and end between two ticks of this interval (#3961).
+    const heartbeat = startRunHeartbeat(
+      {
+        gate: () => activeControlRuntime?.gate ?? null,
+        lastActivityAt: () => lastActivityTime,
+        turnCount: () => turnCount,
+        queryCompletedAt: () => (queryCompleted ? queryCompletedTime : null),
+        // Exiting stays here rather than moving into the module: the module decides,
+        // the worker acts, which is what keeps the decision unit-testable.
+        onForceExit: () => process.exit(0),
+      },
+      { log, console: (msg) => console.log(msg) },
+    );
 
     try {
       // Issue #3962 left the adapter's three transport hooks (`attemptInputFactory`,
@@ -1644,15 +1627,18 @@ Now, complete the assigned task.`;
       const control = activeControlRuntime;
       // Labeled loop so we can break out of the `for await` from inside the
       // switch statement.  Without the label, `break` only exits the switch.
+      const liveProgress = activeExplanationEvents ? new ClaudeProgress(activeExplanationEvents) : undefined;
       queryLoop:                          // eslint-disable-line no-labels
       for await (const message of resilientQuery({
         queryParams: {
           prompt,
           options: {
+            spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
+            includePartialMessages: true,
             model: MODEL,
             cwd: CWD,
             allowedTools: [
-              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
+              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill', 'TodoWrite',
               ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
               ...(AIDLC_ENABLED ? ['Task'] : []),
             ],
@@ -1730,11 +1716,13 @@ Now, complete the assigned task.`;
         onSessionId: (sessionId) => {
           log('INFO', `SDK session id captured: ${sessionId}`, { phase: 'session-id', sessionId });
           writeResultMetadata({ session_id: sessionId });
+          checkRunStreamer?.runRecord.session(sessionId);
         },
         log: (msg) => log('WARN', msg),
       })) {
         lastActivityTime = Date.now();
 
+        liveProgress?.observe(message);
         switch (message.type) {
           case 'assistant': {
             turnCount++;
@@ -1755,6 +1743,8 @@ Now, complete the assigned task.`;
             if (activeLiveComment) {
               activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
+                const checklist = claudeTaskChecklist(block);
+                if (checklist) activeLiveComment.setTaskChecklist(checklist);
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
                   activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);
@@ -1865,7 +1855,23 @@ Now, complete the assigned task.`;
         }
       }
     } finally {
-      clearInterval(heartbeat);
+      // Issue #3965: the run's steering queue closes here — at the boundary where
+      // the query loop has ended — and deterministically. This is the earliest
+      // honest point: past this line there is no attempt, no transport and no
+      // reader, so nothing queued can ever be delivered, and every path out of the
+      // loop reaches this `finally` (normal completion, a thrown error, an abort's
+      // typed cancellation and a `break queryLoop` alike).
+      //
+      // "Drains or cancels deterministically" resolves to cancel, and deliberately
+      // so. A last-gasp drain would have to either push into a closing transport —
+      // which reports `rejected` and settles the command as undelivered anyway, so
+      // it buys nothing — or hold teardown open waiting for a boundary that is not
+      // coming. Cancelling says the true thing: the run ended before these
+      // instructions were delivered. Leaving them `pending` is the one unacceptable
+      // option, because the journal an operator reads back would show an
+      // instruction still in flight for a run that is over.
+      activeControlRuntime?.steerQueue.dispose();
+      heartbeat.stop();
       // Stop the Codex event watcher before the streamer so no late poll can
       // forward into a destroyed streamer (issue #2884).
       codexEventWatcher.dispose();
@@ -1891,7 +1897,9 @@ Now, complete the assigned task.`;
     return lastTurnText || fullResponse.slice(-3000) || 'Task completed but no response returned.';
   } catch (error) {
     const err = error as Error;
-    log('ERROR', 'Agent execution failed', { error: err.message });
+    log(isControlCancellation(error) ? 'INFO' : 'ERROR',
+      isControlCancellation(error) ? 'Agent execution stopped by operator' : 'Agent execution failed',
+      { error: err.message });
     // Issue #4187: a budget stop is a distinct outcome, not a generic failure.
     // The gateway already returns a non-retryable 402 with a `scope`
     // discriminator, and resilientQuery correctly refuses to retry it — but the
@@ -1987,7 +1995,7 @@ async function uploadGitChangesToS3(): Promise<void> {
 
     // Check if there are any changes (committed but not pushed, or uncommitted)
     const status = execSync('git status --porcelain', { cwd: CWD, encoding: 'utf-8' }).trim();
-    const unpushed = execSync('git log --oneline origin/main..HEAD 2>/dev/null || echo ""', { cwd: CWD, encoding: 'utf-8' }).trim();
+    const unpushed = !headIsPublished(CWD);
 
     if (!status && !unpushed) {
       log('INFO', 'No git changes to backup to S3');
@@ -2100,11 +2108,13 @@ async function main(): Promise<void> {
   console.log('═'.repeat(60));
   console.log('');
 
+  // Validate the external token directory before the manager can publish.
+  configureRuntimeGitHubAdapters(CWD);
   await initCloudWatch();
 
   // Initialize token refresh for long-running tasks (tokens expire after 1 hour)
   const appId = process.env.GH_APP_ID || '';
-  const appKey = process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY || '';
+  const appKey = runtimeAppAuth.privateKey || '';
   const repoOwner = process.env.REPO_OWNER || '';
   // Issue #4272: in broker mode there is no private key in this process — the
   // gateway gatekeeper mints. The predicate MUST NOT require appKey then, or the
@@ -2112,10 +2122,9 @@ async function main(): Promise<void> {
   // dies at the 1-hour mark with a 401 while git/gh degrade quietly.
   const brokerMode = isBrokerEnabled();
 
-  // canInitTokenManager() rather than a hand-written predicate: this decision is
-  // tested once in token-refresh.ts. A local copy here is what silently goes
-  // false when the key stops being exported.
-  if (canInitTokenManager()) {
+  // Capture uses canInitTokenManager before removing signing aliases from env.
+  // Re-evaluating the local-mint predicate now would silently disable renewal.
+  if (runtimeAppAuth.enabled) {
     initTokenManager({
       appId,
       privateKey: brokerMode ? undefined : appKey,
@@ -2170,11 +2179,10 @@ async function main(): Promise<void> {
     // Write the initial token to file BEFORE the SDK query starts, so that
     // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).
     try {
-      const initialToken = await getToken();
-      writeTokenFile(initialToken);
+      await initializeRuntimeGitHubToken();
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
-      if (brokerMode) throw err;
+      if (brokerMode || runtimeAppAuth.required) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
   } else if (isMediatedRun()) {
@@ -2184,7 +2192,7 @@ async function main(): Promise<void> {
     // through would abort every mediated run at startup.
     log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
   } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
-    if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
+    if (brokerMode || runtimeAppAuth.required) throw new Error('GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 
@@ -2239,90 +2247,43 @@ async function main(): Promise<void> {
   let memoryContext = '';
   let detectedComponent = 'general';
   let agentSucceeded = false;
+  let agentAborted = false;
   let agentResult = '';
 
   // Issue #3960: the in-pod control listener. Declared outside the try so the
   // finally block can close the port on every exit path — including a thrown
   // error — rather than only on the success path.
   let controlListener: ControlListener | null = null;
-  // Issue #3962: the harness adapter, constructed unconditionally and outside the
-  // try for the same reason. Constructing it costs nothing and starts nothing —
-  // it holds an attempt registry and no transport until `resilientQuery` attaches
-  // one — so it is not gated on the listener having started. That independence is
-  // deliberate: the adapter is the object the retry-safety rules live in, and
-  // making it conditional on a control listener would tie the correctness of a
-  // retry to whether an operator had enabled an intervention channel.
-  //
-  // Issue #3961: the adapter now carries the pause barrier. The gate is the
-  // object the `PreToolUse` hook consults, so it must exist before the query
-  // options are built — which is why it is constructed here and not inside the
-  // query setup. Its deadline comes from the pod's own remaining budget, so a
-  // pause can never outlive the run it is pausing.
-  //
-  // The observer is passed to BOTH the gate (as its background-work probe) and
-  // the hooks (which feed it) so there is exactly one answer to "is anything
-  // still running behind the tools that finished?". Two instances would let the
-  // gate consult a probe nobody was updating, and an un-updated probe answers `0`
-  // — a fabricated quiescence claim, which is the single failure this whole story
-  // exists to prevent.
-  const backgroundWork = new ClaudeBackgroundWorkObserver();
-  const pauseGate = new PauseGate({
-    deadlineAt: controlDeadlineAt,
-    backgroundWorkProbe: () => backgroundWork.count(),
-    log: (msg) => log('DEBUG', msg),
-  });
-  const controlAdapter = new ClaudeControlAdapter({
-    log: (msg) => log('DEBUG', msg),
-    pauseGate,
-    backgroundWorkObserver: backgroundWork,
-  });
+  // Issue #5891: this composition — pause barrier, Claude adapter, command
+  // store, steering queue and the in-pod HTTP listener — used to be assembled
+  // inline here and nowhere else. That made it impossible for anything other
+  // than an ordinary run to start the *same* runtime the gateway's dashboard
+  // talks to: a fixture wanting to prove pause/resume/steer/abort reach a real
+  // agent had no choice but to build a second, similar-looking copy, which
+  // proves the pieces fit together and nothing about production. Extracting it
+  // to `startControlRuntime` (control-runtime-factory.ts) removes that gap —
+  // ordinary runs and the fixture launcher now call the one function that
+  // decides how a control runtime is built. This call is behavior-preserving:
+  // same construction order, same options, same teardown obligations as the
+  // inline version it replaces.
   try {
     // Started here, after config resolution and before the SDK query, so a
     // state read is answerable for the whole life of the run. Everything the
     // listener needs was placed in this process's env by the entrypoint, which
     // only does so when the flag is on and registration succeeded — so an
     // unregistered listener cannot exist.
-    const controlStore = new ControlStateStore({
-      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      // Issue #3962: derived from the adapter rather than declared here, so the
-      // wire cannot be enabled without the transport behind it — there is only one
-      // place left to say yes. Issue #3961 is what that buys: `pause`/`resume` are
-      // now in the ADP set and this adapter carries a barrier, so the intersection
-      // yields them and the listener answers 202 instead of 501. `steer`/`abort`
-      // stay out on both sides.
-      supportedActions: listenerActionsFor(controlAdapter),
-      capabilityProvider: () => controlAdapter.capabilities(),
-      revalidate: revalidateQueuedCommand,
+    const { runtime, listener, outcome, events } = await startControlRuntime({
+      log,
+      // Issue #3965: the deterministic live-comment marker. Written on the
+      // outcome, which is after the handoff — never on acceptance. The
+      // ordinary worker has a live comment to append to; a fixture launcher
+      // passes no callback, which is a correct, inert choice.
+      onSteerOutcome: ({ commandId, outcome }) => {
+        activeLiveComment?.appendActivity(steerMarker(commandId, outcome));
+      },
     });
-    // Issue #3961: mirror every gate-initiated transition — the admitted-tool
-    // count (replacing S1's permanent `null`, and only for a run that actually has
-    // a gate, because `0` is a quiescence claim only the gate may make), plus the
-    // confirm/unavailable/expiry edges that change admission with no command behind
-    // them. Without the latter the store can report `paused` while tools run.
-    bindRuntimeTransitionsToStore({ adapter: controlAdapter, store: controlStore, log });
-    const listener = new ControlListener({
-      bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
-      port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
-      token: process.env.ADP_CONTROL_TOKEN || '',
-      tokenExpiresAt: process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '',
-      credentialFile: process.env.ADP_CONTROL_CREDENTIAL_FILE,
-      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      store: controlStore,
-      // Issue #3961: the seam that makes an accepted command actually happen.
-      // Without it every 202 was a promise nothing kept.
-      executor: (action, commandId) =>
-        applyControlCommand({ action, commandId, adapter: controlAdapter, store: controlStore, log }),
-      // Issue #5028: this run's own identity and the gateway's public verification
-      // keys. Both are placed here by the entrypoint. An absent key map means
-      // live-control commands are refused — the read paths still work, and no verb
-      // is implemented yet, so that is the expected state today.
-      runId: process.env.ADP_CONTROL_RUN_ID || '',
-      envelopeKeys: parseVerificationKeys(process.env.ADP_CONTROL_ENVELOPE_KEYS),
-      envelopeKeysFile: process.env.ADP_CONTROL_ENVELOPE_KEYS_FILE,
-      logger: (level, message, context) => log(level.toUpperCase(), message, context),
-    });
-    const outcome = await listener.start();
-    if (outcome.started) {
+    if (outcome.started) { controlListener = listener; activeExplanationEvents = events; }
+    if (outcome.started && runtime && listener) {
       controlListener = listener;
       // Issue #3961: publishing the runtime here — and only here — is what
       // installs the admission barrier into the query options below. Gating it on
@@ -2332,9 +2293,17 @@ async function main(): Promise<void> {
       // the path every ordinary agent takes. And the capability claim stays
       // truthful in the only direction that matters: pause is advertised where the
       // mechanism is actually in place.
-      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate };
+      //
+      // Issue #3965: the steering queue is published on the same condition, and
+      // that is the flag-off guarantee for this story. A run with no started
+      // listener leaves `activeControlRuntime` null, so the query below passes
+      // `undefined` for every transport hook and takes the plain string-prompt
+      // path byte-for-byte — there is no queue, no input iterable and no way for
+      // a steering command to exist, because there is no socket to submit one to.
+      activeControlRuntime = runtime;
       log('INFO', `Control listener started on port ${outcome.port}`);
-    } else if (outcome.reason !== 'disabled') {
+    }
+    if (!outcome.started && outcome.reason !== 'disabled') {
       // A failure to start is logged at WARN and the run continues: control is an
       // add-on, and refusing to work without it would make an intervention
       // channel a new way for ordinary runs to die. 'disabled' is silent because
@@ -2564,6 +2533,14 @@ Working on this task...`);
 
   } catch (error) {
     const err = error as Error;
+    writeFailureReport(error);
+    if (isControlCancellation(error)) {
+      agentAborted = true;
+      log('INFO', 'Operator abort requested; supervisor will finalize the run');
+      await activeLiveComment?.finalizeAbortRequested().catch(finalizeErr =>
+        log('WARN', `Could not update stopping comment: ${finalizeErr.message}`));
+      throw error;
+    }
     log('ERROR', `Agent failed: ${err.message}`);
     if (activeLiveComment) {
       await activeLiveComment.finalizeFailure({
@@ -2606,7 +2583,7 @@ Please check the workflow logs for details.`);
     // Write agent memory context to adp branch (best-effort, never blocks)
     try {
       const issue = await getIssue().catch(() => null);
-      if (issue) {
+      if (issue && !agentAborted) {
         const component = detectedComponent || detectComponent(issue.labels, issue.body);
         const memStatus = agentSucceeded ? 'success' : 'failed';
         await writeComponentRecord(component, buildComponentRecord({
@@ -2657,6 +2634,14 @@ Please check the workflow logs for details.`);
     // unconditional — anything past that line never runs. Awaited so the socket
     // is actually closed rather than merely asked to close, and wrapped because a
     // teardown throw here would mask the run's real outcome.
+    // Issue #3965: dispose the steering queue before the listener stops, so a
+    // command accepted in the last instant before teardown is settled rather than
+    // left pending. `runAgent`'s own `finally` normally gets here first, and
+    // `dispose` is idempotent — this exists for the paths that never reached the
+    // query loop at all (a prompt-construction failure, a config error), where the
+    // queue would otherwise hold a subscription and any late command forever.
+    activeControlRuntime?.steerQueue.dispose();
+
     if (controlListener) {
       try {
         await controlListener.stop();
@@ -2671,8 +2656,12 @@ Please check the workflow logs for details.`);
     // disposed runtime would read the post-teardown state as though it were the
     // run's — so the surface closes first and the runtime it describes second.
     // Idempotent, and safe when no attempt was ever attached.
+    //
+    // Issue #5891: reads `activeControlRuntime` rather than a local `controlAdapter`
+    // binding — the composition now lives in `startControlRuntime`, so the adapter
+    // this run holds (if any) is exactly the one published there.
     try {
-      await controlAdapter.dispose();
+      await activeControlRuntime?.adapter.dispose();
     } catch (err) {
       log('WARN', `Control adapter dispose failed: ${(err as Error).message}`);
     }
@@ -2693,6 +2682,7 @@ Please check the workflow logs for details.`);
 }
 
 main().catch((err) => {
+  writeFailureReport(err);
   console.error('Fatal error in main:', err);
   process.exit(1);
 });

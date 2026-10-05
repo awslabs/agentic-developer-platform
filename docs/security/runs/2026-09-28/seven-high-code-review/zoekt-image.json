@@ -1,0 +1,14 @@
+{
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:af0c204e3b18ea74e64c6dc5b93abfae3f952c40a79dee7a490de49108f5499d",
+  "config_digest": "sha256:0125f87218a6cfd1884dd56343aae0c20e12862d6a74de6d688b0a27955abf93",
+  "package_count": 218,
+  "native_counts": {
+    "Medium": 1,
+    "Low": 4,
+    "Unknown": 3
+  },
+  "raw_grype_sha256": "70f894142adbfb8b7f17fbd752d93578740b01809de910ffbac594f23552ba7d",
+  "sbom_sha256": "96f8d34b5dd35f4a3c20d935b68e72f5e268e62cb0f78d67eb6b1c6c76197f44",
+  "database": "Frozen 2026-09-27 baseline; database auto-update disabled",
+  "deployed": false
+}

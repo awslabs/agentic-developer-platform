@@ -32,6 +32,13 @@ on:
       - 'modules/agent-factory/infra/pentest-actor-token.tf'
       - 'modules/agent-factory/scripts/seed-pentest-org-admins.sh'
       - '.github/workflows/lambda-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   pull_request:
     paths:
       - 'modules/agent-factory/tests/lambda/**'
@@ -48,6 +55,13 @@ on:
       - 'modules/agent-factory/infra/pentest-actor-token.tf'
       - 'modules/agent-factory/scripts/seed-pentest-org-admins.sh'
       - '.github/workflows/lambda-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

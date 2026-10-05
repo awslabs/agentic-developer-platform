@@ -195,6 +195,14 @@ spec:
     spec:
       serviceAccountName: superplane-controller
       terminationGracePeriodSeconds: 30
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: controller
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/controller:latest
@@ -280,8 +288,11 @@ spec:
               memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
+            privileged: false
             readOnlyRootFilesystem: false
             runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: onboard-scripts
               mountPath: /etc/superplane/scripts

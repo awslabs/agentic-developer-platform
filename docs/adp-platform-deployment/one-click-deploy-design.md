@@ -1,5 +1,9 @@
 # One-Click Deploy — design
 
+> **Design reference, not an operator runbook.** For current commands, start
+> with the [deployment quickstart](deploy-quickstart.md). Implementation details
+> and proposed behavior below may differ from the current scripts.
+
 Design for the customer-facing, self-service deployment experience described in
 EPIC **#969** (Deployment Lifecycle — one-click deploy, continuous monitoring,
 and upgrades). This is the design-of-record for the sub-issue **#1143** (H:

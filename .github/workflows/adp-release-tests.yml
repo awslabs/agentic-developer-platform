@@ -10,6 +10,13 @@ on:
       - 'modules/gateway/frontend/**'
       - '.github/workflows/adp-release*.yml'
       - '.github/actions/release-tools/**'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 permissions:
   contents: read

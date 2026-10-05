@@ -16,7 +16,9 @@ class DeploymentRenderTests(unittest.TestCase):
         for enabled in ("false", "true"):
             with self.subTest(enabled=enabled):
                 env = dict(os.environ, ENVIRONMENT="test", REGISTRY="example.test",
-                           IMAGE_TAG="release-sha", TEST_FLAG=enabled)
+                           IMAGE_TAG="release-sha", TEST_FLAG=enabled,
+                           GATEWAY_IMAGE="example.test/adp-gateway:release-sha",
+                           PERSONA_MODEL_MAPPING_ENABLED="false")
                 prefix = '''set -euo pipefail
 _get_ssm() { echo "$TEST_FLAG"; }
 kubectl() { cat; }
@@ -28,7 +30,7 @@ kubectl() { cat; }
                 self.assertNotRegex(result.stdout, r'__[A-Z_]+__|REPLACE_WITH_GATEWAY_IMAGE')
                 self.assertIn("image: example.test/adp-gateway:release-sha", result.stdout)
                 for flag in ("FEATURE_ORCHESTRATION_ENGINE_ENABLED",
-                             "FEATURE_AGENT_CONTROL_ENABLED", "FEATURE_NEW_UI_ENABLED"):
+                             "FEATURE_AGENT_CONTROL_ENABLED", "FEATURE_AGENT_EXPLANATIONS_ENABLED", "FEATURE_NEW_UI_ENABLED"):
                     self.assertRegex(result.stdout, rf'name: {flag}\s+value: "{enabled}"')
 
 

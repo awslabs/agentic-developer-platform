@@ -58,8 +58,7 @@ on:
       inject_failure:
         description: 'Deliberately break the eval to prove it fails loudly (wrong-account)'
         required: false
-        type: choice
-        options: ['', 'wrong-account']
+        type: string
         default: ''
   pull_request:
     # Lint-only on PRs that touch the eval or the shared harness; the live job
@@ -74,6 +73,13 @@ on:
       - 'platform/scripts/bedrock-routing-validate.sh'
       - 'platform/scripts/validate-bedrock-routing-shadow.sh'
       - '.github/workflows/eval-bedrock-routing.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
@@ -91,7 +97,7 @@ permissions:
 jobs:
   lint:
     name: Lint eval scripts
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
 
@@ -144,17 +150,22 @@ jobs:
           ./platform/evals/budget-ratelimit/tests/test-run-eval-dry-run.sh
 
   eval:
+    permissions:
+      contents: read
+      id-token: write
     name: Routing eval (${{ github.event.inputs.environment || 'dev' }})
     # Skipped on pull_request: the live run AUTHORS routing mappings in dev. It
     # must never run from an untrusted PR.
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
     needs: [lint]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 45
 
     # No job-level image: the ARC scale set has no Docker daemon and no
     # containerMode, so a job that asks for one dies before its first step.
     env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
       AWS_REGION: us-east-1
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -163,6 +174,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Tooling check
         # The ARC runner image already ships aws/kubectl/jq/python3/curl. This eval

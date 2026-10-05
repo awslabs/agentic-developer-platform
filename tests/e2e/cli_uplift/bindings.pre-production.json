@@ -1,0 +1,13 @@
+{
+  "platform_account": "000000000103",
+  "gateway_url": "https://gateway-102.example.com/api",
+  "gateway_deployment": "pre-production",
+  "vpc_id": "vpc-000000000000000c9",
+  "private_subnet_id": "subnet-000000000000000ca",
+  "cognito_user_pool_id": "us-east-1_Example102",
+  "state_bucket": "adp-cli-uplift-eval-state-000000000103",
+  "instance_profile": "adp-cli-uplift-eval-instance",
+  "instance_security_group_id": "sg-000000000000000cb",
+  "credential_secret_name": "adp/dev/gateway/test-admin-credentials",
+  "_binding_example": "Sanitized example only. Supply actual identifiers through private CLI_UPLIFT_EVAL_BINDINGS_JSON configuration. Never commit credentials or deployment identities."
+}

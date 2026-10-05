@@ -332,7 +332,8 @@ resource "aws_lambda_event_source_mapping" "session_sweeper" {
 # =============================================================================
 
 resource "aws_iam_role" "session_sweeper" {
-  name = "adp-${var.environment}-chat-session-sweeper-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "adp-${var.environment}-chat-session-sweeper-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -365,6 +366,14 @@ resource "aws_iam_role_policy" "session_sweeper_dynamodb" {
           "dynamodb:ListStreams"
         ]
         Resource = "${aws_dynamodb_table.chat_context.arn}/stream/*"
+      },
+      {
+        # TransactWriteItems authorizes its ConditionCheck separately. The
+        # sweeper checks only the context header before deleting expired rows.
+        Sid      = "CheckCurrentSessionHeader"
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = aws_dynamodb_table.chat_context.arn
       },
       {
         Sid    = "CleanupTables"

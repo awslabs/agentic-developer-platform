@@ -9,7 +9,7 @@ Graph model (Neptune property graph):
 - Vertices: one per learning/synthesis/pattern, id = entry ULID.
   Mandatory properties: owner_sub, tenant_id, type, persona, visibility.
 - Edges: derived_from, contradicts, supports, exemplifies, cross_persona.
-- Every traversal filters on owner_sub == caller OR
+- Every traversal filters on owner_sub == caller within the same tenant OR
   (visibility == 'shared' AND tenant_id == caller_tenant).
 
 Authentication: IAM database auth via SigV4-signed requests (IRSA, no
@@ -22,8 +22,9 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import urlencode
 
-from .identity import CallerIdentity
+from .identity import CallerIdentity, is_valid_tenant_id, is_valid_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,8 @@ VALID_EDGE_TYPES = frozenset(
 
 
 def _get_neptune_url() -> str:
-    """Build the Neptune Gremlin HTTP endpoint URL."""
-    return f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
+    """Build the Neptune openCypher HTTP endpoint URL."""
+    return f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/openCypher"
 
 
 def _sign_request(method: str, url: str, body: str | None = None) -> dict[str, str]:
@@ -65,7 +66,7 @@ def _sign_request(method: str, url: str, body: str | None = None) -> dict[str, s
 
     Falls back to plain headers if botocore is unavailable or signing fails.
     """
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     try:
         from botocore.auth import SigV4Auth
         from botocore.awsrequest import AWSRequest
@@ -85,33 +86,65 @@ def _sign_request(method: str, url: str, body: str | None = None) -> dict[str, s
     return headers
 
 
-def _execute_gremlin(query: str) -> dict[str, Any] | None:
-    """Execute a Gremlin query against Neptune via HTTP API.
+def _execute_cypher(query: str, parameters: dict[str, Any]) -> dict[str, Any] | None:
+    """Send fixed openCypher text and separate values using Neptune's HTTP API.
 
-    Returns the response JSON or None on failure. Never raises — all errors
-    are logged and swallowed (graceful fallback).
+    Neptune Gremlin text requests do not support parameter bindings. openCypher
+    operates on the same property graph and supports JSON-encoded parameters.
     """
     import httpx
 
     url = _get_neptune_url()
-    body = json.dumps({"gremlin": query})
+    body = urlencode({"query": query, "parameters": json.dumps(parameters)})
     headers = _sign_request("POST", url, body)
-
     try:
         resp = httpx.post(
             url, content=body, headers=headers, timeout=30.0, verify=NEPTUNE_CA_BUNDLE
         )
         if resp.status_code >= 400:
-            logger.warning(
-                "Neptune query failed: HTTP %d - %s",
-                resp.status_code,
-                resp.text[:200],
-            )
+            logger.warning("Neptune query failed: HTTP %d", resp.status_code)
             return None
         return resp.json()
     except Exception as e:
-        logger.warning("Neptune request failed: %s", e)
+        logger.warning("Neptune request failed: %s", type(e).__name__)
         return None
+
+
+# Only relationship types are selected from a closed, source-defined enumeration.
+# All other values, including property keys/values, are parameters, never query text.
+_UPSERT = """
+MERGE (v:personal_context {entry_id: $entry_id, owner_sub: $owner_sub, tenant_id: $tenant_id})
+SET v.type = $entry_type, v.persona = $persona, v.visibility = $visibility
+RETURN v.entry_id AS entry_id
+"""
+_EDGE_TEMPLATE = """
+MATCH (a:personal_context {entry_id: $from_entry_id, owner_sub: $owner_sub, tenant_id: $tenant_id}),
+      (b:personal_context {entry_id: $to_entry_id, tenant_id: $tenant_id})
+WHERE b.owner_sub = $owner_sub OR b.visibility = 'shared'
+MERGE (a)-[e:__EDGE_TYPE__]->(b)
+SET e += $properties
+RETURN type(e) AS edge_type
+"""
+_EDGE_QUERIES = {kind: _EDGE_TEMPLATE.replace("__EDGE_TYPE__", kind) for kind in VALID_EDGE_TYPES}
+_NEIGHBORS = """
+MATCH (a:personal_context {entry_id: $entry_id, tenant_id: $tenant_id})-[e]-(b:personal_context)
+WHERE (a.owner_sub = $owner_sub OR a.visibility = 'shared')
+  AND b.tenant_id = $tenant_id
+  AND (b.owner_sub = $owner_sub OR b.visibility = 'shared')
+RETURN b.entry_id AS entry_id, b.type AS type, b.persona AS persona,
+       type(e) AS edge_type,
+       CASE WHEN startNode(e) = a THEN 'outgoing' ELSE 'incoming' END AS direction
+"""
+_REMOVE = """
+MATCH (v:personal_context {entry_id: $entry_id, owner_sub: $owner_sub, tenant_id: $tenant_id})
+DETACH DELETE v
+"""
+
+
+def _valid_identity(identity: CallerIdentity | None) -> bool:
+    return bool(
+        identity and is_valid_uuid(identity.owner_sub) and is_valid_tenant_id(identity.tenant_id)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,26 +191,21 @@ def upsert_vertex(
     if not is_graph_enabled():
         return False
 
-    if not owner_sub or not tenant_id:
-        logger.error("upsert_vertex called without owner_sub/tenant_id — refusing")
+    if not is_valid_uuid(owner_sub) or not is_valid_tenant_id(tenant_id):
+        logger.error("upsert_vertex called with invalid owner/tenant identity — refusing")
         return False
-
-    # Escape single quotes in values for Gremlin query safety
-    def esc(val: str) -> str:
-        return val.replace("'", "\\'")
-
-    query = (
-        f"g.V().has('entry_id', '{esc(entry_id)}').fold()"
-        f".coalesce(unfold(), addV('personal_context').property('entry_id', '{esc(entry_id)}'))"
-        f".property('owner_sub', '{esc(owner_sub)}')"
-        f".property('tenant_id', '{esc(tenant_id)}')"
-        f".property('type', '{esc(entry_type)}')"
-        f".property('persona', '{esc(persona)}')"
-        f".property('visibility', '{esc(visibility)}')"
+    result = _execute_cypher(
+        _UPSERT,
+        {
+            "entry_id": entry_id,
+            "owner_sub": owner_sub,
+            "tenant_id": tenant_id,
+            "entry_type": entry_type,
+            "persona": persona,
+            "visibility": visibility,
+        },
     )
-
-    result = _execute_gremlin(query)
-    return result is not None
+    return bool(result and result.get("results"))
 
 
 def add_edge(
@@ -185,8 +213,12 @@ def add_edge(
     to_entry_id: str,
     edge_type: str,
     properties: dict[str, str] | None = None,
+    *,
+    identity: CallerIdentity | None = None,
 ) -> bool:
-    """Add an edge between two personal-context vertices.
+    """Add an edge from a caller-owned vertex to a readable same-tenant vertex.
+
+    A validated identity is required; callers without one fail closed.
 
     Parameters
     ----------
@@ -210,26 +242,19 @@ def add_edge(
         logger.error("Invalid edge type: %r (must be one of %s)", edge_type, VALID_EDGE_TYPES)
         return False
 
-    def esc(val: str) -> str:
-        return val.replace("'", "\\'")
-
-    # Build optional property steps for the edge
-    prop_steps = ""
-    if properties:
-        for k, v in properties.items():
-            prop_steps += f".property('{esc(k)}', '{esc(str(v))}')"
-
-    query = (
-        f"g.V().has('entry_id', '{esc(from_entry_id)}').as('a')"
-        f".V().has('entry_id', '{esc(to_entry_id)}').as('b')"
-        f".select('a').coalesce("
-        f"  outE('{esc(edge_type)}').where(inV().has('entry_id', '{esc(to_entry_id)}')),"
-        f"  addE('{esc(edge_type)}').to('b'){prop_steps}"
-        f")"
+    if not _valid_identity(identity):
+        return False
+    result = _execute_cypher(
+        _EDGE_QUERIES[edge_type],
+        {
+            "from_entry_id": from_entry_id,
+            "to_entry_id": to_entry_id,
+            "owner_sub": identity.owner_sub,
+            "tenant_id": identity.tenant_id,
+            "properties": {k: str(v) for k, v in (properties or {}).items()},
+        },
     )
-
-    result = _execute_gremlin(query)
-    return result is not None
+    return bool(result and result.get("results"))
 
 
 def get_neighbors(
@@ -240,17 +265,18 @@ def get_neighbors(
     """Get the 1-hop graph neighborhood of an entry, filtered by owner isolation.
 
     Only returns vertices the caller is allowed to see:
-    - owner_sub == caller's owner_sub, OR
-    - visibility == 'shared' AND tenant_id == caller's tenant_id
+    - tenant_id == caller's tenant_id, AND
+    - owner_sub == caller's owner_sub OR visibility == 'shared'
 
     Parameters
     ----------
     entry_id:
         ULID of the center vertex.
     identity:
-        Caller identity for isolation filtering.
+        Caller identity for isolation filtering. Both starting and returned vertices
+        must be in this tenant and either caller-owned or shared.
     max_hops:
-        Number of hops to traverse (default 1, max 2).
+        Retained for compatibility; traversal remains one hop.
 
     Returns
     -------
@@ -260,83 +286,35 @@ def get_neighbors(
     if not is_graph_enabled():
         return []
 
-    max_hops = min(max_hops, 2)  # Cap at 2 hops for safety
-
-    def esc(val: str) -> str:
-        return val.replace("'", "\\'")
-
-    owner_sub = esc(identity.owner_sub)
-    tenant_id = esc(identity.tenant_id)
-
-    # Query both incoming and outgoing edges, filter by isolation invariant
-    query = (
-        f"g.V().has('entry_id', '{esc(entry_id)}')"
-        f".bothE().as('e')"
-        f".otherV()"
-        f".or("
-        f"  has('owner_sub', '{owner_sub}'),"
-        f"  and(has('visibility', 'shared'), has('tenant_id', '{tenant_id}'))"
-        f")"
-        f".project('entry_id', 'type', 'persona', 'edge_type', 'direction')"
-        f".by(values('entry_id'))"
-        f".by(values('type'))"
-        f".by(values('persona'))"
-        f".by(select('e').label())"
-        f".by("
-        f"  select('e').choose("
-        f"    outV().has('entry_id', '{esc(entry_id)}'),"
-        f"    constant('outgoing'),"
-        f"    constant('incoming')"
-        f"  )"
-        f")"
+    if not _valid_identity(identity):
+        return []
+    # Preserve the existing one-hop contract; max_hops never enabled a second hop.
+    result = _execute_cypher(
+        _NEIGHBORS,
+        {
+            "entry_id": entry_id,
+            "owner_sub": identity.owner_sub,
+            "tenant_id": identity.tenant_id,
+        },
     )
-
-    result = _execute_gremlin(query)
     if result is None:
         return []
-
-    # Parse Neptune response format
-    try:
-        data = result.get("result", {}).get("data", {}).get("@value", [])
-        neighbors = []
-        for item in data:
-            if isinstance(item, dict):
-                # Handle both Neptune response formats
-                neighbor = {
-                    "entry_id": _extract_value(item.get("entry_id")),
-                    "type": _extract_value(item.get("type")),
-                    "persona": _extract_value(item.get("persona")),
-                    "edge_type": _extract_value(item.get("edge_type")),
-                    "direction": _extract_value(item.get("direction")),
-                }
-                neighbors.append(neighbor)
-        return neighbors
-    except Exception as e:
-        logger.warning("Failed to parse Neptune neighbor response: %s", e)
+    data = result.get("results", [])
+    if not isinstance(data, list):
         return []
+    return [item for item in data if isinstance(item, dict)]
 
 
-def _extract_value(val: Any) -> Any:
-    """Extract a scalar value from Neptune's GraphSON response format.
-
-    Neptune may return values wrapped in @type/@value dicts or as plain scalars.
-    """
-    if isinstance(val, dict) and "@value" in val:
-        return val["@value"]
-    return val
-
-
-def remove_vertex(entry_id: str) -> bool:
-    """Remove a vertex and all its edges from the graph.
-
-    Used when an entry is deleted. Graceful — no-op when graph is disabled.
-    """
-    if not is_graph_enabled():
+def remove_vertex(entry_id: str, *, identity: CallerIdentity | None = None) -> bool:
+    """Remove only the caller's vertex and its edges; absent identity fails closed."""
+    if not is_graph_enabled() or not _valid_identity(identity):
         return False
-
-    def esc(val: str) -> str:
-        return val.replace("'", "\\'")
-
-    query = f"g.V().has('entry_id', '{esc(entry_id)}').drop()"
-    result = _execute_gremlin(query)
+    result = _execute_cypher(
+        _REMOVE,
+        {
+            "entry_id": entry_id,
+            "owner_sub": identity.owner_sub,
+            "tenant_id": identity.tenant_id,
+        },
+    )
     return result is not None

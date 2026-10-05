@@ -182,7 +182,8 @@ from .execution_plan import PlanProgress, confirmed_plan_progress
 from .execution_rpc import ExecutionGrant
 from .identity import ContractViolation, OperationRefused, ResolvedPrincipal
 from .leases import ExecutionLease, lock_lease
-from .store import Connection, OperationStore
+from .recovery_grant import RecoveryGrant, lock_recovery_grant
+from .store import Connection, OperationStore, stored_outcome
 
 __all__ = [
     "MAX_INVENTORY_RESOURCES",
@@ -609,7 +610,7 @@ class InventoryAuthority:
     """
 
     connect: Callable[[], AbstractAsyncContextManager[Connection]]
-    authenticate: Callable[[str], Awaitable[ExecutionGrant]] = None  # type: ignore[assignment]
+    authenticate: Callable[[str], Awaitable[ExecutionGrant | RecoveryGrant]] = None  # type: ignore[assignment]
     store: OperationStore = None  # type: ignore[assignment]
     query_provider: Callable | None = None
 
@@ -1646,7 +1647,12 @@ class InventoryAuthority:
             return None
         try:
             async with self.connect() as connection, connection.transaction():
-                if not await lock_lease(connection, lease):
+                verified = (
+                    await lock_recovery_grant(connection, grant)
+                    if isinstance(grant, RecoveryGrant)
+                    else await lock_lease(connection, lease)
+                )
+                if not verified:
                     return None
                 record = await self.store.get(
                     connection, grant.principal, lease.operation_id
@@ -1780,7 +1786,9 @@ class InventoryAuthority:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _grant(self, operation_authority: str) -> ExecutionGrant | None:
+    async def _grant(
+        self, operation_authority: str
+    ) -> ExecutionGrant | RecoveryGrant | None:
         """Resolve the opaque authority, or `None`.
 
         A verifier that raises is an unverified authority, not an authorized one --
@@ -1797,7 +1805,7 @@ class InventoryAuthority:
             raise
         except Exception:
             return None
-        if not isinstance(grant, ExecutionGrant):
+        if not isinstance(grant, ExecutionGrant | RecoveryGrant):
             return None
         return grant
 
@@ -2054,7 +2062,13 @@ class InventoryAuthority:
         known = {(item.provider, item.provider_reference) for item in resources}
         for call in calls:
             stage = str(call["stage"])
-            outcome = call["outcome"] or ""
+            # Decoded, not compared raw: the column carries the provider's free text
+            # after the enum. Clause (3) below is the one that must not be skipped --
+            # an `outcome == "succeeded"` test against the raw column stops matching as
+            # soon as the provider supplies any detail, and then a succeeded call whose
+            # provider reference is absent from membership reads as accounted for. That
+            # releases the hold on an allocation with an unenumerated billable resource.
+            outcome = stored_outcome(call["outcome"])
             if stage in ("intended", "unresolved") or outcome == "unknown":
                 # The `may_have_happened` rule, applied to the stored row. Spelled
                 # against the columns rather than by rebuilding a `ProviderCall` so this

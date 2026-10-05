@@ -8,9 +8,9 @@
  *
  * A plain `<a href="/gitlab/">` cannot carry the bearer token — it lives in
  * sessionStorage, not in a cookie — so the click handler below fetches the SSO
- * endpoint with the token and navigates to the URL it resolves to.
+ * endpoint with the token and navigates to its JSON handoff destination.
  *
- * Extracted from `Navigation.tsx` unchanged (#5123). The new UI's navigation needed
+ * Extracted from `Navigation.tsx` (#5123). The new UI's navigation needed
  * the same behaviour, and the alternative was a second copy of it: the preview
  * rendered the GitLab entry through a react-router `Link`, which pushes client-side,
  * matches no route and lands on the `/next` catch-all 404 instead of GitLab. Copying
@@ -39,33 +39,32 @@ export function startGitlabSso(): boolean {
   const token = getAccessToken();
   if (!token) return false; // Let the default href navigate.
 
-  // redirect: manual would let us read a Location header, but a cross-origin 302
-  // surfaces as an opaque redirect instead, so we re-request letting fetch follow it
-  // and read the final URL.
+  // The authenticated backend supplies the configured GitLab callback as JSON.
+  // Never follow an HTTP redirect with the gateway credential, or navigate to a
+  // destination chosen by a downstream redirect from the GitLab callback.
   fetch(SSO_ENDPOINT, {
-    headers: { Authorization: `Bearer ${token}` },
-    redirect: 'manual',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    redirect: 'error',
   })
-    .then((res) => {
-      if (res.type === 'opaqueredirect') {
-        return fetch(SSO_ENDPOINT, {
-          headers: { Authorization: `Bearer ${token}` },
-          redirect: 'follow',
-        });
+    .then(async (res) => {
+      if (!res.ok || res.redirected) throw new Error('SSO handoff unavailable');
+      const body: unknown = await res.json();
+      if (!body || typeof body !== 'object' || !('redirect_url' in body) ||
+          typeof body.redirect_url !== 'string') {
+        throw new Error('Invalid SSO handoff');
       }
-      return res;
-    })
-    .then((res) => {
-      if (res && res.redirected && res.url) {
-        // fetch followed the 302 — go to the GitLab callback it resolved to.
-        window.location.href = res.url;
-      } else {
-        // Unexpected 200, or the SSO endpoint is unavailable (404/503).
-        window.location.href = GITLAB_PATH;
+      const destination = new URL(body.redirect_url);
+      if (!['https:', 'http:'].includes(destination.protocol) ||
+          destination.username || destination.password || destination.hash ||
+          !destination.pathname.endsWith('/users/auth/jwt/callback') ||
+          !destination.searchParams.get('jwt')) {
+        throw new Error('Invalid SSO destination');
       }
+      // External GitLab origins are supported: this URL comes only from the
+      // authenticated same-origin endpoint, whose authority is deployment config.
+      window.location.href = destination.href;
     })
     .catch(() => {
-      // Network error — direct navigation is better than a dead click.
       window.location.href = GITLAB_PATH;
     });
 

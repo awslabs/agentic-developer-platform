@@ -1,0 +1,22 @@
+{
+  "exact_fixed_binaries_identical": true,
+  "images": [
+    {
+      "reference": "security27-high/worker-tools:complete",
+      "hashes": {
+        "/usr/local/bin/terraform": "3d5c659abb07fa5dbb5d898ca1fdd232efcb5c5b75437b5281c21bc110c977ef",
+        "/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/pyexpat.cpython-314-x86_64-linux-gnu.so": "132759ee340c1ddf9090a0525f86579b7e6e27f2bf299e294f0c9e9efb1903d5",
+        "/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/_elementtree.cpython-314-x86_64-linux-gnu.so": "b82f57beeffda68e49805610177c9549e94abd34249f49b914bedcd5982f6734"
+      }
+    },
+    {
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:90a473eb1636a71315de6119a182cff23fd4e5ff70da41ad183305a5d9730f0f",
+      "hashes": {
+        "/usr/local/bin/terraform": "3d5c659abb07fa5dbb5d898ca1fdd232efcb5c5b75437b5281c21bc110c977ef",
+        "/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/pyexpat.cpython-314-x86_64-linux-gnu.so": "132759ee340c1ddf9090a0525f86579b7e6e27f2bf299e294f0c9e9efb1903d5",
+        "/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/_elementtree.cpython-314-x86_64-linux-gnu.so": "b82f57beeffda68e49805610177c9549e94abd34249f49b914bedcd5982f6734"
+      }
+    }
+  ],
+  "scope": "Terraform and both AWSCLI Python3.14 XML adapters; current normal worker retains reviewed tools fixes"
+}

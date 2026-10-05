@@ -1,0 +1,90 @@
+{
+  "scope": "candidate only; no live clearance",
+  "database_built": "2026-09-26T06:29:14Z",
+  "base": {
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+    "docker_root_descriptor": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+    "config_digest": "sha256:d05a57076d2c5c277b280d37d938716cedc908c25ae4e71931789ca7f7e0ef87",
+    "time": "2026-09-27T08:28:50.111783+00:00",
+    "packages": 1745,
+    "native_counts": {
+      "Negligible": 698,
+      "High": 356,
+      "Critical": 68,
+      "Medium": 330,
+      "Low": 55,
+      "Unknown": 36
+    },
+    "sbom_sha256": "c2c3ebbb36a4c033d5f8e0d423c1d46d15e09a3027682ff6f3cb831cd3f78cfc",
+    "grype_sha256": "3b6988196b7deee74c5008acc1a79d6b63207100859d83c27ec7c2300704d6ab",
+    "archive_sha256": "5d4d67d8f04debf14522c4ac974741a27576a0ec89b79ed1711386b817a7bba1"
+  },
+  "candidate": {
+    "image": "security27/skypilot:final",
+    "docker_root_descriptor": "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+    "config_digest": "sha256:0e793e95f3596810fea1b42efa56b3bfad61fed5072964fa679fa3e8e8a537c1",
+    "time": "2026-09-27T08:41:49.008105+00:00",
+    "packages": 2797,
+    "native_counts": {
+      "Negligible": 689,
+      "High": 184,
+      "Medium": 158,
+      "Critical": 32,
+      "Low": 28
+    },
+    "sbom_sha256": "da30ef541e2ceb5ef14a0c845cc3deeece611f9d436b3ef05a6e790ced57fd17",
+    "grype_sha256": "8384117c99801cadcbc516f7d0f187830f20dcf90c2007289da6b28d52e318f4",
+    "archive_sha256": "5f2f2ebc2334237d83ee1a41a5dc91b8c52f826e0c83474b8ecf22d9381f51c8"
+  },
+  "new_critical_high_advisory_package_pairs": [],
+  "runtime_tests": {
+    "image": "security27/skypilot:final",
+    "health": "passed",
+    "restart": "passed",
+    "status_request_roundtrip": "passed",
+    "task_parser": "passed",
+    "uid": 1000,
+    "python": "3.10.21",
+    "kubectl": "v1.35.9",
+    "cloud_network": "disabled",
+    "live_postgres_and_provisioning": "not tested"
+  },
+  "live_baseline": {
+    "target": {
+      "key": "7ee81298ae935c4e",
+      "reference": "docker.io/berkeleyskypilot/skypilot@sha256:ab4e67e79048c32e70c2803f548ccbefad2e980a4a7f9dd8d96001f81b04b318",
+      "platform": "linux/amd64",
+      "expected_config_digest": "sha256:528a1f792c49a53499b8d5a090d245c95d485967a25b2752f6728d5528ae62a1",
+      "root_references": [
+        "docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+      ],
+      "observed_refs": [
+        "docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+      ],
+      "desired_refs": [
+        "registry-1.docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+      ],
+      "manifest_evidence": [
+        {
+          "path": "/workspaces/projects/security25/live-audit-20260927/manifests/c096e7345a82fc96/manifest-verbose.json",
+          "sha256": "bf88be7a67b8ee7c2284041cd77bba6f1a29bb1ff59831823a2cafec63f00b55"
+        },
+        {
+          "path": "/workspaces/projects/security25/live-audit-20260927/manifests/26d7d5c3533e6ba6/manifest-verbose.json",
+          "sha256": "31033126ac3682dc2ad381c583367abe1cbab4c99aa026b7dbb16ba61a1646f3"
+        }
+      ],
+      "compressed_layer_bytes": 682694852,
+      "active_pod_observations": 1,
+      "historical_pod_observations": 0
+    },
+    "raw_counts": {
+      "Medium": 398,
+      "Negligible": 698,
+      "High": 416,
+      "Critical": 73,
+      "Low": 87,
+      "Unknown": 36
+    }
+  }
+}

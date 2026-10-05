@@ -67,6 +67,7 @@ from src.admin.config import Permission
 from src.admin.exceptions import AccessDeniedError, InvalidScopeError
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.identity.workspaces import primary_team_for_workspace, workspace_user
 from src.shared.models.budget import BudgetUsage
 from src.shared.models.organization import Department, Team, User
 from src.shared.schemas.auth import TokenContext
@@ -315,18 +316,8 @@ async def _check_department_scope(
     ``get_user_role`` never supplies one. Without this, a ``dept_admin`` could read
     any department, team or member in their org — negative test 3 of the issue.
 
-    The caller's own department comes from ``context.department_id``, which is a
-    **token claim**, and FR-4.4 says authority is never read from one. This does
-    not violate that rule, and the distinction is worth stating precisely: the
-    claim is used only to *narrow* an authority that ``tenant_memberships`` already
-    granted. ``get_user_role`` has to have returned ``DEPT_ADMIN`` from a
-    membership row before this runs, so a forged ``department_id`` can never grant
-    access — it can only move a genuine dept_admin's window within an org they
-    genuinely administer, and a claim naming a department the caller does not
-    administer denies more, never less. The remaining gap (no server-side store of
-    which department a dept_admin owns) is real, is a pre-existing platform gap
-    rather than something this unit introduces, and is filed as a follow-up rather
-    than papered over here.
+    The caller's department is resolved from the current workspace account and
+    authoritative primary team. A token department is not sufficient authority.
 
     Returns:
         ``True`` when the target is inside the caller's department, ``False`` when
@@ -340,7 +331,9 @@ async def _check_department_scope(
         # in their own org.
         return True
 
-    caller_dept = (context.department_id or "").strip()
+    caller = await workspace_user(db, context.user_id, target_org, username=context.cognito_username)
+    caller_team = await primary_team_for_workspace(db, caller, target_org) if caller else None
+    caller_dept = caller_team.department_id if caller_team else None
     if not caller_dept:
         # A dept_admin with no department is scoped to nothing. Denied rather than
         # treated as unrestricted — this is the falsy-skip failure applied to the
@@ -441,7 +434,11 @@ async def _authorize_scope(
         # got right.
         raise _deny(f"permission_denied:{type(exc).__name__}", caller_org=caller_org, entity_type=entity_type) from exc
 
-    if not await _check_department_scope(db, access, context, entity_type, normalized_id, target_org=target_org):
+    try:
+        in_department = await _check_department_scope(db, access, context, entity_type, normalized_id, target_org=target_org)
+    except (*_INFRASTRUCTURE_FAULTS, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Budget authorization is temporarily unavailable") from exc
+    if not in_department:
         raise _deny("department_out_of_scope", caller_org=caller_org, entity_type=entity_type)
 
     return target_org, normalized_id
@@ -717,7 +714,8 @@ async def get_managed_scope_budget_runs(
     lineage_user_id = target_id
     if entity_type == EntityType.USER.value:
         try:
-            resolved = await db.scalar(select(User.id).where(User.cognito_sub == target_id, User.org_id == target_org).limit(1))
+            resolved_user = await workspace_user(db, target_id, target_org)
+            resolved = resolved_user.id if resolved_user else None
         except _INFRASTRUCTURE_FAULTS as exc:
             logger.error("Failed to resolve the managed-scope target's canonical id; returning 503", exc_info=True)
             raise HTTPException(
@@ -741,7 +739,9 @@ async def get_managed_scope_budget_runs(
     since, until = _period_bounds_as_instants(resolved_start, resolved_end)
 
     try:
-        lineage = activity.query_by_user(user_id=lineage_user_id, page_size=page_size, last_key=cursor, since=since, until=until)
+        lineage = activity.query_by_user(
+            user_id=lineage_user_id, tenant_id=target_org, page_size=page_size, last_key=cursor, since=since, until=until
+        )
     except ValueError as exc:
         # A malformed cursor is a bad request, not a server error (the
         # `activity/routes.py` precedent, mirrored by U-3).

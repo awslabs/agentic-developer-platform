@@ -65,6 +65,11 @@ on:
       - 'modules/gateway/k8s/configmap.yaml'
       - '.github/workflows/gateway-deploy.yml'
       # In-pod control listener (TypeScript)
+      - 'modules/agent-factory/agent/src/claude-progress*'
+      - 'modules/agent-factory/agent/src/explanation-events.ts'
+      - 'modules/agent-factory/agent/src/explanation-events.test.ts'
+      - 'modules/gateway/src/activity/explanation_stream.py'
+      - 'modules/gateway/tests/activity/test_explanation_stream.py'
       - 'modules/agent-factory/agent/src/control-listener.ts'
       - 'modules/agent-factory/agent/src/control-deadline*'
       - 'modules/agent-factory/agent/src/control-credentials.ts'
@@ -117,6 +122,35 @@ on:
       # is breaking one of those callers, not breaking control.
       - 'modules/agent-factory/agent/src/control-runtime.ts'
       - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # Live steering (#3965): the run-level delivery pump and its suite. Listed
+      # explicitly because a change confined to either file matches none of the
+      # paths above, so the verb gates — which now expect `steer` in
+      # EXPECTED_SUPPORTED on both sides — would not run on exactly the PRs able to
+      # break the delivery path they vouch for.
+      - 'modules/agent-factory/agent/src/steer-queue.ts'
+      - 'modules/agent-factory/agent/src/agent-worker-steer.test.ts'
+      # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
+      # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
+      # the only thing that checks it at all, and it is the file that has to stay
+      # in step with the PauseGate/adapter seams it measures through.
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.integration.ts'
+      # The shared heartbeat / exit-watchdog emitter (#5840). One production copy,
+      # started by both `agent-worker.ts` and the live pause runner, so an edit here
+      # changes what an operator sees during a real paused run AND what the W2-05
+      # visibility fields measure. Listed as its own path because a change confined
+      # to this module matches none of the names above.
+      - 'modules/agent-factory/agent/src/run-heartbeat.ts'
+      - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.test.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.test.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
@@ -181,6 +215,29 @@ on:
       # Evaluation harness
       - 'platform/scripts/agent-control-eval.py'
       - 'platform/scripts/tests/test_agent_control_eval.py'
+      # Wave 2 operator fixture tooling (#3968). This is the executable lifecycle
+      # that creates, observes, probes and tears down the isolated fixture the
+      # evaluation runs against. Root's finding 5808491910: PR #5839's rollup was
+      # empty because no workflow in the branch referenced these paths at all, so
+      # a change to the teardown logic or the workload-verifier composition had no
+      # merge check whatsoever. A `**` glob covers the scripts, the libraries and
+      # the tests together, because they are a single unit: a library change that
+      # breaks a script is only visible when both are exercised.
+      - 'platform/scripts/operator/wave2/**'
+      - 'platform/scripts/operator/wave3/**'
+      # Wave 4 operator collectors (#3970). Same reasoning as wave 2's glob above,
+      # and listed for the reason root's finding 5808491910 named: a package no
+      # workflow references has no merge check at all. The wave-4 tests in
+      # `test_agent_control_eval.py` drive these modules end to end — collector →
+      # artifact → evaluator — so a change here that breaks a measurement is only
+      # visible when both halves run, and the harness's own path entry above does
+      # not fire on an edit confined to this directory.
+      #
+      # The directory is hyphenated rather than `operator/wave4` deliberately: a
+      # nested package needs `platform/scripts/operator/__init__.py`, which shadows
+      # the standard library's `operator` module for anything importing with
+      # `platform/scripts` on the path.
+      - 'platform/scripts/operator-wave4/**'
       # The fixture-config runbook. Listed because its example config is parsed
       # and validated by the harness tests: a doc-only edit that drifts the
       # example from the harness must fail CI, not merge quietly. The operator
@@ -188,23 +245,151 @@ on:
       - 'docs/runbooks/agent-control-evaluation.md'
       # This workflow
       - '.github/workflows/agent-control-ci.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
+  # Manual entry point, for gating a revision the `paths` filters above never ran.
+  #
+  # The filters are correct for their purpose — they keep this workflow off PRs that
+  # cannot affect the control path — but they mean a deployed revision may have no run
+  # of these three jobs at all. Evaluation #3967's W2-01 requires each required gate to
+  # have passed ON a deployed revision, so without a way to run them against an
+  # arbitrary commit that requirement is unsatisfiable for exactly the revisions it
+  # matters for.
+  #
+  # `source_sha` is required and must be a full 40-character SHA. It is validated in
+  # `resolve-source` BEFORE any checkout, because the value is used as a git ref: a
+  # partial SHA or a branch name would resolve to whatever it happened to point at,
+  # which is the opposite of naming one revision. Every test job then checks that ref
+  # out and VERIFIES `git rev-parse HEAD` equals it, and archives what it actually got
+  # — see the `checked-out-revision` artifacts. A manual run's `github.sha` names the
+  # ref this workflow FILE was loaded from, not the revision under test, so it must
+  # never be recorded as the tested source.
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Full 40-character commit SHA to test (not a branch or short SHA)'
+        required: true
+        type: string
+
 concurrency:
-  group: agent-control-ci-${{ github.event.pull_request.number || github.sha }}
+  # The dispatched SHA is part of the group so two manual runs against different
+  # revisions do not cancel each other: on a workflow_dispatch `github.sha` is the
+  # workflow ref, which would be identical for both.
+  group: agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # Validate the dispatch input before anything uses it as a ref, and hand the test
+  # jobs the ref to check out. On a `pull_request` run this resolves to the empty
+  # string, which is `actions/checkout`'s default — so the PR path is unchanged.
+  #
+  # This job is deliberately NOT one of the three required checks. Its name is not part
+  # of the AC-S7 contract, and adding a fourth required check would silently change the
+  # merge gate for every PR.
+  resolve-source:
+    name: Resolve source revision
+    runs-on: arc-runner-org
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      expected: ${{ steps.resolve.outputs.expected }}
+    steps:
+      - name: Validate and resolve the requested revision
+        id: resolve
+        shell: bash
+        env:
+          # Through the environment rather than interpolated into the script: the input
+          # is attacker-influencable text and must never be expanded into a shell body.
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "expected=" >> "$GITHUB_OUTPUT"
+            echo "Triggered by $EVENT_NAME; checking out the triggering ref as usual."
+            exit 0
+          fi
+          # Whole-VALUE validation, not line-based. An earlier revision used
+          # `grep -Eq '^[0-9a-f]{40}$'`, which matches a LINE: root executed this block
+          # with a 40-hex SHA followed by a newline, `ref=main` and another `expected=`
+          # line, and it exited 0 and appended those attacker-chosen lines to
+          # $GITHUB_OUTPUT — where the LAST value of a key wins, so the jobs would have
+          # checked out `main` while reporting a different expected SHA. The length test
+          # rejects a trailing CR or any extra line, and bash's `=~` anchors at the ends
+          # of the whole string rather than of a line, so the two together accept
+          # exactly 40 lowercase hex characters and nothing else.
+          if [ "${#SOURCE_SHA}" -ne 40 ] || ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be exactly 40 lowercase hexadecimal" \
+                 "characters and nothing else; got a value of length" \
+                 "${#SOURCE_SHA}. A branch name or abbreviated SHA names whatever a" \
+                 "ref currently points at, so it cannot identify the revision a gate" \
+                 "tested, and a value carrying a newline or carriage return is" \
+                 "rejected outright rather than truncated to its first line."
+            exit 1
+          fi
+          echo "ref=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Manual run against $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
+
   agent-control-tests:
     # AC-S7 required-check name. Do not rename.
     name: Agent control tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined rather than factored into a local composite action, deliberately: a
+      # `uses: ./...` step resolves from the CHECKED-OUT tree, so a dispatch against a
+      # revision that predates the action would fail to find it — and the whole point
+      # of the manual path is gating revisions other than this one.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: agent-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          # `workflow_ref_sha` is recorded ALONGSIDE the checked-out SHA, never as it:
+          # on a manual run github.sha names the ref this workflow file came from, not
+          # the revision under test. Evaluation #3967 reads `checked_out_revision`.
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-agent-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
+          if-no-files-found: error
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -265,6 +450,17 @@ jobs:
             tests/activity/test_stats_service.py \
             -v --tb=short --timeout=120
 
+      - name: Setup Node for chat ports
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      - name: Install chat-worker test dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev --ignore-scripts
+
       - name: Run delegated authorization tests
         working-directory: modules/gateway
         # Require the existing security suites by name, then collect the whole
@@ -278,10 +474,37 @@ jobs:
             test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
             test_run_services.py test_artifact_service.py \
             test_task_delivery.py test_task_routes.py \
+            test_abort_receipt.py test_abort_redelivery_refusal.py \
+            test_abort_intent_store.py test_abort_reconciliation.py \
+            test_exit_retention.py test_retained_abort_recovery.py \
             test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
-          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
+          # -n 4 pinned to the runner's cpu limit (arc-runner/main.tf). This step
+          # was 12m29s of a ~15m job — every other step here is under a minute —
+          # because it ran ~1700 tests serially on one core while tests/agentauth
+          # grew by 313 tests in three days. Measured on the exact selection
+          # above: 328s serial -> 126s at -n 4, 2.6x, with byte-identical results
+          # (1703 passed, 5 skipped both ways).
+          #
+          # NEVER `-n auto`: nproc inside the runner pod reports the NODE's 32
+          # cores, not the pod's cgroup limit, so auto oversubscribes and runs
+          # slower than a pinned value.
+          #
+          # `--dist loadfile` keeps every test in a file on one worker. The
+          # gateway suite has cross-file ordering dependencies that the default
+          # round-robin distribution breaks (see gateway-ci.yml for the measured
+          # case: 9 phantom failures without it, 6 with). Removing it here
+          # invites the same class of flake.
+          # The chat data-path suites (tests/agentauth/test_chat_*.py, #6932) are
+          # gateway storage tests: ~500 tests that each boot moto + the app. They
+          # run in Gateway CI's full-tree shards and its dedicated chat-ports job.
+          # Running them again here pushed this single-runner job from ~1700 to
+          # ~3000 tests and the runner died mid-run (log ends at 30% with no
+          # summary); this gate stays scoped to agent-control suites.
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
+            --ignore-glob='tests/agentauth/test_chat_*.py' \
+            -v --tb=short --timeout=120 -n 4 --dist loadfile
 
       # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
       # average. The story requires >=85% line AND branch on the NEW control
@@ -290,6 +513,24 @@ jobs:
       # story exists to establish. `--cov-branch` is required: the interesting
       # failures here are all one-sided branches (a tenant check that only ever
       # sees the matching tenant is 100% line-covered and unproven).
+      - name: Enforce abort recovery coverage per module
+        working-directory: modules/gateway
+        run: |
+          pytest tests/agentauth/test_exit_retention.py tests/agentauth/test_retained_abort_recovery.py \
+            tests/agentauth/test_abort_reconciliation.py \
+            --cov=src.agentauth.exit_retention --cov=src.agentauth.retained_abort_recovery \
+            --cov=src.agentauth.abort_reconciliation --cov-branch \
+            --cov-report=json:abort-recovery-coverage.json --timeout=120
+          python - <<'PYCODE'
+          import json
+          report = json.load(open("abort-recovery-coverage.json"))
+          for name in ("exit_retention", "retained_abort_recovery", "abort_reconciliation"):
+              summary = report["files"][f"src/agentauth/{name}.py"]["summary"]
+              for covered, total in (("covered_lines", "num_statements"), ("covered_branches", "num_branches")):
+                  assert summary[total] > 0, f"{name}: no {total} measured"
+                  assert summary[covered] / summary[total] >= 0.85, f"{name}: {covered} below 85%"
+          PYCODE
+
       - name: Enforce control-module coverage (>=85% line and branch)
         working-directory: modules/gateway
         # `--cov=src.activity.control_service` (dotted module), NOT
@@ -298,7 +539,7 @@ jobs:
         # nothing at all. Verified locally: the dotted form reports 100% line and
         # branch on both modules; the path form reports 0.00%.
         run: |
-          pytest tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
+          pytest tests/activity/test_explanation_stream.py tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
             --cov=src.activity.control_service \
             --cov=src.activity.control_schemas \
             --cov=src.agentauth.human_control \
@@ -318,9 +559,13 @@ jobs:
         # empty". S2/S4/S6 each deliver one verb, and against the old form their
         # only way forward was to delete the guard — which is how a gate that
         # cannot express "three of four" dies. It now compares against an explicit
-        # expected set (pause/resume at this stage) and
+        # expected set (pause/resume/abort at this stage) and
         # additionally pins the verb universe, so adding a fifth verb without
         # updating this list fails here rather than passing unexamined.
+        #
+        # #3963 added the second constant. The human service's SUPPORTED_ACTIONS and
+        # the agent policy's SUPPORTED_AGENT_ACTIONS are both read, because checking
+        # one of two sets that must agree is how they stop agreeing.
         env:
           # Importing control_service pulls in src/activity/__init__.py -> routes.py
           # -> src/auth/__init__.py, and the auth middleware constructs AuthService()
@@ -338,14 +583,26 @@ jobs:
           import sys
 
           from src.activity.control_service import SUPPORTED_ACTIONS
+          from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
 
           # The four public verbs. Pinned here so a fifth verb cannot appear
           # without a deliberate edit to this gate.
           ALL_VERBS = {"pause", "resume", "steer", "abort"}
 
           # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Abort: #3963 cancellation plus the terminal finalization that reports it.
+          # Steer: #3965 — the run-level delivery pump (steer-queue.ts) plus the
+          # observed handoff boundary on the adapter (canAcceptInput /
+          # notifyWhenInputAccepted), which is what the verb was missing. The
+          # streaming input transport and the authority re-check immediately before
+          # the physical handoff already existed; what did not was anything that
+          # *waited* for a boundary, so a command submitted mid-tool was refused.
+          #
+          # This completes the set: all four verbs are now implemented. A fifth verb
+          # still fails the ALL_VERBS pin below.
+          #
           # Keep both language gates, gateway and worker in lockstep.
-          EXPECTED_SUPPORTED: set[str] = {"pause", "resume"}
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "steer", "abort"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -372,11 +629,53 @@ jobs:
                   "Implementing a verb requires its transport, state contract and evaluation "
                   "in the same change; then add it to EXPECTED_SUPPORTED in this workflow."
               )
+          # The *agent* control path's set, added by #3963. Until then this gate
+          # read the human set alone, which is why ABORT could sit in
+          # `control_service.SUPPORTED_ACTIONS` and the worker's
+          # `IMPLEMENTED_CONTROL_VERBS` while the agent policy still answered 501 —
+          # a one-sided lag in the very direction the gate exists to catch. The two
+          # sets are compared but deliberately NOT merged: they are allowed to
+          # differ, because the human path authorizes a session and the agent path
+          # authorizes a delegated grant, and MONITOR exists only on the agent side.
+          # What must not differ is the live-control verbs.
+          agent_verbs = {action.value for action in SUPPORTED_AGENT_ACTIONS}
+
+          if not isinstance(SUPPORTED_AGENT_ACTIONS, frozenset):
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS must be a frozenset, got {type(SUPPORTED_AGENT_ACTIONS).__name__}."
+              )
+
+          # MONITOR is a read, not a live control, so it is excluded from the
+          # comparison rather than added to ALL_VERBS — putting it there would let a
+          # *live* verb be advertised on one side and excused as "a read" on the other.
+          agent_live = agent_verbs - {"monitor", "dispatch"}
+          unknown_agent = agent_live - ALL_VERBS
+          if unknown_agent:
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS contains verbs this gate does not know about: {sorted(unknown_agent)}."
+              )
+
+          if agent_live != EXPECTED_SUPPORTED:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS does not match this stage's expected set.\n"
+                  f"  advertised without proof: {sorted(agent_live - EXPECTED_SUPPORTED)}\n"
+                  f"  expected but absent:      {sorted(EXPECTED_SUPPORTED - agent_live)}\n"
+                  "The agent and human control paths must enable a live verb together: one side "
+                  "authorizing a verb the other refuses with 501 is a caller-visible contradiction."
+              )
+
+          if "monitor" not in agent_verbs:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS lost MONITOR. Every agent status read goes through "
+                  "require_supported(MONITOR), so dropping it breaks the read path silently."
+              )
+
           print(
               "OK: advertised verbs match this stage — "
               f"supported={sorted(EXPECTED_SUPPORTED)}, "
               f"unsupported={sorted(ALL_VERBS - EXPECTED_SUPPORTED)}"
           )
+          print(f"OK: agent path agrees — live={sorted(agent_live)}, reads={sorted(agent_verbs - agent_live)}")
           PY
 
       - name: Run pod-security manifest assertions
@@ -398,8 +697,45 @@ jobs:
     # AC-S7 required-check name. Do not rename.
     name: Worker control tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in `agent-control-tests`: a local composite
+      # action would have to exist in the revision being dispatched against.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: worker-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-worker-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
+          if-no-files-found: error
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -453,14 +789,73 @@ jobs:
         # required workflow, so a change re-enabling the refresh path for a
         # mediated run — handing back the exact credential mediation exists to
         # withhold — could merge green.
+        #
+        # The two abort suites are pinned here for #3963, and the pair is the point.
+        # control-abort-sentinel.test.ts holds the channel's "may lose an abort, may
+        # never invent one" direction; agent-worker-abort.test.ts holds the inverse —
+        # the run stops unconditionally while the *report* that it was deliberately
+        # stopped stays contingent on gateway-signed evidence. Between them they are
+        # the only place the ordering (record before cancel), the refusal to forward
+        # an unsigned operator reason, and the settle-to-`unknown` path are checked,
+        # and that last one already caught a real defect: `unknown` was missing from
+        # TERMINAL_STATUSES, so a failed-record abort silently leaked a `maxPending`
+        # slot. Unpinned, an abort that cancels but reports a clean stop it never
+        # achieved — the one outcome an operator cannot detect — merges green.
+        # control-runtime-timeout.test.ts is pinned here (#5840) because it is the
+        # ONLY automated check on the W2-05 pause_expiry producer. The measurement
+        # half of that producer lives in a `.integration.ts` file that jest cannot
+        # collect and that needs a real model, so nothing in CI will ever run it.
+        # What CI can run — and what this suite covers — is the honesty logic: that
+        # an unobserved field stays null rather than defaulting to a value the
+        # evaluator accepts, that auto-resume is not claimed from an explicit
+        # resume, that "no extra turn" comes from the live stream rather than the
+        # transport flag, and that a run which held no work cannot satisfy the
+        # cancellation fields vacuously. Unpinned, a change that turned any of
+        # those into a passing default would merge green and the evaluation would
+        # then read a fabricated pass as live evidence.
+        #
+        # run-heartbeat.test.ts is pinned alongside it (#5840) because that module is
+        # the only production copy of the heartbeat and the post-completion exit
+        # watchdog, and it has two distinct consumers: `agent-worker.ts` runs it on
+        # every real run, and the live pause runner starts it to measure the W2-05
+        # visibility fields. Two properties there are load-bearing and silent when
+        # broken. The watchdog must stand down while a pause is in force — unguarded
+        # it cannot tell a hung stream from a tool parked at the barrier, so an
+        # operator pausing a run to look at something would come back to a killed pod,
+        # and nothing else in CI asserts that. And the heartbeat must keep logging
+        # *and say it is paused*: a silent log is indistinguishable from a crash, so
+        # the suite pins the wording and fields literally rather than paraphrasing
+        # them. Suppression is also asserted to be a deferral rather than an amnesty,
+        # so removing the bound cannot pass as fixing the kill.
+        #
+        # control-runtime-timeout.assembly.test.ts is pinned for a third reason (#5840):
+        # the two suites above cover the producer's *decisions*, and two real defects
+        # still got past them because both were in how the live runner **composes**
+        # those decisions — a spread that dropped one experiment's pod observations
+        # before the field-wise merge could see them, and a force-exit callback that
+        # recorded a verdict it had no way to attribute, so the required after-release
+        # firing was reported as a firing during the pause. Unit-green pieces say
+        # nothing about their assembly, so this suite calls the runner's real exported
+        # assembly and folds a real tick sequence from the real PauseGate through it.
+        # It imports `control-runtime-timeout.integration.ts` on purpose and that is
+        # safe: the only SDK-backed dependency there is behind a lazy `await import`
+        # inside the run function, so importing the module evaluates no SDK, starts no
+        # subprocess and spends nothing. The `.integration.ts` file itself still cannot
+        # be collected by jest, which is what keeps the live experiments out of CI.
         run: |
-          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+          npx jest src/claude-progress.test.ts src/explanation-events.test.ts src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
+            src/agent-worker-steer.test.ts \
+            src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
+            src/control-runtime-timeout.assembly.test.ts \
+            src/control-runtime-steering-probe.test.ts \
+            src/control-runtime-factory.test.ts src/registered-control-fixture.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -470,12 +865,17 @@ jobs:
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
             --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/control-runtime-factory.ts' \
+            --collectCoverageFrom='src/registered-control-fixture.ts' \
             --collectCoverageFrom='src/pause-gate.ts' \
             --collectCoverageFrom='src/control-command-apply.ts' \
+            --collectCoverageFrom='src/steer-queue.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
+            --collectCoverageFrom='src/control-runtime-timeout.ts' \
+            --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
-            --ci --verbose
+            --maxWorkers=2 --ci --verbose
 
       - name: Assert the control adapter advertises no verb as supported
         working-directory: modules/agent-factory/agent
@@ -513,9 +913,12 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // #3961 pause barrier plus the #5222 signed human command path.
+          // #3961 pause barrier plus the #5222 signed human command path, #3963's
+          // abort (cancellation plus reported terminal finalization), and #3965's
+          // steering (the run-level delivery pump plus the adapter's observed
+          // handoff boundary).
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume']);
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'steer', 'abort']);
 
           const fail = (msg: string): never => {
             console.error(msg);
@@ -732,7 +1135,7 @@ jobs:
         # `update_status` would be measured as uncovered by the very step that
         # enforces the threshold.
         run: |
-          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py tests/test_control_evaluation.py \
             tests/test_status_vocabulary.py \
             --cov=lib.invocation_status \
             --cov=entrypoint \
@@ -766,8 +1169,44 @@ jobs:
     # AC-S7 required-check name. Do not rename.
     name: Control evaluation harness tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in the two jobs above.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: control-evaluation-harness-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-control-evaluation-harness-tests
+          path: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json
+          if-no-files-found: error
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -781,7 +1220,16 @@ jobs:
         # drive the published end-to-end command cannot run — and because they are
         # the ones covering `main`, their absence showed up as a coverage drop
         # (83%) rather than as an obviously missing dependency.
-        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28'
+        #
+        # pyyaml is REQUIRED, not optional. The tests that cover the `resolve-source`
+        # step do not describe it, they EXECUTE it: they parse this workflow file to
+        # extract that step's real script and run it under bash. Without a YAML reader
+        # all seventeen fail on import — which is how they failed in run 35956224007,
+        # on a missing dependency rather than on any behaviour of the thing they gate.
+        # They are the only check that the dispatch input is validated as a whole value
+        # rather than line-by-line, so a job that cannot run them is a job that gates
+        # nothing here.
+        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28' pyyaml
 
       - name: Run evaluation harness tests
         # The harness itself never runs in CI — it requires an operator-created
@@ -818,3 +1266,103 @@ jobs:
             exit 1
           fi
           echo "OK: harness refused to run without an explicit fixture"
+
+  operator-fixture-tests:
+    # Required-check name for the Wave 2 operator lifecycle tooling. Do not rename:
+    # renaming a job silently removes a required check rather than failing.
+    name: Operator fixture tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install operator fixture test dependencies
+        # Deliberately short, and that is the point: the suite imports only the
+        # standard library plus pytest, and stubs `aws` and `kubectl` on PATH itself
+        # (tests/conftest.py) rather than reaching a cluster. pyyaml is needed
+        # because the tests that validate this workflow parse it to assert its own
+        # triggers and job names — a suite that claims a required check exists must
+        # read the file that defines it.
+        run: pip install pytest pyyaml
+
+      - name: Assert the prerequisites are actually present
+        # An honest failure on a missing dependency, rather than a skip. A suite that
+        # skips when its interpreter or shell is absent reports the same green tick as
+        # one that ran, which is precisely the failure mode root objected to: "no
+        # tests" and "all tests pass" are the same exit code to a glob.
+        run: |
+          set -euo pipefail
+          for tool in bash python3; do
+            command -v "$tool" >/dev/null || { echo "FAIL: $tool is required and absent"; exit 1; }
+          done
+          python3 -c 'import pytest, yaml' || { echo "FAIL: pytest/pyyaml did not install"; exit 1; }
+          echo "OK: bash, python3, pytest, pyyaml present"
+
+      - name: Run the full operator fixture suite
+        # The WHOLE directory, not the newly added files. A gate that runs only the
+        # latest suite cannot catch a change that breaks an older one, and the older
+        # ones cover teardown and ownership — the paths whose silent failure leaves
+        # real resources running in the account.
+        #
+        # No `-k`, no `--ignore`, and no `-p no:cacheprovider` shortcuts: every test
+        # here is hermetic, so there is nothing legitimate to exclude. `-o
+        # addopts=` neutralises any repo-level pytest config that might inject
+        # coverage flags this tree has no settings for.
+        working-directory: platform/scripts/operator/wave2
+        run: python3 -m pytest tests/ -o addopts= -v --tb=short
+
+      - name: Assert the suite is non-empty and collects cleanly
+        # Guards the gate itself. If a refactor moved or renamed the tests directory,
+        # pytest would collect nothing and exit 5; without this step a PR that
+        # deleted the entire suite could pass review with a green check. The floor is
+        # deliberately well below the current count (487) so it fails on collapse,
+        # not on ordinary churn.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          collected="$(python3 -m pytest tests/ -o addopts= --collect-only -q 2>/dev/null \
+            | grep -cE '^tests/.*::' || true)"
+          echo "collected $collected tests"
+          [ "$collected" -ge 400 ] || {
+            echo "FAIL: only $collected tests collected; the suite has lost coverage"
+            exit 1
+          }
+
+      - name: Check every shell script parses and every Python module compiles
+        # Syntax-only, because these scripts cannot be executed in CI: they mutate a
+        # real account. `bash -n` and py_compile are the strongest checks available
+        # without a cluster, and they catch the class of error that would otherwise
+        # surface for the first time mid-run against a live fixture, after resources
+        # already exist.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in $(find . -name '*.sh' | sort); do
+            bash -n "$script" || { echo "FAIL: $script has a syntax error"; exit 1; }
+          done
+          for module in $(find . -name '*.py' -not -path './tests/__pycache__/*' | sort); do
+            python3 -m py_compile "$module" || { echo "FAIL: $module does not compile"; exit 1; }
+          done
+          echo "OK: all shell scripts parse and all Python modules compile"
+
+      - name: Assert no fixture script can run without an explicit target
+        # The same fail-closed smoke check the harness job applies, for the scripts
+        # that CREATE resources. If either exits 0 when invoked bare, it has acquired
+        # a default target — and for these the default would be whatever account the
+        # ambient credential resolves to, with real objects as the result.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in 10-create-fixture.sh 20-collect-pause-evidence.sh; do
+            if bash "$script" > "/tmp/bare-$script.log" 2>&1; then
+              echo "FAIL: $script exited 0 with no target configured"
+              cat "/tmp/bare-$script.log"
+              exit 1
+            fi
+            echo "OK: $script refused to run bare"
+          done

@@ -1,0 +1,62 @@
+{
+  "reviewed_release_revision": "d2aff640636bef8087b69bb76debd190247bce97",
+  "review_date": "2026-09-25",
+  "method": "Read existing successful execution records and merged implementation; no test rerun, task submission, or deployment mutation during this review.",
+  "limitations": [
+    "Aggregate pytest logs do not embed source revisions or test node IDs; do not infer exact-head reproducibility from their counts.",
+    "Image source and installed files are separately bound by provenance and SHA-256 comparisons.",
+    "Criterion coverage below is scoped deterministic evidence, not live release acceptance."
+  ],
+  "artifacts": [
+    {
+      "artifact": "release-final-gateway-tests.log",
+      "sha256": "00de7a5feee775d8b3f96f2c39fb8e36f9804f20b47209086d7acb979de66df8",
+      "recorded_result": "675 passed, 7063 warnings in 113.61s (0:01:53)"
+    },
+    {
+      "artifact": "release-final-worker-tests.log",
+      "sha256": "97348f47c71bbd91d940e3598fdfb097ebc2d23096ed11f2e9b051e916b7e5ea",
+      "recorded_result": "85 passed, 3 warnings in 7.10s"
+    },
+    {
+      "artifact": "release-factory-tests.log",
+      "sha256": "1c57343626f21927678414f3c987b2837143a14af2e373878387277341466518",
+      "recorded_result": "59 passed, 996 warnings in 76.74s (0:01:16)"
+    },
+    {
+      "artifact": "cancel-final-tests.log",
+      "sha256": "ec287a3c8f1f6ce8a4c27c569619e3dee9223fc9e19dbf3d646f13dbec65ea1b",
+      "recorded_result": "26 passed, 572 warnings in 3.66s"
+    },
+    {
+      "artifact": "cancel-final-contracts.log",
+      "sha256": "e436cc4f415f86386ba799bea76702b2f8d2f45a737b60adaf5238486f5ce1b7",
+      "recorded_result": "All 369 checks passed, exercising 62 criteria."
+    },
+    {
+      "artifact": "release-route-deploy-tests.log",
+      "sha256": "0bfc3265b43326683cf2fcb18f2c63fb7ac16128ab04df08864d1b7ee101e154",
+      "recorded_result": "11 passed, 90 warnings in 1.81s"
+    },
+    {
+      "artifact": "t3-final-image-smoke-expanded-result.json",
+      "sha256": "3e1baa094a652a6e5879056258fbdfbecf70d456f870417147d7acf8953a0e1c",
+      "recorded_result": "{\"source_sha\":\"ba086a30d\",\"fixture_sha256\":\"bbe0067e69970e76285fbca66bbb8315872397286c438db1952f30fe217a0a19\",\"image_digest\":\"sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3\",\"legacy_binary_syntax"
+    },
+    {
+      "artifact": "t3-final-image-smoke-installed-source-check.json",
+      "sha256": "1af2fecfeb6d304da40f58148ad9181c4b976268c5052a15d2468fb8c06363dd",
+      "recorded_result": "}"
+    },
+    {
+      "artifact": "t3-final-image-smoke-provenance.json",
+      "sha256": "318ce0ff6649870433365a2ffba57f0164811fe8da49d4763ca1551299e97ad1",
+      "recorded_result": "}"
+    },
+    {
+      "artifact": "t3-final-image-smoke-network-probe.json",
+      "sha256": "b4eb15f67d5ab07613e9ad433d9c349151c398b82d5fa077e6ec97f3af54f687",
+      "recorded_result": "{\"network_probe\":\"timeout_denied\"}"
+    }
+  ]
+}

@@ -39,12 +39,15 @@ STATE_BUCKET="${STATE_BUCKET:?STATE_BUCKET must be set}"
 # Build a unique source key
 SOURCE_SHA="${SOURCE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")}"
 UNIQUE_ID="$(date +%s)-$$"
-SOURCE_KEY="codebuild/src/${SOURCE_SHA}-${UNIQUE_ID}.zip"
+[[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+SOURCE_KEY="codebuild/src/${PROJECT_NAME}/${SOURCE_SHA}-${UNIQUE_ID}.zip"
 
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
 
 # --- Upload source to per-build S3 key ---------------------------------------
-ZIP_PATH="/tmp/adp-source-${UNIQUE_ID}.zip"
+SOURCE_TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adp-source-${UNIQUE_ID}.XXXXXX")
+ZIP_PATH="$SOURCE_TEMP_DIR/source.zip"
+trap 'rm -rf "$SOURCE_TEMP_DIR"' EXIT
 echo "Packaging source → s3://${STATE_BUCKET}/${SOURCE_KEY}"
 if [ "${ADP_RELEASE_BUILD:-false}" = true ]; then
   # Release inputs come only from the selected commit, never local secrets,

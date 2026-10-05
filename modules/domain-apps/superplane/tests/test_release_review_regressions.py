@@ -26,6 +26,10 @@ RELEASE = Path("modules/domain-apps/superplane/releases")
 def test_first_digest_promotion_preserves_rebuild_inputs(tmp_path, component):
     data = yaml.safe_load((ROOT / RELEASE / "superplane.lock.yaml").read_text())
     data["source_access"]["status"] = "resolved"
+    if component in data["images"]:
+        data["images"].pop(component)
+        data["pending_images"][component] = data["image_sources"].pop(component)
+        data["pending_images"][component]["blocked_by"] = "test first publication"
     lock = tmp_path / "lock.yaml"
     lock.write_text(yaml.safe_dump(data))
     first = resolve_build_inputs(component, lock)
@@ -46,6 +50,7 @@ def test_first_digest_promotion_preserves_rebuild_inputs(tmp_path, component):
 def test_image_cannot_be_pending_and_resolved(tmp_path):
     data = yaml.safe_load((ROOT / RELEASE / "superplane.lock.yaml").read_text())
     data["images"]["superplane-api"] = "sha256:" + "a" * 64
+    data["pending_images"]["superplane-api"] = {"blocked_by": "conflicting fixture"}
     lock = tmp_path / "lock.yaml"
     lock.write_text(yaml.safe_dump(data))
     with pytest.raises(LockError, match="both pending and resolved"):
@@ -84,6 +89,8 @@ def test_build_inputs_cannot_inject_workflow_environment(revision):
         ("superplane-api", "api"),
         ("superplane-controller", "controller"),
         ("superplane-platform-monitor", "monitor"),
+        ("superplane-executor", "executor"),
+        ("superplane-paid-worker", "paid-worker"),
     ],
 )
 @pytest.mark.parametrize(
@@ -105,10 +112,11 @@ def test_buildspec_runs_only_the_selected_domain_build(
     account as a side effect of finding out it was misconfigured.
     """
     spec_path = RELEASE / "buildspecs" / (short + ".yml")
-    workflow = (
-        ROOT / ".github/workflows" / ("superplane-" + short + "-build.yml")
-    ).read_text()
-    assert str(spec_path) in workflow
+    if component != "superplane-paid-worker":
+        workflow = (
+            ROOT / ".github/workflows" / ("superplane-" + short + "-build.yml")
+        ).read_text()
+        assert str(spec_path) in workflow
     spec = yaml.safe_load((ROOT / spec_path).read_text())
     command = spec["phases"]["build"]["commands"][0]
     script = tmp_path / RELEASE / "build-image.sh"
@@ -116,17 +124,37 @@ def test_buildspec_runs_only_the_selected_domain_build(
     shutil.copy(ROOT / RELEASE / "build-image.sh", script)
     # The maintained tree, laid out exactly as the transfer placed it: the build context is
     # <module root>/src/<component>, a sibling of releases/ rather than a directory under it.
-    context = script.parent.parent / "src" / component
+    source_path = (
+        "executor"
+        if component in {"superplane-executor", "superplane-paid-worker"}
+        else "src/" + component
+    )
+    context = script.parent.parent / source_path
     context.mkdir(parents=True)
     (context / "Dockerfile").write_text("FROM scratch\n")
     if component == "superplane-api":
         shutil.copytree(
             ROOT / RELEASE.parent / "src/superplane-api/scripts", context / "scripts"
         )
-        for package in ("auth", "contracts"):
+        for package in (
+            "auth",
+            "contracts",
+            "../../harness/jobs",
+            "infra/account-factory",
+            "infra/account-provisioning",
+            "infra/workspaces",
+            "workspace_bootstrap",
+            "workspace_provisioning",
+            "executor",
+            "src/superplane-controller/deploy",
+        ):
             shutil.copytree(
                 ROOT / RELEASE.parent / package, script.parent.parent / package
             )
+        shutil.copy(
+            ROOT / RELEASE.parent / "pyproject.toml",
+            script.parent.parent / "pyproject.toml",
+        )
         assert not (context / "vendor").exists()
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -137,8 +165,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
             '#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$BUILD_TRACE"\n'
             'case "$*" in *get-login-password*) echo test-password;; login*) cat >/dev/null;; esac\n'
             'if [ "$1" = build ] && [ "$SOURCE_PATH" = src/superplane-api ]; then\n'
-            "  for package in auth contracts; do\n"
-            '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/superplane-$package/pyproject.toml" || exit 91\n'
+            "  for package in superplane-auth superplane-contracts harness-jobs account-factory account-provisioning superplane-bootstrap workspace-provisioning superplane-executor; do\n"
+            '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/$package/pyproject.toml" || exit 91\n'
             "  done\n"
             "fi\n"
         )
@@ -150,7 +178,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
         # Provenance only — the script must not use this to fetch anything.
         "ORIGIN_REPOSITORY": "https://github.com/aws-innovate/AISuperPlane",
         "ORIGIN_REVISION": "a" * 40,
-        "SOURCE_PATH": "src/" + component,
+        "SOURCE_PATH": source_path,
         "ECR_REPO": "adp-" + component,
         "ACCOUNT_ID": "111122223333",
         "AWS_REGION": "us-east-1",
@@ -158,6 +186,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
         # The ADP commit, which is what identifies the built image after the transfer.
         "IMAGE_TAG": adp_commit,
     }
+    if component in {"superplane-executor", "superplane-paid-worker"}:
+        env["PYTHON_IMAGE"] = "python:3.12-slim@sha256:" + "d" * 64
     if bad_input == "repository":
         env["ECR_REPO"] = "adp-gateway"
     if bad_input == "revision":
@@ -183,12 +213,40 @@ def test_buildspec_runs_only_the_selected_domain_build(
             for source, package, sentinel in (
                 ("auth", "superplane_auth", "policy.py"),
                 ("contracts", "superplane_contracts", "emission.py"),
+                ("../../harness/jobs", "harness_jobs", "facade.py"),
+                ("infra/account-factory", "account_factory", "modes.py"),
+                (
+                    "infra/account-provisioning",
+                    "account_provisioning",
+                    "creation_runner.py",
+                ),
+                ("workspace_bootstrap", "superplane_bootstrap", "workspace.py"),
+                (".", "workspace_provisioning", "preview.py"),
+                ("executor", "superplane_executor", "inventory.py"),
             ):
                 assert (
                     context / "vendor" / package.replace("_", "-") / package / sentinel
                 ).read_bytes() == (
                     ROOT / RELEASE.parent / source / package / sentinel
                 ).read_bytes()
+            assert (
+                context
+                / "vendor/superplane-bootstrap/superplane_bootstrap/_data/outputs.tf"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "infra/workspaces/outputs.tf"
+            ).read_bytes()
+            assert (
+                context
+                / "vendor/workspace-provisioning/workspace_provisioning/_data/crds.yaml"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "src/superplane-controller/deploy/crds.yaml"
+            ).read_bytes()
+            assert (
+                context
+                / "vendor/account-factory/account_factory/_data/dependencies.lock.yaml"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "infra/account-factory/dependencies.lock.yaml"
+            ).read_bytes()
         calls = trace.read_text()
         # Tagged by the ADP commit; the origin revision rides along as a label. Both are
         # asserted because collapsing them is the regression this guards.
@@ -199,10 +257,26 @@ def test_buildspec_runs_only_the_selected_domain_build(
         assert "org.opencontainers.image.revision=" + adp_commit in calls
         assert "com.adp.superplane.origin.revision=" + "a" * 40 in calls
         assert (
-            "org.opencontainers.image.source=modules/domain-apps/superplane/src/"
-            + component
+            "org.opencontainers.image.source=modules/domain-apps/superplane/"
+            + source_path
             in calls
         )
+        if component in {"superplane-executor", "superplane-paid-worker"}:
+            build_call = next(
+                line for line in calls.splitlines() if "docker build " in line
+            )
+            target = (
+                "paid-worker"
+                if component == "superplane-paid-worker"
+                else "controller-service"
+            )
+            assert "--target " + target in build_call
+            other = "controller-service" if target == "paid-worker" else "paid-worker"
+            assert "--target " + other not in build_call
+            assert "--build-arg PYTHON_IMAGE=" + env["PYTHON_IMAGE"] in build_call
+            assert build_call.endswith(" ."), (
+                "executor needs the repository build context"
+            )
         # The origin revision must never become the tag: rebuilds from later ADP commits
         # would collide on it, so "which build is running" would stop having an answer.
         assert ":" + "a" * 40 not in calls
@@ -233,4 +307,5 @@ def test_api_build_watches_every_staged_source_package():
     paths = workflow.get("on", workflow.get(True))["push"]["paths"]
     assert sources
     for source in sources:
-        assert f"{RELEASE.parent}/{source}/**" in paths
+        normalized = (ROOT / RELEASE.parent / source).resolve().relative_to(ROOT)
+        assert f"{normalized.as_posix()}/**" in paths

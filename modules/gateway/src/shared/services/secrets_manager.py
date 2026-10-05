@@ -19,6 +19,7 @@ All operations are synchronous (boto3), intended to be called via
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import uuid
@@ -34,6 +35,10 @@ MAX_SECRET_SIZE_BYTES = 65_536  # 64 KB
 
 class SecretTooLargeError(Exception):
     """Raised when a secret payload exceeds the 64 KB limit."""
+
+
+class SecretOperationConflictError(Exception):
+    """Raised when an idempotent operation name belongs to different input."""
 
 
 class SecretsManagerHelper:
@@ -62,6 +67,7 @@ class SecretsManagerHelper:
         team_id: str | None = None,
         org_id: str | None = None,
         domain_app_id: str | None = None,
+        operation_id: str | None = None,
     ) -> str:
         """Build a namespaced secret name with a short UUID suffix.
 
@@ -89,15 +95,15 @@ class SecretsManagerHelper:
             if len(primary_owners) != 1:
                 raise ValueError("Exactly one of user_sub, team_id, org_id, or domain_app_id must be provided.")
 
-        short_id = uuid.uuid4().hex[:8]
+        leaf = f"operation-{operation_id}" if operation_id else f"{service}-{uuid.uuid4().hex[:8]}"
         if user_sub is not None:
-            return f"adp/users/{user_sub}/{service}-{short_id}"
+            return f"adp/users/{user_sub}/{leaf}"
         if team_id is not None:
-            return f"adp/teams/{team_id}/{service}-{short_id}"
+            return f"adp/teams/{team_id}/{leaf}"
         if domain_app_id is not None:
-            return f"adp/domain-apps/{domain_app_id}/{org_id}/{service}-{short_id}"
+            return f"adp/domain-apps/{domain_app_id}/{org_id}/{leaf}"
         # org-scoped
-        return f"adp/orgs/{org_id}/{service}-{short_id}"
+        return f"adp/orgs/{org_id}/{leaf}"
 
     @staticmethod
     def _validate_payload_size(payload: str | bytes) -> bytes:
@@ -124,6 +130,8 @@ class SecretsManagerHelper:
         team_id: str | None = None,
         org_id: str | None = None,
         domain_app_id: str | None = None,
+        operation_id: str | None = None,
+        operation_fingerprint: str | None = None,
     ) -> str:
         """Create a new secret and return its ARN.
 
@@ -167,6 +175,7 @@ class SecretsManagerHelper:
             team_id=team_id,
             org_id=org_id,
             domain_app_id=domain_app_id,
+            operation_id=operation_id,
         )
 
         # Build owner tag for audit / IAM attribute-based access control.
@@ -183,17 +192,38 @@ class SecretsManagerHelper:
             owner_tag = {"Key": "adp:owner_scope", "Value": "org"}
             owner_id_tag = {"Key": "adp:org_id", "Value": org_id or ""}
 
-        response = self._client.create_secret(
-            Name=secret_name,
-            Description=f"Vault credential: {label} ({service})",
-            SecretString=payload,
-            Tags=[
-                owner_tag,
-                owner_id_tag,
-                {"Key": "adp:service", "Value": service},
-                {"Key": "adp:label", "Value": label},
-            ],
-        )
+        tags = [
+            owner_tag,
+            owner_id_tag,
+            {"Key": "adp:service", "Value": service},
+            {"Key": "adp:label", "Value": label},
+        ]
+        if operation_id is not None:
+            tags.append({"Key": "adp:operation_id", "Value": operation_id})
+        if operation_fingerprint is not None:
+            tags.append({"Key": "adp:operation_fingerprint", "Value": operation_fingerprint})
+        try:
+            response = self._client.create_secret(
+                Name=secret_name,
+                Description=f"Vault credential: {label} ({service})",
+                SecretString=payload,
+                Tags=tags,
+            )
+        except ClientError as exc:
+            if operation_id is None or exc.response["Error"]["Code"] != "ResourceExistsException":
+                raise
+            description = self._client.describe_secret(SecretId=secret_name)
+            existing_tags = {tag["Key"]: tag["Value"] for tag in description.get("Tags", [])}
+            expected_tags = {tag["Key"]: tag["Value"] for tag in tags}
+            existing_value = self._client.get_secret_value(SecretId=secret_name).get("SecretString")
+            if description.get("DeletedDate") is not None or any(existing_tags.get(key) != value for key, value in expected_tags.items()):
+                raise SecretOperationConflictError("Credential operation id is already in use") from exc
+            if not hmac.compare_digest(
+                (existing_value or "").encode("utf-8"),
+                payload.encode("utf-8"),
+            ):
+                raise SecretOperationConflictError("Credential operation id was retried with a different value") from exc
+            response = description
         arn = response["ARN"]
         logger.info("Created secret %s scope=%s service=%s", arn, owner_tag["Value"], service)
         return arn
@@ -306,6 +336,17 @@ class SecretsManagerHelper:
                 if code == "ResourceNotFoundException":
                     logger.warning("Secret %s already deleted", secret_arn)
                     return
+                if code == "InvalidRequestException" and not force:
+                    try:
+                        description = self._client.describe_secret(SecretId=secret_arn)
+                    except ClientError as describe_exc:
+                        if describe_exc.response["Error"]["Code"] == "ResourceNotFoundException":
+                            logger.warning("Secret %s already deleted", secret_arn)
+                            return
+                        raise describe_exc from exc
+                    if description.get("DeletedDate") is not None:
+                        logger.warning("Secret %s is already scheduled for deletion", secret_arn)
+                        return
                 if attempt == max_retries:
                     raise
                 logger.warning(

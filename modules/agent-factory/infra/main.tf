@@ -113,7 +113,10 @@ provider "helm" {
 # =============================================================================
 
 module "runner_iam" {
-  source = "./modules/runner-iam"
+  gateway_execution_arns    = local.runner_gateway_execution_arns
+  transport_secret_arns     = var.runner_transport_secret_arns
+  transport_secret_kms_arns = var.runner_transport_secret_kms_arns
+  source                    = "./modules/runner-iam"
 
   environment       = var.environment
   name_prefix       = local.name_prefix
@@ -177,6 +180,9 @@ module "arc_runner" {
   # Custom ADP runner image with CLI tools pre-baked (aws, kubectl, terraform,
   # helm, gh, docker, kaniko). Empty string = chart default.
   runner_image = local.runner_image
+  # The maintained rebuild fixes Go advisories still present in upstream0.14.2.
+  # Publish the verified artifact to this account before applying this release.
+  controller_image = var.arc_controller_image != "" ? var.arc_controller_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50"
 
   depends_on = [module.runner_iam]
 }
@@ -203,18 +209,7 @@ resource "aws_eks_access_entry" "runner" {
 # resources in runner-rbac.tf.
 # =============================================================================
 
-resource "aws_eks_access_policy_association" "runner_edit" {
-  cluster_name  = local.cluster_name
-  principal_arn = module.runner_iam.runner_role_arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
-
-  access_scope {
-    type       = "namespace"
-    namespaces = ["adp-gateway", "adp-gateway-evals", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
-  }
-
-  depends_on = [aws_eks_access_entry.runner]
-}
+# Deployment access is owned by platform/automation-infra.
 
 # =============================================================================
 # Public CFN Templates Bucket

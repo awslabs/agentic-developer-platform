@@ -1235,6 +1235,11 @@ func TestRemoveNodeWaitsForAsyncTeardownToConverge(t *testing.T) {
 		presentForFirstNChecks: map[string]int{"sky-cluster-1": 2},
 	}
 	cons := newTestConsolidator(fc, sky, ConsolidatorConfig{})
+	// This tests convergence after two probes, not a 50ms scheduler deadline.
+	// Leave timeout-failure tests fast, but allow loaded CI workers to schedule
+	// the success path without turning provider convergence into a false failure.
+	cons.ReleaseVerifyTimeout = 2 * time.Second
+
 
 	if err := cons.removeNode(context.Background(), spNode); err != nil {
 		t.Fatalf("an in-progress asynchronous teardown that then completes must be a successful release, got %v", err)

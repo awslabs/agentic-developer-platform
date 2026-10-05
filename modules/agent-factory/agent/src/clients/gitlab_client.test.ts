@@ -13,7 +13,14 @@ global.fetch = mockFetch as unknown as typeof fetch;
 describe('GitLabClient', () => {
   let client: GitLabClient;
 
+  const originalGitLabUrl = process.env.GITLAB_URL;
+  afterEach(() => {
+    if (originalGitLabUrl === undefined) delete process.env.GITLAB_URL;
+    else process.env.GITLAB_URL = originalGitLabUrl;
+  });
+
   beforeEach(() => {
+    process.env.GITLAB_URL = 'https://gitlab.example.com';
     client = new GitLabClient({
       baseUrl: 'https://gitlab.example.com',
       accessToken: 'glpat-test-token',
@@ -22,6 +29,43 @@ describe('GitLabClient', () => {
   });
 
   describe('constructor', () => {
+    it('fails closed without operator configuration', () => {
+      delete process.env.GITLAB_URL;
+      expect(() => new GitLabClient({ baseUrl: 'https://gitlab.example.com', accessToken: 'fixture' }))
+        .toThrow('GITLAB_URL must configure');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'https://attacker.example', 'https://gitlab.example.com.attacker.example',
+      'https://gitlab.example.com:8443', 'http://gitlab.example.com',
+      'https://gitlab.example.com@attacker.example', 'https://gitlab.example.com/api',
+      'https://gitlab.example.com?destination=attacker', 'https://gitlab.example.com#fragment',
+      'https://127.0.0.1', 'https://169.254.169.254',
+    ])('refuses caller-selected destination %s before sending credentials', baseUrl => {
+      expect(() => new GitLabClient({ baseUrl, accessToken: 'fixture' })).toThrow();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each(['http://169.254.169.254', 'https://user:pass@gitlab.example.com',
+      'https://gitlab.example.com/api', 'https://gitlab.example.com?x=y'])
+    ('refuses malformed or blocked operator configuration %s', baseUrl => {
+      process.env.GITLAB_URL = baseUrl;
+      expect(() => new GitLabClient({ baseUrl, accessToken: 'fixture' })).toThrow();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('preserves configured internal HTTP origins and normalizes default ports', async () => {
+      process.env.GITLAB_URL = 'http://gitlab.dev.adp.internal:80/';
+      const internal = new GitLabClient({ baseUrl: 'http://gitlab.dev.adp.internal', accessToken: 'fixture' });
+      mockFetch.mockResolvedValueOnce({ ok: true });
+      await internal.postIssueComment(1, 2, 'body');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://gitlab.dev.adp.internal/api/v4/projects/1/issues/2/notes',
+        expect.objectContaining({ redirect: 'error' }),
+      );
+    });
+
     it('strips trailing slash from baseUrl', () => {
       const c = new GitLabClient({
         baseUrl: 'https://gitlab.example.com/',
@@ -46,6 +90,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/issues/7/notes',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -90,6 +135,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/repository/branches',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -140,6 +186,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/merge_requests',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -216,6 +263,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/repository/files/README.md?ref=main',
         {
+          redirect: 'error',
           method: 'GET',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',

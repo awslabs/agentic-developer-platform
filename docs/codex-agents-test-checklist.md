@@ -89,7 +89,7 @@ live because it depends on the agent's in-run reasoning.
 The automated cases (allowlist 403, metering accuracy, streaming integrity,
 upstream error mapping) are in `test_mantle_passthrough_scenarios.py`. The rows
 below need the live dev gateway (`POST /api/openai/v1/responses` behind
-CloudFront `d1g6cal2ts4iis.cloudfront.net`; in-cluster path `/openai/v1/responses`).
+CloudFront `gateway-101.example.com`; in-cluster path `/openai/v1/responses`).
 
 | # | Scenario | Steps | Expected | Automated? | Status |
 |---|---|---|---|---|---|

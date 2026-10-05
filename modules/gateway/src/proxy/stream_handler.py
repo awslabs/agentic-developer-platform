@@ -12,6 +12,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
+import anyio
+
 from src.proxy.format_translator import FormatTranslator
 from src.shared.exceptions import BedrockGatewayError
 
@@ -99,13 +101,16 @@ async def merge_with_keepalive(
         # source covers a disconnect while parked between reads (at ``yield``),
         # where the read task is already done and cancel is a no-op. Either way
         # the underlying Bedrock stream is closed rather than leaked.
-        next_chunk.cancel()
-        with contextlib.suppress(BaseException):
-            await next_chunk
-        aclose = getattr(source, "aclose", None)
-        if aclose is not None:
+        # A cancelled HTTP scope otherwise cancels the read task again while
+        # it is closing the provider stream and recording usage.
+        with anyio.CancelScope(shield=True):
+            next_chunk.cancel()
             with contextlib.suppress(BaseException):
-                await aclose()
+                await next_chunk
+            aclose = getattr(source, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(BaseException):
+                    await aclose()
 
 
 class StreamingError(Exception):

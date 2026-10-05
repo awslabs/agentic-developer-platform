@@ -1,0 +1,527 @@
+{
+  "schema_version": 1,
+  "issues": [
+    6111,
+    6112
+  ],
+  "purpose": "Verified build-only publication of four shared image candidates",
+  "account": "000000000101",
+  "region": "us-east-1",
+  "reviewed_source": "3f60504a9008276e24b072ba814fcf050739cd1b",
+  "source_archive_sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925",
+  "source_archive_bytes": 21568599,
+  "archived_files_verified_against_git_blobs": 5453,
+  "packaging_script": "platform/scripts/zip-source.sh",
+  "packaging_script_sha256": "2b408b56df3f6e35bc8947cddc2aca46a6fa707ae119704034ab8a51243f0056",
+  "publication_helper": "platform/scripts/publish-shared-image.sh",
+  "publication_helper_sha256": "379d16d0b287ab22b8af44fe700e7774592d6a21258f6087b2ac445c764d3cf9",
+  "operation_run": "security-20260925T164532Z-510dd9e9",
+  "verified_at": "2026-09-25T16:50:11.333063+00:00",
+  "successful_publications": 4,
+  "ecr_mutability_preflight": "IMMUTABLE with no exclusions for all four repositories",
+  "builds": [
+    {
+      "project": "adp-dev-gateway-build",
+      "repository": "adp-gateway",
+      "build_id": "adp-dev-gateway-build:9a52a97f-8a08-4249-9874-d981a44877d7",
+      "status": "SUCCEEDED",
+      "phase": "COMPLETED",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
+      "buildspec": "codebuild/bs-gateway-build.yml",
+      "resolved_source_version": null,
+      "start_time": "2026-09-25T16:46:30.536000+00:00",
+      "end_time": "2026-09-25T16:47:42.409000+00:00",
+      "logs": {
+        "groupName": "/aws/codebuild/adp-dev-gateway-build",
+        "streamName": "9a52a97f-8a08-4249-9874-d981a44877d7",
+        "deepLink": "https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fcodebuild$252Fadp-dev-gateway-build/log-events/9a52a97f-8a08-4249-9874-d981a44877d7"
+      },
+      "phase_states": [
+        {
+          "type": "SUBMITTED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "QUEUED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "PROVISIONING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 8,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "DOWNLOAD_SOURCE",
+          "status": "SUCCEEDED",
+          "duration_seconds": 2,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "INSTALL",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "PRE_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 59,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "POST_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "UPLOAD_ARTIFACTS",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "FINALIZING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "COMPLETED",
+          "status": null,
+          "duration_seconds": null,
+          "context_codes": []
+        }
+      ],
+      "image": {
+        "digest": "sha256:18684248f944b1e5464d6ae323b9049b2f8aff0b184e36e2137ad462b47497d6",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:18684248f944b1e5464d6ae323b9049b2f8aff0b184e36e2137ad462b47497d6",
+        "tags": [
+          "3f60504a9008276e24b072ba814fcf050739cd1b"
+        ],
+        "pushed_at": "2026-09-25T16:47:40.990000+00:00",
+        "size_bytes": 109623204,
+        "manifest_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+        "manifest_sha256_verified": true
+      },
+      "source_object": {
+        "ContentLength": 21568599,
+        "ETag": "\"89b64559a9982445262b72a510f13a99-3\"",
+        "VersionId": "2LQGHrWesGn1uFfPMjlS0DjC7J74N5cT",
+        "Metadata": {
+          "source-revision": "3f60504a9008276e24b072ba814fcf050739cd1b",
+          "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
+        }
+      },
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-gateway-build/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-gateway-build.zip",
+      "source_tag_existed_before": false,
+      "publication_log_matches_digest": true
+    },
+    {
+      "project": "adp-dev-agent-runtime",
+      "repository": "adp-agent-runtime",
+      "build_id": "adp-dev-agent-runtime:ee156348-30a8-4f9c-8ac3-34a0a584347f",
+      "status": "SUCCEEDED",
+      "phase": "COMPLETED",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
+      "buildspec": "codebuild/bs-agent-runtime.yml",
+      "resolved_source_version": null,
+      "start_time": "2026-09-25T16:46:33.122000+00:00",
+      "end_time": "2026-09-25T16:49:30.988000+00:00",
+      "logs": {
+        "groupName": "/aws/codebuild/adp-dev-agent-runtime",
+        "streamName": "ee156348-30a8-4f9c-8ac3-34a0a584347f",
+        "deepLink": "https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fcodebuild$252Fadp-dev-agent-runtime/log-events/ee156348-30a8-4f9c-8ac3-34a0a584347f"
+      },
+      "phase_states": [
+        {
+          "type": "SUBMITTED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "QUEUED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "PROVISIONING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 10,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "DOWNLOAD_SOURCE",
+          "status": "SUCCEEDED",
+          "duration_seconds": 2,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "INSTALL",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "PRE_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 164,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "POST_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "UPLOAD_ARTIFACTS",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "FINALIZING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "COMPLETED",
+          "status": null,
+          "duration_seconds": null,
+          "context_codes": []
+        }
+      ],
+      "image": {
+        "digest": "sha256:7ebe1f235780d6d70ffa2adc8f4f84cc96455cdab25cbfbd6761d8773ce04386",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7ebe1f235780d6d70ffa2adc8f4f84cc96455cdab25cbfbd6761d8773ce04386",
+        "tags": [
+          "3f60504a9008276e24b072ba814fcf050739cd1b"
+        ],
+        "pushed_at": "2026-09-25T16:49:29.340000+00:00",
+        "size_bytes": 1398285768,
+        "manifest_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+        "manifest_sha256_verified": true
+      },
+      "source_object": {
+        "ContentLength": 21568599,
+        "ETag": "\"89b64559a9982445262b72a510f13a99-3\"",
+        "VersionId": "FzSndoSKkqDfDvih0RGR.hv6AxPFDZ1q",
+        "Metadata": {
+          "source-revision": "3f60504a9008276e24b072ba814fcf050739cd1b",
+          "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
+        }
+      },
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-runtime/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-runtime.zip",
+      "source_tag_existed_before": false,
+      "publication_log_matches_digest": true
+    },
+    {
+      "project": "adp-dev-chat-agent",
+      "repository": "adp-chat-agent",
+      "build_id": "adp-dev-chat-agent:bdffdc56-a56f-447c-a260-4df3e067a9f3",
+      "status": "SUCCEEDED",
+      "phase": "COMPLETED",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
+      "buildspec": "codebuild/bs-chat-agent.yml",
+      "resolved_source_version": null,
+      "start_time": "2026-09-25T16:46:35.616000+00:00",
+      "end_time": "2026-09-25T16:48:08.989000+00:00",
+      "logs": {
+        "groupName": "/aws/codebuild/adp-dev-chat-agent",
+        "streamName": "bdffdc56-a56f-447c-a260-4df3e067a9f3",
+        "deepLink": "https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fcodebuild$252Fadp-dev-chat-agent/log-events/bdffdc56-a56f-447c-a260-4df3e067a9f3"
+      },
+      "phase_states": [
+        {
+          "type": "SUBMITTED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "QUEUED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "PROVISIONING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 10,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "DOWNLOAD_SOURCE",
+          "status": "SUCCEEDED",
+          "duration_seconds": 2,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "INSTALL",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "PRE_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 79,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "POST_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "UPLOAD_ARTIFACTS",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "FINALIZING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "COMPLETED",
+          "status": null,
+          "duration_seconds": null,
+          "context_codes": []
+        }
+      ],
+      "image": {
+        "digest": "sha256:4dded4e6373a7e7d58afbc8f7958e8705dcaf1af6f2213a8b3dacbc5a285803d",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:4dded4e6373a7e7d58afbc8f7958e8705dcaf1af6f2213a8b3dacbc5a285803d",
+        "tags": [
+          "3f60504a9008276e24b072ba814fcf050739cd1b"
+        ],
+        "pushed_at": "2026-09-25T16:48:07.521000+00:00",
+        "size_bytes": 243695513,
+        "manifest_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+        "manifest_sha256_verified": true
+      },
+      "source_object": {
+        "ContentLength": 21568599,
+        "ETag": "\"89b64559a9982445262b72a510f13a99-3\"",
+        "VersionId": "CcwnmDQdGMJbfEpivp2IhQ_EZcwp_QGd",
+        "Metadata": {
+          "source-revision": "3f60504a9008276e24b072ba814fcf050739cd1b",
+          "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
+        }
+      },
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-chat-agent/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-chat-agent.zip",
+      "source_tag_existed_before": false,
+      "publication_log_matches_digest": true
+    },
+    {
+      "project": "adp-dev-agent-gateway",
+      "repository": "adp-agent-gateway",
+      "build_id": "adp-dev-agent-gateway:c50ba0b9-9c89-4e4e-9452-06ac03c751e0",
+      "status": "SUCCEEDED",
+      "phase": "COMPLETED",
+      "source_location": "adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
+      "buildspec": "codebuild/bs-agent-gateway.yml",
+      "resolved_source_version": null,
+      "start_time": "2026-09-25T16:46:38.129000+00:00",
+      "end_time": "2026-09-25T16:47:49.440000+00:00",
+      "logs": {
+        "groupName": "/aws/codebuild/adp-dev-agent-gateway",
+        "streamName": "c50ba0b9-9c89-4e4e-9452-06ac03c751e0",
+        "deepLink": "https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fcodebuild$252Fadp-dev-agent-gateway/log-events/c50ba0b9-9c89-4e4e-9452-06ac03c751e0"
+      },
+      "phase_states": [
+        {
+          "type": "SUBMITTED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "QUEUED",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": []
+        },
+        {
+          "type": "PROVISIONING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 9,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "DOWNLOAD_SOURCE",
+          "status": "SUCCEEDED",
+          "duration_seconds": 2,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "INSTALL",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "PRE_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 57,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "POST_BUILD",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "UPLOAD_ARTIFACTS",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "FINALIZING",
+          "status": "SUCCEEDED",
+          "duration_seconds": 0,
+          "context_codes": [
+            ""
+          ]
+        },
+        {
+          "type": "COMPLETED",
+          "status": null,
+          "duration_seconds": null,
+          "context_codes": []
+        }
+      ],
+      "image": {
+        "digest": "sha256:a3e4a7ae993738609c69c32b87ee194d1f7e5c5aa3fd686d3c3fd0291585f0e5",
+        "uri": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:a3e4a7ae993738609c69c32b87ee194d1f7e5c5aa3fd686d3c3fd0291585f0e5",
+        "tags": [
+          "3f60504a9008276e24b072ba814fcf050739cd1b"
+        ],
+        "pushed_at": "2026-09-25T16:47:47.990000+00:00",
+        "size_bytes": 179683632,
+        "manifest_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+        "manifest_sha256_verified": true
+      },
+      "source_object": {
+        "ContentLength": 21568599,
+        "ETag": "\"89b64559a9982445262b72a510f13a99-3\"",
+        "VersionId": "tfXsnq3V5.BhlIFDEsrrS81S9THAEekW",
+        "Metadata": {
+          "source-revision": "3f60504a9008276e24b072ba814fcf050739cd1b",
+          "source-sha256": "641a8531f4372f7d5270c70e2333b1d16842e39f49957ba61278fda204542925"
+        }
+      },
+      "source_s3_uri": "s3://adp-terraform-state-000000000101/codebuild/src/adp-dev-agent-gateway/3f60504a9008276e24b072ba814fcf050739cd1b-security-20260925T164532Z-510dd9e9-1-adp-dev-agent-gateway.zip",
+      "source_tag_existed_before": false,
+      "publication_log_matches_digest": true
+    }
+  ],
+  "changes_excluded": [
+    "workload rollout",
+    "repository configuration",
+    "credential rotation",
+    "image scan denominator changes"
+  ],
+  "security_acceptance": "Publication proves reviewed source and immutable digest identity; vulnerability rescan and runtime acceptance remain separate."
+}

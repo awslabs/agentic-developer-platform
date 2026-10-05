@@ -84,6 +84,10 @@ class ChatLog(BaseModel):
     Contains all metadata and the scrubbed request/response.
     """
 
+    # New producers opt into the shared receipt protocol. Historical objects
+    # have no marker and must never be debited again after rollout.
+    settlement_version: Literal[1] = 1
+
     # Identifiers
     request_id: str = Field(description="Unique request identifier (UUID)")
     timestamp: datetime = Field(description="Request timestamp in ISO8601 format")
@@ -92,6 +96,7 @@ class ChatLog(BaseModel):
     org_id: str = Field(description="Organization ID from auth context")
     user_id: str | None = Field(default=None, description="User ID from auth context")
     team_id: str | None = Field(default=None, description="Team ID from auth context")
+    department_id: str | None = Field(default=None, description="Department from verified auth context")
     # Issue #4300: the human who set this agent chain in motion, as a canonical
     # `users.id`. Resolved server-side from the run's registry row, never from a
     # header. The budget-usage-tracker Lambda reads this to write the cumulative

@@ -1,0 +1,60 @@
+{
+  "time": "2026-09-27T15:00:21.907578+00:00",
+  "checks": [
+    {
+      "check": "keda-auth",
+      "exit_code": 1,
+      "result": "Error from server (Forbidden): triggerauthentications.keda.sh is forbidden: User \"arn:aws:sts::000000000101:assumed-role/adp-dev-box-prsaws-InstanceRole-d4vWBvnYsVUy/i-00000000000000030\" cannot list resource \"triggerauthentications\" in API group \"keda.sh\" at the cluster scope\nError from server (Forbidden): clustertriggerauthentications.keda.sh is forbidden: User \"arn:aws:sts::000000000101:assumed-role/adp-dev-box-prsaws-InstanceRole-d4vWBvnYsVUy/i-00000000000000030\" cannot list resource \"cluster"
+    },
+    {
+      "check": "scaledjobs",
+      "exit_code": 0,
+      "result": "collected"
+    },
+    {
+      "check": "volumes",
+      "exit_code": 0,
+      "result": "collected"
+    },
+    {
+      "check": "probe",
+      "exit_code": 0,
+      "result": "collected"
+    },
+    {
+      "check": "pods",
+      "exit_code": 0,
+      "result": "collected"
+    },
+    {
+      "check": "patch-superplane",
+      "exit_code": 1,
+      "result": "no"
+    },
+    {
+      "check": "patch-adp-agents",
+      "exit_code": 0,
+      "result": "yes"
+    },
+    {
+      "check": "patch-adp-gateway",
+      "exit_code": 0,
+      "result": "yes"
+    },
+    {
+      "check": "patch-keda",
+      "exit_code": 1,
+      "result": "no"
+    },
+    {
+      "check": "patch-arc-systems",
+      "exit_code": 1,
+      "result": "no"
+    },
+    {
+      "check": "patch-kube-system",
+      "exit_code": 1,
+      "result": "no"
+    }
+  ]
+}

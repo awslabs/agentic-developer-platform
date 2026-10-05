@@ -1,0 +1,43 @@
+{
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+  "config_digest": "sha256:7a490f09b0907a556ec3bd553d130f4f93b6fde2617f858de71814b74fb1ecbf",
+  "build_run": 36354263824,
+  "source_commit": "cfacbbcb9ec6054985c8c8a0d975b1cc76cdf2aa",
+  "native_counts": {
+    "Negligible": 703,
+    "Critical": 25,
+    "High": 111,
+    "Low": 27,
+    "Medium": 135,
+    "Unknown": 5
+  },
+  "exact_file_receipt": "/workspaces/projects/security27-high-closure/ingestion-final-lock-exact-files.json",
+  "review": "/workspaces/projects/security27-high-closure/ingestion-final-lock-review.json",
+  "reviewed_matches": 9,
+  "indexers": {
+    "scip-python": 844,
+    "scip-typescript": 722,
+    "scip-go": 445,
+    "syft_go_runtime_detected": true,
+    "trivy_offline_scan": true,
+    "node": "v22.23.2",
+    "trivy": "Version: 0.74.0-adp-security1"
+  },
+  "runtime": {
+    "uid": 10001,
+    "ruby": {
+      "ruby": "3.4.11",
+      "zlib": "3.2.3",
+      "imap": "0.5.15"
+    },
+    "bundler": true,
+    "sorbet": true,
+    "libxml2_version": "2.13.9",
+    "libxml2_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6",
+    "llvm_load": true,
+    "chromium_dom_canvas_screenshot": true,
+    "network": "isolated loopback only"
+  },
+  "signed_xml_positive_and_tamper_negative": true,
+  "scope": "Exact final normal-build artifact verification; no deployment performed."
+}

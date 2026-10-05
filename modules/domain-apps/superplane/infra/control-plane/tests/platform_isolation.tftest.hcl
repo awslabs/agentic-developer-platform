@@ -37,6 +37,9 @@
 # take an RDS instance into its state (caught there).
 
 mock_provider "aws" {
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock-build" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
@@ -64,9 +67,37 @@ override_data {
   target = data.terraform_remote_state.platform
   values = {
     outputs = {
-      eks_oidc_provider_arn = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
-      eks_oidc_issuer       = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      eks_oidc_provider_arn          = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      eks_oidc_issuer                = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      gateway_service_irsa_role_name = "adp-dev-role-gateway-service"
+      codebuild_boundary_arn         = "arn:aws:iam::111122223333:policy/adp-dev-codebuild-boundary"
+      security_scans_bucket_name     = "adp-dev-security-scans"
     }
+  }
+}
+
+run "gateway_route_grant_is_owned_by_superplane" {
+  command = plan
+
+  assert {
+    condition = toset(keys(module.image_builds.project_names)) == toset([
+      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
+    ])
+    error_message = "The Superplane root must own exactly its four declared image build jobs."
+  }
+
+  assert {
+    condition     = aws_iam_role_policy.gateway_route_read.role == "adp-dev-role-gateway-service"
+    error_message = "Superplane must attach its route grant to the gateway role exported by platform."
+  }
+
+  assert {
+    condition = jsondecode(aws_iam_role_policy.gateway_route_read.policy).Statement == [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "arn:aws:s3:::adp-terraform-state-111122223333/domain-routes/dev/superplane/public-route.json"
+    }]
+    error_message = "The Superplane grant must read only its own exact public route."
   }
 }
 
@@ -387,6 +418,7 @@ run "all_resource_names_are_domain_prefixed" {
         aws_iam_role.skypilot.name,
         aws_iam_role_policy.control_plane.name,
         aws_iam_role_policy.skypilot.name,
+        aws_iam_role_policy.gateway_route_read.name,
       ] : startswith(name, "adp-dev-superplane-")
     ])
     error_message = "every IAM resource must carry the adp-<env>-superplane- prefix so domain-owned resources are distinguishable from platform-owned ones."

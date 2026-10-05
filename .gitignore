@@ -83,3 +83,10 @@ test-results/
 # the single source of truth; this is a per-build copy, gated inside the built image
 # by `python -m src.orchestration.review_contract_selfcheck`.
 modules/gateway/contracts/
+
+# Local deployment checkpoints and target locks (distinct from agent phase notes).
+.adp-deploy-checkpoints/
+
+# Private teardown plans, state backups and target binding
+.adp-teardown/
+**/adp_teardown_target_override.tf.json

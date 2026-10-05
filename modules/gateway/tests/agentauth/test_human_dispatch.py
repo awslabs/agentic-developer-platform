@@ -21,6 +21,11 @@ webhook = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = webhook
 _spec.loader.exec_module(webhook)
 
+_identity_spec = importlib.util.spec_from_file_location("adp_human_dispatch_identity", _path.with_name("identity_resolver.py"))
+identity_resolver = importlib.util.module_from_spec(_identity_spec)
+sys.modules[_identity_spec.name] = identity_resolver
+_identity_spec.loader.exec_module(identity_resolver)
+
 
 @pytest.fixture
 def store(monkeypatch):
@@ -36,11 +41,24 @@ def store(monkeypatch):
         yield BootstrapStore(table_name="authority", dynamodb_client=ddb)
 
 
+def resolved_human(**overrides):
+    """A provider-confirmed human in the tenant authorizing this dispatch."""
+    fields = {
+        "tenant_id": "tenant",
+        "org_id": "tenant",
+        "user_id": "human",
+        "user_provisioning_mode": "strict",
+        "user_kind": "human",
+        "verification_method": "oauth",
+    }
+    return identity_resolver.ResolvedIdentity(**(fields | overrides))
+
+
 def event():
     return webhook.VerifiedHumanEvent.from_verified_webhook(
         body=b'{"sender":{"type":"User"},"comment":{"id":1}}',
         event_type="issue_comment",
-        resolved=SimpleNamespace(user_kind="human", user_id="human"),
+        resolved=resolved_human(),
         sender={"type": "User"},
         tenant_id="tenant",
         repo="org/repo",
@@ -54,7 +72,7 @@ def envelope():
         "persona": "developer",
         "arrived_at": "2026-09-13T00:00:00Z",
         "source_ref": {"repo": "org/repo", "issue": 42},
-        "correlation": {"parent_invocation_id": "worker-controlled"},
+        "correlation": {"parent_invocation_id": "worker-controlled", "correlation_id": "advisory-chain"},
         "payload": {"comment": {"id": 1}},
     }
 
@@ -82,13 +100,13 @@ def _report_only_snapshot():
                 "revision": 7,
                 "posture": "report_only",
                 "posture_revision": 2,
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         persona_contracts={
             "developer": {
                 "compatibility_class": "claude-agent-sdk",
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         policy_revision="policy-7",
@@ -111,6 +129,8 @@ def test_actual_human_writer_bootstraps_and_ignores_advisory_parent(store):
     assert record.workload_binding == "pod-uid"
     assert record.parent_principal is None
     assert record.flow_id == event().reference_id
+    assert final["correlation"]["correlation_id"] == record.flow_id
+    assert envelope()["correlation"]["correlation_id"] != record.flow_id
     grant = store.live_grant(invocation_id=record.invocation_id, tenant_id="tenant", attempt=1, now=now)
     assert grant.authority.human_id == "human"
     assert "credential" not in final
@@ -310,11 +330,52 @@ def test_worker_or_service_claim_cannot_create_human_event(user_kind, sender_typ
         webhook.VerifiedHumanEvent.from_verified_webhook(
             body=b"body",
             event_type="issue_comment",
-            resolved=SimpleNamespace(user_kind=user_kind, user_id="claimed-human"),
+            resolved=resolved_human(user_kind=user_kind, user_id="claimed-human"),
             sender={"type": sender_type},
             tenant_id="tenant",
             repo="org/repo",
         )
+
+
+@pytest.mark.parametrize("method", [None, "", "self_asserted", "channel_placement", "magic_link", "unknown_method"])
+def test_unproven_human_resolution_still_cannot_authorize_dispatch(store, method):
+    with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=resolved_human(verification_method=method),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
+
+
+def test_legacy_human_resolution_without_provenance_cannot_authorize_dispatch(store):
+    with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=SimpleNamespace(user_kind="human", user_id="human"),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
+
+
+@pytest.mark.parametrize("scope", [{"tenant_id": "foreign"}, {"org_id": "foreign"}])
+def test_proven_human_resolution_must_match_dispatch_tenant(store, scope):
+    with pytest.raises(webhook.AuthorityProvisionError, match="tenant-consistent identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=resolved_human(**scope),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
 
 
 @pytest.fixture
@@ -695,3 +756,13 @@ def test_total_dispatch_budget_survives_reservation_release(store, child_dispatc
     with pytest.raises(PolicyError) as exc:
         send_child(child_dispatch, child_dispatch.body.model_copy(update={"request_id": "over-total-budget"}))
     assert exc.value.status_code == 409
+
+
+def test_codex_pm_grant_uses_existing_root_coordinator_dispatch(store):
+    final = webhook.provision_human_dispatch(envelope={**envelope(), "persona": "agent-codex-pm"}, event=event(), client=store.client)
+    grant = store._read("TENANT#tenant", f"GRANT#{final['message_id']}#1")
+    assert grant["dispatch_personas"] == {"SS": ["agent-codex-developer"]}
+    assert grant["dispatch_repository_scope"] == {"S": "org/repo"}
+    assert "dispatch" in grant["allowed_actions"]["SS"]
+    assert "dispatch" in grant["delegable_actions"]["SS"]
+    assert grant["work_item_issue"] == {"N": "42"}

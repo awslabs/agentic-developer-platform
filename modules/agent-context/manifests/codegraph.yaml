@@ -21,29 +21,34 @@ spec:
         app.kubernetes.io/name: codegraph
         app.kubernetes.io/part-of: agent-context-platform
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Requires the reviewed pre-baked image and writable data volume (#6105).
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: codegraph
         image: ${CODEGRAPH_IMAGE}
         securityContext:
           allowPrivilegeEscalation: false
-        command: ["/bin/bash", "-c"]
-        args:
-          - |
-            set -e
-            echo "Installing dependencies..."
-            apt-get update && apt-get install -y git curl gcc g++ make && rm -rf /var/lib/apt/lists/*
-            echo "Installing codegraphcontext..."
-            pip install --no-cache-dir codegraphcontext
-            echo "CodeGraphContext ready: $(cgc --version 2>&1 || echo 'installed')"
-            echo "Verification: $(python3 -c 'import codegraphcontext; print("module OK")' 2>&1)"
-            # Keep running for kubectl exec access
-            echo "Pod is ready. Sleeping forever..."
-            while true; do sleep 3600; done
+          privileged: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        command: ["sleep", "infinity"]
         env:
-        - name: CGC_HOME
-          value: /data/.codegraphcontext
+        - name: HOME
+          value: /data
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         - name: data
           mountPath: /data
           subPath: codegraph
@@ -66,6 +71,8 @@ spec:
           periodSeconds: 30
           failureThreshold: 10
       volumes:
+      - name: tmp
+        emptyDir: {}
       - name: data
         persistentVolumeClaim:
           claimName: platform-data

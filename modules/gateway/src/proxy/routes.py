@@ -25,7 +25,6 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -337,10 +336,11 @@ def _pricing_log_args(request: Request, context: TokenContext, capture: PricingC
     """Add settlement to compatibility routes only for newly priced Claude calls."""
     return {
         "request_id": capture.request_id,
-        "timestamp": datetime.now(UTC),
+        "timestamp": context._budget_request_timestamp,
         "org_id": context.attributed_org_id,
         "user_id": context.user_id,
         "team_id": context.team_id,
+        "department_id": context.department_id,
         "root_human_id": context.attributed_user_id,
         "account_type": "service" if context.account_type == "service" else "human",
         "model": capture.original_model,
@@ -358,7 +358,7 @@ async def _invoke_with_failure_logging(invoke, request: Request, context: TokenC
     try:
         return await invoke
     except (Exception, asyncio.CancelledError):
-        if not capture.is_claude:
+        if capture.routing is None:
             raise
 
         async def finalize():
@@ -496,7 +496,7 @@ async def create_message(
 
         # Get request metadata for logging
         request_id = getattr(raw_request.state, "request_id", None) or str(id(raw_request))
-        timestamp = datetime.now(UTC)
+        timestamp = context._budget_request_timestamp
         pricing_capture = PricingCapture(request_id, request.model)
         request_body_dict = request.model_dump(mode="json")
         t0 = time.monotonic()
@@ -518,6 +518,7 @@ async def create_message(
                 org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
+                department_id=context.department_id,
                 # Issue #4300: the initiating human, so an agent chain's spend
                 # debits that person's cumulative budget and not just the agent
                 # service account's. Server-resolved; empty if not human-rooted.
@@ -553,6 +554,7 @@ async def create_message(
                 org_id=context.attributed_org_id,
                 user_id=context.user_id,
                 team_id=context.team_id,
+                department_id=context.department_id,
                 # Issue #4300: the initiating human, so an agent chain's spend
                 # debits that person's cumulative budget and not just the agent
                 # service account's. Server-resolved; empty if not human-rooted.
@@ -781,7 +783,7 @@ async def invoke_model_by_path(
 
         # Get request metadata for logging
         request_id = getattr(request.state, "request_id", None) or str(id(request))
-        timestamp = datetime.now(UTC)
+        timestamp = context._budget_request_timestamp
         pricing_capture = PricingCapture(request_id, model_id)
 
         # Issue #144: Time bedrock invocation
@@ -830,6 +832,7 @@ async def invoke_model_by_path(
             org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
+            department_id=context.department_id,
             # Issue #4300: the initiating human, so an agent chain's spend
             # debits that person's cumulative budget and not just the agent
             # service account's. Server-resolved; empty if not human-rooted.
@@ -886,7 +889,7 @@ async def invoke_model_stream_by_path(
 
         # Get request metadata for logging
         request_id = getattr(request.state, "request_id", None) or str(id(request))
-        timestamp = datetime.now(UTC)
+        timestamp = context._budget_request_timestamp
         pricing_capture = PricingCapture(request_id, model_id)
         t0 = time.monotonic()
 
@@ -915,6 +918,7 @@ async def invoke_model_stream_by_path(
             org_id=context.attributed_org_id,
             user_id=context.user_id,
             team_id=context.team_id,
+            department_id=context.department_id,
             # Issue #4300: the initiating human, so an agent chain's spend
             # debits that person's cumulative budget and not just the agent
             # service account's. Server-resolved; empty if not human-rooted.

@@ -212,7 +212,7 @@ is [#5175](https://github.com/aws-e/adp/issues/5175).
 ## Deployment dependencies and acceptance
 
 Follow [the ownership rollout](stage1-ownership-rollout.md) and the canonical
-deployment guide. Account `879318057152`, profile `embark1`, region `us-east-1`;
+deployment guide. Account `000000000101`, profile `example-profile`, region `us-east-1`;
 use the existing registered connection and ARC runner. No broad Terraform apply
 or EKS allowlist change is part of this work.
 

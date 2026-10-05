@@ -36,26 +36,14 @@ substitution is a Python string operation. Nothing is parsed as shell or as a `s
 A value nothing consumes normally means a placeholder was renamed on one side only, which
 renders successfully while silently dropping an identity. That is an error.
 
-But four of these values — the control-plane role ARN, both secret names and the control-plane
-namespace — belong to `superplane-api`, `superplane-controller` and `superplane-platform-monitor`,
-which `releases/superplane.lock.yaml` records as `pending_images` with no digest. There are no
-ADP manifests for them, so nothing consumes those values, and that is the honest state rather
-than drift.
+The default full rollout lane retains the lock-dependent guard: a control-plane value
+may go unused while its owning image is pending, but promotion makes that an error.
+Publishing an image does not itself create ADP deployment manifests. The explicit
+`skypilot` lane renders the currently shipped SkyPilot-only object set, supplies only
+its four inputs, and rejects control-plane inputs rather than silently ignoring them.
+Adding control-plane manifests requires the full rollout lane and its complete inputs.
+The upstream `src/` manifests are not rendered or applied by either lane.
 
-Why they are pending changed with U22 (#5326) while the rule below did not. It used to be
-"building them needs read access to `aws-innovate/AISuperPlane` that ADP does not have"; the
-source is now maintained in this repository under `src/`, so the blocker is simply that no
-build has run yet. The components' own upstream `deploy/` manifests transferred with them and
-are inventoried in `src/TRANSFER-MANIFEST.md`, but they are NOT rendered by this script and
-not applied: they carry upstream's account id and `:latest` tags, and reconciling them into
-ADP's topology is U3's work. Pointing this renderer at them would make a read-only inventory
-into a second live deploy path.
-
-So the rule is conditional on the lock: a value tied to a pending image may go unused and is
-reported; a value tied to a resolved image may not. This **arms itself** — the moment U2
-promotes an image out of `pending_images`, the corresponding unused value becomes an error and
-names the manifests that must now exist. A hardcoded exemption list would have to be remembered
-at exactly the moment everyone is busy celebrating that the build works.
 """
 
 from __future__ import annotations
@@ -73,8 +61,8 @@ PLACEHOLDER_RE = re.compile(r"REPLACE_WITH_[A-Z0-9_]+")
 #
 # WHY LANES RATHER THAN ONE FLAT TABLE
 #
-# Two lanes render manifests through this script: the rollout (`k8s/`) and the migration
-# (`migrations/`). They consume different placeholders, and property 2 above — every value
+# The full rollout, SkyPilot-only rollout (`k8s/`), and migration (`migrations/`)
+# lanes consume different placeholders, and property 2 above — every value
 # supplied must be consumed — is what makes lanes necessary rather than cosmetic. A single
 # flat table would mean the rollout supplies the migration's values, nothing consumes them,
 # and the rollout either fails or has to exempt them; the exemption is then a permanent hole
@@ -92,6 +80,12 @@ LANE_PLACEHOLDER_ENV = {
         "REPLACE_WITH_SKYPILOT_IMAGE": "SP_SKYPILOT_IMAGE",
         "REPLACE_WITH_DATABASE_SECRET_NAME": "SP_DATABASE_SECRET_NAME",
         "REPLACE_WITH_JWT_SECRET_NAME": "SP_JWT_SECRET_NAME",
+        "REPLACE_WITH_AWS_REGION": "SP_AWS_REGION",
+    },
+    "skypilot": {
+        "REPLACE_WITH_SKYPILOT_NAMESPACE": "SP_SKYPILOT_NAMESPACE",
+        "REPLACE_WITH_SKYPILOT_ROLE_ARN": "SP_SKYPILOT_ROLE_ARN",
+        "REPLACE_WITH_SKYPILOT_IMAGE": "SP_SKYPILOT_IMAGE",
         "REPLACE_WITH_AWS_REGION": "SP_AWS_REGION",
     },
     "migration": {
@@ -146,7 +140,7 @@ FORBIDDEN_IN_VALUE = ("\n", "\r", "#")
 # the release lock, because there is no manifest to consume it yet. Anything NOT listed here
 # must be consumed unconditionally.
 PLACEHOLDER_OWNING_IMAGE = {
-    # The control plane: three unbuildable images share one namespace and one identity.
+    # The control-plane placeholders share the API image as their promotion gate.
     "REPLACE_WITH_NAMESPACE": "superplane-api",
     "REPLACE_WITH_CONTROL_PLANE_ROLE_ARN": "superplane-api",
     "REPLACE_WITH_DATABASE_SECRET_NAME": "superplane-api",
@@ -189,6 +183,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     placeholder_env = LANE_PLACEHOLDER_ENV[args.lane]
+    if args.lane == "skypilot":
+        outside_lane = set(LANE_PLACEHOLDER_ENV["rollout"].values()) - set(
+            placeholder_env.values()
+        )
+        supplied = sorted(name for name in outside_lane if os.environ.get(name))
+        if supplied:
+            print(
+                "::error::control-plane values supplied to the SkyPilot-only lane: "
+                + ", ".join(supplied)
+            )
+            return 1
 
     try:
         pending = _pending_images(args.lock_file)

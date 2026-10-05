@@ -68,6 +68,7 @@ async def get_features(_current_user=Depends(get_current_user)):
             "chat": _is_enabled("FEATURE_CHAT_ENABLED"),
             "knowledge": _is_enabled("FEATURE_KNOWLEDGE_ENABLED", "AGENT_CONTEXT_ENABLED"),
             "indexing": _is_enabled("FEATURE_INDEXING_ENABLED", "AGENT_CONTEXT_ENABLED"),
+            "tenant_org_links": _is_enabled_strict("FEATURE_TENANT_ORG_LINKS_ENABLED"),
             "connections": _is_enabled("FEATURE_CONNECTIONS_ENABLED"),
             "credentials": _is_enabled("FEATURE_CREDENTIALS_ENABLED"),
             "system_dashboard": _is_enabled("FEATURE_SYSTEM_DASHBOARD_ENABLED"),
@@ -101,6 +102,7 @@ async def get_features(_current_user=Depends(get_current_user)):
             # gateway-side flag that could activate worker capabilities would make one
             # config change enable a listener the ingress policy may not yet cover.
             "agent_control": _is_enabled_strict("FEATURE_AGENT_CONTROL_ENABLED"),
+            "agent_explanations": _is_enabled_strict("FEATURE_AGENT_EXPLANATIONS_ENABLED"),
             # Fail-closed: the opt-in /next UI shell (Issue #5079, EPIC #5078). The
             # current UI is the default and stays so; /next is an additional
             # experience users enter voluntarily. Its documented rollback is "flip

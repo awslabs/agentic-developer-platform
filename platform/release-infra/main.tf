@@ -107,8 +107,8 @@ resource "aws_iam_role_policy" "build" {
       Resource = ["arn:aws:s3:::${local.bucket}/*", "arn:aws:s3:::adp-terraform-state-${local.account}/codebuild/src/*"] },
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = ["arn:aws:s3:::${local.bucket}"] },
       { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*" },
-      { Effect = "Allow", Action = ["ecr:DescribeImages", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
-      Resource = [for name in ["adp-gateway", "adp-agent-runtime", "adp-agent-gateway"] : "arn:aws:ecr:us-east-1:${local.account}:repository/${name}"] }
+      { Effect = "Allow", Action = ["ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+      Resource = [for name in ["adp-gateway", "adp-agent-runtime", "adp-agent-gateway", "adp-chat-agent"] : "arn:aws:ecr:us-east-1:${local.account}:repository/${name}"] }
     ]
   })
 }

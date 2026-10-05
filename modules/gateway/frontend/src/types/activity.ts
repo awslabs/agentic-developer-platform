@@ -61,6 +61,11 @@ export type TriggerKind = 'human' | 'agent' | 'bot';
 
 /** A single agent invocation row from the API. */
 export interface InvocationItem {
+  source_type?: 'activity' | 'task';
+  task_id?: string | null;
+  task_snapshot?: { task_id: string; invocation_id: string; status: string } | null;
+  transcript_kind?: 'task_report' | null;
+  transcript_status?: 'available' | 'pending' | 'unavailable' | null;
   invocation_id: string;
   user_id: string;
   persona: string;

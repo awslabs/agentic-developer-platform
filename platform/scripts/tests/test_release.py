@@ -14,8 +14,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'platform/scripts/release'))
 import common
+import build
 import artifacts
 import storage
+import target_config
 import upgrade
 import workflow
 import bootstrap
@@ -117,7 +119,7 @@ class ReleaseContracts(unittest.TestCase):
 
     def test_digest_uri_has_no_mutable_tag(self):
         uri = common.image_uri(self.manifest, 'chat-agent', '615296308642')
-        self.assertEqual(uri, '615296308642.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:' + 'd' * 64)
+        self.assertEqual(uri, '615296308642.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:' + 'd' * 64)
 
     def test_preproduction_requires_same_successfully_tested_manifest(self):
         digest = common.sha256(self.directory / 'manifest.json')
@@ -127,6 +129,61 @@ class ReleaseContracts(unittest.TestCase):
         for key in evidence:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 upgrade.integration_gate(self.manifest, digest, dict(evidence, **{key: 'wrong'}))
+
+    def test_release_leaves_separate_superplane_state_outside_its_scope(self):
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.return_value = [{'Contents': [
+            {'Key': 'dev/modules/superplane/terraform.tfstate'},
+        ]}]
+        upgrade.check_module_scope(s3, 'state-bucket')
+        s3.get_object.assert_not_called()
+
+    def test_release_refuses_installed_agent_context_without_artifacts(self):
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.return_value = [{'Contents': [
+            {'Key': 'dev/modules/agent-context/terraform.tfstate'},
+        ]}]
+        s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{"resources":[{"type":"aws_s3_bucket"}]}'))}
+        with self.assertRaisesRegex(ValueError, 'installed agent-context'):
+            upgrade.check_module_scope(s3, 'state-bucket')
+
+    def test_release_downloads_account_bound_operator_tfvars(self):
+        s3 = Mock()
+        gateway = b'{"environment":"dev","aws_region":"us-east-1","queue":"arn:aws:sqs:us-east-1:608380991969:q"}'
+        webhook = b'{"enable_adversarial_e2e":false}'
+        s3.get_object.side_effect = [
+            {'Body': Mock(read=Mock(return_value=gateway))},
+            {'Body': Mock(read=Mock(return_value=webhook))},
+        ]
+        paths = target_config.download(s3, 'integration-test', self.directory / 'target-config')
+        self.assertEqual(paths['ADP_GATEWAY_UPDATE_TFVARS'].read_bytes(), gateway)
+        self.assertEqual(paths['ADP_WEBHOOK_UPDATE_TFVARS'].read_bytes(), webhook)
+        self.assertEqual(paths['ADP_GATEWAY_UPDATE_TFVARS'].stat().st_mode & 0o777, 0o600)
+        self.assertTrue(all(call.kwargs['ExpectedBucketOwner'] == '608380991969' for call in s3.get_object.call_args_list))
+
+    def test_release_refuses_foreign_account_operator_tfvars(self):
+        s3 = Mock()
+        s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{"queue":"arn:aws:sqs:us-east-1:879318057152:q"}'))}
+        with self.assertRaisesRegex(ValueError, 'invalid for integration-test'):
+            target_config.download(s3, 'integration-test', self.directory / 'target-config')
+
+    def test_release_reuses_verified_source_image_without_codebuild(self):
+        registry = '608380991969.dkr.ecr.us-east-1.amazonaws.com'
+        digest = 'sha256:' + 'd' * 64
+        with patch.object(build, 'run', return_value=f'{registry}/adp-gateway@{digest}\n') as runner:
+            self.assertEqual(build.ensure_image(registry, 'adp-gateway', 'gateway-build', 'a' * 40), digest)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_args.args[0][-1], f'{registry}/adp-gateway:{"a" * 40}')
+
+    def test_release_builds_when_source_image_is_missing(self):
+        registry = '608380991969.dkr.ecr.us-east-1.amazonaws.com'
+        digest = 'sha256:' + 'd' * 64
+        with patch.object(build, 'run', side_effect=['', None]) as runner, patch.object(
+            build, 'aws', return_value={'imageDetails': [{'imageDigest': digest}]}
+        ):
+            self.assertEqual(build.ensure_image(registry, 'adp-gateway', 'gateway-build', 'a' * 40), digest)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args.args[0][:2], ['bash', 'platform/scripts/codebuild-run.sh'])
 
     def test_release_lock_escapes_reserved_owner_attribute(self):
         dynamo = Mock()
@@ -257,14 +314,31 @@ class ReleaseContracts(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", job['if'])
         role_index = next(i for i, step in enumerate(job['steps']) if step.get('uses', '').startswith('aws-actions/configure-aws-credentials'))
         self.assertTrue(any('--check-approver' in step.get('run', '') for step in job['steps'][:role_index]))
+        config_index = next(i for i, step in enumerate(job['steps']) if step.get('name') == 'Load private target configuration')
+        source_index = next(i for i, step in enumerate(job['steps']) if step.get('name') == "Use the release's exact reviewed source")
+        self.assertLess(role_index, config_index)
+        self.assertLess(config_index, source_index)
+
+    def test_partial_pricing_refresh_is_explicit_and_forwarded_to_upgrade(self):
+        import yaml
+        parent = yaml.safe_load((ROOT / '.github/workflows/adp-release.yml').read_text())
+        reusable = yaml.safe_load((ROOT / '.github/workflows/adp-release-upgrade.yml').read_text())
+        dispatch = parent.get('on', parent.get(True))['workflow_dispatch']['inputs']
+        call = reusable.get('on', reusable.get(True))['workflow_call']['inputs']
+        self.assertEqual(dispatch['allow_partial_pricing_refresh']['type'], 'boolean')
+        self.assertIs(dispatch['allow_partial_pricing_refresh']['default'], False)
+        self.assertEqual(call['allow_partial_pricing_refresh']['type'], 'boolean')
+        self.assertIs(call['allow_partial_pricing_refresh']['default'], False)
+        self.assertEqual(parent['jobs']['integration']['with']['allow_partial_pricing_refresh'],
+                         '${{ inputs.allow_partial_pricing_refresh }}')
+        upgrade_step = next(step for step in reusable['jobs']['upgrade']['steps']
+                            if step.get('name') == 'Full upgrade and mandatory acceptance')
+        self.assertEqual(upgrade_step['env']['ADP_PRICING_ALLOW_PARTIAL_REFRESH'],
+                         '${{ inputs.allow_partial_pricing_refresh }}')
 
     def test_all_github_actions_jobs_use_self_hosted_runners(self):
         import yaml
 
-        allowed = {
-            'arc-runner-org',
-            "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
-        }
         workflow_dir = ROOT / '.github/workflows'
         workflows = sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')])
         self.assertTrue(workflows)
@@ -278,11 +352,7 @@ class ReleaseContracts(unittest.TestCase):
                         continue
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
-                    self.assertIn(
-                        job['runs-on'],
-                        allowed,
-                        'GitHub-hosted runner labels are prohibited; use arc-runner-org',
-                    )
+                    self.assertEqual(job['runs-on'], 'arc-runner-org')
 
 
 if __name__ == '__main__':

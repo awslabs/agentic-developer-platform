@@ -55,6 +55,7 @@ async def locked_door_identity(record, grant):
                     User.is_shadow.is_(False),
                     TenantMembership.tenant_id == record.tenant_id,
                     TenantMembership.is_active.is_(True),
+                    TenantMembership.revoked_at.is_(None),
                 )
                 .with_for_update(read=True, of=(User, TenantMembership))
             )
@@ -98,16 +99,14 @@ async def bounded_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def door_config(runtime: AgentRuntime) -> tuple[str, str]:
+def door_config(runtime: AgentRuntime) -> str:
     import os
 
     env = os.environ if runtime.env is None else runtime.env
     base = env.get("ADP_DOOR_SERVICE_URL", "").rstrip("/")
-    key = env.get("ADP_DOOR_SERVICE_KEY", "")
     parsed = urlsplit(base)
     if (
-        not key
-        or not base
+        not base
         or parsed.scheme not in {"http", "https"}
         or not parsed.hostname
         or parsed.username is not None
@@ -117,7 +116,7 @@ def door_config(runtime: AgentRuntime) -> tuple[str, str]:
         or parsed.path
     ):
         raise HTTPException(503, "knowledge service unavailable")
-    return base, key
+    return base
 
 
 async def forward_door(method: str, url: str, headers: dict[str, str], body: bytes) -> Response:
@@ -150,7 +149,7 @@ async def own_knowledge(path: str, request: Request, runtime: AgentRuntime = Dep
     if target_path is None or request.url.query:
         raise HTTPException(404, "not found")
     initial = await live_context(request, runtime)
-    base, key = door_config(runtime)
+    base = door_config(runtime)
     try:
         async with asyncio.timeout(SERVICE_TIMEOUT_SECONDS):
             body = await bounded_body(request)
@@ -158,9 +157,23 @@ async def own_knowledge(path: str, request: Request, runtime: AgentRuntime = Dep
                 current = await live_context(request, runtime)
                 if initial[1:] != current[1:]:
                     raise HTTPException(404, "not found")
+                from src.agentauth.door_identity import sign_door_identity
+                from src.agentauth.envelope import EnvelopeError
+
+                try:
+                    assertion = sign_door_identity(
+                        principal=current[3].principal,
+                        tenant_id=current[2].tenant_id,
+                        identity=identity,
+                        method=request.method,
+                        path=target_path,
+                        body=body,
+                        env=runtime.env,
+                    )
+                except EnvelopeError:
+                    raise HTTPException(503, "knowledge identity unavailable") from None
                 headers = {
-                    **identity,
-                    "x-internal-api-key": key,
+                    "x-adp-door-identity": assertion,
                     "content-type": "application/json",
                     "accept": "application/json, text/event-stream",
                 }

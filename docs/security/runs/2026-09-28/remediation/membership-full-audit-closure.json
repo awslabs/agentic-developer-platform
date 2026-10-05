@@ -1,0 +1,13 @@
+{
+  "database_identities": 15,
+  "proven_members": 11,
+  "table_rows": {
+    "adp-dev-identity-index": 47,
+    "adp-dev-user-identity-index": 30
+  },
+  "differences": 0,
+  "orphan_differences": 0,
+  "nonempty_replacements": 0,
+  "verified_at": "2026-09-28T18:30:46.709115+00:00",
+  "read_only": true
+}

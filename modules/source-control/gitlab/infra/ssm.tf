@@ -96,17 +96,16 @@ resource "aws_ssm_parameter" "gitlab_test_project_path" {
 # =============================================================================
 
 resource "aws_secretsmanager_secret" "gitlab_api_token" {
-  name        = "adp/${var.environment}/gitlab-api-token"
-  description = "GitLab group access token (api scope) for agent-worker Tier-A path. Minted on the GitLab instance; seeded manually."
+  recovery_window_in_days = 30
+  name                    = "adp/${var.environment}/gitlab-api-token"
+  description             = "GitLab group access token (api scope) for agent-worker Tier-A path. Minted on the GitLab instance; seeded manually."
 
   tags = local.common_tags
 }
 
-resource "aws_secretsmanager_secret_version" "gitlab_api_token_placeholder" {
-  secret_id     = aws_secretsmanager_secret.gitlab_api_token.id
-  secret_string = "PLACEHOLDER-seed-after-gitlab-instance-setup"
-
+removed {
+  from = aws_secretsmanager_secret_version.gitlab_api_token_placeholder
   lifecycle {
-    ignore_changes = [secret_string]
+    destroy = false
   }
 }

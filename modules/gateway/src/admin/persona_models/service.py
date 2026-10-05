@@ -35,6 +35,7 @@ from src.shared.models.organization import User
 from src.shared.models.persona_models import (
     PersonaModelPolicySetting,
     PersonaModelPreference,
+    PersonaPlatformDefault,
     ServicePrincipal,
     ServicePrincipalAlias,
 )
@@ -295,6 +296,9 @@ async def get_persona_class_default(
     compatibility_class = persona_compatibility_class(persona_key)
     if compatibility_class is None:
         raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{persona_key}'.")
+    persona_default = await db.get(PersonaPlatformDefault, persona_key)
+    if persona_default is not None and persona_default.canonical_model_id:
+        return compatibility_class, persona_default.canonical_model_id, "proven"
     default_model_id, class_default_status = project_class_default(await get_class_default(db, compatibility_class))
     return compatibility_class, default_model_id, class_default_status
 
@@ -354,6 +358,7 @@ async def build_preference_list(
     }
     default_rows = await db.scalars(select(PersonaModelPolicySetting).where(PersonaModelPolicySetting.compatibility_class.in_(compatibility_classes)))
     defaults_by_class = {row.compatibility_class: row for row in default_rows}
+    defaults_by_persona = {row.persona_key: row for row in await db.scalars(select(PersonaPlatformDefault))}
 
     entries = []
     for persona in INTERIM_PERSONA_CATALOGUE:
@@ -364,11 +369,18 @@ async def build_preference_list(
             raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{key}'.")
         harness_contract_revision = persona["harness_contract_revision"]
         default_model_id, class_default_status = project_class_default(defaults_by_class.get(compatibility_class))
+        platform_default = defaults_by_persona.get(key)
+        default_scope = "class"
+        if platform_default is not None and platform_default.canonical_model_id:
+            default_model_id, class_default_status = platform_default.canonical_model_id, "proven"
+            default_scope = "persona"
 
         if pref is not None:
             entries.append(
                 {
                     "persona_key": key,
+                    "default_scope": default_scope,
+                    "default_model_id": default_model_id,
                     "persona_display_name": persona["display_name"],
                     "configurable": persona["configurable"],
                     "compatibility_class": compatibility_class,
@@ -390,6 +402,8 @@ async def build_preference_list(
             entries.append(
                 {
                     "persona_key": key,
+                    "default_scope": default_scope,
+                    "default_model_id": default_model_id,
                     "persona_display_name": persona["display_name"],
                     "configurable": persona["configurable"],
                     "compatibility_class": compatibility_class,
@@ -421,8 +435,7 @@ async def build_explain(
 
     entries = await build_preference_list(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
     entry = next(row for row in entries if row["persona_key"] == persona_key)
-    compatibility_class, default_model_id, class_default_status = await get_persona_class_default(db, persona_key)
-    return {**entry, "default_model_id": default_model_id, "default_source": compatibility_class, "class_default_status": class_default_status}
+    return {**entry, "default_source": entry["compatibility_class"]}
 
 
 # ── Write operations ─────────────────────────────────────────────────────────

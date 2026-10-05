@@ -36,4 +36,6 @@ async def test_health_response_schema(client):
         "version",
         "cognito_enabled",
         "domain_auth_enforced",
+        "current_identity_required",
+        "current_identity_reader_configured",
     }

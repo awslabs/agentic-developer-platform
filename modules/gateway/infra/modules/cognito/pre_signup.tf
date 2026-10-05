@@ -48,7 +48,8 @@ data "archive_file" "pre_signup" {
 
 # IAM Role for the Lambda function
 resource "aws_iam_role" "pre_signup" {
-  name = "${var.name_prefix}-pre-signup-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-pre-signup-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

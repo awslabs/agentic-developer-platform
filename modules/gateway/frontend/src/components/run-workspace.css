@@ -1,0 +1,35 @@
+.run-identity { display:flex; justify-content:space-between; align-items:start; gap:1rem; padding-bottom:1rem; border-bottom:1px solid #94a3b844; overflow-wrap:anywhere; }
+.run-workspace { display:grid; grid-template-columns:minmax(0,1fr) 310px; gap:1.5rem; padding-top:1rem; }
+.run-main, .run-summary { min-width:0; }
+.run-main { container-type:inline-size; }
+.run-summary { border-left:1px solid #94a3b844; padding-left:1.25rem; }
+.run-archive-grid { display:grid; grid-template-columns:250px minmax(0,1fr); gap:1.25rem; }
+.run-checklist, .run-record { min-width:0; overflow-wrap:anywhere; }
+.run-checklist { align-self:start; }
+.run-tabs { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem; }
+.run-tabs button { padding:.5rem .7rem; border-radius:.4rem; font-size:.875rem; border:1px solid #94a3b866; }
+.run-tabs button[aria-pressed=true] { background:#2563eb; color:white; border-color:#2563eb; }
+.run-tabs button:focus-visible { outline:2px solid #60a5fa; outline-offset:2px; }
+.run-record dl { font-size:.75rem; }
+.run-record dt { color:#64748b; margin-top:.65rem; }
+.run-record dd { overflow-wrap:anywhere; }
+.run-record li { display:flex; align-items:start; gap:.5rem; margin:.65rem 0; font-size:.875rem; }
+.run-record .run-count { font-size:1.1rem; font-weight:600; margin:.75rem 0; }
+@media(min-width:1280px) { .run-record { position:sticky; top:0; max-height:65vh; overflow:auto; } }
+@media(max-width:1279px) { .run-archive-grid { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:1100px) { .run-workspace { grid-template-columns:minmax(0,1fr); } .run-summary { border-left:0; padding-left:0; border-top:1px solid #94a3b844; padding-top:1rem; } }
+@media(max-width:480px) { .run-identity { flex-direction:column; } }
+
+/* Size the live feed against its own panel, not the viewport outside both sidebars. */
+.run-progress-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:1.25rem; }
+@container (min-width:850px) {
+  .run-progress-grid { grid-template-columns:280px minmax(0,1fr); }
+  .run-checklist { position:sticky; top:0; }
+  .run-checklist .live-checklist { max-height:60vh; }
+}
+@media (prefers-color-scheme:dark) {
+  .run-workspace :is(.text-gray-400, .text-gray-500, .dark\:text-gray-500),
+  .run-workspace .run-record dt { color:#b6c2d2; }
+  .run-workspace :is(.text-blue-600, .dark\:text-blue-400),
+  .run-identity .text-blue-600 { color:#93c5fd; }
+}

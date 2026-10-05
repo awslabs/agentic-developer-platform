@@ -34,8 +34,8 @@ const OWNER = 'test-org';
 const STALE_TOKEN = 'ghs_STALE_TOKEN_FROM_AN_HOUR_AGO';
 const FRESH_TOKEN = 'ghs_FRESHLY_MINTED_TOKEN';
 
-function jsonResponse(body: unknown, ok = true) {
-  return { ok, status: ok ? 200 : 404, json: async () => body };
+function jsonResponse(body: unknown, ok = true, url = "") {
+  return { ok, status: ok ? 200 : 404, url, redirected: false, json: async () => body };
 }
 
 describe('local-mint refresh keeps the token file in step', () => {
@@ -74,7 +74,7 @@ describe('local-mint refresh keeps the token file in step', () => {
       }
       // Installation resolution ladder (#4071) — the run's own org resolves.
       if (u === `https://api.github.com/orgs/${OWNER}/installation`) {
-        return jsonResponse({ id: INSTALLATION_ID, account: { login: OWNER } });
+        return jsonResponse({ id: INSTALLATION_ID, account: { login: OWNER } }, true, u);
       }
       if (u.includes('/app/installations')) {
         return jsonResponse([{ id: INSTALLATION_ID, account: { login: OWNER } }]);
@@ -120,7 +120,7 @@ describe('local-mint refresh keeps the token file in step', () => {
         return jsonResponse({}, true); // no `token` field
       }
       if (u === `https://api.github.com/orgs/${OWNER}/installation`) {
-        return jsonResponse({ id: INSTALLATION_ID, account: { login: OWNER } });
+        return jsonResponse({ id: INSTALLATION_ID, account: { login: OWNER } }, true, u);
       }
       return jsonResponse({}, false);
     });

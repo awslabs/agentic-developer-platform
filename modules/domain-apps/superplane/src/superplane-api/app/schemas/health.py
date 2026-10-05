@@ -21,3 +21,7 @@ class HealthResponse(BaseModel):
     # JWKS URL or key material is exposed here.
     cognito_enabled: bool
     domain_auth_enforced: bool
+
+    # This integration is distinct from existing strict token/domain-grant auth.
+    current_identity_required: bool = False
+    current_identity_reader_configured: bool = False

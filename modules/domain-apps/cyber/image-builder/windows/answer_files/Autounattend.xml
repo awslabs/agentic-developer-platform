@@ -83,16 +83,27 @@
                         <CreatePartition wcm:action="add">
                             <Order>1</Order>
                             <Type>Primary</Type>
+                            <Size>500</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>2</Order>
+                            <Type>Primary</Type>
                             <Extend>true</Extend>
                         </CreatePartition>
                     </CreatePartitions>
                     <ModifyPartitions>
                         <ModifyPartition wcm:action="add">
-                            <Extend>false</Extend>
+                            <Active>true</Active>
                             <Format>NTFS</Format>
-                            <Letter>C</Letter>
                             <Order>1</Order>
                             <PartitionID>1</PartitionID>
+                            <Label>System Reserved</Label>
+                        </ModifyPartition>
+                        <ModifyPartition wcm:action="add">
+                            <Format>NTFS</Format>
+                            <Letter>C</Letter>
+                            <Order>2</Order>
+                            <PartitionID>2</PartitionID>
                             <Label>Windows 11</Label>
                         </ModifyPartition>
                     </ModifyPartitions>
@@ -123,7 +134,7 @@
                 <OSImage>
                     <InstallTo>
                         <DiskID>0</DiskID>
-                        <PartitionID>1</PartitionID>
+                        <PartitionID>2</PartitionID>
                     </InstallTo>
                     <WillShowUI>OnError</WillShowUI>
                     <InstallToAvailablePartition>false</InstallToAvailablePartition>

@@ -26,7 +26,7 @@ logger = logging.getLogger("bedrockgateway.orchestration")
 
 class NodeActivity(BaseModel):
     invocation_id: str
-    persona: Literal["developer", "reviewer"]
+    persona: Literal["developer", "agent-codex-developer", "reviewer", "agent-codex-reviewer"]
     status: str
     liveness: LivenessVerdict
 
@@ -54,7 +54,7 @@ def story_execution(chain: InvocationChainResponse) -> StoryExecution:
             continue
         seen.add(item.invocation_id)
         pending.extend(item.children)
-        if item.persona not in ("developer", "reviewer"):
+        if item.persona not in ("developer", "agent-codex-developer", "reviewer", "agent-codex-reviewer"):
             continue
         try:
             timestamp = datetime.fromisoformat(item.invoked_at.replace("Z", "+00:00"))

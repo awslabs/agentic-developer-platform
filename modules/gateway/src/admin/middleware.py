@@ -1,5 +1,6 @@
 """Request logging middleware for audit and analytics."""
 
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from starlette.types import ASGIApp
 
 from src.admin.models import RequestLog
 from src.shared.database import get_session_factory
+
+logger = logging.getLogger(__name__)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -223,9 +226,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 session.add(log_entry)
                 await session.commit()
         except Exception:
-            # Don't let logging failures affect the request
-            # In production, would log this to a fallback location
-            pass
+            # Don't let logging failures affect the request.
+            logger.warning("audit log write failed")
 
 
 def create_request_logging_middleware(

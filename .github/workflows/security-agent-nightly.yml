@@ -159,6 +159,7 @@ jobs:
     name: Code Review
     needs: preflight
     runs-on: arc-runner-org
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     # The night's date, resolved by ONE `date -u` in this job and consumed by
     # `triage` and `deliver`. Every job that addresses the run prefix has to
     # agree on which night it is, and each independent `date` call is another
@@ -178,6 +179,10 @@ jobs:
       # findings would route to the dev bucket with nothing in the log saying
       # so. Once a second environment exists that is a misrouting bug (#4517).
       ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
 
@@ -200,6 +205,12 @@ jobs:
       # dispatch input cannot inject shell. It is format-checked here so a typo
       # fails loud with its own cause rather than surfacing 20 lines down as an
       # empty S3 sync that the triage job misreads as a quiet night.
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Resolve run date
         id: run_date
         env:
@@ -288,14 +299,10 @@ jobs:
       # earlier version of this comment gave, and the difference matters to
       # anyone reasoning about this job's blast radius (#4525).
       #
-      # This job has NO configure-aws-credentials step, so every step in it —
-      # including this publish — runs as the ARC runner's ambient IRSA identity
-      # (adp-<env>-agent-runner-role), NOT as adp-<env>-securityagent-nightly.
-      # The nightly role is a SERVICE role: its trust policy admits only
-      # securityagent.amazonaws.com, so the runner cannot assume it and there is
-      # deliberately no role-to-assume step here. The write below succeeds on the
-      # runner role's s3:PutObject over `arn:aws:s3:::adp-*/*`
-      # (modules/agent-factory/infra/modules/runner-iam/main.tf, S3Combined).
+      # This job uses the protected on-demand scan identity. The service role
+      # remains assumable only by Security Agent; the dispatcher may pass only
+      # that exact role and write only scan source/evidence prefixes.
+
       #
       # So dest-prefix is not what keeps this step from failing AccessDenied —
       # the runner could write anywhere in the bucket. It is what keeps the
@@ -381,8 +388,10 @@ jobs:
   scan_gate:
     name: Scan Gate
     needs: code-review
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
     outputs:
       processed: ${{ steps.check.outputs.processed }}
@@ -398,6 +407,15 @@ jobs:
       RUN_LOG: security-agent/processed-runs.json
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
@@ -477,8 +495,10 @@ jobs:
     # Skipped WHOLE when this scan file has already been turned into issues. No
     # step inside carries a condition — see the `scan_gate` job on why.
     if: needs.scan_gate.outputs.processed != 'true'
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       # Files the dated EPIC and its story issues. Read-only cannot create them.
       issues: write
@@ -501,6 +521,15 @@ jobs:
       BEDROCK_VIA: ${{ inputs.bedrock_via == '' && 'direct' || inputs.bedrock_via }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: |
@@ -606,7 +635,17 @@ jobs:
       # The title contains an em dash. A step that mangled the encoding would fail
       # the exact-title match and file a duplicate umbrella rather than error, so
       # the title is not retyped here at all: the script's default is the value.
+      - name: Recover completed filing before authoring another plan
+        id: recovery
+        run: |
+          set -o pipefail
+          $SECURITYAGENT_PYTHON .github/scripts/resume_filed_triage.py \
+            --ledger-dir "$LEDGER_DIR" --new-findings new-findings.json \
+            --source "$SOURCE" --run-date "$RUN_DATE" | tee recovery.out
+          grep '^resume=' recovery.out >> "$GITHUB_OUTPUT"
+
       - name: Ensure the runtime umbrella EPIC and the story label exist
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/ensure_umbrella_epic.py \
             --repo "${{ github.repository }}"
@@ -631,9 +670,10 @@ jobs:
       # step enriches this same file in place with each cluster's issue number.
       # `--gateway-url` is resolved from SSM only on the gateway path, so the
       # default `direct` run needs no extra permission and no extra call. The
-      # runner's own IRSA identity is what authenticates the gateway call -- there
+      # protected scan identity authenticates the gateway call -- there
       # is no token to mint, store or rotate -- so nothing secret is read here.
       - name: Author the night's grouping plan
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           TRANSPORT_ARGS=(--bedrock-via "$BEDROCK_VIA")
           if [ "$BEDROCK_VIA" = "gateway" ]; then
@@ -670,6 +710,7 @@ jobs:
       # Every argument below matches the filing step exactly. Gating one body and
       # filing a different one would make this step decorative.
       - name: Gate the plan before anything is filed
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py validate \
             --plan plan.json \
@@ -692,6 +733,7 @@ jobs:
       # scanner ran and found nothing" from "this scanner never signalled" —
       # without it every common night would look like a hung pass.
       - name: File the night's grouped work items
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py file \
             --repo "${{ github.repository }}" \
@@ -823,9 +865,18 @@ jobs:
     # find no marker, and — now that the temporary `joinable` guard is gone —
     # hard-fail the barrier as STALLED, blaming a triage pass that had not yet
     # run. `needs` is what makes an absent marker mean "triage is broken".
-    needs: [code-review, triage]
+    needs: [code-review, scan_gate, triage]
+    # A processed scan skips triage, but a previous delivery failure must still
+    # reach the existing plan and durable root-dispatch marker.
+    if: >-
+      ${{ !cancelled() && needs.code-review.result == 'success' &&
+          needs.scan_gate.result == 'success' &&
+          (needs.triage.result == 'success' ||
+           (needs.triage.result == 'skipped' && needs.scan_gate.outputs.processed == 'true')) }}
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       # The barrier files the night's plan issue. Read-only cannot create one,
       # and #4559 §7.2 is explicit that this path attaches an agent to an
@@ -848,6 +899,15 @@ jobs:
       LEDGER_DIR: security-agent-ledger
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: |
@@ -931,8 +991,8 @@ jobs:
       # Only --run-date, --issue-number and the marker dir are passed. Persona,
       # service identity and target repo are deliberately NOT sent: they are
       # Terraform literals in the rule's InputTransformer, which is the primary
-      # control on this path since `events:PutEvents` cannot be scoped to an
-      # event source (§5). Passing any of them here would delete that control.
+      # payload control on this path. IAM also bounds the bus, event source and
+      # detail type. Passing persona or identity here would delete the payload control.
       #
       # With the rule disabled this emit matches nothing and starts no run,
       # which is the intended inert state.

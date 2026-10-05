@@ -1,0 +1,46 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "fixture-scip",
+      "version": "1"
+    },
+    "project_root": "file:///fixtures/repo",
+    "text_document_encoding": "UTF8"
+  },
+  "documents": [
+    {
+      "relative_path": "sample.py",
+      "occurrences": [
+        {
+          "range": [
+            0,
+            4,
+            9
+          ],
+          "symbol": "scip-python python fixture 1 sample/greet().",
+          "symbol_roles": 1
+        },
+        {
+          "range": [
+            3,
+            0,
+            5
+          ],
+          "symbol": "scip-python python fixture 1 sample/greet()."
+        }
+      ],
+      "symbols": [
+        {
+          "symbol": "scip-python python fixture 1 sample/greet().",
+          "documentation": [
+            "Synthetic fixture function"
+          ],
+          "kind": "Function",
+          "display_name": "greet"
+        }
+      ],
+      "language": "python",
+      "text": "def greet(name):\n    return name\n\ngreet(\"world\")\n"
+    }
+  ]
+}

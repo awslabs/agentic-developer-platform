@@ -4,6 +4,12 @@ from app.models.organization import Organization  # noqa: F401
 from app.models.organization_grant import OrganizationGrantRecord  # noqa: F401
 from app.models.workspace import Workspace  # noqa: F401
 from app.models.cluster import Cluster  # noqa: F401
+from app.models.cluster_membership import ClusterMembership  # noqa: F401
+from app.models.membership_credential import MembershipCredential  # noqa: F401
+from app.models.cluster_credential_authority import (  # noqa: F401
+    ClusterCredentialAuthority,
+    MembershipCredentialComponent,
+)
 from app.models.node_pool import NodePool  # noqa: F401
 from app.models.node import Node  # noqa: F401
 from app.models.deployment import Deployment  # noqa: F401
@@ -14,6 +20,11 @@ from app.models.credential import (  # noqa: F401
     CredentialAuditLog,
 )
 from app.models.cloud_account import CloudAccount  # noqa: F401
+from app.models.lifecycle import (  # noqa: F401
+    WorkspaceLifecycleArtifact,
+    WorkspaceLifecycleEffect,
+    WorkspaceLifecycleControlOperation,
+)
 from app.models.reconcile_lock import ReconcileLock  # noqa: F401
 from app.models.observation import (  # noqa: F401
     ObservationReceipt,
@@ -34,5 +45,24 @@ from app.models.provider_connection import (  # noqa: F401
 from app.models.bootstrap import (  # noqa: F401
     WorkspaceBootstrapReservation,
     WorkspaceBootstrapAuthority,
+    WorkspaceBootstrapReadToken,
 )
 from app.models.operation_budget import OperationBudgetReservation  # noqa: F401
+from app.models.operation_approval import OperationApproval, OperationSettlementReceipt  # noqa: F401
+
+from app.models.controller_execution import ControllerExecution  # noqa: F401
+
+from app.models.controller_deployment import ControllerDeploymentOperation  # noqa: F401
+
+from app.models.controller_network import (  # noqa: F401
+    ControllerNetworkCompletion,
+    ControllerNetworkResource,
+    ControllerNetworkMember,
+    ControllerNetworkEffect,
+)
+
+from app.models.cluster_grant_scope import OrganizationGrantClusterScope  # noqa: F401
+from app.models.controller_workload_submission import ControllerWorkloadSubmission  # noqa: F401
+from app.models.controller_node_command import ControllerNodeCommand  # noqa: F401
+from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot  # noqa: F401
+from app.models.controller_cleanup import ControllerCleanupBinding  # noqa: F401

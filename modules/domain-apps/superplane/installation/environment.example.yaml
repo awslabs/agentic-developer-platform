@@ -34,7 +34,17 @@ secrets:
   observation: null                 # e.g. 'adp/dev/superplane/observation'
   # workspace_access is required for full installation but must be omitted
   # when using control_plane_only: true (see below).
-  workspace_access: null            # e.g. 'adp/dev/superplane/workspace-access'
+  workspace_access: null            # Read-only manager credential, e.g. 'adp/dev/superplane/workspace-access'
+execution:                         # Required for full mode; omit for idle control-plane-only
+  authority_endpoint: null         # Existing HTTPS Gateway authority origin
+  role_arn: null                   # Existing trusted executor role
+  provider_role_arn: null          # Existing SkyPilot backend role matching admitted vault role
+  run_projection_secret: null      # Actual ADP-owned run projection; no copied pod tokens
+  database_secret: null            # Restricted domain/execution DSN projection
+  workspace_credentials_secret: null # Separate mutation credential; never mounted in Go
+controller_profiles: null          # Required for full mode: explicit version-1 API profile policy (README)
+                                   # Pins serving image/model/capacity and names an existing workspace auth Secret.
+                                   # Never put the token value or AWS credentials in this document.
 timeout_seconds: 900
 # Set only after verifying the selected cluster's actual enforcement and handover.
 network_policy_enforced: false
@@ -54,3 +64,9 @@ controller_ownership: null          # Set to 'single-workspace-controller' after
 # controller_ownership, and workspace_access are not required.
 # Workspace activation follows in a separate, explicit step.
 control_plane_only: false
+
+# Optional separate privileged member credential reconciler. See
+# ../workspace_provisioning/credential_controller/README.md for installed authority
+# document fields, required pre-existing cloud identities and DB role separation.
+# Omit/null unless those exact prerequisites are reviewed and available.
+credential_controller: null

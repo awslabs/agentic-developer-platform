@@ -112,6 +112,7 @@ async def test_responses_settle_person_and_tenant_budgets(metering, monkeypatch,
     expected_entities = {("org", "tenant"), ("team", "team"), ("user", "worker" if hosted else "cognito-sub")}
     if hosted:
         expected_entities.add(("root_user", "canonical-human"))
+        expected_entities.add(("agent", "worker"))
     assert len(settle.call_args_list) == len(expected_entities) * 3
     for period in ("daily", "weekly", "monthly"):
         calls = [call.args for call in settle.call_args_list if call.args[5] == period]

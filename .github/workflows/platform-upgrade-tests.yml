@@ -4,6 +4,23 @@ on:
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/deploy-prerequisites.sh'
+      - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/ecr/**'
+      - 'platform/infra/main.tf'
+      - 'platform/infra/variables.tf'
+      - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
+      - 'modules/gateway/infra/variables.tf'
+      - 'platform/scripts/prepare-release-config.py'
+      - 'config/release-defaults/**'
+      - 'platform/infra/release-configuration.tf'
+      - 'modules/gateway/infra/release-configuration.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/release-configuration.tf'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'platform/scripts/tests/test_gateway_engine_release.py'
+      - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
@@ -22,19 +39,58 @@ on:
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/deploy-checkpoints.*'
+      - 'platform/scripts/tfvars-account-check.py'
+      - 'platform/scripts/tests/test_deployment_recovery.py'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
+      # Capacity-subnet retention (#5830). The rules that stop an absent or stale
+      # configuration from removing the cluster's added subnets are asserted by
+      # test_capacity_subnets.py, which no other workflow executes -- upgrade-contracts
+      # runs a pinned list, and Script Tests only discovers .github/scripts/tests. The
+      # runbook is a subject too, not documentation-only: the shell regression executes
+      # the resolve block extracted from its text, so an edit that reintroduces the
+      # `export VAR="$(resolver)"` failure-masking must re-run the gate that catches it.
+      - 'platform/scripts/capacity_subnets.py'
+      - 'platform/scripts/resolve-capacity-subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnet_runbook.py'
+      - 'docs/runbooks/eks-pod-ip-exhaustion.md'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
       - 'modules/agent-factory/infra/main.tf'
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/deploy-prerequisites.sh'
+      - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/ecr/**'
+      - 'platform/infra/main.tf'
+      - 'platform/infra/variables.tf'
+      - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
+      - 'modules/gateway/infra/variables.tf'
+      - 'platform/scripts/prepare-release-config.py'
+      - 'config/release-defaults/**'
+      - 'platform/infra/release-configuration.tf'
+      - 'modules/gateway/infra/release-configuration.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/release-configuration.tf'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'platform/scripts/tests/test_gateway_engine_release.py'
+      - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
@@ -53,16 +109,37 @@ on:
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/deploy-checkpoints.*'
+      - 'platform/scripts/tfvars-account-check.py'
+      - 'platform/scripts/tests/test_deployment_recovery.py'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
+      # Capacity-subnet retention (#5830). The rules that stop an absent or stale
+      # configuration from removing the cluster's added subnets are asserted by
+      # test_capacity_subnets.py, which no other workflow executes -- upgrade-contracts
+      # runs a pinned list, and Script Tests only discovers .github/scripts/tests. The
+      # runbook is a subject too, not documentation-only: the shell regression executes
+      # the resolve block extracted from its text, so an edit that reintroduces the
+      # `export VAR="$(resolver)"` failure-masking must re-run the gate that catches it.
+      - 'platform/scripts/capacity_subnets.py'
+      - 'platform/scripts/resolve-capacity-subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnet_runbook.py'
+      - 'docs/runbooks/eks-pod-ip-exhaustion.md'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
       - 'modules/agent-factory/infra/main.tf'
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 
@@ -148,8 +225,23 @@ jobs:
           terraform_version: '1.14.6'
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_rds_bootstrap.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_deployment_recovery.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/modules/eks
+      - run: terraform test -no-color -filter=tests/legacy_bootstrap_admin.tftest.hcl -filter=tests/endpoint_access.tftest.hcl
+        working-directory: platform/infra/modules/eks
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/modules/ecr
+      - run: terraform test -no-color -filter=tests/registry_ownership.tftest.hcl
+        working-directory: platform/infra/modules/ecr
       - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
+      # Capacity-subnet retention and the runbook's resolve block (#5830). Pinned
+      # explicitly, like the rest of this job: a glob silently stops covering a file
+      # that is renamed, which is the same silent coverage loss this step closes.
+      - run: python -m pytest platform/scripts/tests/test_capacity_subnets.py platform/scripts/tests/test_capacity_subnet_runbook.py -q
       - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
 
   factory-before-github:

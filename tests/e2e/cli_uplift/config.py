@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # The reviewed, immutable revision of the #5173 EC2 tenant-validation harness.
 # It is NOT on main (verified at implementation time), so the workflow fetches
@@ -79,7 +80,16 @@ SECRET_KEYS = re.compile(
 # Keys that legitimately contain a matched word but name an ENDPOINT or an ARN
 # reference rather than carrying a credential value. Everything else matching
 # SECRET_KEYS is refused outright.
-SECRET_KEY_ALLOWED = frozenset({"secrets_endpoint", "credential_secret_name"})
+SECRET_KEY_ALLOWED = frozenset(
+    {
+        "secrets_endpoint",
+        "credential_secret_name",
+        # #5637. A Secrets Manager NAME carrying E18's separately onboarded
+        # ordinary session. The inherited run session is the administrator;
+        # `validate()` additionally refuses an ARN, URL or inline value here.
+        "ordinary_session_secret_name",
+    }
+)
 
 REQUIRED = (
     "gateway_url",
@@ -147,6 +157,7 @@ DEFAULTS = {
     # launch call with a bare KeyError -- preflight verifies the name exists.
     "instance_profile": "adp-cli-uplift-eval-instance",
     "instance_type": "t3.small",
+    "instance_security_group_id": "",
 }
 
 
@@ -173,6 +184,43 @@ def no_secrets(value, path="config"):
             no_secrets(item, f"{path}[{index}]")
 
 
+def validate_assistant_websocket_url(value):
+    message = (
+        "assistant_users requires a clean wss:// websocket_url with a hostname "
+        "and optional port from 1 to 65535; credentials, query, fragment and "
+        "whitespace/control characters are not allowed"
+    )
+    require(
+        isinstance(value, str)
+        and bool(value)
+        and not any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+        and not any(marker in value for marker in ("?", "#")),
+        message,
+    )
+    try:
+        websocket = urlsplit(value)
+        port = websocket.port
+        hostname = websocket.hostname or ""
+    except ValueError:
+        raise ConfigError(message) from None
+    authority_host = (
+        websocket.netloc.rsplit(":", 1)[0] if port is not None else websocket.netloc
+    )
+    expected_host = f"[{hostname}]" if ":" in hostname else hostname
+    require(
+        websocket.scheme == "wss"
+        and bool(hostname)
+        and websocket.username is None
+        and websocket.password is None
+        and authority_host.lower() == expected_host.lower()
+        and (port is None or 1 <= port <= 65535),
+        message,
+    )
+
+
 def validate(config):
     """Validate and default a config dict, returning the normalized copy."""
     require(isinstance(config, dict), "Config must be a JSON object")
@@ -183,6 +231,12 @@ def validate(config):
 
     result = {**DEFAULTS, **config}
 
+    if result.get("gateway_deployment") is not None:
+        require(
+            result["gateway_deployment"]
+            in ("dev", "pre-production", "customer-demo", "example-demo"),
+            "Unknown gateway_deployment binding",
+        )
     url = str(result["gateway_url"]).rstrip("/")
     require(url.startswith("https://"), "gateway_url must be HTTPS")
     require(
@@ -190,6 +244,9 @@ def validate(config):
         "gateway_url must not carry credentials or a query",
     )
     result["gateway_url"] = url
+
+    if result.get("assistant_users") and result.get("websocket_url") not in (None, ""):
+        validate_assistant_websocket_url(result["websocket_url"])
 
     require(REGION.match(str(result["region"])), "region is not a valid AWS region")
     for key in ("platform_account", "destination_account"):
@@ -289,6 +346,13 @@ def validate(config):
             str(result[key]).startswith("https://"), f"{key} must be an HTTPS endpoint"
         )
 
+    group = result.get("instance_security_group_id")
+    require(
+        not group
+        or (isinstance(group, str) and re.fullmatch(r"sg-[0-9a-f]{8,17}", group)),
+        "instance_security_group_id must be a security group ID",
+    )
+
     for key in ("instance_profile", "instance_type"):
         require(
             isinstance(result[key], str) and result[key],
@@ -351,6 +415,63 @@ def validate(config):
                     f"github.{key} must be a non-empty string",
                 )
     result["github"] = github
+
+    contrast = result.get("capability_contrast") or {}
+    require(isinstance(contrast, dict), "capability_contrast must be an object")
+    if contrast:
+        required = (
+            "disabled_feature",
+            "enabled_feature",
+            "disabled_operation",
+            "enabled_operation",
+            "denied_operation",
+            "foreign_request_id",
+            "ordinary_fixture_name",
+        )
+        missing_contrast = [
+            key
+            for key in required
+            if not isinstance(contrast.get(key), str) or not contrast.get(key)
+        ]
+        require(
+            not missing_contrast,
+            "capability_contrast is missing: " + ", ".join(missing_contrast),
+        )
+        for key in ("disabled_operation", "enabled_operation", "denied_operation"):
+            require(
+                re.fullmatch(r"[a-z][a-z0-9_.]{2,127}", contrast[key]),
+                f"capability_contrast.{key} is not an operation ID",
+            )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["disabled_feature"]),
+            "capability_contrast.disabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["enabled_feature"]),
+            "capability_contrast.enabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", contrast["foreign_request_id"]),
+            "capability_contrast.foreign_request_id is not a request ID",
+        )
+        require(
+            not contrast["ordinary_fixture_name"].startswith("arn:")
+            and "://" not in contrast["ordinary_fixture_name"],
+            "capability_contrast.ordinary_fixture_name must be a Secrets Manager name",
+        )
+    result["capability_contrast"] = contrast
+    tenant_fixture = result.get("tenant_isolation") or {}
+    require(isinstance(tenant_fixture, dict), "tenant_isolation must be an object")
+    if tenant_fixture:
+        tenant_ids = tenant_fixture.get("tenant_ids")
+        require(
+            isinstance(tenant_ids, list)
+            and len(tenant_ids) == 2
+            and all(isinstance(t, str) and 0 < len(t) <= 255 for t in tenant_ids)
+            and len(set(tenant_ids)) == 2,
+            "tenant_isolation.tenant_ids must name two distinct existing memberships",
+        )
+    result["tenant_isolation"] = tenant_fixture
 
     # #5413: the three deployment bindings E16/E17 run against. Absent means those
     # two cases BLOCK (see `fixture_classes`), which is the honest state until a
@@ -421,6 +542,51 @@ def validate(config):
             "others signed in",
         )
     result["deployments"] = deployments
+
+    # #5637: the Superplane domain fixture E18 runs against. Absent means E18
+    # BLOCKS, which is the honest state until a domain service is actually deployed
+    # behind the gateway in a reachable environment.
+    #
+    # The inherited run session is the already-verified administrator. E18 needs
+    # a separately onboarded ordinary session because quota-setting is admin work,
+    # and using one identity for both cannot prove the ordinary-user negative path.
+    superplane = result.get("superplane") or {}
+    require(isinstance(superplane, dict), "superplane must be an object")
+    if superplane:
+        for key in (
+            "base_path",
+            "ordinary_session_secret_name",
+            "model_name",
+            "aws_connection_id",
+        ):
+            value = superplane.get(key)
+            require(
+                isinstance(value, str) and value,
+                f"superplane.{key} must be a non-empty string",
+            )
+        require(
+            superplane["base_path"].startswith("/"),
+            "superplane.base_path must be the gateway-relative API base, for "
+            "example /superplane/v1",
+        )
+        secret = superplane["ordinary_session_secret_name"]
+        require(
+            not secret.startswith("arn:") and "://" not in secret,
+            "superplane.ordinary_session_secret_name must be a Secrets Manager "
+            "secret NAME, not an ARN, a URL or a credential value",
+        )
+        connection_id = superplane["aws_connection_id"]
+        require(
+            not connection_id.startswith("arn:") and "://" not in connection_id,
+            "superplane.aws_connection_id must be an opaque ADP credential ID, not an ARN or URL",
+        )
+    result["superplane"] = superplane
+    research = result.get("research_readback", False)
+    require(
+        type(research) is bool,
+        "research_readback must be a boolean fixture declaration",
+    )
+    result["research_readback"] = research
 
     return result
 
@@ -497,6 +663,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parent / "config.example.json"
 # env var -> config key. A dotted key lands inside `github`.
 OVERLAY = {
     "CLI_UPLIFT_EVAL_INSTANCE_PROFILE": "instance_profile",
+    "CLI_UPLIFT_EVAL_SECURITY_GROUP_ID": "instance_security_group_id",
     "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "expected_revision",
     "CLI_UPLIFT_EVAL_GITHUB_ORG": "github.org",
     "CLI_UPLIFT_EVAL_GITHUB_REPO": "github.repo",
@@ -507,6 +674,13 @@ OVERLAY = {
     "CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN": "destination_role_arn",
     "CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN": "provisioner_role_arn",
     "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "credential_secret_name",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE": "capability_contrast.disabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE": "capability_contrast.enabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION": "capability_contrast.disabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION": "capability_contrast.enabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION": "capability_contrast.denied_operation",
+    "CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID": "capability_contrast.foreign_request_id",
+    "CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE": "capability_contrast.ordinary_fixture_name",
 }
 
 # #5413. The three deployment bindings, as a JSON array, because they are a list
@@ -537,16 +711,11 @@ def from_environment(env, *, base=None):
     account, and an absent GitHub fixture must block its cases rather than
     downgrade them to something weaker that passes.
 
-    `CLI_UPLIFT_EVAL_BINDINGS` may name a reviewed non-secret binding file
-    (tests/e2e/cli_uplift/bindings.dev.json) that layers between the example and
-    the environment overlay. It exists because the identifiers below are carried
-    by repository VARIABLES that the executing identity cannot write (HTTP 403 on
-    the Actions variables API), and blocking the evaluation on a privileged
-    GitHub write is worse than carrying the same non-secret references in review.
-    It is layered UNDER the overlay, so a repository variable always wins once
-    set and this file never has to be removed to hand control back. It is passed
-    through the same validate()/no_secrets() gate as every other config, so it
-    cannot introduce a credential.
+    `CLI_UPLIFT_EVAL_BINDINGS` can name a local binding example. Real target
+    identifiers belong in private configuration: CLI_UPLIFT_EVAL_BINDINGS_JSON
+    overlays the example before individual environment overrides. Both forms
+    pass the same structural credential guard; only fixture references belong
+    in bindings, never passwords, tokens, or credential values.
     """
     document = dict(base) if base is not None else json.loads(EXAMPLE_PATH.read_text())
     if base is None:
@@ -580,6 +749,20 @@ def from_environment(env, *, base=None):
             # fails before it is merged into the run config.
             no_secrets(bindings, "bindings")
             document.update(bindings)
+    raw_bindings = str(env.get("CLI_UPLIFT_EVAL_BINDINGS_JSON") or "").strip()
+    if base is None and raw_bindings:
+        try:
+            private_bindings = json.loads(raw_bindings)
+        except ValueError:
+            raise ConfigError(
+                "CLI_UPLIFT_EVAL_BINDINGS_JSON is not valid JSON"
+            ) from None
+        require(
+            isinstance(private_bindings, dict),
+            "CLI_UPLIFT_EVAL_BINDINGS_JSON must be a JSON object",
+        )
+        no_secrets(private_bindings, "bindings")
+        document.update(private_bindings)
     for name, key in OVERLAY.items():
         value = str(env.get(name) or "").strip()
         if not value:
@@ -609,6 +792,11 @@ def from_environment(env, *, base=None):
         # pasted into the variable fails here rather than inside the run config.
         no_secrets(parsed, DEPLOYMENTS_VARIABLE)
         document["deployments"] = parsed
+    raw_fixtures = str(env.get("CLI_UPLIFT_EVAL_FIXTURES") or "").strip()
+    if raw_fixtures:
+        from .fixtures import parse
+
+        document.update(parse(raw_fixtures))
     return validate(document)
 
 
@@ -621,6 +809,10 @@ def fixture_classes(config):
     from . import cases
 
     available = {cases.PLATFORM, cases.EC2, cases.COGNITO}
+    # Explicitly identifies an existing domain for read-only regression. This
+    # does not assert readiness: actual authenticated CLI reads decide that.
+    if config.get("research_readback") is True:
+        available.add(cases.SUPERPLANE_RESEARCH)
     # The destination class is exactly "we hold a cross-account session", so it
     # depends on both role bindings the same way SECOND_DESTINATION depends on
     # its account. Claiming it unconditionally made the cross-account cases
@@ -640,9 +832,51 @@ def fixture_classes(config):
         available.add(cases.GITHUB_REPO)
     if config.get("hosted_tasks_queue_url") and config.get("websocket_url"):
         available.add(cases.HOSTED)
+    from .fixtures import validate_fixture
+
+    for key, fixture_class in (
+        ("human_task_coding", cases.HUMAN_TASK_CODING),
+        ("human_task_chat", cases.HUMAN_TASK_CHAT),
+        ("vault_lifecycle", cases.VAULT_LIFECYCLE),
+        ("hierarchy_lifecycle", cases.HIERARCHY_LIFECYCLE),
+        ("knowledge_lifecycle", cases.KNOWLEDGE_LIFECYCLE),
+        ("machine_lifecycle", cases.MACHINE_LIFECYCLE),
+        ("budget_lifecycle", cases.BUDGET_LIFECYCLE),
+    ):
+        if config.get(key):
+            try:
+                validate_fixture(key, config[key])
+            except ConfigError:
+                continue
+            available.add(fixture_class)
+    if config.get("assistant_users"):
+        try:
+            validate_assistant_websocket_url(config.get("websocket_url"))
+            validate_fixture("assistant_users", config["assistant_users"])
+        except ConfigError:
+            pass
+        else:
+            available.add(cases.ASSISTANT_USERS)
     # #5413. `validate()` has already refused a binding set that is too small, or
     # that reuses a URL or a credential reference, so reaching the required count
     # here means three genuinely distinct deployments were configured.
     if len(config.get("deployments") or []) >= REQUIRED_DEPLOYMENTS:
         available.add(cases.THREE_DEPLOYMENTS)
+    if config.get("capability_contrast"):
+        available.add(cases.CAPABILITY_CONTRAST)
+    # #5637. Configured is not the same as reachable here either, and preflight
+    # discards this class again if the domain does not answer through the gateway —
+    # a 404 from the proxy means nothing is mounted behind the allowlist, which
+    # must block E18 before it mutates anything rather than fail mid-journey.
+    superplane = config.get("superplane") or {}
+    if all(
+        superplane.get(key)
+        for key in (
+            "base_path",
+            "ordinary_session_secret_name",
+            "model_name",
+            "aws_connection_id",
+        )
+    ):
+        available.add(cases.SUPERPLANE_DOMAIN)
     return available

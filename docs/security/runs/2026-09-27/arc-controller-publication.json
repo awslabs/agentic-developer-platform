@@ -1,0 +1,10 @@
+[
+  {
+    "component": "arc-controller",
+    "source_commit": "96766f1d2",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:3a1961b09a0275363be9c4c6398a4c970d2ba0781dd252750384899814aa8a3d",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller:security27-96766f1d2",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]

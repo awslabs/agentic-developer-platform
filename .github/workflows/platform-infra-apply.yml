@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       account_id:
-        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        description: 'Target AWS account (12 digits). Empty = use the protected deployment identity / config file.'
         required: false
         default: ''
       customer_account_id:
@@ -76,9 +76,11 @@ env:
 jobs:
   apply:
     name: Terraform Apply
+    if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
 
@@ -102,6 +104,19 @@ jobs:
             exit 1
           fi
 
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
@@ -114,27 +129,10 @@ jobs:
       # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       # Accept Bedrock marketplace agreements for the Claude models the
       # platform invokes. Fresh customer accounts have none; without them
       # every model call fails with AccessDeniedException and the
@@ -235,6 +233,53 @@ jobs:
           esac
           echo "TF_VAR_extra_cluster_admin_principal_arns=${TFVAR}" >> "$GITHUB_ENV"
           echo "Extra cluster-admin principals: ${TFVAR}"
+
+      # Additional EXISTING private capacity subnets for the cluster's own subnet
+      # set (#5830). Subnet ids are account-specific, so
+      # environments/dev/platform.tfvars deliberately leaves
+      # additional_private_subnet_ids_by_az unassigned — a -var-file assignment,
+      # even `= {}`, would override this TF_VAR_.
+      #
+      # An UNSET OR BLANK REPOSITORY VARIABLE IS NOT A NO-OP once capacity has been
+      # added. Empty resolves to the declared default ({}), so on an expanded
+      # cluster an ordinary apply would plan the additions away and re-break pod IP
+      # assignment for every node launched afterwards — with nobody having asked for
+      # a change. Passing the variable through does NOT prevent that; the effective
+      # value has to be decided against the LIVE cluster, which is what this step
+      # does:
+      #   unset/blank          -> retain whatever the live cluster already has
+      #   omits a live addition -> REFUSE (a stale variable is likelier than a
+      #                            deliberate decision to shrink capacity)
+      #   names more            -> allowed; that is an operator adding capacity
+      # Narrowing happens only through a deliberate authorised removal.
+      #
+      # The resolved value is exported once and used by BOTH the plan and the apply
+      # below, so the reviewed plan is provably the applied plan (the #5004 class of
+      # asymmetry). Read-only: describe-cluster / describe-subnets / state read.
+      # Rules and tests: platform/scripts/capacity_subnets.py.
+      #
+      # Runs for the scoped paths too, deliberately and for the same reason the
+      # public-CIDR preservation above does: a scoped target's dependency graph can
+      # reach the cluster, so planning the empty default here would narrow the
+      # subnet set as a side effect of an unrelated scoped apply.
+      - name: Resolve additional private capacity subnets
+        env:
+          ADDITIONAL_PRIVATE_SUBNETS_BY_AZ: ${{ vars.ADDITIONAL_PRIVATE_SUBNETS_BY_AZ }}
+          ALLOW_CAPACITY_SUBNET_REMOVAL: ${{ vars.ALLOW_CAPACITY_SUBNET_REMOVAL }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ "${ALLOW_CAPACITY_SUBNET_REMOVAL:-}" = "yes" ]; then
+            echo "::warning::ALLOW_CAPACITY_SUBNET_REMOVAL=yes — a configured omission may narrow the cluster's subnet set."
+            ARGS+=(--allow-removal)
+          fi
+          TFVAR=$(python3 platform/scripts/resolve-capacity-subnets.py \
+            --environment "${ENVIRONMENT}" \
+            --bucket "${STATE_BUCKET}" \
+            --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}" \
+            "${ARGS[@]}")
+          echo "TF_VAR_additional_private_subnet_ids_by_az=${TFVAR}" >> "$GITHUB_ENV"
+          echo "Effective additional private capacity subnets: ${TFVAR}"
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -352,6 +397,7 @@ jobs:
       - name: Destroy-safety gate
         if: steps.plan.outputs.detailed_exitcode == '2' || steps.plan_scoped.outputs.detailed_exitcode == '2'
         env:
+          ADP_INPUT_6B856C20FF: ${{ inputs.confirm_destructive_apply }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
@@ -369,7 +415,7 @@ jobs:
 
           # workflow_dispatch: require explicit operator confirmation.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.confirm_destructive_apply }}" = "yes" ]; then
+            if [ "${ADP_INPUT_6B856C20FF}" = "yes" ]; then
               echo "Operator-confirmed destructive apply (confirm_destructive_apply=yes). Proceeding."
               exit 0
             fi
@@ -395,7 +441,6 @@ jobs:
             echo "::error::Add the label to PR #$PR_NUMBER and re-run, or trigger manually with confirm_destructive_apply=yes."
             exit 1
           fi
-
       - name: Terraform Apply
         id: apply
         if: ${{ !inputs.plan_only }}

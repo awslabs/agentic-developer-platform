@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PlatformPersonaDefaults } from './PlatformPersonaDefaults';
+import { useAuth } from '@/hooks/useAuth';
+import { AdminRole } from '@/types';
+import { AgentTaskBudget } from '@/components/org/AgentTaskBudget';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
@@ -39,30 +43,30 @@ function availability(
   preference?: PersonaPreference,
 ): { label: string; className: string } {
   if (preference?.model_lifecycle === 'retired' || model?.retired || model?.reason === 'retired') {
-    return { label: 'Retired', className: 'text-red-700' };
+    return { label: 'Retired', className: 'text-red-700 dark:text-red-300' };
   }
   if ((preference?.status === 'disallowed' || preference?.availability_status === 'disallowed') || model?.permitted === false || model?.reason === 'not_permitted') {
-    return { label: 'Not permitted', className: 'text-red-700' };
+    return { label: 'Not permitted', className: 'text-red-700 dark:text-red-300' };
   }
   if ((preference?.status === 'stale' || preference?.availability_status === 'stale') || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
-    return { label: 'Availability needs checking', className: 'text-amber-700' };
+    return { label: 'Availability needs checking', className: 'text-amber-700 dark:text-amber-300' };
   }
   if (preference?.availability_status === 'selectable' || (model?.selectable && model.invocable == null && !model.evidence)) {
-    return { label: 'Available to select', className: 'text-green-700' };
+    return { label: 'Available', className: 'text-green-700 dark:text-green-300' };
   }
-  if (preference?.effective_is_candidate) return { label: 'Not ready', className: 'text-gray-600' };
+  if (preference?.effective_is_candidate) return { label: 'Not ready', className: 'text-gray-600 dark:text-gray-300' };
   if ((preference?.status === 'unavailable' || preference?.availability_status === 'unavailable') || model?.reason === 'not_invocable' || model?.invocable === false) {
-    return { label: 'Unavailable', className: 'text-red-700' };
+    return { label: 'Unavailable', className: 'text-red-700 dark:text-red-300' };
   }
   if (model?.reason === 'harness_incompatible') {
-    return { label: 'Incompatible', className: 'text-red-700' };
+    return { label: 'Incompatible', className: 'text-red-700 dark:text-red-300' };
   }
-  if (preference?.availability_status === 'unknown') return { label: 'Availability unknown', className: 'text-gray-600' };
-  if (!model) return { label: 'Availability unknown', className: 'text-gray-600' };
+  if (preference?.availability_status === 'unknown') return { label: 'Availability unknown', className: 'text-gray-600 dark:text-gray-300' };
+  if (!model) return { label: 'Availability unknown', className: 'text-gray-600 dark:text-gray-300' };
   if (model.invocable === true && !model.evidence?.stale) {
-    return { label: 'Available', className: 'text-green-700' };
+    return { label: 'Available', className: 'text-green-700 dark:text-green-300' };
   }
-  return { label: 'Not ready', className: 'text-gray-600' };
+  return { label: 'Not ready', className: 'text-gray-600 dark:text-gray-300' };
 }
 
 /**
@@ -129,6 +133,8 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
           // Carried from the response so a reset back to the class default reports the
           // server's current proof state rather than the pre-mutation value.
           class_default_status: detail.class_default_status ?? null,
+          default_model_id: detail.default_model_id,
+          default_scope: detail.default_scope,
           saved_model_id: detail.saved_model_id,
           requested_alias: detail.requested_alias,
           revision: detail.revision,
@@ -136,6 +142,10 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
         }
       : entry,
   );
+}
+
+function modelName(model: ModelCatalogueRow): string {
+  return `${model.model_family} ${model.canonical_version}`;
 }
 
 function PersonaCard({
@@ -168,103 +178,149 @@ function PersonaCard({
   );
 
   const effective = catalogue?.models.find((model) => model.canonical_model_id === preference?.effective_model_id);
+  const selected = catalogue?.models.find((model) => model.canonical_model_id === draft);
+  const blockedModels = catalogue?.models.filter((model) => !model.selectable) ?? [];
   const state = availability(effective, preference);
   const effectivePrice = effective ? priceLabel(effective) : null;
+  const selectedPrice = selected && selected.canonical_model_id !== preference?.effective_model_id
+    ? priceLabel(selected)
+    : null;
   const canSave = Boolean(
     persona.configurable &&
       draft &&
       draft !== preference?.saved_model_id &&
-      catalogue?.models.some((model) => model.canonical_model_id === draft && model.selectable),
+      selected?.selectable,
   );
+  const missingDraft = draft && !selected ? draft : null;
 
   return (
-    <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800" data-testid={`persona-row-${persona.key}`}>
-      <div className="grid gap-4 md:grid-cols-[minmax(12rem,1.2fr)_minmax(12rem,1fr)_minmax(15rem,1.5fr)_auto] md:items-start">
-        <div>
-          <h2 className="font-semibold text-gray-900 dark:text-white">{persona.display_name}</h2>
-          <p className="text-sm text-gray-600 dark:text-gray-300">{persona.purpose}</p>
+    <article
+      className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800"
+      data-testid={`persona-row-${persona.key}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-700 sm:px-6">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">{persona.display_name}</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">{persona.purpose}</p>
         </div>
+        <span className={`rounded-full bg-gray-50 px-3 py-1 text-xs font-semibold dark:bg-gray-700 ${state.className}`}>
+          {state.label}
+        </span>
+      </div>
 
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Model for new runs</p>
-          <p className="break-words text-sm font-medium text-gray-900 dark:text-white">
-            {effective ? `${effective.model_family} ${effective.canonical_version}` : preference?.effective_model_id || 'No model configured'}
+      <div className="grid gap-5 px-5 py-5 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="min-w-0 rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Model for new runs</p>
+          <p className="mt-2 break-words text-lg font-semibold text-gray-900 dark:text-white">
+            {effective ? modelName(effective) : preference?.effective_model_id || 'No model configured'}
           </p>
-          <p className="text-xs text-gray-500" data-testid={`effective-source-${persona.key}`}>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300" data-testid={`effective-source-${persona.key}`}>
             {effectiveSourceLabel(preference)}
           </p>
-          <p className={`mt-2 text-sm font-medium ${state.className}`}>{state.label}</p>
-          {preference?.warnings?.map((warning) => <p key={warning} role="status" className="text-sm text-amber-700">{warning}</p>)}
-          {effectivePrice && <p className="text-xs text-gray-500">{effectivePrice}</p>}
+          {preference?.source === 'principal-mapping' && preference.default_model_id && (
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">Default: {preference.default_model_id}</p>
+          )}
+          {effectivePrice && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{effectivePrice}</p>}
+          {preference?.warnings?.map((warning) => (
+            <p key={warning} role="status" className="mt-3 text-sm text-amber-700 dark:text-amber-300">{warning}</p>
+          ))}
         </div>
 
-        <div>
+        <div className="min-w-0">
           {!persona.configurable ? (
-            <p className="text-sm text-gray-600" data-testid={`not-configurable-${persona.key}`}>
+            <p className="text-sm text-gray-600 dark:text-gray-300" data-testid={`not-configurable-${persona.key}`}>
               Model selection is not available for this persona.
             </p>
           ) : (
-            <fieldset disabled={busy}>
-              <legend className="text-xs font-medium uppercase tracking-wide text-gray-500">Choose a model</legend>
-              {!catalogue && <div role="alert" className="text-sm text-amber-700">
-                <p>Could not load model choices. Your saved settings are still shown.</p>
-                <Button size="sm" variant="secondary" onClick={onReload}>Reload models</Button>
-              </div>}
-              <div className="space-y-2" role="radiogroup" aria-label={`Model for ${persona.display_name}`}>
-                {(catalogue?.models ?? []).map((model) => (
-                  <label
-                    key={model.canonical_model_id}
-                    className={`flex cursor-pointer gap-2 rounded-md border p-2 text-sm ${model.selectable ? 'border-gray-200' : 'cursor-not-allowed border-gray-100 opacity-70'}`}
-                  >
-                    <input
-                      type="radio"
-                      name={`model-${scopeIdentity}-${persona.key}`}
-                      value={model.canonical_model_id}
-                      checked={draft === model.canonical_model_id}
-                      disabled={!model.selectable}
-                      onChange={() => setDraft(model.canonical_model_id)}
-                    />
-                    <span>
-                      <span className="font-medium">{model.model_family} {model.canonical_version}</span>
-                      {catalogue!.models.some((other) => other.canonical_model_id !== model.canonical_model_id &&
-                        other.model_family === model.model_family && other.canonical_version === model.canonical_version) && (
-                        <span className="block break-all text-xs text-gray-500">{model.canonical_model_id}</span>
-                      )}
-                      {!model.selectable && <span className="block text-xs text-gray-600">{reasonLabel(model.reason)}</span>}
-                      {priceLabel(model) && <span className="block text-xs text-gray-500">{priceLabel(model)}</span>}
-                    </span>
+            <>
+              {!catalogue ? (
+                <div role="alert" className="text-sm text-amber-700 dark:text-amber-300">
+                  <p>Could not load model choices. Your saved settings are still shown.</p>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={onReload}>Reload models</Button>
+                  {preference?.saved_model_id && (
+                    <Button className="ml-2" size="sm" variant="outline" disabled={busy} onClick={onReset}>Use default</Button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <label htmlFor={`model-${scopeIdentity}-${persona.key}`} className="block text-sm font-semibold text-gray-900 dark:text-white">
+                    Change model
                   </label>
-                ))}
-                {catalogue && catalogue.models.length === 0 && <p className="text-sm text-gray-600">No compatible models are published for this persona.</p>}
-              </div>
-            </fieldset>
+                  <select
+                    id={`model-${scopeIdentity}-${persona.key}`}
+                    value={draft}
+                    disabled={busy || catalogue.models.length === 0}
+                    onChange={(event) => setDraft(event.target.value)}
+                    aria-label={`Model for ${persona.display_name}`}
+                    className="mt-2 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:focus:ring-primary-900"
+                  >
+                    <option value="">Select a model to override the default</option>
+                    {missingDraft && <option value={missingDraft} disabled>{missingDraft} · No longer in the catalogue</option>}
+                    {catalogue.models.map((model) => {
+                      const duplicate = catalogue.models.some((other) =>
+                        other.canonical_model_id !== model.canonical_model_id && modelName(other) === modelName(model));
+                      return (
+                        <option key={model.canonical_model_id} value={model.canonical_model_id} disabled={!model.selectable}>
+                          {modelName(model)}{duplicate ? ` · ${model.canonical_model_id}` : ''}{!model.selectable ? ' · Unavailable' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {selectedPrice && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{selectedPrice}</p>}
+                  {catalogue.models.length === 0 && (
+                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">No compatible models are published for this persona.</p>
+                  )}
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <Button size="sm" disabled={!canSave} isLoading={busy} onClick={() => onSave(draft)}>
+                      Save model
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={!preference?.saved_model_id || busy} onClick={onReset}>
+                      Use default
+                    </Button>
+                  </div>
+                  {blockedModels.length > 0 && (
+                    <details className="mt-4 border-t border-gray-100 pt-3 text-sm dark:border-gray-700">
+                      <summary className="cursor-pointer text-primary-700 hover:underline dark:text-primary-300">
+                        {blockedModels.length} unavailable {blockedModels.length === 1 ? 'model' : 'models'}
+                      </summary>
+                      <ul className="mt-3 space-y-2">
+                        {blockedModels.map((model) => (
+                          <li key={model.canonical_model_id} className="rounded-md bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+                            <span className="font-medium text-gray-800 dark:text-gray-200">{modelName(model)}</span>
+                            {catalogue.models.some((other) =>
+                              other.canonical_model_id !== model.canonical_model_id && modelName(other) === modelName(model)) && (
+                              <span className="block break-all text-xs text-gray-500 dark:text-gray-400">{model.canonical_model_id}</span>
+                            )}
+                            <span className="block text-xs text-gray-600 dark:text-gray-400">{reasonLabel(model.reason)}</span>
+                            {priceLabel(model) && <span className="block text-xs text-gray-500 dark:text-gray-400">{priceLabel(model)}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
+              )}
+            </>
           )}
         </div>
-
-        {persona.configurable && (
-          <div className="flex flex-wrap gap-2 md:flex-col">
-            <Button size="sm" disabled={!canSave} isLoading={busy} onClick={() => onSave(draft)}>
-              Save
-            </Button>
-            <Button size="sm" variant="outline" disabled={!preference?.saved_model_id || busy} onClick={onReset}>
-              Reset
-            </Button>
-          </div>
-        )}
       </div>
 
-      {error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}
+      {error && <p className="mx-5 mb-4 text-sm text-red-700 dark:text-red-300" role="alert">{error}</p>}
       {conflict && (
-        <div className="mt-3 text-sm text-amber-800" role="alert">
+        <div className="mx-5 mb-4 text-sm text-amber-800 dark:text-amber-300" role="alert">
           This mapping changed elsewhere. Your edit was not applied.{' '}
           <button type="button" className="font-medium underline" onClick={onReload}>Reload current value</button>
         </div>
       )}
+      {persona.key.startsWith('agent-task-') && <AgentTaskBudget
+        principal={scopeIdentity.startsWith('service:') ? scopeIdentity.slice(8) : undefined}
+        persona={persona.key} selectionRevision={preference?.revision} model={selected?.canonical_model_id ?? preference?.effective_model_id} />}
     </article>
   );
 }
 
 export default function AgentModels() {
+  const { hasRole } = useAuth();
   const [scopeKind, setScopeKind] = useState<ScopeKind>('self');
   const [adminPrincipalId, setAdminPrincipalId] = useState<string | undefined>(undefined);
   const [principals, setPrincipals] = useState<ManageableServicePrincipal[]>([]);
@@ -423,34 +479,37 @@ export default function AgentModels() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6" data-testid="agent-models-page">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Agent Models</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">Choose the model each agent persona uses when you start a new run.</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Agent Models</h1>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">Choose the model each agent persona uses when you start a new run.</p>
+        </div>
+        {principals.length > 0 && (
+          <div className="w-full sm:w-72">
+            <label htmlFor="agent-models-account" className="block text-sm font-semibold text-gray-900 dark:text-white">
+              Settings for
+            </label>
+            <select
+              id="agent-models-account"
+              value={scopeKind === 'self' ? 'self' : adminPrincipalId}
+              disabled={mutationInFlight}
+              onChange={(event) => event.target.value === 'self'
+                ? switchToSelf()
+                : switchToAdmin(event.target.value)}
+              className="mt-2 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:focus:ring-primary-900"
+            >
+              <option value="self">My own agents</option>
+              {principals.map((principal) => (
+                <option key={principal.canonical_service_principal_id} value={principal.canonical_service_principal_id}>
+                  {principal.display_name} ({principal.tenant_label})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {principals.length > 0 && (
-        <fieldset disabled={mutationInFlight} className="rounded-lg border border-gray-200 p-4">
-          <legend className="px-1 text-sm font-medium">Settings for</legend>
-          <div className="flex flex-wrap gap-3">
-            <label className="flex items-center gap-2">
-              <input type="radio" name="scope" checked={scopeKind === 'self'} onChange={switchToSelf} />
-              My own agents
-            </label>
-            {principals.map((principal) => (
-              <label key={principal.canonical_service_principal_id} className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="scope"
-                  checked={scopeKind === 'service' && adminPrincipalId === principal.canonical_service_principal_id}
-                  onChange={() => switchToAdmin(principal.canonical_service_principal_id)}
-                />
-                {principal.display_name} ({principal.tenant_label})
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      )}
-
+      {hasRole(AdminRole.PLATFORM_ADMIN) && <PlatformPersonaDefaults onSaved={() => void load(scopeKind, adminPrincipalId)} />}
       {selectedPrincipal && (
         <Alert variant="info" title="Managed service account">
           Changes below apply to {selectedPrincipal.display_name} in {selectedPrincipal.tenant_label}, not to your own account.
@@ -474,6 +533,13 @@ export default function AgentModels() {
             </Alert>
           )}
           <div className="space-y-4">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Agent personas</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-300">Review the model in use, then change individual personas as needed.</p>
+              </div>
+              <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{data.personas.length} personas</span>
+            </div>
             {data.personas.map((persona) => (
               <PersonaCard
                 key={`${scopeIdentity}:${persona.key}`}

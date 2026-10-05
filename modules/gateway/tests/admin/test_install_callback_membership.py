@@ -1,13 +1,9 @@
-"""Unit tests for install-callback tenant membership creation.
+"""GitHub connection setup must not create or promote human ADP memberships.
 
-Issue #3035: When a user installs the GitHub App on an org, the install
-callback must create a tenant_membership row for the installing user so
-they can see the workspace in the multi-tenant Connections view.
-"""
+Provider control and canonical identity checks remain required."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,23 +13,29 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
-    _PROVIDER_GITHUB_INSTALL,
     install_callback,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import MagicLinkNonce
+from tests.admin import install_setup_fixtures as setup_fixtures
+from tests.admin.install_setup_fixtures import (
+    bind_real_org_control,
+    issue_install_nonce,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _configure_github_app(monkeypatch):
+def _configure_github_app(monkeypatch, offline_setup_boundaries):
     """Block Secrets Manager and DDB in unit tests."""
     from src.admin.connections.github_app_provider import _reset_provider_for_testing
 
@@ -116,7 +118,9 @@ def _mock_github_client(
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
-    return client
+    # These human-routing cases model an unavailable optional bot lookup.
+    client.get_bot_user = AsyncMock(return_value={})
+    return bind_real_org_control(client)
 
 
 async def _seed_user_and_nonce(
@@ -138,17 +142,7 @@ async def _seed_user_and_nonce(
     db.add(user)
     await db.commit()
 
-    nonce = MagicLinkNonce(
-        jti=jti,
-        provider=_PROVIDER_GITHUB_INSTALL,
-        provider_user_id=cognito_sub,
-        channel_context=None,
-        target_user_id=user_id,
-        expires_at=datetime.now(UTC) + timedelta(minutes=15),
-        consumed_at=None,
-    )
-    db.add(nonce)
-    await db.commit()
+    nonce = await issue_install_nonce(db, user, jti=jti)
     return user, nonce
 
 
@@ -158,210 +152,37 @@ async def _seed_user_and_nonce(
 
 
 class TestInstallCallbackMembership:
-    """Issue #3035: install_callback creates a tenant_membership for the
-    installing user on org-type installs."""
+    """Connecting a provider never grants an ADP role or changes membership."""
 
-    async def test_org_install_creates_membership(self, db_session: AsyncSession, org_in_db):
-        """Org install with authenticated user → membership row created with
-        role=org_admin (#4006 — the installer must be an org admin by the
-        path's own contract), joined_via=app_install."""
-        await _seed_user_and_nonce(db_session)
-        gh = _mock_github_client()
-
-        result = await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="membership-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        assert result["success"] is True
-
-        # Verify membership was created
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "user-installer-001",
-            TenantMembership.tenant_id == "org-test-001",
-        )
-        membership = (await db_session.execute(stmt)).scalar_one_or_none()
-        assert membership is not None
-        assert membership.role == "org_admin"
-        assert membership.joined_via == "app_install"
-        assert membership.github_org_id == "acme-test"
-
-    async def test_first_membership_becomes_active(self, db_session: AsyncSession, org_in_db):
-        """When the user has no existing memberships, the new one is set active
-        (first-membership-active rule)."""
-        await _seed_user_and_nonce(db_session)
-        gh = _mock_github_client()
-
-        await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="membership-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "user-installer-001",
-        )
-        membership = (await db_session.execute(stmt)).scalar_one()
-        assert membership.is_active is True
-
-    async def test_reinstall_does_not_duplicate(self, db_session: AsyncSession, org_in_db):
-        """Reinstall (membership already exists) → no duplicate, no error."""
-        user, _ = await _seed_user_and_nonce(db_session, jti="first-jti")
-        gh = _mock_github_client()
-
-        # First install
-        await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="first-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        # Seed a second nonce for the reinstall
-        nonce2 = MagicLinkNonce(
-            jti="second-jti",
-            provider=_PROVIDER_GITHUB_INSTALL,
-            provider_user_id="sub-installer",
-            channel_context=None,
-            target_user_id="user-installer-001",
-            expires_at=datetime.now(UTC) + timedelta(minutes=15),
-            consumed_at=None,
-        )
-        db_session.add(nonce2)
-        await db_session.commit()
-
-        # Second install (reinstall) — should not raise or duplicate
-        result = await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="second-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        assert result["success"] is True
-
-        # Verify only one membership exists
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "user-installer-001",
-            TenantMembership.tenant_id == "org-test-001",
-        )
-        memberships = (await db_session.execute(stmt)).scalars().all()
-        assert len(memberships) == 1
-
-    async def test_existing_active_membership_switched(self, db_session: AsyncSession, org_in_db):
-        """User with existing active membership → auto-switched to the
-        newly-installed org (#3072). The previous membership is deactivated
-        and the new membership is now active."""
+    @pytest.mark.parametrize("role", [None, "member", "org_admin"])
+    async def test_org_install_preserves_existing_membership(self, db_session, org_in_db, role):
         user, _ = await _seed_user_and_nonce(db_session)
+        if role:
+            db_session.add(TenantMembership(user_id=user.id, tenant_id=user.org_id, role=role, is_active=True, joined_via="admin"))
+            await db_session.commit()
+        for jti in ["membership-jti", "reinstall-jti"]:
+            if jti == "reinstall-jti":
+                await issue_install_nonce(db_session, user, jti=jti)
+            result = await install_callback(
+                installation_id=124731131, setup_action="install", state=jti, db=db_session, github_client=_mock_github_client()
+            )
+            assert result["success"] is True
+            assert result["switched_from"] is None
+        rows = (await db_session.scalars(select(TenantMembership).where(TenantMembership.user_id == user.id))).all()
+        assert [(m.tenant_id, m.role, m.is_active, m.joined_via) for m in rows] == ([(user.org_id, role, True, "admin")] if role else [])
 
-        # Create a second org for the existing membership
-        other_org = Organization(
-            id="org-other-active",
-            name="Other Active Org",
-            aws_accounts=[],
-            role_mappings={},
-            settings={},
-        )
-        db_session.add(other_org)
-        await db_session.commit()
+    async def test_canonical_user_is_recorded_without_membership_grant(self, db_session, org_in_db):
+        from src.shared.models.vault import ChannelTenantMap
 
-        # Pre-existing ACTIVE membership to a different tenant
-        existing_membership = TenantMembership(
-            user_id="user-installer-001",
-            tenant_id="org-other-active",
-            role="org_admin",
-            is_active=True,
-            joined_via="org_membership",
-            github_org_id="other-org",
-        )
-        db_session.add(existing_membership)
-        await db_session.commit()
-
-        gh = _mock_github_client()
+        user, _ = await _seed_user_and_nonce(db_session, user_id="pg-uuid-001", cognito_sub="different-cognito-sub")
         result = await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="membership-jti",
-            db=db_session,
-            github_client=gh,
+            installation_id=124731131, setup_action="install", state="membership-jti", db=db_session, github_client=_mock_github_client()
         )
-
         assert result["success"] is True
-
-        # Issue #3072: The new membership IS now active (auto-switch)
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "user-installer-001",
-            TenantMembership.tenant_id == "org-test-001",
-        )
-        new_membership = (await db_session.execute(stmt)).scalar_one()
-        assert new_membership.is_active is True
-        assert new_membership.role == "org_admin"
-        assert new_membership.joined_via == "app_install"
-
-        # The existing membership's is_active is now False (switched away)
-        await db_session.refresh(existing_membership)
-        assert existing_membership.is_active is False
-
-    async def test_personal_install_no_membership(self, db_session: AsyncSession, org_in_db):
-        """Personal-account install → no membership row created."""
-        await _seed_user_and_nonce(db_session)
-        gh = _mock_github_client(account_type="User", account_login="alice")
-
-        result = await install_callback(
-            installation_id=999,
-            setup_action="install",
-            state="membership-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        assert result["success"] is True
-        assert result["account_type"] == "User"
-
-        # No membership row should exist
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "user-installer-001",
-        )
-        memberships = (await db_session.execute(stmt)).scalars().all()
-        assert len(memberships) == 0
-
-    async def test_cognito_sub_user_resolution(self, db_session: AsyncSession, org_in_db):
-        """Regression test for #3021 bug class: the user is resolved from the
-        nonce (target_user_id → users.id), NOT from the ID token. The fixture
-        uses an access-token-shaped cognito_sub (different from users.id)."""
-        # The user's cognito_sub ≠ users.id — this is the standard case
-        await _seed_user_and_nonce(
-            db_session,
-            user_id="pg-uuid-001",
-            cognito_sub="cognito-sub-different-from-pg-id",
-        )
-        gh = _mock_github_client()
-
-        result = await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="membership-jti",
-            db=db_session,
-            github_client=gh,
-        )
-
-        assert result["success"] is True
-
-        # Membership uses the Postgres users.id, not the cognito_sub
-        stmt = select(TenantMembership).where(
-            TenantMembership.user_id == "pg-uuid-001",
-            TenantMembership.tenant_id == "org-test-001",
-        )
-        membership = (await db_session.execute(stmt)).scalar_one_or_none()
-        assert membership is not None
-        assert membership.role == "org_admin"
+        row = (await db_session.scalars(select(ChannelTenantMap))).one()
+        assert row.org_id == user.org_id
+        assert row.installed_by_user_id == user.id
+        assert (await db_session.scalars(select(TenantMembership))).all() == []
 
 
 # ---------------------------------------------------------------------------

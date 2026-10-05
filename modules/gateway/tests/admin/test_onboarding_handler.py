@@ -18,6 +18,19 @@ from src.shared.models.onboarding import TenantAccessRequest
 from src.shared.models.organization import Organization
 from src.shared.schemas.auth import TokenContext
 
+# Ordinary handler fixtures model the server-side Cognito read explicitly.
+# The unsigned bearer below exercises request plumbing, never identity authority.
+_provider_claims = {}
+
+
+@pytest.fixture(autouse=True)
+def subject_bound_cognito_record(monkeypatch):
+    from src.admin.onboarding import handler
+
+    _provider_claims.clear()
+    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
+
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -154,6 +167,8 @@ def _fake_bearer(claims: dict) -> str:
     The handler's _decode_jwt_claims just base64-decodes the middle segment;
     signature is irrelevant for these tests (auth is overridden upstream).
     """
+    _provider_claims.clear()
+    _provider_claims.update(claims)
     import base64 as _b64
     import json as _json
 
@@ -494,14 +509,14 @@ async def test_admin_approve_503_when_flag_off(admin_app_client, db_engine):
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — calls AdminDeleteUser
+# Admin deny — preserves global account
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_deletes_cognito_user(admin_app_client, db_engine):
-    """Deny calls AdminDeleteUser on the Cognito sub."""
+async def test_admin_deny_preserves_cognito_user(admin_app_client, db_engine):
+    """Tenant request denial does not authorize global account deletion."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -524,21 +539,18 @@ async def test_admin_deny_deletes_cognito_user(admin_app_client, db_engine):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
-    mock_cognito.admin_delete_user.assert_called_once_with(
-        UserPoolId="us-east-1_testpool",
-        Username="sub-to-deny",
-    )
+    mock_cognito.admin_delete_user.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — UserNotFoundException treated as success
+# Admin deny — repeated request is idempotent
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_user_not_found_is_idempotent(admin_app_client, db_engine):
-    """Deny treats UserNotFoundException as idempotent success."""
+async def test_admin_deny_repeated_request_is_idempotent(admin_app_client, db_engine):
+    """Repeated denial retains the global account and request-only outcome."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -559,21 +571,24 @@ async def test_admin_deny_user_not_found_is_idempotent(admin_app_client, db_engi
 
     with patch("boto3.client", return_value=mock_cognito):
         resp = await admin_app_client.post("/admin/access-requests/req-deny2/deny")
+        repeated = await admin_app_client.post("/admin/access-requests/req-deny2/deny")
+        assert repeated.status_code == 200
+        mock_cognito.admin_delete_user.assert_not_called()
 
-    # Should succeed — UserNotFoundException is idempotent
+    # Request-only denial succeeds without consulting Cognito
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — Cognito failure emits metric
+# Admin deny — no provider operation
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_cognito_failure_emits_metric(admin_app_client, db_engine):
-    """Deny emits OnboardingDeny.CognitoDeleteFailure on non-UserNotFound errors."""
+async def test_admin_deny_requires_no_cognito_operation(admin_app_client, db_engine):
+    """Provider deletion errors cannot affect a request-only denial."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -602,7 +617,8 @@ async def test_admin_deny_cognito_failure_emits_metric(admin_app_client, db_engi
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
-    mock_metric.assert_called_with("ADP/Onboarding", "OnboardingDeny.CognitoDeleteFailure")
+    mock_metric.assert_not_called()
+    mock_cognito.admin_delete_user.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

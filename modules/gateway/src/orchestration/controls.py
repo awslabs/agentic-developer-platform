@@ -73,7 +73,7 @@ import json
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from httpx import HTTPError
 from pydantic import BaseModel, ConfigDict, Field
@@ -92,6 +92,7 @@ from src.shared.models.base import utcnow
 from src.shared.schemas.auth import TokenContext
 
 from .adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
+from .compile import ExpiredExecutionPolicyError, PolicyNotAcceptableError
 from .execution_state import BlockCode, BlockRecord
 from .handoff import outstanding_block
 from .lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
@@ -400,6 +401,7 @@ class GateDecisionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    execution_preview: dict | None = None
     reason: str | None = Field(default=None, max_length=2000)
     # Optional revision binding (#5331). When present, the answer applies only if
     # this is still the plan in force for the gate's flow, compared inside the same
@@ -435,6 +437,9 @@ class ResumeRequest(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_flow_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     reason: str | None = Field(default=None, max_length=2000)
     reconciled: bool = Field(
@@ -542,6 +547,7 @@ async def _answer_gate(
     access: AccessControl,
     db: AsyncSession,
     expected_plan_hash: str | None = None,
+    execution_preview: dict | None = None,
 ) -> GateDecisionResponse:
     """Approve or reject one gate through the shared adapter.
 
@@ -551,16 +557,25 @@ async def _answer_gate(
     HTTP — which is what keeps the dashboard row and the GitHub-comment row the
     same shape produced by the same code.
     """
-    outcome = await apply_gate_answer_for_context(
-        db,
-        context=current_user,
-        node_id=gate_id,
-        approve=approve,
-        reason=reason,
-        access=access,
-        input_path=InputPath.DASHBOARD,
-        expected_plan_hash=expected_plan_hash,
-    )
+    try:
+        outcome = await apply_gate_answer_for_context(
+            db,
+            context=current_user,
+            node_id=gate_id,
+            approve=approve,
+            reason=reason,
+            access=access,
+            input_path=InputPath.DASHBOARD,
+            expected_plan_hash=expected_plan_hash,
+            execution_preview=execution_preview,
+        )
+    except PolicyNotAcceptableError as exc:
+        # Policy promotion happens inside the same transaction as the tentative
+        # gate transition and decision append. An expected refusal must roll all
+        # three back before it becomes a stable client-visible conflict.
+        await db.rollback()
+        error = "execution_policy_expired" if isinstance(exc, ExpiredExecutionPolicyError) else "execution_policy_not_acceptable"
+        raise HTTPException(status_code=409, detail={"error": error, "message": str(exc)}) from None
 
     status_code = _GATE_STATUS_CODES[outcome.status]
     if status_code != 200:
@@ -622,6 +637,7 @@ async def approve_gate(
         access=access,
         db=db,
         expected_plan_hash=body.expected_plan_hash,
+        execution_preview=body.execution_preview,
     )
 
 
@@ -746,6 +762,21 @@ async def resume_current_continuation(
         raise HTTPException(404 if str(error) == "node_not_found" else 409, str(error)) from None
 
 
+@router.get("/nodes/{node_id}/recovery")
+async def read_node_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    flow_id: Annotated[str, Query(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    from .recovery_snapshot import snapshot
+
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
+    _, result = await snapshot(db, org_id=current_user.org_id, node_id=node_id, flow_id=flow_id)
+    return result
+
+
 @router.post("/nodes/{node_id}/resume", response_model=ResumeResponse)
 async def resume_node(
     node_id: Annotated[str, Path(min_length=1, max_length=36)],
@@ -791,6 +822,13 @@ async def resume_node(
     node = await repo.get_node(org_id=org_id, node_id=node_id)
     if node is None:
         raise HTTPException(status_code=404, detail=f"no orchestration node {node_id!r} in this tenant")
+
+    if body.expected_revision is not None:
+        from .recovery_snapshot import require_snapshot
+
+        if body.expected_flow_id is None:
+            raise HTTPException(422, detail="Revision-bound resume requires the reviewed flow ID.")
+        node = await require_snapshot(db, org_id=org_id, node_id=node_id, flow_id=body.expected_flow_id, expected_revision=body.expected_revision)
 
     observed_state = node.state
     actor_role = (await access.get_user_role(current_user))[0].value
@@ -1167,3 +1205,35 @@ async def get_run_control_state(
         return await control.get_state(run_id, user_id=user_id, tenant_id=tenant_id)
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/gates/{gate_id}/execution-preview")
+async def gate_execution_preview(
+    gate_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from ..agentauth.bootstrap import BootstrapRefusedError
+    from ..agentauth.human_control import authorize_human_session
+    from .compile import ApprovalContext
+    from .evaluation_acceptance import EvaluationAcceptanceError
+    from .gate_execution import prepare_gate_execution
+    from .review_cycle import CycleBlockedError
+    from .routes import _resolve_actor_role
+    from .shared_window import WindowRenewalError
+
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    node = await db.scalar(select(OrchestrationNode).where(OrchestrationNode.id == gate_id, OrchestrationNode.org_id == current_user.org_id))
+    if node is None:
+        raise HTTPException(404, "No such gate in this organisation.")
+    try:
+        human = await authorize_human_session(current_user, db)
+    except BootstrapRefusedError:
+        raise HTTPException(403, "An authenticated human plan approver is required.") from None
+    actor = ApprovalContext(org_id=human.tenant_id, actor_id=human.user_id, actor_role=await _resolve_actor_role(access, current_user))
+    try:
+        result = await prepare_gate_execution(db, gate=node, actor=actor)
+        return {key: value for key, value in result.items() if key != "grants"}
+    except (EvaluationAcceptanceError, WindowRenewalError, CycleBlockedError, PolicyNotAcceptableError) as error:
+        raise HTTPException(409, {"message": "The next step is not executable: " + str(error)}) from None

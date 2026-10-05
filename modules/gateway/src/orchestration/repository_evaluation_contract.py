@@ -212,13 +212,16 @@ def harness_digest():
     for name in (
         "repository_evaluation_contract.py",
         "repository_evaluation_provider.py",
+        "deployment_workflow_provider.py",
         "repository_evaluation.py",
         "evaluation_acceptance.py",
+        "evaluation_authority.py",
         "merge_evidence.py",
         "repository_producer_contract.py",
         "repository_producer.py",
         "repository_producer_controller.py",
         "cli_live_contract.py",
+        "workflow_evaluation_contract.py",
         "cli_live_evidence.py",
     ):
         data = Path(__file__).with_name(name).read_bytes()
@@ -227,6 +230,10 @@ def harness_digest():
 
 
 def native_specification(value):
+    if isinstance(value, dict) and value.get("evidence_schema") == "workflow-evaluation/v1":
+        from .workflow_evaluation_contract import WorkflowEvaluationSpecification
+
+        return WorkflowEvaluationSpecification.model_validate(value)
     if isinstance(value, dict) and value.get("evidence_schema") == "cli-live-evaluation/v1":
         from .cli_live_contract import CliLiveSpecification
 

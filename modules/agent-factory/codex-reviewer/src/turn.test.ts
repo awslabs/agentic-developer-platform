@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ThreadEvent } from "@openai/codex-sdk";
 import { interruptedTransport, runResumableTurn } from "./turn.js";
 
 const completed = { items: [], finalResponse: "verified", usage: {
@@ -60,3 +61,61 @@ test("no fresh thread is launched when identity is missing or the deadline expir
     abort.abort(); throw new Error("stream disconnected before completion");
   } }, "review", { signal: abort.signal }, async () => assert.fail("deadline expired")));
 });
+
+test('reviewer streams activity before completion while retaining its structured verdict', async () => {
+  const seen: string[] = [];
+  const result = await runResumableTurn({ id: 'review-session',
+    run: async () => assert.fail('must use streaming SDK'),
+    runStreamed: async () => ({ events: (async function* () {
+      yield { type: 'thread.started' as const, thread_id: 'review-session' };
+      assert.deepEqual(seen, ['thread.started']);
+      yield { type: 'item.started' as const, item: { type: 'command_execution' as const,
+        id: 'command', command: 'npm test', status: 'in_progress' as const, aggregated_output: '' } };
+      assert.equal(seen.at(-1), 'item.started');
+      yield { type: 'item.completed' as const, item: { type: 'agent_message' as const,
+        id: 'final', text: '{"verdict":"approve"}' } };
+      yield { type: 'turn.completed' as const, usage: completed.usage };
+    })() }),
+  }, 'review', { outputSchema: { type: 'object' } }, undefined, undefined, event => { seen.push(event.type); });
+  assert.equal(result.finalResponse, '{"verdict":"approve"}');
+  assert.equal(result.usage, completed.usage);
+});
+
+for (const outcome of ['completed', 'failed', 'truncated', 'refused', 'cancelled'] as const) {
+  test(`stream reconnect notifications continue until ${outcome}`, async () => {
+    const controller = new AbortController();
+    const options = { signal: controller.signal, outputSchema: { type: 'object' } };
+    let starts = 0, notifications = 0, waits = 0;
+    const run = runResumableTurn({ id: 'retained-thread',
+      run: async () => assert.fail('must use streaming SDK'),
+      runStreamed: async (_input, actual) => {
+        starts++;
+        assert.equal(actual, options);
+        return { events: (async function* (): AsyncGenerator<ThreadEvent> {
+          for (let retry = 1; retry <= 5; retry++) {
+            yield { type: 'error', message: `Reconnecting... ${retry}/5 (stream disconnected before completion)` };
+          }
+          if (outcome === 'completed') {
+            yield { type: 'item.completed', item: { type: 'agent_message', id: 'final', text: 'verified' } };
+            yield { type: 'turn.completed', usage: completed.usage };
+          } else if (outcome === 'failed') {
+            yield { type: 'turn.failed', error: { message: 'stream disconnected before completion: retries exhausted' } };
+          } else if (outcome === 'refused') {
+            yield { type: 'turn.failed', error: { message: 'stream disconnected before completion: policy rejection' } };
+          } else if (outcome === 'cancelled') {
+            controller.abort();
+            throw new Error('stream disconnected before completion: cancelled');
+          }
+        })() };
+      },
+    }, 'review', options, async () => { waits++; }, undefined,
+    event => { if (event.type === 'error') notifications++; });
+    if (outcome === 'completed') assert.equal((await run).finalResponse, 'verified');
+    else await assert.rejects(run, outcome === 'truncated' ? /missing turn.completed/ :
+      outcome === 'refused' ? /policy rejection/ : outcome === 'cancelled' ? /cancelled/ : /retries exhausted/);
+    const expectedStarts = outcome === 'failed' || outcome === 'truncated' ? 2 : 1;
+    assert.equal(starts, expectedStarts);
+    assert.equal(notifications, expectedStarts * 5);
+    assert.equal(waits, expectedStarts - 1);
+  });
+}

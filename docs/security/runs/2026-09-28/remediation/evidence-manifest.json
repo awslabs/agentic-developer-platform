@@ -1,0 +1,190 @@
+{
+  "generated_at": "2026-09-28T18:44:50.740838+00:00",
+  "private_evidence_root": "/workspaces/projects/security28-remediation-evidence",
+  "artifacts": [
+    {
+      "artifact": "README.md",
+      "sha256": "510161360ca8bf0277e0a537553fbe6faa802ccf4d3f880a6ce1493077b01a2c"
+    },
+    {
+      "artifact": "api-candidate-recheck.json",
+      "sha256": "267c8ad885a544475d5719dacc0456157816564f1a51cdd47f70d1c4574a33fd"
+    },
+    {
+      "artifact": "browser-admission-restored.json",
+      "sha256": "96633cefe8218d76af186ced7daa936b96093d47564fc9b23a9850e4191ca801"
+    },
+    {
+      "artifact": "browser-live-acceptance.json",
+      "sha256": "0d0c550b0167e86d13add0e449e4bc3ee3475b87618654e6475e4f7368f9ae2e"
+    },
+    {
+      "artifact": "completion-audit.json",
+      "sha256": "306fdb6b22b02d9adc2f3af43a399b78a6a56561f6edd2f75dcb9d62a31119a4"
+    },
+    {
+      "artifact": "debian-supported-release-check.json",
+      "sha256": "87d522acdfcdf192b16f36283bb3cf4b7be09f3c6f308f4892e7b811697781e2"
+    },
+    {
+      "artifact": "deepwiki-app-preservation.json",
+      "sha256": "63af7fc2a8635e6857e7fcf24278fa46739b3d1738a46ccd3ab5ad5f5b3c9a0d"
+    },
+    {
+      "artifact": "deepwiki-live-acceptance.json",
+      "sha256": "094fd8fd25122788301a0453a6a16224cd7dae448124d9cbf6cf42911af64e5c"
+    },
+    {
+      "artifact": "deepwiki-normal-live-acceptance.json",
+      "sha256": "dce9b0a333c566c2e6de5725bc26d6c1c219d2dc3141137278e09de82ebc71b8"
+    },
+    {
+      "artifact": "deepwiki-normal-parity.json",
+      "sha256": "11acdb14c8fe8a753cd614b2cc94830545ba934572ff94a945b12273f2db0b2b"
+    },
+    {
+      "artifact": "deepwiki-pinned-base-restored.json",
+      "sha256": "11b5b67788b0803d4d363cc67af66e93fffc5d15d478d2e8017f26df2fa34adf"
+    },
+    {
+      "artifact": "deepwiki-retention-acceptance.json",
+      "sha256": "904fbe7880b53e6732b1e4b2bea4a68daa1f868a11b830a4b2ef67a9b03539ee"
+    },
+    {
+      "artifact": "deepwiki-scan-diff.json",
+      "sha256": "436987c6d0df17a71975ab5f143ca89f970311302b8344c990fea164813ef1cb"
+    },
+    {
+      "artifact": "dependabot-final.json",
+      "sha256": "55d99ccb9d411e1f1ed56a3d844479c7ce687e1351394cb15482b7b7fab31dec"
+    },
+    {
+      "artifact": "full-scan-coverage-progress.json",
+      "sha256": "5d61e37984aa1a61b03eca7a6ae9bb1aa6ae2d2408899850ef6c90c6448bc5ff"
+    },
+    {
+      "artifact": "full-scan-final-status.json",
+      "sha256": "7cbed13d632963727ecbdaa47b938d6309e963566f00994412baabb8a560404c"
+    },
+    {
+      "artifact": "gateway-source-acceptance.json",
+      "sha256": "0fe847d503ae5b12fd2a44bda2a33632f9d6538dde463a8f9f96ff8c59128479"
+    },
+    {
+      "artifact": "image-counts.json",
+      "sha256": "b75dadda215d5badc0aa44a7b946ce22875eb6f9c0572c6bec32d20757d3e96f"
+    },
+    {
+      "artifact": "ingestion-promotion-receipt.json",
+      "sha256": "0cff0804a69e698d13c51eb1b8d464b7f42858e4b15b4d46b89e7c1399e39451"
+    },
+    {
+      "artifact": "ingestion-restoration-live.json",
+      "sha256": "604d53bac166c7ccaaeb3504b7984e350541dd3c31ec99d5859f559ed6c747f8"
+    },
+    {
+      "artifact": "lambda-closure-config.json",
+      "sha256": "9a15bbde4f158d968e8c3d9276dd3dc72fbb80e9dd65304c1144cee26e837cd4"
+    },
+    {
+      "artifact": "lambda-live-acceptance.json",
+      "sha256": "642786b5b8c6c147d893d49801a4b677486e488cfadf873a4e1673b2393868bf"
+    },
+    {
+      "artifact": "managed-addon-release-check.json",
+      "sha256": "e7d2c60b0c70213527fab4f7f15c11670e49abc9801d11e05647850ab3c98f60"
+    },
+    {
+      "artifact": "membership-full-audit-after.json",
+      "sha256": "e7c9c54180a79a0c733219a32fd2e75cafcb201780a278675ee498a45b5664d9"
+    },
+    {
+      "artifact": "membership-full-audit-closure.json",
+      "sha256": "3bef35f713b0c9dbf1fa6aa61a39dab5c5b53c1a6e17fdc8491002afc2ffae2f"
+    },
+    {
+      "artifact": "membership-full-audit.json",
+      "sha256": "92b9274e1d7a18eb72add09f1421669e9dcb9d84496f01165cb7826b92e67cf6"
+    },
+    {
+      "artifact": "remaining-advisory-matrix.json",
+      "sha256": "5bfb4107ab5b468b861ebc97d91fba56b8892ff824494e3419344a4ec3733443"
+    },
+    {
+      "artifact": "scanner-input-restoration-cross-check.json",
+      "sha256": "bdbb66f739b97e34861658d9296f964b7be110b3e9d13400665d5b7d9838adc5"
+    },
+    {
+      "artifact": "scanner-parity-detailed.json",
+      "sha256": "03ca0117748b78af927aa9666143a7c19cdac8d4fe535f4e06b35c67ad8bbadb"
+    },
+    {
+      "artifact": "scanner-parity.json",
+      "sha256": "0a3a2e6aecf90554e42c3c23ab4b70e837b780dd684e6814034b9566ba1c5249"
+    },
+    {
+      "artifact": "secret-migration-acceptance.json",
+      "sha256": "26e45abb02623e82cb162df230382e2bc4e723397350f30a8f49a373e364525b"
+    },
+    {
+      "artifact": "services-1844-status.json",
+      "sha256": "8239852abecaf2f869dcae673c7b53415f5b40aba34fcfc696fceef89cfaaa64"
+    },
+    {
+      "artifact": "services-final-status.json",
+      "sha256": "13d3d8cf14cabb2019368bcbd1236736e9f8d328b2359b1db39cf7b8b578b660"
+    },
+    {
+      "artifact": "signup-config-acceptance.json",
+      "sha256": "a52142bde0706f7af4ff04b100b5ea55fe87aae82cd2d3f6b2a69c9dc0fa28b5"
+    },
+    {
+      "artifact": "signup-final-acceptance.json",
+      "sha256": "6a1946c93ee9c0e3425175ecca40f4939d17d4c7097ac8ed7a38aee2c642cddb"
+    },
+    {
+      "artifact": "source-triage-reviewed.json",
+      "sha256": "dcc0497b7f70b47f512fa350fd3bbdeed0fe76ba637f6d08f0278a0d70472076"
+    },
+    {
+      "artifact": "worker-compiler-parity.json",
+      "sha256": "56e815c8da7fbc9b5eace364ea2d481d2e7f0bc6e23367ed8cbb50e48fd69cfc"
+    },
+    {
+      "artifact": "worker-deployment-acceptance.json",
+      "sha256": "1b95ec46f5ab42f396574faedc9f4999dd676597ef2ab693108f1cbc2d4bd89b"
+    },
+    {
+      "artifact": "worker-installed-acceptance.json",
+      "sha256": "76dc8a644c8490c78d6cbb50860826e88a18df0de3f1be63495ed825f861c3a9"
+    },
+    {
+      "artifact": "worker-installed-tests.js",
+      "sha256": "ba38c8e08333e78f478240469be525516dc2b264f299031608efd365bc33979a"
+    },
+    {
+      "artifact": "worker-layer-preservation.json",
+      "sha256": "505354ece9cd13f7d54a455dfa10c9cd2c2c763bfdad4550932f5de4800673fd"
+    },
+    {
+      "artifact": "worker-live-acceptance.json",
+      "sha256": "b0a2d8927f6d450d46f1e1f3b8ad97e8b9662f818ce4adb642fa333b2b8bbe06"
+    },
+    {
+      "artifact": "worker-prepull-final.json",
+      "sha256": "296343270cf07fb78b9ac3ba7047af2d3e21450f46460b4dd91632206316b9c1"
+    },
+    {
+      "artifact": "worker-publication.json",
+      "sha256": "2cf5e10e55d5ca853a9ed51e00760b38a7d6bb1e59298ecb2ba9dc366ee98975"
+    },
+    {
+      "artifact": "worker-reviewed-source.json",
+      "sha256": "22f50197dc7b846e127bdb557db117335c57c077e51ad353ea253d4014df5b50"
+    },
+    {
+      "artifact": "worker-scan-parity.json",
+      "sha256": "3c9a458e7fbc06faebc79de4fee4898e9829abe0f00c79637101a1c1651373b5"
+    }
+  ]
+}

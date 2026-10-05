@@ -1,45 +1,34 @@
-# AgentCore Browser boundary contract
+# Direct AgentCore Browser contract
 
-## Caller contract
+The default `URL_ANALYSIS_BROWSER_MODE=native` connects the worker directly to
+AWS-managed `aws.browser.v1` with `BrowserClient.start`, signed CDP headers and
+Playwright `connect_over_cdp`. Worker IAM grants session start/get/list/stop and
+`ConnectBrowserAutomationStream` in the configured region. No generic runtime,
+Code Interpreter or `InvokeBrowser` permission is needed.
 
-Reasoning-agent orchestration has no AgentCore Browser IAM permissions. It must
-submit each URL to the trusted broker through `browser_client.analyze_url`:
+`browser_client.analyze_url` and `capture_url` use bounded one-shot processes.
+`investigation_request(start|step|close)` preserves a Playwright process within the
+worker across CLI calls using a private Unix socket. It uses the worker identity,
+not an HTTP service or a separate credential-bearing broker. Session tokens refer
+to that pod and cannot be resumed on a different worker. Actions are never replayed
+after uncertain errors. Close is idempotent; a watchdog terminates hung driver
+processes and independently attempts StopBrowserSession. AgentCore expiry remains
+the backstop when an entire pod disappears.
 
-```python
-from browser_client import analyze_url
+Native Chromium handles page networking. The collector does not set offline mode,
+block service workers/WebSockets/popups, rewrite popup targets, intercept requests,
+or replay HTTP through pinned Python sockets. Automatic page requests can include
+POSTs. Downloads are recorded as offers and cancelled; payloads are not executed.
+The analyst's authorized scope and read-only investigation instructions still apply.
+Host scope limits chosen actions, not page-generated requests or redirects.
 
-analysis = analyze_url("https://example.com")
-print(analysis["final_url"], analysis["http_status"])
-```
+AWS documents container/session isolation and automatic TTL termination:
+https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/browser-tool.html
+This does not establish parity with the removed per-request private-address filter.
+The standard AWS-managed browser is used without customer VPC connectivity or a
+custom execution role. Do not claim that every private destination is filtered.
 
-The result contains `session_id`, `final_url`, `http_status`, `page_title`,
-`screenshot_base64`, `visible_text`, `forms`, `orphan_inputs`, `redirects`,
-`frame_navigations`, `downloads`, and `refusals`.
-If the initial navigation becomes a direct download, the broker cancels it and
-returns the bounded download metadata. In that download-only result,
-`http_status` is `0`; page title, screenshot, and visible text are empty; and
-forms and orphan inputs are empty lists.
-
-There is no raw-browser fallback. Direct session lifecycle, `InvokeBrowser`, and
-CDP stream actions are explicitly denied on worker roles. Broker unavailability
-is an environment failure, while a broker HTTP 403 becomes `DestinationRefused`
-with the denylist reason code.
-
-## Trusted broker contract
-
-The broker runs under a distinct service account and permissions boundary. Its
-role permits only session lifecycle and `ConnectBrowserAutomationStream`; it
-does not permit `InvokeBrowser`. Before a page exists, `browser_guard.py`:
-
-1. Resolves and vets the initial target, failing closed.
-2. Starts AgentCore and connects over CDP inside the broker pod.
-3. Creates an offline context with service workers disabled.
-4. Installs HTTP routing and WebSocket refusal before creating a page.
-5. Re-resolves every navigation, redirect, popup, and subresource.
-6. Fetches over a socket pinned to one vetted address with the original Host and
-   TLS SNI, response/time/byte limits, and no browser-network fallback.
-7. Closes the page, context, CDP connection, and AgentCore session before
-   returning the bounded evidence response.
-
-The broker API accepts only capture options. It never returns an AWS credential,
-CDP URL/header, Playwright object, or arbitrary browser command channel.
+`URL_ANALYSIS_BROWSER_MODE=broker` explicitly selects the legacy guarded path for
+old deployments during migration. An old broker URL alone does not select it.
+Native sessions never fall back to the broker. The broker deployment is scaled to
+zero only after existing leases drain and native worker acceptance succeeds.

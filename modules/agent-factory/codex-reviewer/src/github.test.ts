@@ -7,6 +7,24 @@ import {
   GitHubClient,
 } from "./github.js";
 
+test("merge and queue mutations carry the exact reviewed head", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const requests: Array<{ url: string; body: any }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify(String(url).endsWith("/graphql")
+      ? { data: { enqueuePullRequest: { mergeQueueEntry: { id: "entry" } } } }
+      : { merged: true, sha: "c".repeat(40) }));
+  };
+  const github = new GitHubClient("org/repo", async () => "test-token");
+  await github.merge(7, "a".repeat(40), "rebase");
+  await github.enqueue("PR_7", "a".repeat(40), "operation");
+  assert.deepEqual(requests[0]?.body, { sha: "a".repeat(40), merge_method: "rebase" });
+  assert.deepEqual(requests[1]?.body.variables.input,
+    { pullRequestId: "PR_7", expectedHeadOid: "a".repeat(40), clientMutationId: "operation" });
+});
+
 test("review comments identify the exact reviewed head and engine", () => {
   const body = formatReviewComment(
     { verdict: "approve", summary: "Verified.", findings: [], validationGaps: [] },
@@ -107,6 +125,7 @@ test("shared live-fleet diagnostics do not block an otherwise ready merge", asyn
       failing: [],
       pending: [],
       total: 1,
+      observations: [{ name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" }],
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -139,6 +158,7 @@ test("unavailable legacy statuses do not hide accessible check runs", async () =
       failing: [],
       pending: [],
       total: 1,
+      observations: [{ name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" }],
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -264,4 +284,70 @@ test("a same-origin redirect, as GitHub issues for renamed repositories, is acce
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("authentication rejection refreshes reads once and stops on repeated rejection", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const forced: boolean[] = [];
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("Bad credentials", { status: 401 }); };
+  const github = new GitHubClient("org/repo", async force => { forced.push(force === true); return "token"; });
+  await assert.rejects(github.getPullRequest(7), /401/);
+  assert.equal(calls, 2);
+  assert.deepEqual(forced, [false, true]);
+});
+
+test("fresh credentials recover explicit rejection without replaying uncertain mutations", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    if (init?.method === "POST" || (init?.headers as Record<string, string>).authorization === "Bearer old") {
+      if (init?.method === "POST") throw new Error("connection reset after write");
+      return new Response("Bad credentials", { status: 401 });
+    }
+    return Response.json({ number: 7 });
+  };
+  const github = new GitHubClient("org/repo", async force => force ? "fresh" : "old");
+  assert.equal((await github.getPullRequest(7)).number, 7);
+  assert.equal(calls, 2);
+  await assert.rejects(github.comment(7, "review"), /connection reset/);
+  assert.equal(calls, 3);
+});
+
+
+test("explicitly unauthorized mutation can refresh once without changing its payload", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(init?.body);
+    return bodies.length === 1 ? new Response("Bad credentials", { status: 401 }) : Response.json({ merged: true });
+  };
+  const forced: boolean[] = [];
+  const github = new GitHubClient("org/repo", async force => { forced.push(force === true); return "token"; });
+  await github.merge(7, "a".repeat(40), "rebase");
+  assert.deepEqual(forced, [false, true]);
+  assert.equal(bodies[0], bodies[1]);
+});
+
+test('retry context reads recent persisted checklists beyond the first comment page', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const urls: string[] = [];
+  globalThis.fetch = async url => {
+    urls.push(String(url));
+    return new Response(JSON.stringify(String(url).endsWith('page=2') ? [
+      { body: 'Earlier run\n### Task checklist\n\n- ☑ Implement history\n- ☐ Verify integration\n### Agent explanation\nDo not include this.' },
+    ] : [{ body: 'Unrelated comment' }]));
+  };
+  const github = new GitHubClient('org/repo', async () => 'token');
+  assert.deepEqual(await github.taskChecklists(7, 201), [
+    '### Task checklist\n\n- ☑ Implement history\n- ☐ Verify integration',
+  ]);
+  assert.equal(urls.length, 2);
+  assert.ok(urls[0]!.endsWith('page=2'));
+  assert.ok(urls[1]!.endsWith('page=3'));
 });

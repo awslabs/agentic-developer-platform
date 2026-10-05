@@ -395,6 +395,31 @@ async def test_role_change_projects_the_membership(db_session: AsyncSession):
     assert kwargs["member_org_ids"] == ["role-org"]
 
 
+@pytest.mark.parametrize("method", ["channel_placement", "self_asserted", "admin_manual", "admin_attested", "oauth"])
+async def test_role_change_only_projects_membership_through_proven_identity(db_session: AsyncSession, method):
+    from src.admin.service import AdminService
+    from src.shared.models.vault import UserIdentity
+    from src.shared.schemas.admin import UserUpdateRequest
+
+    user = await _linked_user(db_session, "proof-role-org", "60003", role="member")
+    identity = await db_session.scalar(select(UserIdentity).where(UserIdentity.user_id == user.id))
+    identity.verification_method = method
+    await db_session.commit()
+
+    writer = _writer()
+    with patch("src.admin.identity.identity_index_writer.IdentityIndexWriter", return_value=writer):
+        await AdminService(db=db_session).update_user("proof-role-org", user.id, UserUpdateRequest(role="org_admin"))
+
+    # An authorized platform-role edit still changes the real membership, but
+    # does not verify an external account the member has only claimed.
+    membership = await db_session.scalar(select(TenantMembership).where(TenantMembership.user_id == user.id))
+    assert membership.role == "org_admin"
+    assert identity.verification_method == method
+    writer.update_user_membership_orgs.assert_awaited_once_with(
+        provider_user_id="60003", member_org_ids=["proof-role-org"] if method in {"oauth", "admin_attested"} else [], provider="github"
+    )
+
+
 async def test_role_change_that_creates_the_membership_row_projects_it(db_session: AsyncSession):
     """A role change can CREATE the membership (user had none in this tenant),
     so the org list itself changes here — the projection must see the new org."""

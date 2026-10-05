@@ -15,9 +15,10 @@ from .pr_bindings import active_binding_for_node, binding_scope_matches
 DELIVERY_PHASES = frozenset({ExecutionPhase.DEPLOYMENT_PENDING, ExecutionPhase.AWAITING_RUNTIME_VERIFICATION, ExecutionPhase.EVALUATION_PENDING})
 
 
-async def load_delivery_merge(session, *, identity, node):
+async def load_delivery_merge(session, *, identity, node, allow_concluded=False):
     loaded = await load_execution(session, identity=identity)
-    if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None or loaded.record.phase not in DELIVERY_PHASES:
+    phases = DELIVERY_PHASES | ({ExecutionPhase.CONCLUDED} if allow_concluded else set())
+    if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None or loaded.record.phase not in phases:
         raise BootstrapRefusedError("delivery execution unavailable")
     if node.kind != "story" or node.state != "passed" or node.attempts != identity.cycle:
         raise BootstrapRefusedError("delivery requires verified code completion")

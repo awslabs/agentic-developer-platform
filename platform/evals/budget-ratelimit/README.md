@@ -204,7 +204,7 @@ under `root_user`; the previous harness incorrectly conflated those ledgers.
 
 ## Running it
 
-The live suite is called by the [combined nightly regression](../../../docs/runbooks/nightly-cli-regression.md)
+The live suite is called by the [combined nightly regression](../../../docs/regression-testing/nightly-cli-regression.md)
 after onboarding has restored the approval flag. It still supports standalone
 `workflow_dispatch` for diagnosis. The only cron belongs to the parent workflow;
 this reusable child does not schedule itself. All live CLI suites share one lock,

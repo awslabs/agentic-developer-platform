@@ -398,3 +398,13 @@ output "workspace_node_security_group_id" {
   description = "EKS-managed security group attached to workspace managed nodes; source of private STS ingress."
   value       = aws_eks_cluster.workspace.vpc_config[0].cluster_security_group_id
 }
+
+output "workspace_node_group" {
+  description = "Exact applied node-group and launch-template identities for lifecycle verification and read-only recovery."
+  value = {
+    name                    = aws_eks_node_group.default.node_group_name
+    arn                     = aws_eks_node_group.default.arn
+    launch_template_id      = aws_launch_template.node.id
+    launch_template_version = tostring(aws_launch_template.node.latest_version)
+  }
+}

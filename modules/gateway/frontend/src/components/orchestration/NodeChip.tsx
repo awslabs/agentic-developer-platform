@@ -32,6 +32,7 @@ export interface NodeChipProps {
   blockedBy?: string[];
   /** Direct dependencies, including completed steps, for inspecting the plan. */
   dependencies?: GraphNode[];
+  dependencyWaveTitle?: (node: GraphNode) => string;
   /**
    * Decision controls for this node (issue #4213), passed as a slot rather than
    * imported here. This chip stays presentational: it has no permission check, no
@@ -64,7 +65,7 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], dependencies, controls, execution }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTitle, controls, execution }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
@@ -78,7 +79,9 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
     .trim();
 
   // `superseded` and unknown states get no segment in the bar, and no fill here.
-  const style = display ? DISPLAY_STATES[display] : null;
+  const style = node.state === 'waived'
+    ? { label: 'Waived by owner approval', glyph: '↷', fill: '#e5e7eb', text: '#374151' }
+    : display ? DISPLAY_STATES[display] : null;
   const isQueued = display === 'queued';
   const waiting = dependencies?.filter((dependency) => toDisplayState(dependency) !== 'complete') ?? [];
 
@@ -109,7 +112,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
         )}
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {node.kind === 'story' ? 'Story' : node.kind === 'gate' ? 'Approval gate' : 'Evaluation'}
+            {node.kind === 'story' ? 'Implementation story' : node.kind === 'gate' ? 'Approval gate' : node.issue_ref?.trim() ? 'Evaluation story' : 'Evaluation checkpoint'}
           </p>
           <div className="flex items-start gap-2">
             <span className="min-w-0 break-words font-medium text-gray-900 dark:text-gray-100">{node.title}</span>
@@ -128,6 +131,15 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
           {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {node.state === 'waived' && (
+            <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              <p>Independent evaluation was not run.</p>
+              {node.evaluation_waiver && <>
+                <p>{node.evaluation_waiver.reason}</p>
+                <p>Recorded {new Date(node.evaluation_waiver.created_at).toLocaleString()} · Plan v{node.evaluation_waiver.plan_version}</p>
+              </>}
+            </div>
+          )}
           {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
           {resultSummary && !node.binding_hold && !node.delivery_progress && <p className="mt-1 text-sm">{resultSummary}</p>}
@@ -135,7 +147,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
             )}
-            {node.run_id && (
+            {node.run_id && node.kind !== 'story' && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
             )}
 
@@ -180,7 +192,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
                     <li key={dependency.id}>
                       <span className="block font-medium">{dependency.title}</span>
                       <span className="text-gray-500 dark:text-gray-400">
-                        {dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
+                        {dependencyWaveTitle?.(dependency) || dependency.wave_ref} · {dependency.state === 'waived' ? 'Waived by owner approval' : state ? DISPLAY_STATES[state].label : dependency.state}
                       </span>
                     </li>
                   );

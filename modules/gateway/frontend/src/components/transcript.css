@@ -1,0 +1,51 @@
+/* Scoped to saved transcripts: Tailwind's reset does not supply Markdown typography. */
+.transcript-document {
+  --transcript-border: #dbe3ee;
+  --transcript-muted: #526176;
+  --transcript-panel: #f3f6fa;
+  --transcript-accent: #0369a1;
+  color: #1e293b;
+  font-size: .9375rem;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  max-width: 80ch;
+  margin-inline: auto;
+  padding: .5rem 1rem 2rem;
+}
+.transcript-document h1 { font-size: 1.5rem; line-height: 1.35; font-weight: 700; margin: .5rem 0 1rem; }
+.transcript-document h2 { font-size: 1.125rem; font-weight: 650; border-top: 1px solid var(--transcript-border); padding-top: 1.5rem; margin: 2rem 0 1rem; }
+.transcript-document h3 { font-size: .9375rem; font-weight: 650; margin: 1.75rem 0 .65rem; color: var(--transcript-muted); }
+.transcript-document :is(h4, h5, h6) { font-weight: 650; margin: 1rem 0 .5rem; }
+.transcript-section-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; margin-right: .6rem; border-radius: .4rem; background: var(--transcript-panel); color: var(--transcript-accent); font-size: 1rem; vertical-align: middle; }
+.transcript-document p { margin: .75rem 0; }
+.transcript-document :is(ul, ol) { padding-left: 1.6rem; margin: .75rem 0; }
+.transcript-document ul { list-style: disc; }
+.transcript-document ol { list-style: decimal; }
+.transcript-document li { margin: .3rem 0; padding-left: .2rem; }
+.transcript-document li > :is(ul, ol) { margin: .25rem 0; }
+.transcript-document .contains-task-list { list-style: none; padding-left: .25rem; }
+.transcript-document input[type=checkbox] { margin-right: .5rem; }
+.transcript-document a { color: var(--transcript-accent); text-decoration: underline; text-underline-offset: 3px; }
+.transcript-document a:hover { text-decoration-thickness: 2px; }
+.transcript-document :is(a, pre, .transcript-table-scroll):focus-visible { outline: 2px solid var(--transcript-accent); outline-offset: 3px; }
+.transcript-document code { font-size: .85em; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.transcript-document :not(pre) > code { background: var(--transcript-panel); padding: .15rem .35rem; border-radius: .25rem; }
+.transcript-document pre { background: var(--transcript-panel); border: 1px solid var(--transcript-border); border-left: 3px solid var(--transcript-accent); border-radius: .5rem; padding: 1rem; margin: 1rem 0; overflow-x: auto; white-space: pre; line-height: 1.65; }
+.transcript-document pre code { font-size: .8125rem; }
+.transcript-document blockquote { border-left: 3px solid var(--transcript-border); padding: .1rem 1rem; margin: 1rem 0; color: var(--transcript-muted); }
+.transcript-document hr { border: 0; border-top: 1px solid var(--transcript-border); margin: 1.5rem 0; }
+.transcript-table-scroll { overflow-x: auto; margin: 1rem 0; }
+.transcript-document table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+.transcript-document :is(th, td) { border: 1px solid var(--transcript-border); padding: .6rem .8rem; text-align: left; }
+.transcript-document th { background: var(--transcript-panel); font-weight: 650; }
+.transcript-document img { max-width: 100%; height: auto; border-radius: .5rem; }
+.transcript-document .hljs-comment { color: var(--transcript-muted); }
+.transcript-document :is(.hljs-keyword, .hljs-selector-tag, .hljs-title) { color: #7e22ce; }
+.transcript-document :is(.hljs-string, .hljs-attr) { color: #047857; }
+.transcript-document :is(.hljs-number, .hljs-literal) { color: #b45309; }
+@media (prefers-color-scheme: dark) {
+  .transcript-document { --transcript-border: #374151; --transcript-muted: #b6c2d2; --transcript-panel: #1e293b; --transcript-accent: #7dd3fc; color: #e2e8f0; }
+  .transcript-document :is(.hljs-keyword, .hljs-selector-tag, .hljs-title) { color: #d8b4fe; }
+  .transcript-document :is(.hljs-string, .hljs-attr) { color: #6ee7b7; }
+  .transcript-document :is(.hljs-number, .hljs-literal) { color: #fcd34d; }
+}

@@ -1,8 +1,9 @@
-"""Attributed financial increases for a live shared-worker plan.
+"""Attributed financial increases for an accepted worker plan.
 
 The accepted graph and worker assignments remain immutable. An append-only human
 budget decision, bound to that exact plan/hash, supplements only its financial
 limits. It never renews authority or resets the existing reservation accumulators.
+Both protected workers and legacy shared-worker continuations use this receipt.
 """
 
 from __future__ import annotations
@@ -22,6 +23,21 @@ from .state import ActorKind
 
 CONTRACT = "shared-budget-increase/v1"
 KIND = "budget_increased"
+
+
+def accepted_document_hash(document):
+    """Use the same identity as the compiler or continuation that accepted it."""
+    if not isinstance(document, dict):
+        raise BudgetIncreaseError("accepted_document_unverifiable")
+    if document.get("execution_continuation") is not None:
+        return digest(document)
+    from .compile import plan_hash
+    from .proposal import LoopProposal
+
+    try:
+        return plan_hash(LoopProposal.model_validate(document))
+    except ValueError as error:
+        raise BudgetIncreaseError("accepted_document_unverifiable") from error
 
 
 class BudgetIncreaseError(ValueError):
@@ -82,9 +98,6 @@ def apply_limits(policy, limits, decision_id):
 
 async def effective_shared_budget(session, plan, policy):
     """A budget receipt cannot confer authority outside its exact accepted plan."""
-    marker = (plan.plan_document or {}).get("execution_continuation") or {}
-    if marker.get("mode") != "shared_worker_role" or marker.get("contract_version") != 1:
-        return policy
     decision = await session.scalar(
         select(OrchestrationDecision)
         .where(
@@ -107,14 +120,18 @@ async def effective_shared_budget(session, plan, policy):
     if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
         raise BudgetIncreaseError("budget_receipt_unverifiable")
     if data["plan_version"] < plan.version:
-        return policy  # A later graph acceptance does not inherit this supplement.
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data)
+        if plan is None:
+            return policy  # General plan changes still require a fresh approval.
     if (
         decision.actor_kind != "human"
         or decision.actor_role != "platform_admin"
         or not decision.actor_id
         or data.get("contract") != CONTRACT
         or data.get("plan_hash") != plan.plan_hash
-        or plan.plan_hash != digest(plan.plan_document)
+        or plan.plan_hash != accepted_document_hash(plan.plan_document)
         or data.get("original_policy_hash") != policy.policy_hash
         or policy.policy_hash != policy_hash(policy)
         or data.get("principal_id") != policy.principal_id
@@ -135,9 +152,24 @@ async def prepare_increase(session, *, flow_id, actor, request, lock=False):
     flow, plan = await current_plan(session, flow_id=flow_id, actor=actor, lock=lock)
     if plan.version != request.expected_plan_version or plan.plan_hash != request.expected_plan_hash:
         raise BudgetIncreaseError("accepted_plan_changed")
-    if plan.plan_hash != digest(plan.plan_document):
+    if plan.plan_hash != accepted_document_hash(plan.plan_document):
         raise BudgetIncreaseError("accepted_document_hash_changed")
-    inputs, marker = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    marker = (plan.plan_document or {}).get("execution_continuation")
+    if marker is not None:
+        inputs, marker = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+        baseline = Decimal(marker["prior_spend_usd"])
+    else:
+        from .policy_admission import load_in_force_policy
+
+        if flow.state not in {"pending", "running"}:
+            raise BudgetIncreaseError("flow_not_active")
+        acceptance = await session.get(OrchestrationDecision, plan.accepted_by_decision_id) if plan.accepted_by_decision_id else None
+        if acceptance is None or acceptance.org_id != actor.org_id or acceptance.flow_id != flow_id or acceptance.actor_kind != "human":
+            raise BudgetIncreaseError("plan_acceptance_unverifiable")
+        inputs = await load_in_force_policy(session, org_id=actor.org_id, flow_id=flow_id)
+        if inputs.refusal is not None or inputs.policy is None:
+            raise BudgetIncreaseError("accepted_policy_unverifiable")
+        baseline = Decimal(0)
     policy = inputs.policy
     if policy.expires_at <= datetime.now(UTC):
         raise BudgetIncreaseError("policy_expired")
@@ -147,7 +179,7 @@ async def prepare_increase(session, *, flow_id, actor, request, lock=False):
     if request.limits == before:
         raise BudgetIncreaseError("budget_limits_unchanged")
     meter = await read_flow_meter(org_id=actor.org_id, flow_id=flow_id, policy=policy)
-    if meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"]):
+    if meter is None or meter.total_usd < baseline:
         raise BudgetIncreaseError("budget_usage_unavailable")
     document = {
         "contract": CONTRACT,

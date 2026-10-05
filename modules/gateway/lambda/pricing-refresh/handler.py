@@ -29,6 +29,7 @@ from publication import PointerConflictError, RefreshDeferredError, publish, rea
 
 from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS, CATALOG_BASE, SourceValidationError, parse_catalog, parse_model_card
 from pricing_policy.claude_sources import PRICING_PAGE_URL, TOKEN_MAP_URL, parse_claude_pricing
+from pricing_policy.kimi_sources import KIMI_CARD_URL, KIMI_MODEL, parse_kimi_card
 from pricing_policy.policy import load_snapshot
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,8 @@ def fetch_source(url, limit, deadline):
 
 def fetch_rates(templates, deadline, models=None):
     jobs = [("card", model, CARD_BASE + slug + ".md", 1024 * 1024) for model, slug in CARD_SLUGS.items()]
+    if any(row.model_id == KIMI_MODEL for row in templates):
+        jobs.append(("kimi_card", KIMI_MODEL, KIMI_CARD_URL, 1024 * 1024))
     regions = sorted({row.region for row in templates if ".gpt-oss-" in row.model_id})
     jobs.extend(("catalog", region, CATALOG_BASE + "/" + region + "/index.json", 10 * 1024 * 1024) for region in regions)
     if any(row.model_id.startswith("anthropic.") for row in templates):
@@ -149,7 +152,9 @@ def fetch_rates(templates, deadline, models=None):
                 continue
             try:
                 rows = (
-                    parse_model_card(content, identity, templates, source_url=url, verified_at=verified_at)
+                    parse_kimi_card(content, templates, verified_at=verified_at)
+                    if kind == "kimi_card"
+                    else parse_model_card(content, identity, templates, source_url=url, verified_at=verified_at)
                     if kind == "card"
                     else parse_catalog(content, identity, source_url=url, verified_at=verified_at)
                 )
@@ -181,6 +186,8 @@ def handler(event, context):
     forbidden = {"required_variants", "manifest", "retirements", "retirement_list", "bundled_required", "sources", "source_urls", "rates"}
     if not isinstance(event, dict) or forbidden.intersection(event):
         raise ValueError("invocation payload cannot override trusted pricing coverage or sources")
+    if "report_partial" in event and type(event["report_partial"]) is not bool:
+        raise ValueError("report_partial must be a boolean")
     emit_metrics({"PricingRefreshAttempt": 1})
     try:
         with get_db_connection() as conn:
@@ -219,7 +226,7 @@ def handler(event, context):
             len(candidate.retained_keys),
             failures,
         )
-        if partial:
+        if partial and not event.get("report_partial", False):
             raise PartialRefreshError(
                 f"generation {generation} committed with {len(candidate.retained_keys)} retained variants; failed sources={failures}"
             )
@@ -229,6 +236,11 @@ def handler(event, context):
             "pointer_revision": revision,
             "variants": len(candidate.rows),
             "content_sha256": candidate.content_sha256,
+            "partial": partial,
+            "retained_variants": len(candidate.retained_keys),
+            "fresh_variants": len(candidate.fresh_keys),
+            "failed_sources": list(failures),
+            "retained_models": sorted({key[0] for key in candidate.retained_keys}),
         }
     except RefreshDeferredError as exc:
         emit_metrics({"PricingRefreshDeferred": 1})

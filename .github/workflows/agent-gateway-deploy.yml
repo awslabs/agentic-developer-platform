@@ -14,6 +14,13 @@ on:
     paths:
       - 'modules/agent-factory/gateway/lambdas/**'
       - '.github/workflows/agent-gateway-deploy.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:
@@ -53,12 +60,31 @@ jobs:
   deploy-lambdas:
     name: Deploy Ingest + Response Lambdas (Terraform)
     runs-on: arc-runner-org
+    environment: adp-deploy-dev
     needs: changes
-    if: needs.changes.outputs.lambdas == 'true'
+    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.lambdas == 'true')
     # Runner has AWS creds via IRSA (adp-dev-agent-runner-role).
+
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config

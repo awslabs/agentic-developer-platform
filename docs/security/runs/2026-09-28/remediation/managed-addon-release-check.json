@@ -1,0 +1,25 @@
+{
+  "checked_at": "2026-09-28T18:17:19.038004+00:00",
+  "account": "000000000101",
+  "cluster": "adp-dev-eks-cluster",
+  "kubernetes_version": "1.35",
+  "read_only": true,
+  "source": "EKS DescribeAddon and DescribeAddonVersions filtered to Kubernetes 1.35",
+  "addons": [
+    {
+      "name": "amazon-cloudwatch-observability",
+      "installed": "v6.7.0-eksbuild.1",
+      "newest_compatible_returned": "v6.7.0-eksbuild.1",
+      "status": "ACTIVE",
+      "health_issues": []
+    },
+    {
+      "name": "aws-mountpoint-s3-csi-driver",
+      "installed": "v2.8.0-eksbuild.1",
+      "newest_compatible_returned": "v2.8.0-eksbuild.1",
+      "status": "ACTIVE",
+      "health_issues": []
+    }
+  ],
+  "conclusion": "No newer compatible managed addon version returned. Existing High image matches remain open."
+}

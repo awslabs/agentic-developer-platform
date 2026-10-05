@@ -109,7 +109,7 @@ def make_evidence(
     canonical_model_id: str = DEFAULT_MODEL_ID,
     outcome: str = "proven",
     compatibility_class: str = "claude-agent-sdk",
-    harness_contract_revision: str = "0.3.220",
+    harness_contract_revision: str = "0.3.283",
     request_shape_sha256: str | None = None,
     error_code: str | None = None,
     provider_request_id: str | None = "req-12345",

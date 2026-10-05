@@ -254,7 +254,7 @@ use controlled provider fixtures, not other users' live credentials.
 The infrastructure follow-up renders the actual Terraform policy expressions
 with fixture resource ARNs. Local Terraform validation and boundary/manifest
 checks are separate from live acceptance. Read-only IAM custom-policy simulation
-in account `879318057152` verified 16 action/resource cases against the boundary
+in account `000000000101` verified 16 action/resource cases against the boundary
 even with an additional administrator identity policy. The concrete CloudWatch
 log-stream case returned implicitDeny; a standalone logs:PutLogEvents policy with
 Resource `*` produced the same result. This remains a simulator limitation or

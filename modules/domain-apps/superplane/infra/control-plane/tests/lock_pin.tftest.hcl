@@ -30,6 +30,9 @@
 # both in the same change is the intended cost.
 
 mock_provider "aws" {
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock-build" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
@@ -57,8 +60,11 @@ override_data {
   target = data.terraform_remote_state.platform
   values = {
     outputs = {
-      eks_oidc_provider_arn = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
-      eks_oidc_issuer       = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      eks_oidc_provider_arn          = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      eks_oidc_issuer                = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
+      gateway_service_irsa_role_name = "adp-dev-role-gateway-service"
+      codebuild_boundary_arn         = "arn:aws:iam::111122223333:policy/adp-dev-codebuild-boundary"
+      security_scans_bucket_name     = "adp-dev-security-scans"
     }
   }
 }
@@ -68,7 +74,7 @@ run "the_published_skypilot_reference_is_digest_pinned" {
 
   # The digest U2's lock pins for skypilot-api, restated on purpose — see the header.
   assert {
-    condition     = local.skypilot_digest == "sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+    condition     = local.skypilot_digest == "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4"
     error_message = "the module must publish the digest the lock pins for skypilot-api. If the lock was intentionally re-pinned, update this expected value in the same change — that is what makes a silent re-pin impossible."
   }
 
@@ -165,5 +171,25 @@ run "no_image_reference_is_published_for_a_pending_image" {
       value if can(regex("superplane-(api|controller|platform-monitor)(:|@)", value))
     ]) == 0
     error_message = "no parameter may publish an image reference for one of the three pending Superplane images. The lock pins no digest for them (blocked by source_access), so any such reference would be either a fabricated pin or a floating tag."
+  }
+}
+
+run "skypilot_tagged_rollback_images_do_not_expire" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for rule in jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-skypilot"].policy).rules :
+      rule.selection.tagStatus == "untagged"
+    ])
+    error_message = "SkyPilot tagged release and rollback images must never match an expiration rule."
+  }
+  assert {
+    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-skypilot"].policy).rules) == 1
+    error_message = "Retain the bounded untagged-image cleanup policy."
+  }
+  assert {
+    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-api"].policy).rules) == 2
+    error_message = "The SkyPilot exception must not remove other repositories' retention limits."
   }
 }

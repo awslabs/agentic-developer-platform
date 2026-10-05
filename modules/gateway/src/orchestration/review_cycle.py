@@ -48,7 +48,28 @@ class CycleBlockedError(Exception):
 
 
 def block(reason: str, code: BlockCode = BlockCode.DEPENDENCY_UNSATISFIED) -> BlockRecord:
-    return BlockRecord(code=code, owner="orchestration-owner", required_input=f"Resolve review cycle condition: {reason}", detail=reason)
+    required_input = {
+        "worker_dispatch_unpublished": (
+            "Worker dispatch has no protected execution record. The engine will replay a saved dispatch; "
+            "historical assignments without one require recovery."
+        ),
+        "worker_start_pending": (
+            "The assignment is prepared but no worker has acknowledged startup. "
+            "The engine will replay the same assignment within its accepted bounds."
+        ),
+        "shared_worker_continuation_disabled": (
+            "The accepted flow uses shared workers, but that transport is disabled. "
+            "Have the platform operator restore the approved transport or migrate the flow before resuming."
+        ),
+        "protected_authority_required": "Have the platform operator restore protected execution support before resuming this flow.",
+        "continuation_mode_unrecognized": "Reconcile the accepted continuation contract; no alternate authority mode will be selected.",
+    }.get(reason, f"Resolve review cycle condition: {reason}")
+    return BlockRecord(
+        code=code,
+        owner="engine" if reason in {"worker_dispatch_unpublished", "worker_start_pending"} else "orchestration-owner",
+        required_input=required_input,
+        detail=required_input if reason in {"worker_dispatch_unpublished", "worker_start_pending"} else reason,
+    )
 
 
 @dataclass(frozen=True)
@@ -58,10 +79,6 @@ class CycleObservation(HandlerObservation):
 
 class ReviewCycleHandler:
     def __init__(self, factory, services=None):
-        if services is None:
-            from .review_cycle_dispatch import cycle_services
-
-            services = cycle_services(factory)
         self.factory, self.services = factory, services
 
     async def observe(self, context: RunnerContext) -> HandlerObservation:
@@ -75,6 +92,9 @@ class ReviewCycleHandler:
             return CycleObservation(ObservationKind.BLOCKED, block=block("review_cycle_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
 
     async def _observe(self, context):
+        from .review_cycle_dispatch import cycle_services
+
+        services = self.services or await cycle_services(self.factory, context)
         async with self.factory() as session:
             loaded = await load_execution(session, identity=context.identity)
             if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None:
@@ -86,7 +106,7 @@ class ReviewCycleHandler:
                 raise CycleBlockedError("outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
             binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
             if binding is None:
-                if not await self.services.development_complete(context, node):
+                if not await services.development_complete(context, node):
                     return CycleObservation(ObservationKind.WAITING, detail="Development is still producing its bound PR.")
                 raise CycleBlockedError("implementation_pr_missing", BlockCode.HUMAN_INPUT_REQUIRED)
             if not binding_scope_matches(binding, node):
@@ -112,20 +132,54 @@ class ReviewCycleHandler:
             # Resolve every policy/claim/grant before a provider read, and again at
             # dispatch. No cached decision licenses a new worker.
             if pending is not None:
-                return await self.services.observe_dispatch(context, pending)
-            recover = getattr(self.services, "recovery_snapshot", None)
+                return await services.observe_dispatch(context, pending)
+            if dispatches:
+                from .review_assignment import reviewer_owns_delivery
+                from .review_cycle_dispatch import continuation_run_id
+
+                if await reviewer_owns_delivery(
+                    session, org_id=node.org_id, node_id=node.id, run_id=continuation_run_id(dispatches[-1].operation_key)
+                ):
+                    head = await services.head(binding)
+                    for evidence in reversed(rows):
+                        data = evidence.detail or {}
+                        cycle = json.loads(data.get("cycle_input", "{}"))
+                        if (
+                            evidence.kind == "review_evidence"
+                            and evidence.status == "succeeded"
+                            and data.get("reviewed_head_sha") == head
+                            and data.get("complete_review") == "true"
+                            and data.get("publication_outstanding") != "true"
+                            and cycle.get("reviewer_run_id") == continuation_run_id(dispatches[-1].operation_key)
+                            and cycle.get("author_run_id") == dispatches[-1].detail.get("author_run_id")
+                        ):
+                            # Observe delivery as soon as review evidence exists.
+                            # A missing terminal report after merge must not cause
+                            # another reviewer to be scheduled.
+                            return CycleObservation(
+                                ObservationKind.SUCCEEDED,
+                                snapshot={
+                                    "merge_ready": True,
+                                    "binding_id": binding.id,
+                                    "binding_revision": binding.revision,
+                                    "accepted_scope": binding.accepted_scope,
+                                    "head_sha": head,
+                                },
+                                receipt_ref=evidence.receipt_ref,
+                            )
+            recover = getattr(services, "recovery_snapshot", None)
             recovered = await recover(session, context, node, binding, dispatches) if recover else None
             if recovered is not None:
-                waiting = await self.services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
+                waiting = await services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
                 return waiting or CycleObservation(ObservationKind.READY, snapshot=recovered)
-            facts = await self.services.facts(session, context, node, binding, dispatches)
+            facts = await services.facts(session, context, node, binding, dispatches)
             if not facts["worker_complete"]:
                 return CycleObservation(ObservationKind.WAITING, detail="Waiting for the current protected worker to finish.")
             if not dispatches:
                 from .results import _delivery_receipt
 
                 receipt = await _delivery_receipt(session, node=node, lock=False)
-                shared_handoff = getattr(self.services, "has_delivery_handoff", None)
+                shared_handoff = getattr(services, "has_delivery_handoff", None)
                 if receipt is None and not (shared_handoff and await shared_handoff(session, context, node)):
                     raise CycleBlockedError("development_handoff_missing")
             snapshot = {
@@ -142,14 +196,35 @@ class ReviewCycleHandler:
             latest = dispatches[-1] if dispatches else None
             repairs = [row for row in rows if row.kind == "merge_repair_request" and row.status == "succeeded"]
             repair_request = repairs[-1] if repairs else None
-            if repair_request is not None and (latest is None or repair_request.created_at > latest.created_at):
+            if latest is not None and facts.get("review_retry_of"):
+                from .review_assignment import reviewer_owns_delivery
+
+                if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=facts["active_run_id"]):
+                    for evidence in rows:
+                        if evidence.kind != "review_evidence" or evidence.status != "succeeded":
+                            continue
+                        data = evidence.detail or {}
+                        try:
+                            reviewed = json.loads(data.get("cycle_input", "{}"))
+                        except (TypeError, ValueError):
+                            continue
+                        if reviewed.get("reviewer_run_id") == facts["active_run_id"] and data.get("reviewed_head_sha") == facts["head_sha"]:
+                            raise CycleBlockedError("reviewer_delivery_blocked", BlockCode.HUMAN_INPUT_REQUIRED)
+            if latest is not None and facts["active_run_id"] in {facts.get("bootstrap_retry_of"), facts.get("review_retry_of")}:
+                # Retry a terminal failure with remaining allowance through a new
+                # durable action, retaining its PR, author, findings and allowance.
+                snapshot.update(next_action=latest.detail["action"], author_run_id=latest.detail["author_run_id"])
+                for key in ("findings", "review_artifact"):
+                    if key in latest.detail:
+                        snapshot[key] = latest.detail[key]
+            elif repair_request is not None and (latest is None or repair_request.created_at > latest.created_at):
                 snapshot.update(
                     next_action=Action.REPAIR.value,
                     findings=[{"summary": repair_request.detail["reason"], "source": "merge-controller"}],
                     review_artifact=repair_request.receipt_ref,
                     author_run_id=latest.detail["author_run_id"] if latest else facts["active_run_id"],
                 )
-            elif latest is None or latest.detail.get("action") == Action.REPAIR.value:
+            elif latest is None:
                 snapshot["next_action"] = Action.REVIEW.value
                 snapshot["author_run_id"] = facts["active_run_id"]
             else:
@@ -167,9 +242,14 @@ class ReviewCycleHandler:
                     if item.get("reviewer_run_id") == facts["active_run_id"] and item.get("author_run_id") == latest.detail.get("author_run_id"):
                         matching.append((row, item))
                 if not matching:
+                    # Older author-only repairs have no review receipt. A new
+                    # reviewer-owned repair supplies its own exact-head evidence
+                    # and proceeds through the same merge-ready path below.
+                    if latest.detail.get("action") == Action.REPAIR.value:
+                        snapshot.update(next_action=Action.REVIEW.value, author_run_id=facts["active_run_id"])
                     # A push invalidates the prior approval; it requires another
                     # exact-head review, never a repair based on stale findings.
-                    if latest.detail.get("head_sha") != facts["head_sha"]:
+                    elif latest.detail.get("head_sha") != facts["head_sha"]:
                         snapshot.update(next_action=Action.REVIEW.value, author_run_id=latest.detail["author_run_id"])
                     else:
                         raise CycleBlockedError("fresh_verified_review_missing")
@@ -177,7 +257,7 @@ class ReviewCycleHandler:
                     review, data = max(matching, key=lambda pair: pair[1].get("observed_at", ""))
                     if review.detail.get("complete_review") == "true":
                         # Observe authority/head again before the pure phase move.
-                        await self.services.recheck(session, context, node, binding, facts)
+                        await services.recheck(session, context, node, binding, facts)
                         return CycleObservation(
                             ObservationKind.SUCCEEDED,
                             snapshot={**snapshot, "merge_ready": True},
@@ -186,6 +266,12 @@ class ReviewCycleHandler:
                         )
                     if review.detail.get("publication_outstanding") == "true":
                         raise CycleBlockedError("review_publication_outstanding")
+                    from .review_assignment import reviewer_owns_delivery
+
+                    if await reviewer_owns_delivery(session, org_id=node.org_id, node_id=node.id, run_id=facts["active_run_id"]):
+                        # This reviewer already owned repair. An explicit blocker
+                        # is not permission to dispatch the same work again.
+                        raise CycleBlockedError("reviewer_delivery_blocked", BlockCode.HUMAN_INPUT_REQUIRED)
                     findings = data.get("findings")
                     if not isinstance(findings, list) or not findings or data.get("blocked"):
                         raise CycleBlockedError("review_inconclusive")
@@ -195,8 +281,10 @@ class ReviewCycleHandler:
                         review_artifact=review.artifact_ref,
                         author_run_id=latest.detail["author_run_id"],
                     )
-            await self.services.recheck(session, context, node, binding, facts)
-            readiness = getattr(self.services, "dispatch_readiness", None)
+            if snapshot["next_action"] == Action.REPAIR.value:
+                snapshot["remaining_attempts"] = facts.get("remaining_repair_attempts", facts["remaining_attempts"])
+            await services.recheck(session, context, node, binding, facts)
+            readiness = getattr(services, "dispatch_readiness", None)
             if readiness is not None:
                 waiting = await readiness(session, context, node, binding, facts["active_run_id"], Action(snapshot["next_action"]))
                 if waiting is not None:
@@ -265,7 +353,14 @@ class ReviewCycleHandler:
         )
 
     async def perform(self, context, effect):
-        return await self.services.dispatch(context, effect)
+        from .execution_runner import EffectOutcome, EffectResult
+        from .review_cycle_dispatch import cycle_services
+
+        try:
+            services = self.services or await cycle_services(self.factory, context)
+        except CycleBlockedError as error:
+            return EffectResult(EffectOutcome.UNCERTAIN, detail=error.reason)
+        return await services.dispatch(context, effect)
 
 
 def handlers(factory):

@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from src.admin.persona_models import catalogue_service, dispatch_selection, service
+from src.admin.persona_models import catalogue_service, service
+from src.agentauth import launch_configuration as dispatch_selection
 from src.internal import persona_model_selection
 from src.shared.database import get_db
 from src.shared.models.organization import User
@@ -122,8 +123,8 @@ async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped, select
     assert denied.reason == "not_permitted"
 
 
-@pytest.mark.parametrize("flag,value", [("PERSONA_MODEL_MAPPING_ENABLED", "false"), ("AGENT_AUTHORITY_ENABLED", "true")])
-async def test_disabled_or_protected_path_is_unchanged(mapped, monkeypatch, flag, value):
+@pytest.mark.parametrize("flag,value", [("PERSONA_MODEL_MAPPING_ENABLED", "false")])
+async def test_disabled_path_is_unchanged(mapped, monkeypatch, flag, value):
     monkeypatch.setenv(flag, value)
     original = envelope()
     assert await dispatch_selection.apply_dispatch_selection(mapped, original) is original
@@ -154,3 +155,49 @@ async def test_producer_endpoint_binds_entire_request_and_rejects_unauthenticate
         assert proof.call_args.kwargs["allowed_roles"] == {"arn:aws:iam::123456789012:role/ingress"}
         extra = await client.post("/internal/v1/agent/persona-model/resolve", json={**body, "allowed_models": ["*"]})
         assert extra.status_code == 422
+
+
+async def test_protected_dispatch_preserves_authorized_saved_selection(mapped, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    selected = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    assert selected["model_resolved"] == HAIKU
+    assert selected["model_selection"]["principal_id"] == "human-root"
+
+
+@pytest.mark.parametrize("protected", ["true", "false"])
+async def test_engine_launch_and_individual_trigger_resolve_identically(mapped, monkeypatch, protected):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", protected)
+    engine = await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-a", user_id="root-sub", persona="developer")
+    individual = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    assert engine == {key: individual[key] for key in ("model_selection", "model_resolved")}
+    assert engine["model_resolved"] == HAIKU
+
+
+async def test_engine_launch_refuses_invalid_configuration(mapped):
+    with pytest.raises(service.PreferenceRejectedError):
+        await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-b", user_id="root-sub", persona="developer")
+
+
+async def test_platform_persona_default_is_below_user_and_direct_choices(mapped):
+    from src.shared.models.persona_models import PersonaPlatformDefault
+
+    opus = "global.anthropic.claude-opus-5"
+    for persona in ("reviewer", "developer"):
+        mapped.add(
+            PersonaPlatformDefault(
+                persona_key=persona, compatibility_class="claude-agent-sdk", harness_contract_revision="0.3.283", canonical_model_id=opus, revision=1
+            )
+        )
+    await mapped.commit()
+    reviewer = await dispatch_selection.apply_dispatch_selection(mapped, envelope("reviewer"))
+    developer = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    explicit = await dispatch_selection.apply_dispatch_selection(mapped, {**envelope("reviewer"), "model_requested": SONNET})
+    assert reviewer["model_resolved"] == opus
+    assert developer["model_resolved"] == HAIKU
+    assert explicit["model_resolved"] == SONNET
+    row = await mapped.get(PersonaPlatformDefault, "reviewer")
+    row.canonical_model_id = None
+    await mapped.commit()
+    reset = await dispatch_selection.apply_dispatch_selection(mapped, envelope("reviewer"))
+    assert reset["model_resolved"] == SONNET
+    assert reviewer["model_resolved"] == opus

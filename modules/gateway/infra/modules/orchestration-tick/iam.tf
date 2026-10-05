@@ -12,7 +12,8 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 resource "aws_iam_role" "tick" {
-  name = "${local.tick_name}-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.tick_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -205,6 +206,19 @@ resource "aws_iam_role_policy" "tick" {
           ]
           Condition = {
             "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["orch:*"] }
+          }
+        },
+        {
+          # Recovery reads the exact committed run/arrival key consistently.
+          # Continuation IDs are UUIDs; initial engine run IDs use orch:.
+          Sid      = "EngineRecoveryReads"
+          Effect   = "Allow"
+          Action   = ["dynamodb:GetItem"]
+          Resource = ["arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${var.webhook_events_table_name}"]
+          Condition = {
+            "ForAllValues:StringLike" = {
+              "dynamodb:LeadingKeys" = ["orch:*", "????????-????-????-????-????????????"]
+            }
           }
         }
       ] : [],

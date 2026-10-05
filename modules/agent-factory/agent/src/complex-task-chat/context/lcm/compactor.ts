@@ -20,26 +20,27 @@ export interface CompactionResult {
  * exceed leafChunkTokens.
  */
 export async function maybeCompact(
-  store: ContextStore,
+  store: Pick<ContextStore, 'readContextItems' | 'getMessagesByIds' | 'replaceRangeWithSummary'>,
   sessionId: string,
   summarizer: Summarizer,
   tokens: TokenEstimator,
   config: LcmConfig,
   log: (msg: string) => void = console.log,
+  maxItems = Number.POSITIVE_INFINITY,
 ): Promise<CompactionResult> {
   const items = await store.readContextItems(sessionId);
   if (items.length === 0) return { triggered: false };
 
   // Find oldest contiguous raw messages outside the fresh tail
-  const candidate = findCompactionCandidate(items, config.freshTailCount);
-  if (!candidate || candidate.length === 0) return { triggered: false };
+  const eligible = findCompactionCandidate(items, config.freshTailCount);
+  if (eligible.length === 0) return { triggered: false };
 
   // Prefer token counts joined from the item row (written in recordTurn).
   // Fallback: fetch the backing messages once and use their real stored tokens.
-  const missingTokens = candidate.some(it => typeof it.tokens !== 'number');
+  const missingTokens = eligible.some(it => typeof it.tokens !== 'number');
   let messagesById: Map<string, StoredMessage> | null = null;
   if (missingTokens) {
-    const ids = candidate.map(i => i.ref);
+    const ids = eligible.map(i => i.ref);
     const msgs = await store.getMessagesByIds(sessionId, ids);
     messagesById = new Map<string, StoredMessage>();
     for (let i = 0; i < ids.length && i < msgs.length; i++) {
@@ -53,8 +54,10 @@ export async function maybeCompact(
     return m ? m.tokens : 0;
   };
 
-  const totalTokens = candidate.reduce((sum, it) => sum + tokenFor(it), 0);
-  if (totalTokens < config.leafChunkTokens) return { triggered: false };
+  if (eligible.reduce((sum, item) => sum + tokenFor(item), 0) < config.leafChunkTokens) return { triggered: false };
+  const candidate = eligible.slice(0, maxItems);
+  if (candidate.length === 0) return { triggered: false };
+  const totalTokens = candidate.reduce((sum, item) => sum + tokenFor(item), 0);
 
   log(`[compactor] Compacting ${candidate.length} items (${totalTokens} tokens) for session ${sessionId}`);
 

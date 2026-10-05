@@ -1,6 +1,6 @@
 // Package management reconciles durable registrations without acquiring cloud
-// spending authority. Workspace execution is a separate, currently unavailable
-// capability; a healthy management loop must never imply that capability exists.
+// spending authority. Workspace execution requires a separately authenticated
+// shared executor and a current registration; idle health is not workspace readiness.
 package management
 
 import (
@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,13 +25,23 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Target struct {
-	WorkspaceID     string `json:"workspace_id"`
-	ClusterID       string `json:"cluster_id"`
-	Namespace       string `json:"namespace"`
-	WorkspaceStatus string `json:"workspace_status"`
-	ClusterStatus   string `json:"cluster_status"`
-	ClusterARN      string `json:"cluster_arn"`
-	Endpoint        string `json:"endpoint"`
+	SharedMembership     bool                  `json:"shared_membership,omitempty"`
+	PlatformEligible     bool                  `json:"platform_eligible,omitempty"`
+	MembershipCredential *MembershipCredential `json:"membership_credential,omitempty"`
+	Provisional          bool                  `json:"provisional,omitempty"`
+	BootstrapOperationID string                `json:"bootstrap_operation_id,omitempty"`
+	RegistrationClaim    string                `json:"registration_claim,omitempty"`
+	ExecutionOrgID       string                `json:"execution_org_id"`
+	WorkspaceID          string                `json:"workspace_id"`
+	ClusterID            string                `json:"cluster_id"`
+	Namespace            string                `json:"namespace"`
+	WorkspaceStatus      string                `json:"workspace_status"`
+	ClusterStatus        string                `json:"cluster_status"`
+	ClusterARN           string                `json:"cluster_arn"`
+	Endpoint             string                `json:"endpoint"`
+	Assignments          []Assignment          `json:"execution_assignments,omitempty"`
+	Reports              []json.RawMessage     `json:"execution_reports,omitempty"`
+	ProviderObservations []ProviderObservation `json:"provider_observations,omitempty"`
 }
 
 type registry struct {
@@ -42,33 +53,59 @@ type registry struct {
 	GovernedProvisioning bool      `json:"governed_provisioning"`
 }
 
+type BootstrapObservation struct {
+	MembershipCredential *MembershipCredential `json:"membership_credential,omitempty"`
+	BootstrapOperationID string                `json:"bootstrap_operation_id"`
+	RegistrationClaim    string                `json:"registration_claim"`
+	ClusterARN           string                `json:"cluster_arn"`
+	Namespace            string                `json:"namespace"`
+}
+
 type Snapshot struct {
-	Mode                 string            `json:"mode"`
-	RegistryReady        bool              `json:"registry_ready"`
-	LastReconciled       time.Time         `json:"last_reconciled"`
-	LeaseExpiresAt       time.Time         `json:"lease_expires_at"`
-	Targets              map[string]string `json:"targets"`
-	GovernedProvisioning bool              `json:"governed_provisioning"`
+	InstanceID            string                          `json:"instance_id"`
+	FenceToken            int64                           `json:"fence_token"`
+	BootstrapObservations map[string]BootstrapObservation `json:"bootstrap_observations"`
+	Mode                  string                          `json:"mode"`
+	RegistryReady         bool                            `json:"registry_ready"`
+	LastReconciled        time.Time                       `json:"last_reconciled"`
+	LeaseExpiresAt        time.Time                       `json:"lease_expires_at"`
+	Targets               map[string]string               `json:"targets"`
+	GovernedProvisioning  bool                            `json:"governed_provisioning"`
+	ExecutionSupported    bool                            `json:"governed_execution_supported"`
+	Executions            map[string]string               `json:"executions"`
+	Reports               map[string][]json.RawMessage    `json:"execution_reports"`
 }
 
 type Config struct {
-	APIURL                  string
-	OrgID                   string
-	CredentialFile          string
-	WorkspaceCredentialsDir string
-	ManagementAPIServer     string
+	APIURL                    string
+	OrgID                     string
+	CredentialFile            string
+	WorkspaceCredentialsDir   string
+	ManagementAPIServer       string
+	EnableExecution           bool
+	ExecutionSocket           string
+	ExecutionCredentialsDir   string
+	InstanceFile              string
+	ObservationCredentialsDir string
 }
 
 type Manager struct {
-	config     Config
-	instanceID string
-	client     *http.Client
-	mu         sync.RWMutex
-	snapshot   Snapshot
-	inspect    func(context.Context, Target) string
+	config          Config
+	instanceID      string
+	client          *http.Client
+	mu              sync.RWMutex
+	targets         map[string]Target
+	snapshot        Snapshot
+	inspect         func(context.Context, Target) string
+	reconcileMu     sync.Mutex
+	workers         map[string]*executionWorker
+	executionClient func(Assignment) (stepExecutor, error)
 }
 
 func New(config Config) (*Manager, error) {
+	if config.EnableExecution && (!filepath.IsAbs(config.ExecutionSocket) || !filepath.IsAbs(config.ExecutionCredentialsDir) || !filepath.IsAbs(config.InstanceFile)) {
+		return nil, errors.New("governed execution requires explicit trusted socket and token mount paths")
+	}
 	u, err := url.Parse(config.APIURL)
 	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.Host == "" {
 		return nil, errors.New("an explicit control-plane API origin is required")
@@ -99,9 +136,30 @@ func New(config Config) (*Manager, error) {
 	transport.Proxy = nil
 	m := &Manager{
 		config:     config,
+		workers:    map[string]*executionWorker{},
 		instanceID: h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:],
 		client:     &http.Client{Timeout: 20 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		snapshot:   Snapshot{Mode: "management", Targets: map[string]string{}},
+		snapshot:   Snapshot{Mode: "management", ExecutionSupported: true, Targets: map[string]string{}},
+	}
+	if config.EnableExecution {
+		// Pod-private volume: only this controller writes its random instance ID;
+		// the trusted sidecar reads it and binds tokens to this registry owner.
+		temporary, err := os.CreateTemp(filepath.Dir(config.InstanceFile), ".instance-*")
+		if err != nil {
+			return nil, errors.New("controller instance mount unavailable")
+		}
+		name := temporary.Name()
+		defer os.Remove(name)
+		if _, err = temporary.WriteString(m.instanceID); err == nil {
+			err = temporary.Chmod(0640)
+		}
+		closeErr := temporary.Close()
+		if err != nil || closeErr != nil {
+			return nil, errors.New("controller instance publication failed")
+		}
+		if err := os.Rename(name, config.InstanceFile); err != nil {
+			return nil, errors.New("controller instance publication failed")
+		}
 	}
 	m.inspect = m.inspectTarget
 	return m, nil
@@ -116,11 +174,20 @@ func (m *Manager) credential() ([]byte, error) {
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			m.stopExecutions()
+		}
+	}()
 	// Clear readiness before the request. An expired/revoked credential or a
 	// failed registry read cannot retain the previous successful ready state.
 	m.mu.Lock()
 	m.snapshot.RegistryReady = false
 	m.snapshot.Targets = map[string]string{}
+	m.snapshot.BootstrapObservations = map[string]BootstrapObservation{}
 	m.mu.Unlock()
 	credential, err := m.credential()
 	if err != nil {
@@ -146,10 +213,16 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return errors.New("invalid registry response size")
 	}
 	var result registry
-	if json.Unmarshal(data, &result) != nil || result.Version != 1 || result.OrgID != m.config.OrgID || result.FenceToken < 1 || result.Targets == nil || result.GovernedProvisioning || !result.LeaseExpiresAt.After(time.Now()) || result.LeaseExpiresAt.After(time.Now().Add(time.Minute)) {
+	if json.Unmarshal(data, &result) != nil || result.Version != 1 || result.OrgID != m.config.OrgID || result.FenceToken < 1 || result.Targets == nil || !result.LeaseExpiresAt.After(time.Now()) || result.LeaseExpiresAt.After(time.Now().Add(time.Minute)) || !m.validateAssignments(result.Targets) {
 		return errors.New("registry contract mismatch")
 	}
-	snapshot := Snapshot{Mode: "management", RegistryReady: true, LastReconciled: time.Now().UTC(), LeaseExpiresAt: result.LeaseExpiresAt, Targets: map[string]string{}}
+	snapshot := Snapshot{InstanceID: m.instanceID, FenceToken: result.FenceToken, BootstrapObservations: map[string]BootstrapObservation{}, Mode: "management", ExecutionSupported: true, RegistryReady: true, LastReconciled: time.Now().UTC(), LeaseExpiresAt: result.LeaseExpiresAt, Targets: map[string]string{}}
+	snapshot.Reports = map[string][]json.RawMessage{}
+	if m.config.EnableExecution {
+		snapshot.Mode = "governed"
+		snapshot.ExecutionSupported = true
+		snapshot.GovernedProvisioning = result.GovernedProvisioning
+	}
 	for _, target := range result.Targets {
 		if !uuidPattern.MatchString(target.WorkspaceID) {
 			return errors.New("invalid registry identity")
@@ -158,6 +231,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			return errors.New("duplicate registry identity")
 		}
 		snapshot.Targets[target.WorkspaceID] = "pending"
+		snapshot.Reports[target.WorkspaceID] = target.Reports
 	}
 	// All probes are reads. Bound each probe and the entire reconcile to the
 	// current lease. There is intentionally no provider client in this package.
@@ -165,13 +239,25 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	defer cancel()
 	for _, target := range result.Targets {
 		snapshot.Targets[target.WorkspaceID] = m.inspect(probeCtx, target)
+		if snapshot.Targets[target.WorkspaceID] == "observed_execution_unavailable" && target.Provisional {
+			snapshot.BootstrapObservations[target.WorkspaceID] = BootstrapObservation{BootstrapOperationID: target.BootstrapOperationID, RegistrationClaim: target.RegistrationClaim, ClusterARN: target.ClusterARN, Namespace: target.Namespace, MembershipCredential: target.MembershipCredential}
+		}
+		if snapshot.Targets[target.WorkspaceID] == "observed_execution_unavailable" && !target.Provisional && snapshot.GovernedProvisioning {
+			snapshot.Targets[target.WorkspaceID] = "workspace_verified"
+		}
 	}
 	if probeCtx.Err() != nil {
 		return errors.New("registry lease expired during inspection")
 	}
 	m.mu.Lock()
 	m.snapshot = snapshot
+	m.targets = make(map[string]Target, len(result.Targets))
+	for _, target := range result.Targets {
+		m.targets[target.WorkspaceID] = target
+	}
 	m.mu.Unlock()
+	m.updateExecutions(ctx, result.Targets, snapshot)
+	succeeded = true
 	return nil
 }
 
@@ -183,7 +269,26 @@ func (m *Manager) Snapshot() Snapshot {
 	for id, state := range m.snapshot.Targets {
 		s.Targets[id] = state
 	}
+	s.BootstrapObservations = make(map[string]BootstrapObservation, len(m.snapshot.BootstrapObservations))
+	for id, observation := range m.snapshot.BootstrapObservations {
+		s.BootstrapObservations[id] = observation
+	}
 	s.RegistryReady = s.RegistryReady && time.Now().Before(s.LeaseExpiresAt)
+	s.GovernedProvisioning = s.GovernedProvisioning && s.RegistryReady
+	s.Executions = make(map[string]string, len(m.workers))
+	s.Reports = make(map[string][]json.RawMessage, len(m.snapshot.Reports))
+	for workspace, reports := range m.snapshot.Reports {
+		for _, report := range reports {
+			s.Reports[workspace] = append(s.Reports[workspace], append(json.RawMessage(nil), report...))
+		}
+	}
+	for id, worker := range m.workers {
+		if s.RegistryReady && time.Now().Before(worker.authorizedUntil) {
+			s.Executions[id] = worker.state
+		} else {
+			s.Executions[id] = "authority_lost"
+		}
+	}
 	return s
 }
 
@@ -206,10 +311,12 @@ func (m *Manager) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(m.Snapshot())
 	})
+	mux.HandleFunc("GET /workload-observation", m.workloadObservation)
 	return mux
 }
 
 func (m *Manager) Run(ctx context.Context, address string) error {
+	defer m.stopExecutions()
 	server := &http.Server{Addr: address, Handler: m.Handler(), ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	errors := make(chan error, 1)
 	go func() { errors <- server.ListenAndServe() }()

@@ -235,7 +235,7 @@ class TestConsumerTwoMiddleware:
             context = extract_iam_identity_from_headers(_request(_verified_headers()))
 
         assert context is not None
-        assert context.user_id == "scaledjob-worker"
+        assert context.user_id == "iam-agent:scaledjob-worker"
         assert context.auth_source == "iam"
 
 
@@ -289,9 +289,9 @@ class TestConsumerThreeInternalGuard:
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "invalid_caller_identity"
 
-    def test_legitimate_shared_secret_caller_unaffected(self):
-        """The ClusterIP ingestion callback sends no assertion and must keep working."""
+    def test_shared_secret_cannot_establish_principal(self):
+        """Only the callback route accepts its own asset-specific signed grant."""
         with patch("src.internal.auth_deps.get_settings", return_value=_settings(trust=False)):
             resp = self._client().get("/internal/v1/probe", headers={"X-Internal-Api-Key": _INTERNAL_KEY})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 403

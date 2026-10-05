@@ -269,6 +269,25 @@ describe('LiveStatusComment', () => {
     expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
+  it('reports an operator stop as pending finalization and stops later progress updates', async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 301 }))
+      .mockResolvedValue(mockFetchResponse(200));
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setExplanation('Waiting for foreground work to finish.');
+    await comment.finalizeAbortRequested();
+    const body = JSON.parse(mockFetch.mock.calls.at(-1)![1].body).body as string;
+    expect(body).toContain('Agent stopping');
+    expect(body).toContain('Finalization is in progress');
+    expect(body).toContain('Waiting for foreground work to finish.');
+    expect(body).not.toContain('Failed');
+    const count = mockFetch.mock.calls.length;
+    comment.appendActivity('late progress');
+    await comment.flush();
+    jest.advanceTimersByTime(60000);
+    expect(mockFetch).toHaveBeenCalledTimes(count);
+  });
+
   describe('finalizeFailure()', () => {
     it('replaces comment body with failure summary', async () => {
       mockFetch
@@ -414,4 +433,20 @@ describe('live implementation explanations', () => {
     jest.advanceTimersByTime(30000);
     expect(mockFetch).toHaveBeenCalledTimes(count);
   });
+  it('preserves unchecked tasks on successful execution and withholds secrets', async () => {
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setTaskChecklist('☐ Pending validation AKIAABCDEFGHIJKLMNOP');
+    await comment.flush();
+    expect(lastBody()).toContain('Checklist omitted');
+    expect(lastBody()).not.toContain('AKIA');
+    comment.setTaskChecklist('☑ Implementation\n☐ Validation');
+    await comment.finalizeSuccess({ details: 'PR handed off; validation remains.' });
+    expect(lastBody()).toContain('☐ Validation');
+    const count = mockFetch.mock.calls.length;
+    comment.setTaskChecklist('☑ Validation');
+    jest.advanceTimersByTime(30000);
+    expect(mockFetch).toHaveBeenCalledTimes(count);
+  });
+
 });

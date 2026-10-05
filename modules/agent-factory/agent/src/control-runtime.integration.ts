@@ -1,5 +1,12 @@
 /**
- * Live pause/resume experiment against the real Claude Agent SDK — Issue #3961.
+ * Live control experiments against the real Claude Agent SDK — Issues #3961, #3965.
+ *
+ * Pause/resume first (#3961); steering added as experiments 9 and 10 (#3965), which
+ * belong here for the same reason and not by convenience: the claims they test are
+ * claims about the provider's streaming-input channel — that a `shouldQuery`
+ * message reaches a live run, that pushing one does not end the turn, and that a
+ * retry really does close the superseded channel. A mock of the SDK can only
+ * restate whichever of those I assumed.
  *
  * ## Why this file exists, and why it is not a unit test
  *
@@ -40,17 +47,28 @@
  * experiment rather than a demonstration.
  *
  * Nothing here decides whether the story is accepted. Live acceptance belongs to
- * evaluation #3968, reading these artifacts alongside the deployed build.
+ * evaluation #3968 for the pause work and #3969 for steering, each reading these
+ * artifacts alongside the deployed build.
  */
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { join } from 'path';
-import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, ClaudeControlAdapter, CLAUDE_SDK_VERSION } from './harnesses/claude-control';
+import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, ClaudeControlAdapter, CLAUDE_SDK_VERSION, type AttemptInputChannel } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore, serializeToolResponse } from './utils/spill';
+// Issue #3965: the production framing, so the steering experiments push the exact
+// text the worker pushes. Composing a bare string here would exercise a path no
+// run takes and would quietly drop the trust boundary from the evidence.
+import { buildSteeringText } from './steer-queue';
+import { injectReadFailure } from './control-runtime-fault-probe';
+// #5840: the expiry half of W2-05. Kept in its own file so this one stays the
+// pause/resume experiment it was, and so the honesty rules live in a module
+// ordinary CI can actually run.
+import { runTimeoutExperiments, assemblePauseExpiryArtifact } from './control-runtime-timeout.integration';
+import type { HeldHookTimeoutObservations } from './control-runtime-timeout';
 
 /** Recorded outcome of one experiment. `null` anywhere means "not observed". */
 interface ExperimentReport {
@@ -61,6 +79,18 @@ interface ExperimentReport {
 }
 
 const SETTLE_MS = 2_000;
+/**
+ * #5840: the two W2-05 measurements this file already takes.
+ *
+ * Recorded as named observations so the pause_expiry producer derives the artifact
+ * fields from them, rather than either file hand-assembling a block the evaluator
+ * reads. `null`/`undefined` until the owning experiment has actually run, so an
+ * experiment that was skipped or that threw leaves its field missing rather than
+ * passing — the same rule the producer follows.
+ */
+let heldHookTimeoutObservations: HeldHookTimeoutObservations | undefined;
+let spillOutputPreservedObservation: boolean | undefined;
+
 const observedModels = new Set<string>();
 function observeModel(message: Record<string, unknown>): void {
   if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string') observedModels.add(message.model);
@@ -574,6 +604,11 @@ async function experimentProductionSpill(): Promise<ExperimentReport> {
     const durableMatch = locator !== null && persistedPayload !== null && readFileSync(locator, 'utf8') === persistedPayload;
     const locatorReceivedByModel = locator !== null && existsSync(target) && readFileSync(target, 'utf8').trim() === locator;
     const ok = locatorReceivedByModel && (responseBytes ?? 0) > 20_000 && mergedLocator && reminderPreserved && durableMatch && settled && heldWithoutWrite && phaseDuringHold === 'paused' && existsSync(target);
+    // #5840: W2-05's `spill_output_preserved`. The claim is that the locator
+    // survived the pause, so it is the measured pair — the locator the model
+    // actually received, and a pause that provably held — never `ok`, which also
+    // folds in the checkpoint reminder this field says nothing about.
+    spillOutputPreservedObservation = locatorReceivedByModel && durableMatch && heldWithoutWrite && phaseDuringHold === 'paused';
     return { name: 'production spill/checkpoint/pause composition', ok,
       detail: `bytes=${responseBytes} locator=${mergedLocator} modelReceivedLocator=${locatorReceivedByModel} reminder=${reminderPreserved} durable=${durableMatch} settled=${settled} held=${heldWithoutWrite} phase=${phaseDuringHold}`,
       artifact: { production_hook_factory: 'createWorkerToolHooks', real_tool: 'Read', response_bytes: responseBytes,
@@ -590,7 +625,10 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
   const { query } = await loadSdk();
   const dir = mkdtempSync(join(tmpdir(), 'adp-sdk-timeout-'));
   const target = join(dir, 'timeout.txt');
-  const events: Array<{ type: string; failure?: string }> = [];
+  // `reason` is recorded alongside the failure because W2-05 requires a non-empty
+  // cause for a lapsed pause: "pause did not take" with no reason leaves an
+  // operator nothing to act on.
+  const events: Array<{ type: string; failure?: string; reason?: string }> = [];
   const observer = new ClaudeBackgroundWorkObserver();
   const gate = new PauseGate({ defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count(), onEvent: (event) => events.push(event) });
   const pauseHooks = createClaudePauseHooks(gate, observer);
@@ -627,12 +665,24 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
     const phase = gate.currentPhase();
     const retry = await gate.requestPause();
     const ok = reached && signalAborted === true && !safetyRelease && !!failure && phase !== 'paused' && retry.outcome === 'unavailable';
+    // #5840: the same facts, named, so the pause_expiry producer derives
+    // `held_hook_timeout` from them instead of this file hand-building the block.
+    heldHookTimeoutObservations = {
+      signalAborted,
+      safetyReleaseUsed: safetyRelease,
+      phaseAfterTimeout: phase,
+      unavailableReason: failure?.reason ?? null,
+      hookTimeoutSeconds: pauseHooks.preToolUseTimeoutSeconds,
+      pauseBudgetSeconds: Math.round(gate.maxParkDurationMs() / 1000),
+      forcedTimeoutSeconds: timeoutSeconds,
+    };
     return { name: 'real SDK hook timeout reports unavailable', ok,
       detail: `reached=${reached} aborted=${signalAborted} elapsed=${callbackElapsedMs} safetyRelease=${safetyRelease} unavailable=${!!failure} phase=${phase} retry=${retry.outcome}`,
       artifact: { production_hook_factory: 'createWorkerToolHooks', fault: 'CLI matcher timeout shortened to one second',
         matcher_timeout_seconds: timeoutSeconds, production_matcher_timeout_seconds: pauseHooks.preToolUseTimeoutSeconds,
         callback_elapsed_ms: callbackElapsedMs, sdk_signal_aborted: signalAborted, safety_release_used: safetyRelease,
-        unavailable_event_observed: !!failure, phase_after_timeout: phase, repeated_pause_outcome: retry.outcome,
+        unavailable_event_observed: !!failure, unavailable_reason: failure?.reason ?? null,
+        phase_after_timeout: phase, repeated_pause_outcome: retry.outcome,
         fixture_write_after_timeout: existsSync(target), events },
     };
   } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
@@ -756,6 +806,314 @@ async function experimentReturnedOpaqueTool(): Promise<ExperimentReport> {
   }
 }
 
+/**
+ * Experiment 9 (AC-T2/AC-T6/AC-S8): does a mid-run steering instruction land?
+ *
+ * The one claim in #3965 that no unit test can reach. Everything else about the
+ * delivery pump is observable in-process — the journal statuses, the ordering, the
+ * authority re-check — but three facts here belong to the provider and nothing
+ * else can testify about them:
+ *
+ * 1. that a message pushed to a parked reader with `shouldQuery: true` actually
+ *    reaches the model mid-run, rather than being queued behind the initial prompt
+ *    or silently dropped;
+ * 2. that pushing it does **not** close the stream or start a second session. The
+ *    mechanism is an open async iterable, and an iterable that ends terminates the
+ *    turn. If steering ended the turn, every instruction would look delivered and
+ *    would in fact have truncated the run;
+ * 3. that the run still reaches a normal terminal `result` afterwards.
+ *
+ * ## The measurement, and why it is a file
+ *
+ * The fixture asks the model to wait for further instruction, then steers it to
+ * write a specific token to a specific path. The token is chosen at runtime and
+ * appears nowhere in the initial prompt, so the file's *contents* distinguish "the
+ * model received the steering message" from "the model did something plausible on
+ * its own". A transcript substring would not: the model could echo the prompt.
+ *
+ * ## What this experiment does not claim
+ *
+ * Only that the instruction was delivered and the run survived it. `delivered` is
+ * receipt by the runtime. A model that receives an instruction and ignores it is
+ * indistinguishable here from one that never got it *if the file is absent* — so
+ * an absent file is recorded as a delivery that cannot be confirmed
+ * (`instruction_effect_observed: false`), never as a failure of the transport, and
+ * never as a claim about comprehension. `handoff_result` is the transport's own
+ * answer and is reported separately from the file, because they are different
+ * facts and conflating them is precisely the lie the story is about.
+ */
+async function experimentSteeringReachesTheModel(): Promise<ExperimentReport> {
+  const { resilientQuery } = await import('./utils/resilientQuery');
+  const dir = mkdtempSync(join(tmpdir(), 'adp-steer-'));
+  const target = join(dir, 'steered.txt');
+  // Not in the prompt, so the file's contents cannot be produced by guessing.
+  const token = `steer-${process.pid}-${observedModels.size}-marker`;
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count() });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate, backgroundWorkObserver: observer });
+  const sessionIds: string[] = [];
+  let initCount = 0;
+  let resultSubtype: string | null = null;
+  // `null` until observed. A boundary that never appeared and a boundary that
+  // appeared and refused must not produce the same artifact.
+  const observed = { boundary: null as boolean | null };
+  let acceptedBeforeBoundary: boolean | null = null;
+  let handoffResult: string | null = null;
+  let attemptAtHandoff: string | null = null;
+  let streamEndedAtHandoff: boolean | null = null;
+  let deliveredAt: number | null = null;
+  let messagesAfterHandoff = 0;
+  let handoff: Promise<void> | null = null;
+  let channel: AttemptInputChannel | null = null;
+  const attach = adapter.onAttemptHandle();
+  const tryHandoff = (): void => {
+    if (handoff || sessionIds.length === 0) return;
+    if (acceptedBeforeBoundary === null) acceptedBeforeBoundary = adapter.canAcceptInput();
+    if (!adapter.canAcceptInput()) return;
+    observed.boundary = true;
+    attemptAtHandoff = adapter.currentAttempt();
+    handoff = adapter.submitInput({
+      kind: 'steering',
+      command_id: '00000000-0000-4000-8000-000000003965',
+      text: buildSteeringText(
+        '00000000-0000-4000-8000-000000003965',
+        `Use the Write tool to write exactly "${token}" to ${target}, then stop.`,
+      ),
+    }).then(result => {
+      handoffResult = result;
+      deliveredAt = Date.now();
+      streamEndedAtHandoff = channel?.isClosed() ?? null;
+    }).catch(error => { handoffResult = `threw: ${String(error)}`; });
+  };
+
+  try {
+    const iterator = resilientQuery({
+      queryParams: {
+        prompt:
+          'Reply with the single word READY and then wait. Do not use any tool yet. '
+          + 'A further instruction will follow in this same conversation; follow it when it arrives.',
+        options: { permissionMode: 'bypassPermissions', maxTurns: 8, cwd: dir },
+      },
+      maxRetries: 0,
+      attemptInputFactory: adapter.attemptInputFactory((hooks) => ({
+        hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks: hooks }),
+      })),
+      onAttemptHandle: async (handle) => {
+        await attach(handle);
+        channel = (adapter as unknown as { activeChannel: AttemptInputChannel }).activeChannel;
+        adapter.notifyWhenInputAccepted(tryHandoff);
+      },
+      cancellation: adapter.cancellationSource(),
+      beforeOutput: () => gate.waitForOutput(),
+      idleSuspended: () => gate.isPauseActive(),
+    });
+
+    for await (const message of iterator) {
+      observeModel(message);
+      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'init') initCount += 1;
+      const id = (message as { session_id?: string }).session_id;
+      if (id && !sessionIds.includes(id)) sessionIds.push(id);
+      if (deliveredAt !== null) messagesAfterHandoff += 1;
+
+      // Also check after init: readiness may have appeared before the session ID.
+      // The subscription handles the quiet boundary where no output arrives.
+      tryHandoff();
+
+      if (message.type === 'result') {
+        resultSubtype = (message as { subtype?: string }).subtype ?? null;
+        break;
+      }
+    }
+
+    if (handoff) await handoff;
+    if (observed.boundary === null) observed.boundary = false;
+    const wrote = existsSync(target);
+    const contents = wrote ? readFileSync(target, 'utf8') : null;
+    const effectObserved = contents !== null && contents.includes(token);
+    // The transport's claim is the subject. `effectObserved` is reported but
+    // deliberately NOT required for `ok`: a model that declines an instruction is
+    // not a transport failure, and requiring it would make this experiment fail
+    // for a reason it cannot distinguish from success.
+    const ok = observed.boundary === true
+      && handoffResult === 'delivered'
+      && streamEndedAtHandoff === false
+      && resultSubtype === 'success'
+      && sessionIds.length === 1
+      && initCount === 1
+      && messagesAfterHandoff > 0;
+    return {
+      name: 'a steering instruction reaches a live run without ending it (AC-T2/AC-T6)',
+      ok,
+      detail: `boundary=${observed.boundary} handoff=${handoffResult} streamEnded=${streamEndedAtHandoff} `
+        + `messagesAfter=${messagesAfterHandoff} result=${resultSubtype} sessions=${sessionIds.length} `
+        + `effectObserved=${effectObserved}`,
+      artifact: {
+        boundary_observed: observed.boundary,
+        // The mid-run state at the instant the first submission was considered.
+        // `false` is the expected reading and is the transport-level evidence for
+        // "a submission before a boundary stays pending".
+        input_accepted_before_first_boundary: acceptedBeforeBoundary,
+        handoff_result: handoffResult,
+        attempt_id_at_handoff: attemptAtHandoff,
+        // The load-bearing negative. `true` here would mean steering truncates
+        // the run, which no in-process test can detect.
+        stream_ended_at_handoff: streamEndedAtHandoff,
+        messages_after_handoff: messagesAfterHandoff,
+        result_subtype: resultSubtype,
+        session_count: sessionIds.length,
+        init_count: initCount,
+        // Receipt and effect, kept apart on purpose.
+        instruction_effect_observed: effectObserved,
+        steering_wrapped_as_untrusted: true,
+        should_query: true,
+        sdk_version: CLAUDE_SDK_VERSION,
+      },
+    };
+  } finally {
+    gate.cancel();
+    await adapter.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Experiment 10 (AC-T7): does a handoff resolve against the attempt that is live *now*?
+ *
+ * The retry-safety rule is that a pending instruction reattaches to the new
+ * attempt and a confirmed one is never replayed. In-process that is provable with
+ * two fake endpoints, and `agent-worker-steer.test.ts` proves it. What a fake
+ * cannot show is that the *real* transport swap behaves the way the registry
+ * assumes: that the superseded attempt's channel is genuinely closed, so a push
+ * aimed at it cannot land, and that the replacement channel is genuinely open.
+ *
+ * Two attempts are forced by failing the first with a retryable error, then:
+ *
+ * - the captured OLD input channel must be closed and no longer deliverable.
+ *   This is the anti-replay half, and it is the half with teeth: if the old
+ *   channel stayed writable, an instruction could be handed to a dead attempt and
+ *   reported delivered, which is the ambiguous handoff the story requires be
+ *   reported as `unknown` rather than retried.
+ * - a push after the swap must be delivered, on the new attempt id. Without this
+ *   half, a transport that closed *everything* on retry would pass the first.
+ *
+ * Neither half is satisfiable by the other, and a run where the retry did not
+ * happen records `attempts_observed: 1` and fails — an unobserved swap must not
+ * read as a safe one.
+ */
+async function experimentSteeringSurvivesRetry(): Promise<ExperimentReport> {
+  const { resilientQuery } = await import('./utils/resilientQuery');
+  const dir = mkdtempSync(join(tmpdir(), 'adp-steer-retry-'));
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count() });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate, backgroundWorkObserver: observer });
+  const attemptIds: string[] = [];
+  const observed = {
+    staleAttemptId: null as string | null,
+    attemptIdAtSecondHandoff: null as string | null,
+    staleChannel: null as AttemptInputChannel | null,
+  };
+  let resultAfterRetry: string | null = null;
+  let deliveredOnNewAttempt: string | null = null;
+  let acceptedOnStaleAttempt: boolean | null = null;
+  let firstAttemptFailed = false;
+  let sawFirstAssistant = false;
+  let handoff: Promise<void> | null = null;
+  const attach = adapter.onAttemptHandle();
+  const commandId = '00000000-0000-4000-8000-000000003966';
+
+  try {
+    const iterator = resilientQuery({
+      queryParams: {
+        prompt: 'Reply with the single word READY and then wait for a further instruction. Do not use any tool.',
+        options: { permissionMode: 'bypassPermissions', maxTurns: 8, cwd: dir },
+      },
+      // Exactly one retry: enough to observe a swap, not enough for a flaky
+      // provider error to be mistaken for the injected one.
+      maxRetries: 1,
+      attemptInputFactory: adapter.attemptInputFactory((hooks) => ({
+        hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks: hooks }),
+      })),
+      onAttemptHandle: async (handle) => {
+        await attach(handle);
+        const attempt = adapter.currentAttempt();
+        if (attempt) attemptIds.push(attempt);
+        if (handle.attemptNumber === 1) {
+          observed.staleAttemptId = attempt;
+          observed.staleChannel = (adapter as unknown as { activeChannel: AttemptInputChannel }).activeChannel;
+          injectReadFailure(
+            handle.session as AsyncIterable<unknown>,
+            () => sawFirstAssistant,
+            () => { firstAttemptFailed = true; },
+          );
+        } else {
+          // Observe the retained old channel, not just the registry's new pointer.
+          acceptedOnStaleAttempt = observed.staleChannel?.isDeliverable() ?? null;
+          adapter.notifyWhenInputAccepted(() => {
+            if (handoff || !adapter.canAcceptInput()) return;
+            observed.attemptIdAtSecondHandoff = adapter.currentAttempt();
+            handoff = adapter.submitInput({
+              kind: 'steering', command_id: commandId,
+              text: buildSteeringText(commandId, 'Reply with RETRY_STEERING_RECEIVED, then stop.'),
+            }).then(result => { deliveredOnNewAttempt = result; });
+          });
+        }
+      },
+      cancellation: adapter.cancellationSource(),
+      beforeOutput: () => gate.waitForOutput(),
+      idleSuspended: () => gate.isPauseActive(),
+      baseDelayMs: 1_000,
+      log: () => {},
+    });
+
+    for await (const message of iterator) {
+      observeModel(message);
+      if (attemptIds.length === 1 && message.type === 'assistant') sawFirstAssistant = true;
+      if (message.type === 'result') { resultAfterRetry = (message as { subtype?: string }).subtype ?? null; break; }
+    }
+  } catch (err) {
+    // The injected failure propagates out of the generator when maxRetries is
+    // exhausted or the throw escapes the wrapper. Recorded, not swallowed: the
+    // artifact must show whether the swap was observed or the run simply died.
+    resultAfterRetry = resultAfterRetry ?? `threw: ${(err as Error)?.message?.slice(0, 120) ?? 'unknown'}`;
+  }
+
+  try {
+    if (handoff) await handoff;
+    const swapped = attemptIds.length === 2 && observed.attemptIdAtSecondHandoff !== null
+      && observed.staleAttemptId !== observed.attemptIdAtSecondHandoff;
+    const ok = firstAttemptFailed && swapped && acceptedOnStaleAttempt === false
+      && observed.staleChannel?.isClosed() === true && deliveredOnNewAttempt === 'delivered'
+      && resultAfterRetry === 'success';
+    return {
+      name: 'a retry swaps the steering transport without replaying to the dead attempt (AC-T7)',
+      ok,
+      detail: `attempts=${attemptIds.length} stale=${observed.staleAttemptId?.slice(0, 12) ?? null} `
+        + `newAttempt=${observed.attemptIdAtSecondHandoff?.slice(0, 12) ?? null} postRetryHandoff=${deliveredOnNewAttempt} `
+        + `staleWritable=${acceptedOnStaleAttempt} result=${resultAfterRetry}`,
+      artifact: {
+        attempts_observed: attemptIds.length,
+        first_attempt_failed: firstAttemptFailed,
+        failure_injection: 'first SDK iterator next() after a real assistant message',
+        stale_channel_closed: observed.staleChannel?.isClosed() ?? null,
+        stale_attempt_id: observed.staleAttemptId,
+        attempt_id_at_post_retry_handoff: observed.attemptIdAtSecondHandoff,
+        // `null` means no second attempt attached — an unobserved swap, which
+        // fails rather than reading as safe.
+        post_retry_handoff_result: deliveredOnNewAttempt,
+        // The anti-replay property. `true` would mean a superseded transport is
+        // still writable, i.e. an instruction could be handed to a dead attempt.
+        stale_attempt_still_writable: acceptedOnStaleAttempt,
+        terminal_state: resultAfterRetry,
+        sdk_version: CLAUDE_SDK_VERSION,
+      },
+    };
+  } finally {
+    gate.cancel();
+    await adapter.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<number> {
   const jsonFlag = process.argv.indexOf('--json');
   const jsonPath = jsonFlag >= 0 ? process.argv[jsonFlag + 1] : null;
@@ -771,6 +1129,11 @@ async function main(): Promise<number> {
     experimentSdkHookTimeout,
     experimentAlreadyRunningTool,
     experimentReturnedOpaqueTool,
+    // Issue #3965. Last, because they are the only experiments that push input
+    // into a live stream: anything they disturb in the SDK subprocess cannot then
+    // be mistaken for a pause finding.
+    experimentSteeringReachesTheModel,
+    experimentSteeringSurvivesRetry,
   ];
 
   const reports: ExperimentReport[] = [];
@@ -788,9 +1151,29 @@ async function main(): Promise<number> {
     }
   }
 
+  // #5840: the expiry experiments run after these, so the two measurements above
+  // are already recorded and the assembled artifact carries all of W2-05's
+  // in-process fields. Anything still unmeasured stays `null` plus a named gap in
+  // `missing_launcher_inputs` — this run never fills a field it did not observe.
+  const timeout = await runTimeoutExperiments();
+  reports.push(...timeout.reports);
+  const pauseExpiry = assemblePauseExpiryArtifact({
+    parts: timeout.parts,
+    preserved: {
+      ...(heldHookTimeoutObservations ? { heldHookTimeout: heldHookTimeoutObservations } : {}),
+      ...(spillOutputPreservedObservation === undefined
+        ? {}
+        : { spillOutputPreserved: spillOutputPreservedObservation }),
+    },
+  });
+
   if (jsonPath) {
-    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, observed_models: [...observedModels], reports }, null, 2)}\n`);
+    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, observed_models: [...observedModels], reports, pause_expiry: pauseExpiry }, null, 2)}\n`);
     console.log(`wrote ${jsonPath}`);
+  }
+  if (pauseExpiry.missing_launcher_inputs.length > 0) {
+    console.log('pause_expiry fields this process cannot observe — the launcher must supply them:');
+    for (const entry of pauseExpiry.missing_launcher_inputs) console.log(`  - ${entry.field}: ${entry.collect}\n`);
   }
 
   const failed = reports.filter((r) => !r.ok);
@@ -809,4 +1192,5 @@ if (require.main === module) {
 }
 
 export { experimentBarrierBlocksSideEffects, experimentResumeSameExecution, experimentHookCanHold, experimentProductionSpill, experimentSdkHookTimeout };
+export { experimentSteeringReachesTheModel, experimentSteeringSurvivesRetry };
 export type { ExperimentReport };

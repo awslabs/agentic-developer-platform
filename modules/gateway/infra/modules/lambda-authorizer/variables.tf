@@ -60,6 +60,16 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
+variable "pyjwt_layer_s3_key" {
+  description = "S3 key of the currently selected PyJWT layer package"
+  type        = string
+}
+
+variable "pyjwt_layer_skip_destroy" {
+  description = "Retain old PyJWT layer versions during upgrades and rollback"
+  type        = bool
+}
+
 # =============================================================================
 # Lambda Configuration
 # =============================================================================

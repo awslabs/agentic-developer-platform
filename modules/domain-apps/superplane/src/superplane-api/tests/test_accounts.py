@@ -1,10 +1,33 @@
 """Tests for account onboarding and vault credential endpoints."""
 
+import asyncio
+import json
 import uuid
 
 import pytest
 
 from app.middleware.auth import create_access_token
+
+
+@pytest.fixture
+def concurrent_database_url(tmp_path):
+    """Exercise the actual unique constraints and independent PostgreSQL sessions."""
+    import pgserver
+
+    server = pgserver.get_server(tmp_path / "account-retry-postgres")
+    try:
+        yield server.get_uri().replace("postgresql://", "postgresql+asyncpg://", 1)
+    finally:
+        server.cleanup()
+
+
+async def _seed_organization(org_id: uuid.UUID) -> None:
+    from app.models.organization import Organization
+    from tests.conftest import async_session_test
+
+    async with async_session_test() as session:
+        session.add(Organization(id=org_id, name=f"org-{org_id.hex}"))
+        await session.commit()
 
 
 def _auth_header(org_id: uuid.UUID | None = None) -> dict:
@@ -77,6 +100,114 @@ class TestRegisterAccount:
             headers=headers,
         )
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_identical_retry_reuses_the_account_record(self, client):
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        payload = {
+            "name": "prod",
+            "provider": "aws",
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/ADP-Agent-Role",
+            "external_id": "external-1",
+            "adp_credential_ids": ["credential-1"],
+        }
+
+        first = await client.post("/accounts", json=payload, headers=headers)
+        second = await client.post("/accounts", json=payload, headers=headers)
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert first.json()["id"] == second.json()["id"]
+        assert "role_arn" not in first.json()
+        assert "external_id" not in first.json()
+        listed = await client.get("/accounts", headers=headers)
+        assert listed.json()["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_with_different_connection_metadata_is_rejected(self, client):
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        payload = {
+            "name": "prod",
+            "provider": "aws",
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/ADP-Agent-Role",
+            "external_id": "external-1",
+            "adp_credential_ids": ["credential-1"],
+        }
+
+        created = await client.post("/accounts", json=payload, headers=headers)
+        changed = await client.post(
+            "/accounts",
+            json={**payload, "adp_credential_ids": ["credential-2"]},
+            headers=headers,
+        )
+
+        assert created.status_code == 201
+        assert changed.status_code == 409
+        listed = await client.get("/accounts", headers=headers)
+        assert listed.json()["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_identical_retries_create_one_account(
+        self, concurrent_database_url
+    ):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.database import Base, get_session
+        from app.middleware.auth import get_current_org
+        from app.models.organization import Organization
+        from app.routers.accounts import router
+
+        org_id = uuid.uuid4()
+        engine = create_async_engine(concurrent_database_url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions() as session:
+            session.add(Organization(id=org_id, name=f"org-{org_id.hex}"))
+            await session.commit()
+
+        async def get_test_session():
+            async with sessions() as session:
+                yield session
+
+        async def get_test_org():
+            return org_id
+
+        test_app = FastAPI()
+        test_app.include_router(router)
+        test_app.dependency_overrides[get_session] = get_test_session
+        test_app.dependency_overrides[get_current_org] = get_test_org
+        payload = {
+            "name": "prod",
+            "provider": "aws",
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/ADP-Agent-Role",
+            "external_id": "external-1",
+            "adp_credential_ids": ["credential-1"],
+        }
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as concurrent_client:
+            first, second = await asyncio.gather(
+                concurrent_client.post("/accounts", json=payload),
+                concurrent_client.post("/accounts", json=payload),
+            )
+            listed = await concurrent_client.get("/accounts")
+        await engine.dispose()
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert first.json()["id"] == second.json()["id"]
+        assert listed.json()["total"] == 1
 
 
 class TestListAccounts:
@@ -164,6 +295,91 @@ class TestRegisterCredential:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_concurrent_retries_create_one_domain_record(
+        self, concurrent_database_url
+    ):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.database import Base, get_session
+        from app.middleware.auth import get_current_org
+        from app.models.organization import Organization
+        from app.routers.accounts import router
+
+        org_id = uuid.uuid4()
+        engine = create_async_engine(concurrent_database_url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions() as session:
+            session.add(Organization(id=org_id, name=f"org-{org_id.hex}"))
+            await session.commit()
+
+        async def get_test_session():
+            async with sessions() as session:
+                yield session
+
+        async def get_test_org():
+            return org_id
+
+        test_app = FastAPI()
+        test_app.include_router(router)
+        test_app.dependency_overrides[get_session] = get_test_session
+        test_app.dependency_overrides[get_current_org] = get_test_org
+        payload = {
+            "name": "prod",
+            "provider": "nebius",
+            "credential_type": "api_key",
+            "adp_credential_id": "adp-cred-concurrent-01",
+        }
+
+        transport = ASGITransport(app=test_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as concurrent_client:
+            first, second = await asyncio.gather(
+                concurrent_client.post("/vault/credentials", json=payload),
+                concurrent_client.post("/vault/credentials", json=payload),
+            )
+            listed = await concurrent_client.get("/vault/credentials")
+            deleted = await concurrent_client.delete(
+                f"/vault/credentials/{first.json()['id']}"
+            )
+            after_delete = await concurrent_client.get("/vault/credentials")
+        await engine.dispose()
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert first.json()["id"] == second.json()["id"]
+        assert listed.status_code == 200
+        assert listed.json()["total"] == 1
+        assert deleted.status_code == 200
+        assert after_delete.json()["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_with_different_metadata_is_rejected(self, client):
+        org_id = uuid.uuid4()
+        headers = _auth_header(org_id)
+        await _seed_organization(org_id)
+        payload = {
+            "name": "prod",
+            "provider": "nebius",
+            "credential_type": "api_key",
+            "adp_credential_id": "adp-cred-metadata-01",
+        }
+        created = await client.post("/vault/credentials", json=payload, headers=headers)
+        changed = await client.post(
+            "/vault/credentials",
+            json={**payload, "name": "different"},
+            headers=headers,
+        )
+
+        assert created.status_code == 201
+        assert changed.status_code == 409
+        listed = await client.get("/vault/credentials", headers=headers)
+        assert listed.json()["total"] == 1
+
     async def test_register_rejects_a_secret_arn_at_the_route(self, client):
         """Issue #5046 (U13b): an authenticated caller cannot register a secret ARN.
 
@@ -207,6 +423,114 @@ class TestValidationErrorsDoNotEchoTheRejectedValue:
     FAKE_ARN = (
         "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
     )
+
+    @pytest.mark.asyncio
+    async def test_encoded_confusables_cannot_persist_through_either_write_route(
+        self, client
+    ):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from sqlalchemy import select
+
+        from tests.conftest import async_session_test
+
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        for encoded in (
+            self.FAKE_ARN.replace(":", "%EF%BC%9A"),
+            self.FAKE_ARN.replace(":", "&#xff1a;"),
+        ):
+            account = await client.post(
+                "/accounts",
+                json={
+                    "name": "test",
+                    "account_id": "test",
+                    "role_arn": "role",
+                    "external_id": "id",
+                    "adp_credential_ids": [encoded],
+                },
+                headers=headers,
+            )
+            credential = await client.post(
+                "/vault/credentials",
+                json={
+                    "name": "test",
+                    "provider": "nebius",
+                    "adp_credential_id": encoded,
+                },
+                headers=headers,
+            )
+            for response in (account, credential):
+                assert response.status_code == 422, response.text
+                assert encoded not in response.text
+                assert "fake-not-real" not in response.text
+        async with async_session_test() as session:
+            assert (await session.scalars(select(CloudAccount))).all() == []
+            assert (await session.scalars(select(CredentialRegistry))).all() == []
+
+    @pytest.mark.asyncio
+    async def test_oversized_list_and_elements_return_scrubbed_422s(self, client):
+        org_id = uuid.uuid4()
+        headers = _auth_header(org_id)
+        for references in (["r" * 256], ["r" * 255] * 65):
+            response = await client.post(
+                "/accounts",
+                json={
+                    "name": "test",
+                    "account_id": "test",
+                    "role_arn": "role",
+                    "external_id": "id",
+                    "adp_credential_ids": references,
+                },
+                headers=headers,
+            )
+            assert response.status_code == 422, response.text
+            assert "r" * 255 not in response.text
+        credential = await client.post(
+            "/vault/credentials",
+            json={"name": "test", "provider": "nebius", "adp_credential_id": "r" * 256},
+            headers=headers,
+        )
+        assert credential.status_code == 422, credential.text
+        assert "r" * 255 not in credential.text
+
+    @pytest.mark.asyncio
+    async def test_valid_opaque_reference_survives_both_routes_unchanged(self, client):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from sqlalchemy import select
+
+        from tests.conftest import async_session_test
+
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        reference = "vault:secret/data/team/ref%2Fv2"
+        account = await client.post(
+            "/accounts",
+            json={
+                "name": "test",
+                "account_id": "test",
+                "role_arn": "role",
+                "external_id": "id",
+                "adp_credential_ids": [reference],
+            },
+            headers=headers,
+        )
+        credential = await client.post(
+            "/vault/credentials",
+            json={"name": "test", "provider": "nebius", "adp_credential_id": reference},
+            headers=headers,
+        )
+        assert account.status_code == credential.status_code == 201
+        async with async_session_test() as session:
+            stored_account = (await session.scalars(select(CloudAccount))).one()
+            stored_credential = (
+                await session.scalars(select(CredentialRegistry))
+            ).one()
+        assert json.loads(stored_account.adp_credential_ids_json) == [reference]
+        assert stored_credential.adp_credential_id == reference
 
     @pytest.mark.asyncio
     async def test_422_body_does_not_contain_the_submitted_arn(self, client):

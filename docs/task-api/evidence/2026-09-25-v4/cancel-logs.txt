@@ -1,0 +1,5 @@
+14:08 inventory latency rose from180ms to6200ms.
+14:10 checkout connection pool exhausted, all20 connections occupied.
+14:10 checkout returned503 waiting for the connection pool.
+config: pool.max=20; upstream.timeout_seconds=30.
+No inventory-service logs or later metrics were supplied.

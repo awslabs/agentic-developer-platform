@@ -1,0 +1,39 @@
+{
+  "source": "AWS EKS DescribeAddonVersions; selected candidate excerpt",
+  "addons": [
+    {
+      "addonName": "coredns",
+      "type": "networking",
+      "addonVersions": [
+        {
+          "addonVersion": "v1.14.6-eksbuild.4",
+          "architecture": [
+            "amd64",
+            "arm64"
+          ],
+          "computeTypes": [
+            "ec2",
+            "hybrid",
+            "fargate",
+            "auto",
+            "local-cluster"
+          ],
+          "compatibilities": [
+            {
+              "clusterVersion": "1.35",
+              "platformVersions": [
+                "*"
+              ],
+              "defaultVersion": false
+            }
+          ],
+          "requiresConfiguration": false,
+          "requiresIamPermissions": false
+        }
+      ],
+      "publisher": "eks",
+      "owner": "aws",
+      "defaultNamespace": "kube-system"
+    }
+  ]
+}

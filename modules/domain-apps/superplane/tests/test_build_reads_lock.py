@@ -209,11 +209,17 @@ class TestResolverFailsClosed:
     def test_pending_entry_with_a_digest_raises(self, tmp_path: Path) -> None:
         """The two-map invariant is enforced in code, not only in the lock's tests."""
         data = yaml.safe_load(LOCK_PATH.read_text(encoding="utf-8"))
-        data["pending_images"]["superplane-api"]["digest"] = "sha256:" + "0" * 64
+        data["pending_images"]["superplane-platform-monitor"] = data[
+            "image_sources"
+        ].pop("superplane-platform-monitor")
+        data["images"].pop("superplane-platform-monitor")
+        data["pending_images"]["superplane-platform-monitor"]["digest"] = (
+            "sha256:" + "0" * 64
+        )
         path = tmp_path / "lock.yaml"
         path.write_text(yaml.safe_dump(data), encoding="utf-8")
         with pytest.raises(LockError, match="carries a digest"):
-            resolve_build_inputs("superplane-api", path)
+            resolve_build_inputs("superplane-platform-monitor", path)
 
     def test_missing_lock_raises(self, tmp_path: Path) -> None:
         with pytest.raises(LockError, match="cannot read"):

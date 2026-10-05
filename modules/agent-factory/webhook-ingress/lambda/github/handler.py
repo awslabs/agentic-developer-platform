@@ -72,7 +72,11 @@ def _resolve_webhook_secret() -> str:
     the real webhook secret (fresh-deploy timing issue).
     """
     global _webhook_secret
-    if _webhook_secret is not None and not _webhook_secret.startswith("PLACEHOLDER"):
+    if (
+        _webhook_secret
+        and _webhook_secret.strip()
+        and not _webhook_secret.strip().upper().startswith(("PLACEHOLDER", "ROTATE-ME"))
+    ):
         return _webhook_secret
 
     if WEBHOOK_SECRET_ARN:
@@ -84,6 +88,14 @@ def _resolve_webhook_secret() -> str:
         # Fallback for local dev/testing: allow plaintext env var
         _webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
 
+    if (
+        not _webhook_secret
+        or not _webhook_secret.strip()
+        or _webhook_secret.strip().upper().startswith(("PLACEHOLDER", "ROTATE-ME"))
+    ):
+        _webhook_secret = None
+        _get_secrets().clear_cache()
+        return ""
     return _webhook_secret
 
 
@@ -131,100 +143,24 @@ class AutoRegisterResult(NamedTuple):
 def _auto_register_installation(
     installation_id: int, org_login: str, *, bypass_negative_cache: bool = False
 ) -> AutoRegisterResult:
-    """Write an installation_id → tenant row to the identity-index (guarded).
+    """Register only a currently owned, unrevoked installation.
 
-    Issue #2769: Postgres is the single source of truth for the
-    installation → tenant mapping. Auto-register must NEVER clobber a
-    Postgres-owned row (one written by the gateway write-through, which never
-    sets ``auto_registered``). The write-guard:
-
-      1. GetItem the ``github_installation_id`` row.
-      2. Row exists WITHOUT ``auto_registered`` → Postgres-owned → no-op. If
-         the stored org differs from this webhook's org login, emit
-         ``InstallationTenantDrift`` (visibility only). Returns the stored
-         tenant so downstream provisioning still works.
-      3. No row → **the tenant gate** (#2724 slice B, below).
-      4. Row exists WITH ``auto_registered`` → idempotent refresh OK.
-
-    The same guard is applied to the reverse-lookup ``org_installation`` row
-    (#2336).
-
-    **The tenant gate (#2724 slice B).** Step 3 previously resolved the
-    installation via the gateway and then fell through to
-    ``tenant_id = org_login`` no matter what the gateway said — so ANY GitHub org
-    that installed the App became an ADP tenant with no operator involvement, got
-    the platform App's private key copied into ``adp/<env>/tenants/<org>/github-app``,
-    and could dispatch agent pods on the platform's EKS. (Worse than compute
-    theft: the installer then signs in and is auto-approved as ``org_admin`` of
-    the tenant they just created.) The docstring promised a skip since #2769; the
-    code never implemented one. It does now:
-
-      * Gate via :func:`common.gateway_client.installation_gate`, the single
-        choke point shared with ``identity_resolver``'s independent backfill path
-        so the gate cannot be bypassed by whichever writer fires first.
-      * **Denied** (authoritative gateway 404, or a self-created
-        ``install_autocreate`` shell while the deployment is not open-onboarding)
-        → write nothing, return no tenant → caller 403s ``unknown_installation``.
-        This is the contract the docstring has always claimed.
-      * **Allowed via the gateway** (``resolved``: trusted provenance, or an
-        ``install_autocreate`` shell in an explicitly open-onboarding deployment)
-        → write the **Postgres tenant**, not the raw org login (that was the
-        phantom-tenant bug), tagged ``auto_registered``, with
-        ``ConditionExpression=attribute_not_exists(auto_registered)`` on the
-        non-clobber path. ``authoritative=True``.
-      * **Allowed because the gate could not be evaluated** (gateway
-        unreachable/unconfigured, or provenance absent because the gateway has
-        not been redeployed) → fail OPEN but LOUD: keep today's ``org_login``
-        fallback so a gateway outage never becomes "reject every new
-        installation", emit ``AutoRegisterGateUnavailable``, and return
-        ``authoritative=False`` so the caller does NOT seed credentials.
-
-    Open onboarding is controlled by ``ORG_TENANT_AUTO_CREATE`` — the same single
-    flag the gateway reads. There is deliberately no second Lambda-only flag.
-
-    **Partial writes (#4030).** The forward ``github_installation_id`` row is
-    what dispatch routes on, so the two writes are not equivalent and their
-    failures must not be handled the same way:
-
-      * **Forward write fails** (or anything before it) → return ``None``.
-        Nothing routes to this installation, so the caller must not treat it as
-        registered.
-      * **Reverse write fails** → log ERROR, emit ``AutoRegister.PartialWrite``,
-        and still return the tenant. The mapping is live and usable; only
-        ``adp-trigger`` resolution is degraded (#3860).
-
-    Previously a single ``except`` wrapped both writes, so a reverse-row failure
-    returned ``None`` *after* the forward row was already persisted. That made
-    the caller skip downstream provisioning forever: every later webhook
-    resolves successfully, so the ``unknown_installation`` self-heal branch
-    never fires again. That is the state the Acme PoV hit.
-
-    **Negative cache (#4047, #2724 slice C).** The step-3 gateway resolve is the
-    expensive part of this function (``resolve-installation`` filters
-    organizations in Python), and an unknown installation re-asks it on every
-    single delivery. When the gateway authoritatively answers ``not_found`` we
-    write a short-TTL row into the identity-index under a distinct
-    ``github_installation_negative`` key and skip the call while it is live.
-    Only ``not_found`` is cached — never ``error`` — so a gateway outage cannot
-    lock out a legitimate new tenant for the TTL window.
-
-    A cache hit synthesizes the same ``not_found`` state and feeds it to the one
-    shared ``installation_gate``, so slice B's deny applies to cached and live
-    ``not_found`` alike with no second decision point here.
-
-    ``bypass_negative_cache=True`` skips the read AND invalidates any existing
-    row — used for ``installation.created``, where a genuinely fresh install
-    must always re-resolve rather than inherit a stale "unknown" verdict.
-
-    Returns an :class:`AutoRegisterResult`. ``tenant_id`` is None when the gate
-    denied or we never persisted a routable mapping; ``authoritative`` tells the
-    caller whether per-tenant credential provisioning is permitted.
+    Canonical unavailability denies, including refreshes and delayed lifecycle
+    deliveries. A permanent DDB marker blocks writes racing local revocation.
+    ``bypass_negative_cache`` affects only ordinary unknown-cache maintenance;
+    it cannot bypass durable denial.
     """
     if not org_login:
         return AutoRegisterResult(None, False)
     resolver = _get_identity_resolver()
     try:
         table = resolver._get_table()
+        from common.installation_revocation import admit_installation, put_active_installation
+
+        canonical, _ = admit_installation(table, installation_id)
+        if canonical is None:
+            return AutoRegisterResult(None, False)
+
         # Step 1: read-before-write.
         existing = table.get_item(
             Key={
@@ -232,6 +168,9 @@ def _auto_register_installation(
                 "identity_value": str(installation_id),
             }
         ).get("Item")
+
+        if existing is not None and existing.get("org_id") != canonical["tenant_id"]:
+            return AutoRegisterResult(None, False)
 
         # Step 2: Postgres-owned row (no auto_registered flag) → do not clobber.
         if existing is not None and not existing.get("auto_registered"):
@@ -272,12 +211,10 @@ def _auto_register_installation(
             # does not narrow pg to dict[str, object], which would make
             # pg["tenant_id"] an `object` and break tenant_id's str | None type.
             pg: dict[str, Any]
-            if not bypass_negative_cache and neg_cache.is_negative_cached(
-                table, installation_id
-            ):
+            if not bypass_negative_cache and neg_cache.is_negative_cached(table, installation_id):
                 pg = {"state": "not_found", "cached": True}
             else:
-                pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
+                pg = canonical
                 # Cache ONLY the authoritative 404. An "error" state means we do
                 # not know — caching it would turn a gateway outage into a
                 # TTL-long lockout for legitimate new tenants.
@@ -322,42 +259,13 @@ def _auto_register_installation(
                 tenant_id = pg["tenant_id"]
                 authoritative = True
             else:
-                # Allowed, but NOT authoritatively: the gate could not be
-                # evaluated (gateway unreachable/unconfigured, or provenance
-                # absent because the gateway predates the field). Fail OPEN so a
-                # gateway outage never becomes "reject every new installation",
-                # but LOUD — and mark the result non-authoritative so the caller
-                # skips credential provisioning.
-                #
-                # Fallback rationale (unchanged from before the gate): if the
-                # gateway is unreachable (SigV4 auth on API GW, fresh deploy) or
-                # the tenant isn't in Postgres yet (user-namespace installs, new
-                # orgs), register using the org_login directly. This covers a user
-                # installing the app on their personal account — no org-tenant
-                # shell exists in Postgres, but the install is legitimate. The
-                # user still needs approval before they can trigger agents.
-                logger.warning(
-                    "AutoRegisterGateUnavailable: installation_id=%d org_login=%s "
-                    "reason=%s (state=%s, gateway reason=%s) — failing OPEN, "
-                    "registering with org_login as tenant_id, NOT provisioning "
-                    "per-tenant credentials",
-                    installation_id,
-                    org_login,
-                    gate_reason,
-                    state or "unknown",
-                    (pg or {}).get("reason", ""),
-                )
+                # Admission already resolved this installation through ADP.
+                # Provider account names are metadata, never tenant identifiers.
                 _emit_metric("AutoRegisterGateUnavailable")
-                tenant_id = org_login
+                tenant_id = canonical["tenant_id"]
                 authoritative = False
         else:
-            # Step 4: idempotent refresh of an auto_registered row. Grandfathering
-            # (#2724 design item 5): the gate applies to NEW registrations only,
-            # so rows written before it existed keep working untouched — no
-            # gateway call, no provenance check. But the refresh is not
-            # authoritative on its own: an auto_registered row may itself be a
-            # pre-gate org_login fallback, so we do not re-seed credentials off it.
-            tenant_id = existing.get("org_id") or org_login
+            tenant_id = canonical["tenant_id"]
             authoritative = False
 
         now = datetime.now(UTC).isoformat()
@@ -376,9 +284,11 @@ def _auto_register_installation(
             # Non-clobber path: only write when we would not overwrite a
             # Postgres-owned row that appeared between our read and write.
             try:
-                table.put_item(
-                    Item=forward_item,
-                    ConditionExpression="attribute_not_exists(auto_registered)",
+                put_active_installation(
+                    table,
+                    installation_id,
+                    forward_item,
+                    condition="attribute_not_exists(identity_type)",
                 )
             except Exception as cond_exc:  # noqa: BLE001
                 # ConditionalCheckFailedException → a Postgres-owned row won the
@@ -393,10 +303,10 @@ def _auto_register_installation(
                     )
                     # The winner is a Postgres-owned row, so the mapping is
                     # authoritative regardless of how we got here.
-                    return AutoRegisterResult(tenant_id, True)
+                    return AutoRegisterResult(None, False)
                 raise
         else:
-            table.put_item(Item=forward_item)
+            put_active_installation(table, installation_id, forward_item)
 
         # The forward row is now persisted, so the mapping is live: dispatch
         # reads it and routes on it. From here on a failure is PARTIAL, not
@@ -414,14 +324,16 @@ def _auto_register_installation(
                 }
             ).get("Item")
             if reverse_existing is None or reverse_existing.get("auto_registered"):
-                table.put_item(
-                    Item={
+                put_active_installation(
+                    table,
+                    installation_id,
+                    {
                         "identity_type": "org_installation",
                         "identity_value": tenant_id,
                         "installation_id": installation_id,
                         "updated_at": now,
                         "auto_registered": True,
-                    }
+                    },
                 )
         except Exception as rev_exc:  # noqa: BLE001
             # Issue #4030: do NOT swallow this into a None return. The forward
@@ -444,8 +356,7 @@ def _auto_register_installation(
             return AutoRegisterResult(tenant_id, authoritative)
 
         logger.info(
-            "Auto-registered installation_id=%d → tenant=%s (forward + reverse, "
-            "authoritative=%s)",
+            "Auto-registered installation_id=%d → tenant=%s (forward + reverse, authoritative=%s)",
             installation_id,
             tenant_id,
             authoritative,
@@ -823,9 +734,232 @@ def _resolve_chain_record(correlation_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _job_lineage_context(payload: dict, resolved_identity) -> dict[str, str]:
+    """The new job's OWN tenant / installation / repository (#5663, A09).
+
+    Issue #5663, finding f-7c46ead6. Every field here is server-side:
+    ``tenant_id`` comes from :class:`ResolvedIdentity` (the identity index keyed on
+    the installation id), and ``repo`` / ``installation_id`` come from the webhook
+    payload *after* this Lambda has verified GitHub's HMAC signature over it. None
+    of the three is read from a correlation pointer, a marker, or any other row an
+    agent pod can write — which is the whole point: they are the context the
+    inherited authority is about to be checked *against*.
+    """
+    return {
+        "tenant_id": str(getattr(resolved_identity, "tenant_id", "") or ""),
+        "repo": str((payload.get("repository") or {}).get("full_name") or ""),
+        "installation_id": str((payload.get("installation") or {}).get("id") or ""),
+    }
+
+
+def _lineage_context_mismatch(chain: dict, job_context: dict) -> str | None:
+    """Why this chain row may not lend its human authority to this job, or None.
+
+    Issue #5663 (A09), finding f-7c46ead6. #4129 established that the *values* of
+    the inherited authority come from a server-written ``webhook-events`` row rather
+    than the pod-writable pointer. What it did not establish is that the row is
+    about the same tenant, installation and repository as the job now inheriting
+    from it — only that the job named its ``correlation_id``. A correlation id is an
+    opaque string that appears in PR bodies, issue comments and agent logs, so it is
+    not a secret and cannot function as a capability: an agent worker whose
+    instructions were shaped by text an outsider pasted into an issue can write a
+    pointer naming ANOTHER tenant's human-rooted chain and have this job start
+    holding that human's authority, which the credential broker later reads as
+    licence to release that human's vault secrets.
+
+    The three predicates, and why each is shaped the way it is:
+
+    * **tenant** — exact equality, and a chain row with no tenant is a mismatch.
+      This mirrors ``agent_trigger.handle_agent_trigger``'s #4128 rule ("chain
+      record has no tenant_id" → refuse): absence must narrow, never widen, or
+      omitting the attribute becomes the trivial way around the check.
+    * **installation** — compared only when BOTH sides carry one.
+      ``webhook_events.log_event`` writes ``installation_id`` conditionally (rows
+      from producers that have none simply lack the attribute), so requiring it
+      would drop authority for legitimate non-GitHub-App-rooted chains. Absence
+      widens nothing here because installations are per-tenant and the tenant
+      predicate above already had to hold exactly.
+    * **repository** — delegated to ``agent_trigger._repo_in_tenant``, reused
+      rather than reimplemented so there is one repo↔tenant rule in this Lambda.
+      A blunt repo-equality test would break legitimate #1828 cross-repo lineage
+      (an issue in one repo continuing into a sibling repo of the same org); what
+      that helper accepts is exactly "this repo belongs to the chain's tenant", and
+      it fails closed on an owner it cannot tie back.
+
+    Returns:
+        ``None`` when the chain row may lend its authority to this job, else a
+        short human-readable reason for the log line. Reasons name tenants,
+        repositories and installation ids — identifiers this Lambda already logs —
+        and never credentials or vault material.
+    """
+    job_tenant = job_context.get("tenant_id") or ""
+    chain_tenant = str(chain.get("tenant_id") or "")
+    if not job_tenant:
+        return "this job has no resolved tenant"
+    if not chain_tenant:
+        return "chain row carries no tenant_id"
+    if chain_tenant != job_tenant:
+        return f"tenant chain={chain_tenant} job={job_tenant}"
+
+    chain_installation = str(chain.get("installation_id") or "")
+    job_installation = job_context.get("installation_id") or ""
+    if chain_installation and job_installation and chain_installation != job_installation:
+        return f"installation chain={chain_installation} job={job_installation}"
+
+    chain_repo = str(chain.get("repo") or "")
+    if chain_repo:
+        job_repo = job_context.get("repo") or ""
+        try:
+            from agent_trigger import _repo_in_tenant
+
+            repo_ok = _repo_in_tenant(job_repo, chain_tenant, chain)
+        except Exception as exc:  # noqa: BLE001 — an unresolvable repo is a mismatch
+            logger.warning(
+                "Lineage repo predicate failed for repo=%s tenant=%s: %s — treating as mismatch",
+                job_repo,
+                chain_tenant,
+                exc,
+            )
+            repo_ok = False
+        if not repo_ok:
+            return f"repo chain={chain_repo} job={job_repo}"
+
+    return None
+
+
+def _lineage_binding_enforced() -> bool:
+    """Whether a lineage-context mismatch actually drops the inherited authority.
+
+    Issue #5663 (A09). Enforcement is ON by default: the acceptance criterion is
+    that the check holds "on the default deployment configuration, not only when an
+    optional hardening flag is switched on", and unlike the gateway's 403 paths a
+    mismatch here *narrows* a run's authority rather than refusing the request, so
+    the job still dispatches and no worker stops working. ``LINEAGE_CONTEXT_BINDING``
+    exists only as the documented rollback: set it to ``log_only`` to revert to
+    counting mismatches without acting on them, which is a Lambda configuration
+    change with no redeploy (the Deployment section of #5663 asks for exactly that
+    rollback shape). Any value other than ``log_only`` enforces, so a typo fails
+    closed.
+    """
+    return os.environ.get("LINEAGE_CONTEXT_BINDING", "enforce").strip().lower() != "log_only"
+
+
+def _emit_lineage_binding_metric(metric_name: str) -> None:
+    """Count one lineage-authority decision. Best-effort; never raises (#5663).
+
+    Separate from :func:`_emit_metric`, whose ``Operation`` dimension is pinned to
+    ``AutoRegister``. The dimension value is a literal chosen here, never
+    caller-supplied text — CloudWatch bills per unique dimension combination, so a
+    caller-controlled dimension is a cost amplification primitive.
+    """
+    try:
+        metrics = _get_metrics()
+        metrics._metric_data.append(
+            {
+                "MetricName": metric_name,
+                "Dimensions": [{"Name": "Operation", "Value": "LineageBinding"}],
+                "Value": 1,
+                "Unit": "Count",
+                "Timestamp": time.time(),
+            }
+        )
+        metrics.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to emit lineage metric %s: %s", metric_name, exc)
+
+
+def _resolve_marker_authority(
+    marker: dict,
+    fallback_root_human_id: str,
+    job_context: dict | None,
+) -> tuple[str, bool]:
+    """Resolve a MARKER's claimed human authority against server-written state.
+
+    Issue #5663 (A09), finding f-7c46ead6 — the marker half of the same escalation.
+
+    The first revision of this fix bound only the pointer path
+    (:func:`_resolve_pointer_provenance`). That was incomplete: Rules 2 and 4 of
+    ``determine_correlation`` return marker-borne ``root_human_id`` /
+    ``is_human_rooted`` **directly from the marker dict** and never consult the
+    chain row or the job context at all. Verified against the real function on the
+    default configuration before this fix: a marker naming another tenant's human
+    returned ``root_human_id=<other tenant's human> is_human_rooted=True`` from both
+    branches.
+
+    WHY THE EXISTING SIGNATURE CHECK DOES NOT COVER THIS. Rules 2 and 4 already
+    strip ``is_human_rooted`` from an *unsigned* marker (#3179, #4128). A valid
+    signature is not an authority boundary here, for two independent reasons:
+
+    * The signed input is
+      ``"{correlation_id}:{root_human_id}:{is_human_rooted}:{invocation_id}:{chain_depth}"``
+      (``common/marker_verify.py``) — it commits to no tenant, repository or
+      installation. A signature therefore cannot say *whose* chain this is.
+    * The signing key is a single fleet-wide secret
+      (``infra/lambdas.tf``: one ``marker_signing_key``), readable by every worker in
+      every tenant. So any worker can mint a *valid* signature over any human's id.
+
+    Signing gives integrity, not authorization — exactly the gap the probes above
+    walked through. Widening the signed input to include the tenant would be a
+    protocol change requiring a coordinated producer/consumer rollout and a key
+    rotation; binding to the server-written row needs neither and is the same
+    control already used on the pointer path, so there is ONE rule in this Lambda
+    rather than two.
+
+    The marker's ``correlation_id`` is used only to SELECT the row (it is not a
+    secret and confers nothing); the authority values come from that row, and are
+    carried forward only when :func:`_lineage_context_mismatch` agrees the row is
+    about this job. Unresolvable chain and mismatched chain land in the same place a
+    mismatched pointer does: bot-rooted, no human authority.
+
+    Returns:
+        ``(root_human_id, is_human_rooted)``. The caller keeps owning
+        ``chain_depth``, which is deliberately NOT withheld — see
+        :func:`_resolve_pointer_provenance`; resetting it would widen the recursion
+        bound this refusal is meant to narrow.
+    """
+    chain = _resolve_chain_record(marker.get("correlation_id") or "")
+    if not chain:
+        logger.warning(
+            "No server-written chain row for marker correlation=%s — dropping "
+            "marker-claimed human authority (fail-closed); lineage is still inherited",
+            marker.get("correlation_id"),
+        )
+        return fallback_root_human_id, False
+
+    if job_context is not None:
+        mismatch = _lineage_context_mismatch(chain, job_context)
+        if mismatch is not None:
+            if _lineage_binding_enforced():
+                logger.warning(
+                    "Marker lineage context mismatch for correlation=%s (%s) — "
+                    "dropping marker-claimed human authority; lineage and chain "
+                    "depth are still inherited",
+                    marker.get("correlation_id"),
+                    mismatch,
+                )
+                _emit_lineage_binding_metric("LineageContextMismatchDenied")
+                return fallback_root_human_id, False
+            logger.warning(
+                "Marker lineage context mismatch for correlation=%s (%s) — would "
+                "drop marker-claimed human authority (log_only)",
+                marker.get("correlation_id"),
+                mismatch,
+            )
+            _emit_lineage_binding_metric("LineageContextMismatchWouldDeny")
+        else:
+            _emit_lineage_binding_metric("LineageContextMatched")
+
+    root_human_id = chain.get("root_human_id") or ""
+    is_human_rooted = bool(chain.get("is_human_rooted")) and bool(root_human_id)
+    if not is_human_rooted:
+        return fallback_root_human_id, False
+    return root_human_id, True
+
+
 def _resolve_pointer_provenance(
     pointer: dict,
     fallback_root_human_id: str,
+    job_context: dict | None = None,
 ) -> tuple[str, bool, int | None]:
     """Resolve a pointer's chain provenance from server-written state (#4129).
 
@@ -847,6 +981,19 @@ def _resolve_pointer_provenance(
     legitimate #1828 cross-issue lineage connected on a channel the webhook has
     never seen while granting it no vault access it hasn't earned.
 
+    Issue #5663 (A09), finding f-7c46ead6 — WHICH chain row, not just which field.
+    #4129 stopped the pod from supplying the authority *values*, but the pod still
+    selects the *row* they are read from: the pointer's ``correlation_id`` picks the
+    chain. A correlation id is not a secret (it appears in PR bodies, comments and
+    logs), so naming someone else's chain is not a capability check. This function
+    therefore also requires the resolved row's tenant, installation and repository
+    to match the new job's own server-derived context — see
+    :func:`_lineage_context_mismatch` — and on a mismatch drops human authority to
+    exactly the same place an unresolvable chain lands. Lineage still connects: the
+    ``correlation_id`` and parent edge are unchanged, so the Activity chain view and
+    #1828 cross-repo continuations keep working; only the inherited human authority,
+    which is what the credential broker reads, is withheld.
+
     Args:
         pointer: The row returned by ``correlation_store.read_pointer``. Its
             provenance fields are deliberately IGNORED — passing a forged row is
@@ -855,6 +1002,11 @@ def _resolve_pointer_provenance(
         fallback_root_human_id: Root human to report when the chain cannot be
             resolved. Callers pass the resolved BOT sender id, never anything
             claimed by the event.
+        job_context: The new job's own tenant/installation/repo, from
+            :func:`_job_lineage_context`. ``None`` means "no context available to
+            check against", which keeps the pre-#5663 behaviour for the one caller
+            that genuinely has none rather than silently vacuously passing a check;
+            every in-repo caller passes it.
 
     Returns:
         ``(root_human_id, is_human_rooted, chain_depth)``. ``chain_depth`` is
@@ -870,8 +1022,34 @@ def _resolve_pointer_provenance(
         )
         return fallback_root_human_id, False, None
 
+    # Issue #5663 (A09): the row resolved above must be ABOUT this job before its
+    # human authority may be carried forward.
+    authority_withheld = False
+    if job_context is not None:
+        mismatch = _lineage_context_mismatch(chain, job_context)
+        if mismatch is not None:
+            authority_withheld = _lineage_binding_enforced()
+            logger.warning(
+                "Lineage context mismatch for correlation=%s (%s) — %s inherited "
+                "human authority; lineage and chain depth are still inherited",
+                pointer.get("correlation_id"),
+                mismatch,
+                "dropping" if authority_withheld else "would drop (log_only)",
+            )
+            _emit_lineage_binding_metric(
+                "LineageContextMismatchDenied" if authority_withheld else "LineageContextMismatchWouldDeny"
+            )
+        else:
+            _emit_lineage_binding_metric("LineageContextMatched")
+
     root_human_id = chain.get("root_human_id") or ""
     is_human_rooted = bool(chain.get("is_human_rooted")) and bool(root_human_id)
+    if authority_withheld:
+        # Withhold the HUMAN root only. The depth below is deliberately still taken
+        # from the chain row: a mismatch must narrow this run's authority, and
+        # returning "unknown depth" would reset the counter that bounds recursion —
+        # turning a refusal into the depth reset #4129 exists to prevent.
+        root_human_id, is_human_rooted = "", False
     if not is_human_rooted:
         root_human_id = root_human_id or fallback_root_human_id
 
@@ -881,8 +1059,7 @@ def _resolve_pointer_provenance(
             chain_depth = int(chain_depth)
         except (ValueError, TypeError):
             logger.warning(
-                "Malformed chain_depth=%r on chain row correlation=%s — treating "
-                "as unknown",
+                "Malformed chain_depth=%r on chain row correlation=%s — treating as unknown",
                 chain_depth,
                 pointer.get("correlation_id"),
             )
@@ -900,7 +1077,7 @@ def _resolve_pointer_provenance(
 
 
 def _pr_marker_text_with_issue_fallback(
-    store, repo, pr_body, head_ref, fallback_root_human_id: str = ""
+    store, repo, pr_body, head_ref, fallback_root_human_id: str = "", job_context: dict | None = None
 ) -> tuple[str | None, bool]:
     """Resolve the marker text to use for a PR event's correlation.
 
@@ -921,9 +1098,17 @@ def _pr_marker_text_with_issue_fallback(
     pod-writable row here would forward the forgery straight into a Rule-4 spawn
     on the PR channel — the pointer supplies only the chain id and parent edge.
 
+    Issue #5663 (A09): ``job_context`` is forwarded so the synthesized marker cannot
+    launder a mismatched chain's human authority into the PR channel. Without it
+    this path — trusted by construction — would be the one place the A09 predicates
+    do not run, which is exactly the "incomplete rollout" failure mode the issue's
+    impact table names.
+
     Args:
         fallback_root_human_id: Root human to embed when the chain cannot be
             resolved server-side. Callers pass the resolved sender's id.
+        job_context: The PR event's own tenant/installation/repo, from
+            :func:`_job_lineage_context`.
 
     Returns:
         A ``(marker_text, trusted)`` tuple. ``trusted`` is True ONLY for the
@@ -945,7 +1130,7 @@ def _pr_marker_text_with_issue_fallback(
     if not issue_pointer:
         return pr_body, False
     root_human_id, is_human_rooted, chain_depth = _resolve_pointer_provenance(
-        issue_pointer, fallback_root_human_id
+        issue_pointer, fallback_root_human_id, job_context
     )
     return (
         f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
@@ -1002,7 +1187,17 @@ def determine_correlation(
     start. Nothing about WHERE the depth is sourced from changed: the #4129
     server-written-row resolution and the #4128 no-silent-reset hardening are
     untouched, so a caller still cannot reset or forge it.
+
+    Issue #5663 (A09): the job's own tenant/installation/repo context is derived
+    HERE, from the signed payload and the resolved identity, rather than accepted as
+    a parameter. Both call sites in this module already hold those values, so a
+    parameter would only add a way for a future caller to pass the wrong one — and
+    an argument that can be omitted is an authority check that can be skipped. The
+    context is then handed to :func:`_resolve_pointer_provenance`, which refuses to
+    carry a mismatched chain's human authority forward.
     """
+    # Issue #5663 (A09): server-derived; see _job_lineage_context.
+    job_context = _job_lineage_context(payload, resolved_identity)
     # Human senders ALWAYS start a new chain
     if resolved_identity.user_kind == "human":
         return {
@@ -1100,7 +1295,7 @@ def determine_correlation(
             # row is pod-writable, so trusting it here is the laundering hop
             # that turns a forged pointer into a server-blessed authority.
             root_human_id, is_human_rooted, pointer_depth = _resolve_pointer_provenance(
-                pointer, resolved_identity.user_id
+                pointer, resolved_identity.user_id, job_context
             )
             inherited_depth = pointer_depth if pointer_depth is not None else 0
             return {
@@ -1131,8 +1326,7 @@ def determine_correlation(
             # but may NOT claim human-rooted authority.
             marker_depth = marker.get("chain_depth")
             inherited_depth = marker_depth if marker_depth is not None else 0
-            claims_human_rooted = marker.get("is_human_rooted", False)
-            if marker_sig is None and claims_human_rooted:
+            if marker_sig is None and marker.get("is_human_rooted", False):
                 logger.warning(
                     "Rule-2 unsigned marker claims is_human_rooted=true — "
                     "stripping authority (fail-closed): correlation_id=%s, "
@@ -1141,12 +1335,20 @@ def determine_correlation(
                     marker.get("root_human_id"),
                     resolved_identity.user_id,
                 )
-                claims_human_rooted = False
+            # Issue #5663 (A09): the human authority is resolved from the chain's
+            # server-written row and checked against THIS job's context, replacing
+            # the marker's own claim. This subsumes the unsigned-marker strip above
+            # (kept for its log line): a signature is not an authority boundary
+            # here, because the signed input names no tenant and the signing key is
+            # fleet-wide — see _resolve_marker_authority.
+            root_human_id, is_human_rooted = _resolve_marker_authority(
+                marker, resolved_identity.user_id, job_context
+            )
             return {
                 "correlation_id": marker["correlation_id"],
-                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "root_human_id": root_human_id,
                 "triggered_by": resolved_identity.user_id,
-                "is_human_rooted": claims_human_rooted,
+                "is_human_rooted": is_human_rooted,
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
                 # Issue #4268: inherited unchanged — spawn_persona owns the increment.
@@ -1157,7 +1359,7 @@ def determine_correlation(
         # Pointer only — same-channel continuation.
         # Issue #4129: same server-side resolution as the pointer+marker branch.
         root_human_id, is_human_rooted, pointer_depth = _resolve_pointer_provenance(
-            pointer, resolved_identity.user_id
+            pointer, resolved_identity.user_id, job_context
         )
         inherited_depth = pointer_depth if pointer_depth is not None else 0
         return {
@@ -1197,37 +1399,33 @@ def determine_correlation(
                 marker.get("correlation_id"),
                 resolved_identity.user_id,
             )
-        elif sig_result is None and marker.get("is_human_rooted", False):
-            # Unsigned marker claiming human-rooted authority in Rule-4 position.
-            # Fail-closed: strip is_human_rooted (cannot be trusted without sig).
-            logger.warning(
-                "Rule-4 unsigned marker claims is_human_rooted=true — "
-                "stripping authority (fail-closed): correlation_id=%s, sender=%s",
-                marker.get("correlation_id"),
-                resolved_identity.user_id,
-            )
-            marker_depth = marker.get("chain_depth")
-            inherited_depth = marker_depth if marker_depth is not None else 0
-            return {
-                "correlation_id": marker["correlation_id"],
-                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
-                "triggered_by": resolved_identity.user_id,
-                "is_human_rooted": False,  # Stripped — unsigned, fail-closed
-                "is_new_chain": False,
-                "parent_invocation_id": marker.get("invocation_id"),
-                # Issue #4268: inherited unchanged — spawn_persona owns the increment.
-                "chain_depth": inherited_depth,
-            }
         else:
-            # sig_result is True (verified) or None with is_human_rooted=False
-            # (no escalation concern) — trust the marker.
+            if sig_result is None and marker.get("is_human_rooted", False):
+                # Unsigned marker claiming human-rooted authority in Rule-4 position
+                # (#3179). Kept for the log line; the resolution below is what
+                # actually decides, and it does not consult the marker's claim.
+                logger.warning(
+                    "Rule-4 unsigned marker claims is_human_rooted=true — "
+                    "stripping authority (fail-closed): correlation_id=%s, sender=%s",
+                    marker.get("correlation_id"),
+                    resolved_identity.user_id,
+                )
+            # Issue #5663 (A09): a VERIFIED signature used to be enough to carry
+            # marker-borne root_human_id / is_human_rooted straight through. It is
+            # not an authority boundary — the signed input commits to no tenant and
+            # the signing key is fleet-wide, so any tenant's worker can mint a valid
+            # signature naming any human. Resolve from the chain's server-written row
+            # and require it to be about this job. See _resolve_marker_authority.
             marker_depth = marker.get("chain_depth")
             inherited_depth = marker_depth if marker_depth is not None else 0
+            root_human_id, is_human_rooted = _resolve_marker_authority(
+                marker, resolved_identity.user_id, job_context
+            )
             return {
                 "correlation_id": marker["correlation_id"],
-                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "root_human_id": root_human_id,
                 "triggered_by": resolved_identity.user_id,
-                "is_human_rooted": marker.get("is_human_rooted", False),
+                "is_human_rooted": is_human_rooted,
                 "is_new_chain": False,
                 "parent_invocation_id": marker.get("invocation_id"),
                 # Issue #4268: inherited unchanged — spawn_persona owns the increment.
@@ -1346,6 +1544,13 @@ def handler(event: dict, context) -> dict:
     Returns:
         Response dict (API Gateway format or plain dict for EventBridge).
     """
+    # The recovery alias, not request content, selects this privileged path.
+    # Check it before generic EventBridge routing so ordinary schedules remain unchanged.
+    from common import task_dispatch
+
+    if task_dispatch.invoked_alias(context) == task_dispatch.RECOVERY_ALIAS:
+        return task_dispatch.handle_recovery_event(event, context)
+
     # Issue #2154: shape-based routing for EventBridge events
     if _is_eventbridge_event(event):
         from eventbridge.handler import handle_eventbridge
@@ -1359,6 +1564,15 @@ def handler(event: dict, context) -> dict:
         from agent_trigger import handle_agent_trigger
 
         return handle_agent_trigger(event, context)
+
+    # Issue #5795: dispatch POST /v1/tasks to the Task API handler. The import
+    # is local to this branch so a task-only import or initialization failure
+    # cannot affect the GitHub, EventBridge or agent-trigger paths above
+    # (T2-AC04); the route is authenticated by the gateway, not by HMAC.
+    if resource == "/v1/tasks":
+        from task_api.handler import handle_task_submit
+
+        return handle_task_submit(event, context)
 
     start_time = time.time()
     print("DBG handler:start")
@@ -1654,8 +1868,10 @@ def handler(event: dict, context) -> dict:
             head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
             # Issue #4128: marker_trusted is True only for the server-synthesized
             # fallback marker; a marker read out of the PR body is verified.
+            # Issue #5663 (A09): pass this PR event's own server-derived context so
+            # the synthesized marker cannot carry a mismatched chain's human root.
             marker_text, marker_trusted = _pr_marker_text_with_issue_fallback(
-                store, repo, pr_body, head_ref, resolved.user_id
+                store, repo, pr_body, head_ref, resolved.user_id, _job_lineage_context(payload, resolved)
             )
             correlation_ctx = determine_correlation(
                 payload,
@@ -1748,9 +1964,7 @@ def handler(event: dict, context) -> dict:
             delivery_id=headers.get("x-github-delivery", "") if is_engine_command else "",
             sender_type=str(sender.get("type", "")) if is_engine_command else "",
             repo_id=(
-                int(payload.get("repository", {}).get("id", 0) or 0)
-                if is_engine_command
-                else 0
+                int(payload.get("repository", {}).get("id", 0) or 0) if is_engine_command else 0
             ),
         )
         # Echo the reason in the body for parity with the guard-block response
@@ -1788,10 +2002,19 @@ def handler(event: dict, context) -> dict:
     model_resolved = None
     model_canonical = None
     if model_requested:
-        from common.model_validate import resolve_canonical_override, resolve_legacy_assignment
+        from common.model_validate import (
+            resolve_canonical_override,
+            resolve_codex_assignment,
+            resolve_legacy_assignment,
+        )
+        from common.personas import PERSONA_COMPATIBILITY_CLASS
 
-        model_resolved = resolve_legacy_assignment(model_requested)
-        model_canonical = resolve_canonical_override(model_requested)
+        if PERSONA_COMPATIBILITY_CLASS.get(intent.persona) == "codex-sdk":
+            model_resolved = resolve_codex_assignment(model_requested)
+            model_canonical = model_resolved
+        else:
+            model_resolved = resolve_legacy_assignment(model_requested)
+            model_canonical = resolve_canonical_override(model_requested)
         if model_resolved:
             logger.info(
                 "handler: /model directive resolved %r -> %r (proposed=%r)",
@@ -1820,11 +2043,7 @@ def handler(event: dict, context) -> dict:
     # PAT instead of minting an App installation token. Absent = App default.
     resolver_mod_for_token = _get_identity_resolver()
     tenant_item = getattr(resolver_mod_for_token, "last_tenant_item", None)
-    token_source = (
-        tenant_item.get("token_source_override")
-        if tenant_item
-        else None
-    )
+    token_source = tenant_item.get("token_source_override") if tenant_item else None
 
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
@@ -1838,13 +2057,20 @@ def handler(event: dict, context) -> dict:
     }
 
     trusted_human_event = None
-    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and resolved.user_kind == "human":
+    if (
+        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        and resolved.user_kind == "human"
+    ):
         from common.agent_authority import AuthorityProvisionError, VerifiedHumanEvent
 
         try:
             trusted_human_event = VerifiedHumanEvent.from_verified_webhook(
-                body=body_bytes, event_type=event_type, resolved=resolved, sender=sender,
-                tenant_id=tenant_id, repo=repo,
+                body=body_bytes,
+                event_type=event_type,
+                resolved=resolved,
+                sender=sender,
+                tenant_id=tenant_id,
+                repo=repo,
             )
         except AuthorityProvisionError:
             return _response(403, {"error": "human_authority_refused"})

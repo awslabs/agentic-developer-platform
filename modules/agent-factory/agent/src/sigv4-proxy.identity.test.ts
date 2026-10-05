@@ -7,7 +7,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-test.each(['protected', 'shared'])('%s model requests use refreshed supervisor proof and preserve bytes', async (mode) => {
+test.each(['protected', 'shared', 'protected-responses'])('%s model requests use refreshed supervisor proof and preserve bytes', async (mode) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adp-proxy-identity-'));
   const key = path.join(dir, 'key.pem');
   const cert = path.join(dir, 'cert.pem');
@@ -51,7 +51,7 @@ test.each(['protected', 'shared'])('%s model requests use refreshed supervisor p
         AWS_ENDPOINT_URL_STS: `https://127.0.0.1:${receiverPort}/sts`,
         ADP_WORKER_IRSA_ROLE_ARN: 'arn:aws:iam::123456789012:role/worker', ADP_WORKER_IRSA_TOKEN_FILE: irsa,
         AWS_ROLE_ARN: '', AWS_PROFILE: '', AWS_EC2_METADATA_DISABLED: 'true',
-        ADP_AGENT_AUTHORITY_ENABLED: mode === 'protected' ? 'true' : 'false',
+        ADP_AGENT_AUTHORITY_ENABLED: mode.startsWith('protected') ? 'true' : 'false',
         ADP_RUN_CREDENTIAL_FILE: credential, ADP_WORKLOAD_TOKEN_FILE: workload,
         ADP_RUN_REPORT_CREDENTIAL_FILE: mode === 'shared' ? credential : '',
         ADP_MESSAGE_ID: 'protected-run', TENANT_ID: 'protected-tenant', NODE_EXTRA_CA_CERTS: cert, NODE_TLS_REJECT_UNAUTHORIZED: '1',
@@ -67,9 +67,10 @@ test.each(['protected', 'shared'])('%s model requests use refreshed supervisor p
         if (String(data).includes('[sigv4-proxy]')) { clearTimeout(timer); resolve(); }
       });
     });
-    const bytes = Buffer.from('{  "literal": "a\\nb", "messages": [] }');
+    const responses = mode === 'protected-responses';
+    const bytes = responses ? Buffer.from('{"model":"openai.gpt-6-sol","input":"hello"}') : Buffer.from('{  "literal": "a\\nb", "messages": [] }');
     const request = () => new Promise<number>((resolve, reject) => {
-      const req = http.request({ hostname: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: {
+      const req = http.request({ hostname: '127.0.0.1', port, path: responses ? '/openai/v1/responses' : '/v1/messages', method: 'POST', headers: {
         'content-type': 'application/json', 'content-length': bytes.length,
         'x-adp-run-credential': 'forged', 'x-adp-workload-token': 'forged', 'x-agent-runid': 'forged',
         'x-adp-report-credential': 'forged-report',
@@ -81,15 +82,21 @@ test.each(['protected', 'shared'])('%s model requests use refreshed supervisor p
     if (firstStatus !== 200) throw new Error(`Proxy returned ${firstStatus}: ${proxyErrors}`);
     fs.writeFileSync(credential, 'refreshed-credential\n');
     expect(await request()).toBe(200);
-    const ownHeader = mode === 'protected' ? 'x-adp-run-credential' : 'x-adp-report-credential';
+    const ownHeader = mode.startsWith('protected') ? 'x-adp-run-credential' : 'x-adp-report-credential';
     expect(captures.map(c => c.headers[ownHeader])).toEqual(['current-credential', 'refreshed-credential']);
     for (const capture of captures) {
-      expect(capture.headers['x-adp-workload-token']).toBe(mode === 'protected' ? 'current-pod' : undefined);
-      expect(capture.headers[mode === 'protected' ? 'x-adp-report-credential' : 'x-adp-run-credential']).toBeUndefined();
+      expect(capture.headers['x-adp-workload-token']).toBe(mode.startsWith('protected') ? 'current-pod' : undefined);
+      expect(capture.headers[mode.startsWith('protected') ? 'x-adp-report-credential' : 'x-adp-run-credential']).toBeUndefined();
       expect(capture.headers['x-agent-runid']).toBe('protected-run');
       expect(capture.headers.authorization).toContain('Credential=LOCAL_PLATFORM_KEY/');
       expect(capture.headers.authorization).toContain('/us-east-1/execute-api/');
-      expect(capture.body.equals(bytes)).toBe(true);
+      if (responses) {
+        expect(JSON.parse(capture.body.toString())).toEqual({ model: 'openai.gpt-6-sol', input: 'hello', max_output_tokens: 16384 });
+        expect(capture.headers['content-length']).toBe(String(capture.body.length));
+        expect(capture.headers['x-amz-content-sha256']).toBe(require('node:crypto').createHash('sha256').update(capture.body).digest('hex'));
+      } else {
+        expect(capture.body.equals(bytes)).toBe(true);
+      }
     }
     expect(assumptions.length).toBeGreaterThan(0);
     for (const assumption of assumptions) {

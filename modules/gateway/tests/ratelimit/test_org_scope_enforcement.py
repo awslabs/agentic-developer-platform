@@ -19,7 +19,7 @@ from src.shared.schemas.auth import TokenContext
 async def test_authored_limit_throttles_its_member(db_session, entity_type, entity_id):
     """Reverting the enum to 'organization' makes the org case allow excess requests."""
     await AdminService(db_session).create_ratelimit("acme", RateLimitCreateRequest(entity_type=entity_type, entity_id=entity_id, rpm=2))
-    limiter = RateLimitService(config=RateLimitConfig(default_rpm=10000, burst_multiplier=1, refill_buffer_seconds=60))
+    limiter = RateLimitService(config=RateLimitConfig(backend_type="memory", default_rpm=10000, burst_multiplier=1, refill_buffer_seconds=60))
 
     @asynccontextmanager
     async def session():

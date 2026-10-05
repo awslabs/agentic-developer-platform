@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.persona_models.catalogue import PLATFORM_MODEL_CATALOGUE
+from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_PERSONAS, NATIVE_PROBE_REVISION, native_request_shape
 from src.admin.persona_models.request_shape_manifest import expected_request_shape, request_shape_manifest
 from src.proxy.bedrock_routing import BedrockTarget
 from src.proxy.bedrock_signing import DestinationCredentials, bedrock_destination_signer
@@ -27,6 +28,7 @@ from src.shared.models.persona_model_catalogue import (
     ModelProbeCycle,
     ModelProbeSlot,
 )
+from src.tasks.personas import TASK_PERSONAS
 
 Trigger = Literal["scheduled", "manual", "change"]
 Outcome = Literal["proven", "refused", "error"]
@@ -128,8 +130,46 @@ async def _expire_leases(db: AsyncSession, now: datetime) -> None:
         slot.updated_at = now
 
 
-async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> ClaimResult:
+@dataclass(frozen=True)
+class ProbeProfile:
+    canonical_model_id: str
+    compatibility_class: str
+    harness_contract_revision: str
+    digest: str | None
+
+
+def _probe_profiles(task_persona: str | None, native_persona: str | None = None):
+    if native_persona is not None:
+        return tuple(
+            ProbeProfile(model.canonical_model_id, "codex-sdk", NATIVE_PROBE_REVISION, digest)
+            for model in PLATFORM_MODEL_CATALOGUE
+            if model.compatibility_class == "codex-sdk" and (digest := native_request_shape(native_persona, model.canonical_model_id))
+        )
+    if task_persona is not None:
+        profile = TASK_PERSONAS[task_persona]
+        return tuple(
+            ProbeProfile(model.canonical_model_id, profile.compatibility_class, profile.harness_contract_revision, profile.request_shape_sha256)
+            for model in PLATFORM_MODEL_CATALOGUE
+            if model.compatibility_class == ("codex-sdk" if profile.compatibility_class == "codex-sdk" else "claude-agent-sdk")
+        )
+    return tuple(
+        ProbeProfile(
+            model.canonical_model_id, model.compatibility_class, model.harness_contract_revision, expected_request_shape(model.canonical_model_id)
+        )
+        for model in PLATFORM_MODEL_CATALOGUE
+    )
+
+
+async def claim_probe(
+    db: AsyncSession, *, trigger: Trigger = "scheduled", task_persona: str | None = None, native_persona: str | None = None
+) -> ClaimResult:
     """Atomically reserve a Gateway-selected destination/model and worst-case spend."""
+    if task_persona is not None and task_persona not in TASK_PERSONAS:
+        raise ProbeConflictError("unknown_task_persona", "Unknown Task probe profile")
+    if task_persona is not None and TASK_PERSONAS[task_persona].compatibility_class not in {"anthropic_messages", "codex-sdk"}:
+        raise ProbeConflictError("unsupported_task_probe_transport", "Task probe worker does not support this transport")
+    if native_persona is not None and (native_persona not in NATIVE_PROBE_PERSONAS or task_persona is not None):
+        raise ProbeConflictError("unknown_native_persona", "Choose one registered native probe profile")
     settings = get_settings()
     if reason := _configuration_reason(settings):
         return ClaimResult(claimed=False, reason=reason)
@@ -194,10 +234,10 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
 
     candidate: tuple[BedrockDestinationRegistry, object] | None = None
     for destination in destinations:
-        for model in PLATFORM_MODEL_CATALOGUE:
+        for model in _probe_profiles(task_persona, native_persona):
             if settings.model_probe_model_allowlist and model.canonical_model_id not in settings.model_probe_model_allowlist:
                 continue
-            expected_digest = expected_request_shape(model.canonical_model_id)
+            expected_digest = model.digest
             if expected_digest is None:
                 continue
             paid_or_live_attempt = await db.scalar(
@@ -250,7 +290,7 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
         return ClaimResult(claimed=False, reason="no_candidates")
 
     destination, model = candidate
-    expected_digest = expected_request_shape(model.canonical_model_id)
+    expected_digest = model.digest
     if expected_digest is None:  # guarded in the candidate loop; fail closed if the manifest changes mid-call
         await db.rollback()
         return ClaimResult(claimed=False, reason="no_candidates")

@@ -10,6 +10,29 @@ import yaml
 
 SUPERPLANE = Path("modules/domain-apps/superplane")
 BUILD_CONFIG = {
+    # This detached-check fixture requires only POSIX sh/coreutils. Reuse the
+    # reviewed scan Python base rather than leaving its required ARG empty.
+    "modules/agent-factory/codex-harness/test/fixtures/detached-checks/Dockerfile": {
+        "build_arg_env": {"BASE_IMAGE": "SECURITY_EXECUTOR_PYTHON_IMAGE"},
+    },
+    "modules/tools/agentcore/Dockerfile": {"context": "."},
+    "modules/tools/validation/Dockerfile": {"context": "."},
+    "platform/security/openssh-high/Dockerfile": {"context": "."},
+    "platform/security/skypilot-openssh/Dockerfile": {"context": "."},
+    "modules/agent-context/images/parser/Dockerfile": {"context": "modules/agent-context/images/ingestion"},
+    "modules/domain-apps/cyber/tools/Dockerfile": {"context": "."},
+    "modules/domain-apps/cyber/browser/Dockerfile": {"context": "."},
+    "modules/domain-apps/cyber/workers/Dockerfile": {"context": "modules/domain-apps/cyber"},
+    "modules/domain-apps/superplane/tests/acceptance/workloads/Dockerfile": {
+        "build_arg_env": {"PYTORCH_IMAGE": "SECURITY_PYTORCH_IMAGE"},
+    },
+    "platform/automation-infra/Dockerfile": {
+        "build_arg_env": {"RUNNER_IMAGE": "SECURITY_RUNNER_IMAGE"},
+    },
+    "modules/domain-apps/superplane/executor/Dockerfile": {
+        "context": ".",
+        "build_arg_env": {"PYTHON_IMAGE": "SECURITY_EXECUTOR_PYTHON_IMAGE"},
+    },
     "modules/agent-context/images/context-mcp/Dockerfile": {
         "prepare": [
             ["copy-tree", "modules/agent-context/door", "modules/agent-context/images/context-mcp/door"],
@@ -20,11 +43,15 @@ BUILD_CONFIG = {
         "prepare": [
             ["copy-tree", "modules/agent-context/pipeline", "modules/agent-context/images/ingestion/pipeline"],
             ["copy-tree", "modules/agent-context/alembic", "modules/agent-context/images/ingestion/alembic"],
+            ["copy-tree", "modules/agent-context/personal_context", "modules/agent-context/images/ingestion/personal_context"],
         ],
     },
     "modules/agent-factory/agent-worker-image/Dockerfile": {"context": "."},
     "modules/agent-factory/agent/Dockerfile": {"context": "modules/agent-factory"},
-    "modules/agent-factory/gateway/Dockerfile": {"context": "modules/agent-factory"},
+    "modules/agent-factory/gateway/Dockerfile": {
+        "context": "modules/agent-factory",
+        "prepare": [["run", "bash", "modules/agent-factory/scripts/stage-security-bundles.sh"]],
+    },
     "modules/domain-apps/superplane/src/superplane-api/Dockerfile": {
         "prepare": [["run", "bash", "modules/domain-apps/superplane/src/superplane-api/scripts/stage-domain-auth.sh"]],
     },
@@ -33,6 +60,16 @@ BUILD_CONFIG = {
     },
     "modules/research/gbrain/docker/Dockerfile": {"context": "modules/research/gbrain"},
 }
+
+# Keep scanner builds on the same canonical source bundles as release builds.
+for _image in ("codegraph-context", "ingestion", "context-mcp", "litellm-proxy", "parser", "deepwiki"):
+    _dockerfile = f"modules/agent-context/images/{_image}/Dockerfile"
+    _build = BUILD_CONFIG.setdefault(_dockerfile, {})
+    _context = _build.get("context", str(Path(_dockerfile).parent))
+    _prepare = _build.setdefault("prepare", [])
+    _prepare.append(["copy-tree", "modules/gateway/security/stdlib", f"{_context}/security-stdlib"])
+    if _image in ("codegraph-context", "ingestion"):
+        _prepare.append(["copy-tree", "modules/agent-context/images/shared", f"{_context}/security-build"])
 
 
 def discover(root: Path, scope: str = "all") -> list[dict]:
@@ -53,6 +90,7 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
             "dockerfile": dockerfile,
             "context": build.get("context", str(Path(dockerfile).parent)),
             "prepare": build.get("prepare", []),
+            "build_arg_env": build.get("build_arg_env", {}),
             "image": "-",
             "required": dockerfile in required,
         })

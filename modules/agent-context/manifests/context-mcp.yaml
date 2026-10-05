@@ -32,17 +32,37 @@ spec:
       app.kubernetes.io/name: context-mcp
   template:
     metadata:
+      annotations:
+        adp.dev/door-verification-keys: "${DOOR_VERIFICATION_KEYS_SHA256}"
+      # These services do not run a JVM; omit the unused Java agent and JARs.
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
       labels:
         app.kubernetes.io/name: context-mcp
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: mcp-server
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: context-mcp
         image: ${CONTEXT_MCP_IMAGE}
         securityContext:
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 5100
           name: http
@@ -61,25 +81,20 @@ spec:
               name: agent-context-secrets
               key: DATABASE_URL
               optional: true
-        # Shared secret every Door caller must present (#4073 finding #8).
-        #
-        # Reuses the gateway internal-api-key already bridged into this
-        # namespace as agent-context-gateway-callback by agent-context-deploy.yml
-        # (and by deploy.sh) — the same value the gateway's /internal/v1/* plane
-        # accepts, so no caller needs a new credential type.
-        #
-        # optional: true is deliberate and does NOT fail open. If the secret is
-        # absent DOOR_API_KEY is unset, and door/auth.py rejects every
-        # authenticated path with 503 "not_configured". Making it required
-        # instead would block pod creation on a missing secret, which is a worse
-        # failure mode for the same security outcome (nothing is served either
-        # way) and would take out /health with it.
-        - name: DOOR_API_KEY
+        # Private backend credential; never shared with Door callers.
+        - name: ZOEKT_API_KEY
           valueFrom:
             secretKeyRef:
-              name: agent-context-gateway-callback
-              key: internal-api-key
-              optional: true
+              name: zoekt-backend-auth
+              key: api-key
+        - name: DOOR_VERIFICATION_KEYS
+          valueFrom:
+            configMapKeyRef:
+              name: agent-context-door-identity
+              key: keys.json
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: "250m"
@@ -87,9 +102,16 @@ spec:
           limits:
             cpu: "1"
             memory: "1Gi"
+        # Readiness is NOT the same question as liveness here (#5658).
+        #
+        # /ready reports 503 while the ACL store is unreachable, so a Door that
+        # cannot authorise a read is pulled from Service endpoints instead of
+        # receiving traffic it would have to refuse. /health stays on liveness:
+        # the process is alive and its error is observable, so restarting it
+        # would only hide the misconfiguration in a crash loop.
         readinessProbe:
           httpGet:
-            path: /health
+            path: /ready
             port: 5100
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -103,6 +125,10 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 5
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
 ---
 apiVersion: v1
 kind: Service
@@ -122,3 +148,17 @@ spec:
     targetPort: 5100
     protocol: TCP
   type: ClusterIP
+
+---
+# Keep one ready replica through voluntary node consolidation. Deployment
+# rollouts still follow the strategy configured above.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: context-mcp
+  namespace: ${NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: context-mcp

@@ -775,6 +775,7 @@ async def close(
             """
             UPDATE harness_operation_leases
                SET closed_at = clock_timestamp(), closed_reason = $3,
+                   closed_holder=holder, closed_attempt_id=attempt_id,
                    holder = NULL, expires_at = NULL, acquired_at = NULL,
                    runtime_deadline = NULL, attempt_id = NULL, updated_at = now()
              WHERE operation_id = $1 AND closed_at IS NULL
@@ -803,6 +804,7 @@ async def fence_expired_lease(
     connection: Connection,
     *,
     operation_id: str,
+    recovery_principal=None,
 ) -> ExpiredLeaseTakeover | None:
     """Claim recovery for 60 seconds without consuming an execution attempt.
 
@@ -810,6 +812,13 @@ async def fence_expired_lease(
     crashes, its finite lease can itself be recovered. Every later write must still
     present this claim; a slow observer never grants authority over a successor.
     """
+    from .identity import OperationRefused, ResolvedPrincipal
+
+    if recovery_principal is not None and (
+        not isinstance(recovery_principal, ResolvedPrincipal)
+        or "workspace:recover" not in recovery_principal.permissions
+    ):
+        raise OperationRefused("authenticated workspace:recover principal required")
     holder = "recovery:" + str(uuid4())
     async with connection.transaction():
         # A provider hook holds this same operation-specific advisory lock across
@@ -821,12 +830,17 @@ async def fence_expired_lease(
             return None
         # All paths that touch operation and lease lock in this order.
         operation = await connection.fetchrow(
-            "SELECT cancel_requested_at FROM harness_operations "
+            "SELECT cancel_requested_at,org_id,workspace_id FROM harness_operations "
             "WHERE operation_id=$1 FOR UPDATE",
             operation_id,
         )
         if operation is None:
             return None
+        if recovery_principal is not None and (
+            operation["org_id"],
+            operation["workspace_id"],
+        ) != (recovery_principal.org_id, recovery_principal.workspace_id):
+            raise OperationRefused("recovery operation outside authenticated scope")
         row = await connection.fetchrow(
             f"""
             UPDATE harness_operation_leases
@@ -846,6 +860,20 @@ async def fence_expired_lease(
         if row is None:
             return None
         lease = _lease(row)
+        if recovery_principal is not None:
+            await connection.execute(
+                "INSERT INTO harness_recovery_claim_bindings "
+                "(operation_id,fence_token,org_id,workspace_id,"
+                "holder,attempt_id,subject) "
+                "VALUES($1,$2,$3,$4,$5,$6,$7)",
+                lease.operation_id,
+                lease.fence_token,
+                lease.org_id,
+                lease.workspace_id,
+                lease.holder,
+                lease.attempt_id,
+                recovery_principal.subject,
+            )
         from .execution import audit
 
         await audit(

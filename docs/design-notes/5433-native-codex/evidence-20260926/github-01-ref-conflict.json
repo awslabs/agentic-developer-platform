@@ -1,0 +1,193 @@
+{
+  "model": "openai.gpt-6-sol",
+  "effort": "medium",
+  "status": "failed",
+  "error": {
+    "schema_version": "1.0",
+    "outcome": "failed",
+    "code": "process_failed",
+    "message": "Codex Task model bridge failed: request_contract_invalid.",
+    "committed_at": "2026-09-26T19:25:03Z",
+    "child_exit_confirmed": true,
+    "recovery_required": false,
+    "total_usd": null
+  },
+  "final_messages": [
+    "I\u2019ll read `retry-delay.js` and repository guidance, then implement and validate it.",
+    "The module is a small stub. I\u2019ll add validation and capped jitter, including large-attempt handling.",
+    "I spotted a zero-base edge case that could loop indefinitely for huge attempts; I\u2019ll fix it.",
+    "The final file review is complete. I\u2019ll commit the scoped change, then run acceptance.",
+    "Acceptance passed all 28 cases on the committed tree. I\u2019ll publish the ready PR."
+  ],
+  "runtime_source": {
+    "commit": "b0d5c1b2c4f37e55c2597a8fc205e4ad04614bc0",
+    "dirty": true,
+    "diff_sha256": "da46034ea22d13632d54f7f8af247295508b592e5bd5f99ee782d83943bb358e"
+  },
+  "validation_image": "sha256:12ce6be82bed29b72198e4fdf3e51649aad17ab037d05975112b5fec0a2adf1d",
+  "model_calls": [
+    {
+      "provider_request_id": "dfc16b5c-853d-40b7-9fbd-1b27d79d262d",
+      "duration_seconds": 1.828,
+      "usage": {
+        "input_tokens": 6016,
+        "input_tokens_details": {
+          "cache_write_tokens": 6014,
+          "cached_tokens": 0
+        },
+        "output_tokens": 106,
+        "output_tokens_details": {
+          "reasoning_tokens": 24
+        },
+        "total_tokens": 6122
+      }
+    },
+    {
+      "provider_request_id": "ba39e1d2-93e1-4373-91ec-3462935bd8af",
+      "duration_seconds": 12.545,
+      "usage": {
+        "input_tokens": 6379,
+        "input_tokens_details": {
+          "cache_write_tokens": 363,
+          "cached_tokens": 6014
+        },
+        "output_tokens": 1632,
+        "output_tokens_details": {
+          "reasoning_tokens": 1116
+        },
+        "total_tokens": 8011
+      }
+    },
+    {
+      "provider_request_id": "7cf5e9e5-3c01-4739-a9e2-93f188732f62",
+      "duration_seconds": 6.09,
+      "usage": {
+        "input_tokens": 8212,
+        "input_tokens_details": {
+          "cache_write_tokens": 1833,
+          "cached_tokens": 6377
+        },
+        "output_tokens": 861,
+        "output_tokens_details": {
+          "reasoning_tokens": 337
+        },
+        "total_tokens": 9073
+      }
+    },
+    {
+      "provider_request_id": "fadb90d0-5733-4355-bf2e-4ea7666d3a28",
+      "duration_seconds": 1.835,
+      "usage": {
+        "input_tokens": 9273,
+        "input_tokens_details": {
+          "cache_write_tokens": 1061,
+          "cached_tokens": 8210
+        },
+        "output_tokens": 96,
+        "output_tokens_details": {
+          "reasoning_tokens": 39
+        },
+        "total_tokens": 9369
+      }
+    },
+    {
+      "provider_request_id": "68338518-1b0c-4663-af01-7e2a5fa6d12b",
+      "duration_seconds": 1.459,
+      "usage": {
+        "input_tokens": 9968,
+        "input_tokens_details": {
+          "cache_write_tokens": 695,
+          "cached_tokens": 9271
+        },
+        "output_tokens": 94,
+        "output_tokens_details": {
+          "reasoning_tokens": 7
+        },
+        "total_tokens": 10062
+      }
+    },
+    {
+      "provider_request_id": "8f1012d6-911b-43ed-8847-2d16aae72aa0",
+      "duration_seconds": 1.436,
+      "usage": {
+        "input_tokens": 10299,
+        "input_tokens_details": {
+          "cache_write_tokens": 331,
+          "cached_tokens": 9966
+        },
+        "output_tokens": 81,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 10380
+      }
+    },
+    {
+      "provider_request_id": "d65250ed-62b7-4cc9-8724-d0272e2a70c4",
+      "duration_seconds": 2.044,
+      "usage": {
+        "input_tokens": 10728,
+        "input_tokens_details": {
+          "cache_write_tokens": 429,
+          "cached_tokens": 10297
+        },
+        "output_tokens": 227,
+        "output_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "total_tokens": 10955
+      }
+    }
+  ],
+  "tool_effects": 7,
+  "publication": null,
+  "manifest": {
+    "schema_version": "1.0",
+    "provider": "github",
+    "repository_id": "1186991269",
+    "repository": "aws-e/adp",
+    "source_revision": "23a931a5314468dbbef699c5c7eeb831f9c7eefd",
+    "local_head": "452991a3abe7b07791c503945e0cff7f842433d4",
+    "base_tree": "d50b89a903c2093113a2172304e1be6d1141ccac",
+    "tree": "abfb8bc86a8a958a1e01e141de8758ac45c492fd",
+    "changes": [
+      {
+        "path": "retry-delay.js",
+        "mode": "100644",
+        "deleted": false,
+        "content_base64": "J3VzZSBzdHJpY3QnOwoKZnVuY3Rpb24gcmV0cnlEZWxheShvcHRpb25zKSB7CiAgY29uc3QgeyBhdHRlbXB0LCBiYXNlTXMgPSAxMDAsIG1heE1zID0gMzAwMDAsIHJhbmRvbSA9IE1hdGgucmFuZG9tIH0gPSBvcHRpb25zOwoKICBpZiAoIU51bWJlci5pc0ludGVnZXIoYXR0ZW1wdCkgfHwgYXR0ZW1wdCA8IDApIHsKICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdhdHRlbXB0IG11c3QgYmUgYSBub25uZWdhdGl2ZSBpbnRlZ2VyJyk7CiAgfQogIGlmICh0eXBlb2YgYmFzZU1zICE9PSAnbnVtYmVyJyB8fCAhTnVtYmVyLmlzRmluaXRlKGJhc2VNcykgfHwgYmFzZU1zIDwgMCkgewogICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ2Jhc2VNcyBtdXN0IGJlIGEgZmluaXRlIG5vbm5lZ2F0aXZlIG51bWJlcicpOwogIH0KICBpZiAodHlwZW9mIG1heE1zICE9PSAnbnVtYmVyJyB8fCAhTnVtYmVyLmlzRmluaXRlKG1heE1zKSB8fCBtYXhNcyA8IDApIHsKICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdtYXhNcyBtdXN0IGJlIGEgZmluaXRlIG5vbm5lZ2F0aXZlIG51bWJlcicpOwogIH0KICBpZiAoYXR0ZW1wdCA9PT0gMCkgewogICAgcmV0dXJuIDA7CiAgfQoKICBjb25zdCBzYW1wbGUgPSByYW5kb20oKTsKICBpZiAodHlwZW9mIHNhbXBsZSAhPT0gJ251bWJlcicgfHwgIU51bWJlci5pc0Zpbml0ZShzYW1wbGUpIHx8IHNhbXBsZSA8IDAgfHwgc2FtcGxlID49IDEpIHsKICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdyYW5kb20gbXVzdCByZXR1cm4gYSBmaW5pdGUgbnVtYmVyIGluIFswLCAxKScpOwogIH0KCiAgbGV0IGNlaWxpbmcgPSBiYXNlTXM7CiAgbGV0IGV4cG9uZW50ID0gYXR0ZW1wdCAtIDE7CiAgaWYgKGNlaWxpbmcgPiAwICYmIGV4cG9uZW50ID4gMjA5NykgewogICAgY2VpbGluZyA9IG1heE1zOwogIH0gZWxzZSB7CiAgICB3aGlsZSAoZXhwb25lbnQgPiAwICYmIGNlaWxpbmcgPiAwICYmIGNlaWxpbmcgPCBtYXhNcykgewogICAgICBjb25zdCBzdGVwID0gTWF0aC5taW4oZXhwb25lbnQsIDEwMjMpOwogICAgICBjZWlsaW5nID0gTWF0aC5taW4obWF4TXMsIGNlaWxpbmcgKiAyICoqIHN0ZXApOwogICAgICBleHBvbmVudCAtPSBzdGVwOwogICAgfQogIH0KCiAgcmV0dXJuIE1hdGguZmxvb3Ioc2FtcGxlICogTWF0aC5taW4obWF4TXMsIGNlaWxpbmcpKTsKfQoKbW9kdWxlLmV4cG9ydHMgPSB7IHJldHJ5RGVsYXkgfTsK"
+      }
+    ]
+  },
+  "tool_results": [
+    {
+      "tool": "repository.read",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.write",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.write",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.read",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.commit",
+      "status": "completed"
+    },
+    {
+      "tool": "validation.run",
+      "status": "passed"
+    }
+  ],
+  "limitations": [
+    "Task admission identity and ledger use Moto fixtures",
+    "GitHub source/publication/observation are live; Task and installation authorization use fixtures with an operator credential",
+    "gateway inference is live and charged to the authenticated user"
+  ]
+}

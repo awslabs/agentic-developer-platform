@@ -229,6 +229,41 @@ variable "enable_broker_route" {
   default     = false
 }
 
+# =============================================================================
+# Task API submission route (Issue #5795, T2)
+# =============================================================================
+# POST /v1/tasks is an EXPLICIT method on an explicit path, not a proxy. That is
+# deliberate: /{proxy+} would route it to the gateway pod, and this route must
+# reach the ingress Lambda instead. An explicit path takes precedence over
+# /{proxy+} in API Gateway, so adding it moves exactly this one method and
+# leaves every existing route resolving as it does today.
+#
+# The route is auth NONE at the edge because the token it carries is a Cognito
+# ACCESS token, and the authority decision needs more than a valid signature:
+# the required task scope, the active alias, and the canonical principal in the
+# gateway's own identity directory. Only the gateway can make that decision, so
+# a Cognito authorizer here would add a second, weaker gate whose verdict could
+# disagree with the authoritative one. The Lambda forwards the token; the
+# gateway decides. Nothing is accepted on signature alone.
+
+variable "task_api_lambda_invoke_arn" {
+  description = "Invoke ARN of the webhook-ingress Lambda that serves POST /v1/tasks. When set (with enable_task_api_route), adds the explicit /v1/tasks route to the OpenAPI body."
+  type        = string
+  default     = ""
+}
+
+variable "task_api_lambda_function_name" {
+  description = "Function name of the webhook-ingress Lambda serving POST /v1/tasks (for aws_lambda_permission)."
+  type        = string
+  default     = ""
+}
+
+variable "enable_task_api_route" {
+  description = "Whether to publish POST /v1/tasks. Must be a plan-time-known bool (not derived from the Lambda's computed invoke ARN, which is unknown until apply) because it drives a count. Publishing the route does not accept tasks: the Lambda refuses every submission unless ADP_TASK_API_ADMISSION_ENABLED is set, so route and admission roll out independently."
+  type        = bool
+  default     = false
+}
+
 variable "cloudwatch_kms_key_arn" {
   description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
   type        = string

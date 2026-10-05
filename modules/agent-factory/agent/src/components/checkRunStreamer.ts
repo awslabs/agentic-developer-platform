@@ -21,6 +21,8 @@
  */
 
 import * as fs from 'fs';
+import { RunRecordCapture } from '../run-record';
+import { claudeTaskChecklist } from '../claude-progress';
 import { assistantText, truncateUtf8 } from '../reporting-text';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,8 @@ export interface CheckRunStreamerConfig {
   issueNumber: number;
   /** Model identifier string. */
   model: string;
+  /** Native runtimes may report metered cost outside this streamer. */
+  costLabel?: string;
   /** Optional logger function (defaults to console.warn). */
   log?: (msg: string) => void;
   /**
@@ -133,6 +137,7 @@ export class CheckRunStreamer {
   private readonly startTimeMs: number;
   private readonly warn: (msg: string) => void;
 
+  readonly runRecord: RunRecordCapture;
   private turns: TurnRecord[] = [];
   private totalCostUsd: number = 0;
   /** Estimated Codex delegation cost (display only; issue #2970). */
@@ -149,6 +154,7 @@ export class CheckRunStreamer {
 
   constructor(cfg: CheckRunStreamerConfig) {
     this.cfg = cfg;
+    this.runRecord = new RunRecordCapture(cfg);
     this.startTimeMs = Date.now();
     this.warn = cfg.log ?? ((msg) => console.warn(`[CheckRunStreamer] ${msg}`));
   }
@@ -176,6 +182,8 @@ export class CheckRunStreamer {
     const text = assistantText(data.content);
 
     for (const block of data.content) {
+      const checklist = claudeTaskChecklist(block);
+      if (checklist) this.runRecord.checklist(checklist);
       if (block.name) {
         tools.push({ name: block.name, inputPreview: this._previewInput(block.name, block.input ?? {}) });
       }
@@ -189,6 +197,7 @@ export class CheckRunStreamer {
     }
 
     this.turns.push({ turn: data.turn, tools, text });
+    if (text) this.runRecord.evidence(text);
     this._schedulePatch();
   }
 
@@ -252,6 +261,7 @@ export class CheckRunStreamer {
   /** Clean up timers. Call when the message loop exits. */
   destroy(): void {
     this.destroyed = true;
+    this.runRecord.close();
     this._clearMidTurnTimer();
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
@@ -288,9 +298,9 @@ export class CheckRunStreamer {
     const turnLabel = status === 'running'
       ? `${this.turns.length} / running`
       : `${this.turns.length} / done`;
-    const costLabel = this.codexCostUsd > 0
+    const costLabel = this.cfg.costLabel ?? (this.codexCostUsd > 0
       ? `$${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.)`
-      : `$${this.totalCostUsd.toFixed(4)}`;
+      : `$${this.totalCostUsd.toFixed(4)}`);
 
     const headerLines = [
       `## Agent: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
@@ -332,6 +342,7 @@ export class CheckRunStreamer {
   /** Readable archive of captured explanations, independent of GitHub's display budget. */
   buildTranscript(): string {
     const parts = [
+      this.runRecord.markdown(),
       `# Agent implementation transcript: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
       `Model: ${this.cfg.model} · Assistant turns recorded: ${this.turns.length}`,
       'This record preserves captured assistant explanations in order. Claims are agent-reported; '
@@ -366,6 +377,7 @@ export class CheckRunStreamer {
 
   private _previewInput(toolName: string, input: Record<string, unknown>): string {
     switch (toolName) {
+      case 'Codex':
       case 'Bash': {
         const cmd = (input.command as string) ?? '';
         return cmd.slice(0, 120) + (cmd.length > 120 ? '…' : '');
@@ -581,6 +593,7 @@ export class CheckRunStreamer {
   }
 
   private async _doPatch(title: string, summary: string, text: string): Promise<void> {
+    if (this.cfg.checkRunId <= 0) return; // Archive even when bootstrap could not create a check run.
     const url = `https://api.github.com/repos/${this.cfg.repo}/check-runs/${this.cfg.checkRunId}`;
     // Clamp to GitHub's hard limit just in case
     const safeText = text.length > 65535 ? text.slice(0, 65535) : text;
@@ -591,6 +604,8 @@ export class CheckRunStreamer {
 
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — base host is hardcoded https://api.github.com; only repo/checkRunId are interpolated (validated at config time)
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${this.cfg.tokenProvider()}`,

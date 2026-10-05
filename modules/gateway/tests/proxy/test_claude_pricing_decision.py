@@ -169,6 +169,7 @@ async def test_claude_routes_emit_one_additive_durable_decision(metering, path, 
     logged = metering.usage.log_request.await_args.kwargs
     assert logged["cost_usd"] == Decimal(".007650") and isinstance(logged["cost_usd"], Decimal)
     assert logged["input_tokens"] == 100 and logged["cache_creation_input_tokens"] == 700
+    assert logged["reservation_usage_known"] is True
     assert logged["client_tool"] == "claude_code"
     assert logged["request_id"] == event["request_id"]
     assert metering.reconcile.await_args.kwargs["actual_cost_usd"] == Decimal(".007650")
@@ -646,7 +647,7 @@ async def test_missing_usage_release_is_bounded_without_fabricating_settlement(m
     assert capture.decision is None and capture.finalization_task.done()
     metering.usage.log_request.assert_not_awaited()
     metering.writer.write_log.assert_not_awaited()
-    assert "Claude usage could not be priced" in caplog.text
+    assert "Provider usage could not be priced" in caplog.text
     assert "Claude usage persistence timed out" in caplog.text
 
 
@@ -668,9 +669,99 @@ async def test_upstream_failure_keeps_error_log_without_a_settlement_charge(mete
     await flush_logs()
     metering.usage.log_request.assert_awaited_once()
     logged = metering.usage.log_request.await_args.kwargs
+    assert logged["reservation_usage_known"] is False
     assert logged["status_code"] == (502 if stream else 500)
     assert logged["input_tokens"] == logged["output_tokens"] == 0
     assert logged["cost_usd"] == Decimal("0")
     metering.reconcile.assert_awaited_once()
     assert metering.reconcile.await_args.kwargs["actual_cost_usd"] == Decimal("0")
     metering.writer.write_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_non_claude_compat_usage_is_priced_even_with_transcripts_disabled(metering, stream):
+    model = "meta.llama3-70b-instruct-v1:0"
+    client = Client({"input_tokens": 100, "output_tokens": 50})
+    proxy = ProxyService(MockPoolService(client), model_resolver=ModelResolver(custom_aliases={"metered-model": model}))
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.get_token_context] = lambda: metering.context
+    app.dependency_overrides[routes.get_proxy_service] = lambda: proxy
+    routes.get_chat_logging_service()._enabled = False
+    body = {"model": "metered-model", "max_tokens": 80, "messages": [{"role": "user", "content": "hello"}], "stream": stream}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.post("/v1/chat/completions", json=body)
+    assert response.status_code == 200, response.text
+    await flush_logs()
+    logged = metering.usage.log_request.await_args.kwargs
+    assert logged["pricing_decision"].variant_key[0] == model
+    assert logged["pricing_decision"].ledger_cost > 0
+    assert logged["cost_usd"] == logged["pricing_decision"].ledger_cost
+    metering.writer.write_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sql_failure_retains_reservation_with_transcripts_disabled(metering):
+    routes.get_chat_logging_service()._enabled = False
+    metering.usage.log_request.side_effect = RuntimeError("ledger unavailable")
+    proxy = ProxyService(MockPoolService(Client(USAGE)))
+    capture = PricingCapture("sql-failed", FORWARDED)
+    await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
+    assert capture.decision is not None
+    metering.usage.log_request.assert_awaited_once()
+    assert metering.reconcile.await_count == 1
+    assert metering.reconcile.await_args.kwargs["usage_known"] is False
+    metering.writer.write_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_client_acquisition_is_still_preprovider(metering):
+    pool = MockPoolService(Client(USAGE))
+    pool.get_client = AsyncMock(side_effect=RuntimeError("credential acquisition failed"))
+    proxy = ProxyService(pool)
+    capture = PricingCapture("before-provider", FORWARDED)
+    with pytest.raises(Exception):
+        await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, pricing_capture=capture)
+    assert metering.context._budget_provider_started is False
+    assert capture.routing is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_200_before_client_failure_releases_preprovider_hold(metering):
+    from starlette.responses import StreamingResponse
+
+    from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
+    from src.shared.middleware.request_identity import RequestIdentityMiddleware
+
+    pool = MockPoolService(Client(USAGE))
+    pool.get_client = AsyncMock(side_effect=RuntimeError("credential acquisition failed"))
+    proxy = ProxyService(pool)
+    admission = SimpleNamespace(
+        prepare_enforcement_context=AsyncMock(return_value=None),
+        check_budget_hierarchy=AsyncMock(return_value=SimpleNamespace(allowed=True)),
+        reconcile_reservation=AsyncMock(),
+    )
+    sent = []
+
+    async def endpoint(scope, receive, send):
+        capture = PricingCapture(scope["state"]["request_id"], FORWARDED)
+        stream = await proxy.invoke_model(FORWARDED, {"messages": [], "max_tokens": 80}, metering.context, stream=True, pricing_capture=capture)
+        await StreamingResponse(stream)(scope, receive, send)
+
+    budget = BudgetEnforcementMiddleware(endpoint, enforcement_service=admission)
+
+    async def authenticated(scope, receive, send):
+        scope["state"]["token_context"] = metering.context
+        await budget(scope, receive, send)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/messages", "headers": [], "asgi": {"spec_version": "2.4"}}
+    with pytest.raises(Exception):
+        await RequestIdentityMiddleware(authenticated)(scope, AsyncMock(return_value={"type": "http.request", "body": b""}), send)
+    assert sent[0]["status"] == 200
+    assert metering.context._budget_provider_started is False
+    admission.reconcile_reservation.assert_awaited_once()
+    assert admission.reconcile_reservation.await_args.kwargs["actual_cost_usd"] == Decimal("0")

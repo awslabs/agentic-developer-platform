@@ -6,7 +6,7 @@ export interface ModalProps {
   onClose: () => void;
   title?: string;
   children: ReactNode;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'workspace';
   closeOnOverlayClick?: boolean;
 }
 
@@ -64,6 +64,7 @@ export function Modal({
     md: 'max-w-md',
     lg: 'max-w-lg',
     xl: 'max-w-xl',
+    workspace: 'max-w-[1600px]',
   };
 
   const modalContent = (

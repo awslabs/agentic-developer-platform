@@ -111,9 +111,12 @@ env:
 
 jobs:
   migrate:
+    if: github.ref == 'refs/heads/main'
     name: Migrate Superplane schema
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     env:
@@ -137,23 +140,27 @@ jobs:
 
       - uses: actions/checkout@v7
 
-      - name: Install tooling
+      - name: Verify source belongs to reviewed main history
+        shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --user pyyaml
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
-          kubectl version --client
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
 
-      # -------------------------------------------------------------------------------
-      # PREFLIGHT. One script, so the lane's refusals are the same refusals the tests
-      # exercise directly — a check that lives only in YAML is a check with no test.
-      #
-      # This runs BEFORE kubectl is configured and before any evidence handling: an
-      # unavailable input should be reported without touching a cluster.
-      # -------------------------------------------------------------------------------
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
+
       - name: Preflight — is there a chain, and is there a runner?
         run: |
           set -euo pipefail

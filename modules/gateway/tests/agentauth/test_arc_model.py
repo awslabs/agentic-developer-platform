@@ -75,7 +75,7 @@ async def arc_context(store, report_only_db, db_session, monkeypatch):
             team_id="team",
             provider="github",
             provider_user_id="42",
-            verification_method="admin_manual",
+            verification_method="admin_attested",
             verified_at=datetime.now(UTC),
         )
     )

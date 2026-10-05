@@ -7,11 +7,25 @@
  */
 import { ArtifactStore } from './port';
 import { NoopArtifactStore } from './noop-artifact-store';
+import { GatewayArtifactStore } from './gateway-artifact-store';
+import { ChatDataClient } from '../gateway/chat-data-client';
 
-export function buildArtifactStore(env: Record<string, string | undefined> = process.env): ArtifactStore {
+export function buildArtifactStore(
+  env: Record<string, string | undefined> = process.env,
+  gateway?: { client: ChatDataClient; sessionId: string; workspaceRoot: string },
+): ArtifactStore {
   const strategy = env.ARTIFACT_STRATEGY ?? 'noop';
+  if (env.ADP_CHAT_DATA_ENABLED === 'true' && strategy !== 'gateway') {
+    throw new Error('Scoped chat data requires ARTIFACT_STRATEGY=gateway');
+  }
 
   switch (strategy) {
+    case 'gateway':
+      if (env.ADP_CHAT_DATA_ENABLED !== 'true' || !gateway) {
+        throw new Error('Gateway artifacts require enabled scoped chat data and a workload-bound client');
+      }
+      return new GatewayArtifactStore(gateway.client, gateway.sessionId, gateway.workspaceRoot);
+
     case 'noop':
       return new NoopArtifactStore();
 
@@ -25,6 +39,6 @@ export function buildArtifactStore(env: Record<string, string | undefined> = pro
     }
 
     default:
-      throw new Error(`Unknown ARTIFACT_STRATEGY: ${strategy}. Valid: noop, s3`);
+      throw new Error(`Unknown ARTIFACT_STRATEGY: ${strategy}. Valid: noop, s3, gateway`);
   }
 }

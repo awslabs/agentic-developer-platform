@@ -1,3 +1,4 @@
+import { deploymentSetting } from '@/config/runtime';
 /**
  * Connections page — link external services (GitHub, Slack, etc.) to ADP.
  *
@@ -158,11 +159,17 @@ export default function Connections() {
   // Install handler — POST install-start → redirect to GitHub
   // -------------------------------------------------------------------------
 
-  const handleInstall = async () => {
+  const handleInstall = async (installationId?: number) => {
     setIsInstalling(true);
     try {
       const result = await startGitHubInstall();
-      window.location.href = result.install_url;
+      if (installationId) {
+        const base = (deploymentSetting('VITE_API_URL') || '/api').replace(/\/$/, '');
+        const params = new URLSearchParams({ installation_id: String(installationId), state: result.state_token });
+        window.location.href = `${base}/admin/connections/github/install-callback?${params}`;
+      } else {
+        window.location.href = result.install_url;
+      }
       // Note: page navigates away; isInstalling stays true intentionally
     } catch (err: unknown) {
       const message =
@@ -180,8 +187,14 @@ export default function Connections() {
 
   const handleDisconnect = async (installationId: number) => {
     try {
-      await deleteGitHubConnection(installationId);
-      toast.success("GitHub installation disconnected.");
+      const result = await deleteGitHubConnection(installationId);
+      if (result?.warning) {
+        toast.warning(result.warning);
+      } else if (result?.provider_revoked === false) {
+        toast.success("Local access revoked. The installation remains at GitHub.");
+      } else {
+        toast.success("GitHub installation disconnected.");
+      }
       await loadConnections();
     } catch (err: unknown) {
       const message =
@@ -450,7 +463,8 @@ export default function Connections() {
         <GitHubTile
           connections={connections}
           isLoading={isLoading}
-          onInstall={handleInstall}
+          onInstall={() => handleInstall()}
+          onConnectExisting={handleInstall}
           onDisconnect={handleDisconnect}
           isInstalling={isInstalling}
           isPlatformAdmin={isPlatformAdmin}

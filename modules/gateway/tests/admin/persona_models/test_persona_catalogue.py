@@ -24,10 +24,10 @@ from src.admin.persona_models.catalogue_service import build_persona_catalogue
 class TestPersonaCatalogue:
     """AC-01 and AC-02: the persona catalogue reads from the authoritative source."""
 
-    def test_catalogue_has_exactly_14_personas(self):
-        """AC-02: all 14 registered keys, including automatic personas."""
+    def test_catalogue_has_exactly_28_personas(self):
+        """AC-02: all 28 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 14, f"Expected 14 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 28, f"Expected 28 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -35,7 +35,10 @@ class TestPersonaCatalogue:
 
         catalogue = build_persona_catalogue()
         catalogue_keys = {p.key for p in catalogue}
-        assert catalogue_keys == VALID_PERSONAS
+        from src.tasks.personas import TASK_PERSONAS
+
+        assert not (VALID_PERSONAS & set(TASK_PERSONAS))
+        assert catalogue_keys == VALID_PERSONAS | set(TASK_PERSONAS)
 
     def test_catalogue_is_sorted(self):
         """Presentation property: alphabetical by key."""
@@ -47,7 +50,17 @@ class TestPersonaCatalogue:
         """The native Codex reviewer is never classified as Claude."""
         catalogue = build_persona_catalogue()
         for persona in catalogue:
-            expected = COMPATIBILITY_CLASS_CODEX if persona.key == "agent-codex-reviewer" else COMPATIBILITY_CLASS_CLAUDE
+            expected = COMPATIBILITY_CLASS_CODEX if persona.key.startswith("agent-codex-") else COMPATIBILITY_CLASS_CLAUDE
+            if persona.key in {
+                "agent-task-gpt-developer",
+                "agent-task-gpt-intent-refinement",
+                "agent-task-gpt-architect",
+                "agent-task-gpt-product",
+                "agent-task-gpt-pm",
+            }:
+                expected = COMPATIBILITY_CLASS_CODEX
+            elif persona.key.startswith("agent-task-"):
+                expected = "anthropic_messages"
             assert persona.compatibility_class == expected
 
     def test_pt_superpower_not_configurable(self):
@@ -65,9 +78,14 @@ class TestPersonaCatalogue:
                 assert persona.not_configurable_reason is None, f"{persona.key} is configurable but has reason: {persona.not_configurable_reason}"
 
     def test_expected_persona_keys_present(self):
-        """All 14 expected persona keys are present."""
+        """All 28 expected persona keys are present."""
         expected = {
             "agent-codex-reviewer",
+            "agent-codex-developer",
+            "agent-codex-architect",
+            "agent-codex-product",
+            "agent-codex-pm",
+            "agent-codex-intent-refinement",
             "aidlc",
             "architect",
             "codex",
@@ -84,7 +102,17 @@ class TestPersonaCatalogue:
         }
         catalogue = build_persona_catalogue()
         catalogue_keys = {p.key for p in catalogue}
-        assert catalogue_keys == expected
+        assert catalogue_keys == expected | {
+            "agent-task-gpt-developer",
+            "agent-task-gpt-intent-refinement",
+            "agent-task-gpt-architect",
+            "agent-task-gpt-product",
+            "agent-task-gpt-pm",
+            "agent-task-investigator",
+            "agent-task-cyber",
+            "agent-task-claude-developer",
+            "agent-task-codex-developer",
+        }
 
     def test_non_vacuous_pass(self):
         """Anti-vacuity: at least 10 personas (copied from test_persona_catalogue_parity.py discipline)."""
@@ -108,7 +136,7 @@ class TestPersonaCompatibility:
         assert result is None
 
     def test_harness_revision_is_server_owned_without_cross_class_fallback(self):
-        assert persona_harness_contract_revision("developer") == "0.3.220"
+        assert persona_harness_contract_revision("developer") == "0.3.283"
         assert persona_harness_contract_revision("agent-codex-reviewer") == "0.155.1"
         assert compatibility_class_harness_contract_revision(COMPATIBILITY_CLASS_CODEX) == "0.155.1"
 

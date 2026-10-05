@@ -16,9 +16,30 @@ terraform {
   }
 
   required_providers {
+    # AWS >= 6.42.0 is a state-decoding floor, not a feature preference (#5831).
+    #
+    # `~> 5.0` resolves to 5.100.0, the final 5.x release. Provider 5.x publishes
+    # no *resource identity* schema for aws_eks_addon, so once the live state
+    # record carries the identity fields a newer provider writes
+    # (account_id, addon_name, cluster_name, region), Terraform can still plan
+    # but can no longer serialise that state to JSON:
+    #
+    #   Failed to marshal plan to json: error marshaling prior state:
+    #   no resource identity schema found for aws_eks_addon.coredns
+    #
+    # That breaks `terraform show -json <saved-plan>`, which is how a saved plan
+    # is inspected before apply — so the constraint, not the plan, was blocking
+    # scoped-plan review. Note a plain `terraform plan` still reports "no
+    # changes" here, which is why this surfaced only at the JSON-export step.
+    #
+    # 6.42.0 specifically: that release added aws_eks_addon `namespace_config`,
+    # a field already present in the dev state record. Verified empirically with
+    # Terraform 1.14.9 against a representative newer-provider state —
+    # 6.41.0 still fails with the message above; 6.42.0 decodes and exports.
+    # Do not lower this floor below 6.42.0.
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.42.0, < 7.0.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -125,6 +146,7 @@ locals {
     # attempting to create the same EKS entry when that role runs an upgrade.
     if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) &&
     arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy" &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-trusted-deployment" &&
     arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-authority-worker-role" &&
     (!var.agent_legacy_worker_admin_retired || arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-scaledjob-role")
   ]
@@ -172,7 +194,8 @@ module "networking" {
 # Base IAM Roles (cluster + node group service roles)
 # -----------------------------------------------------------------------------
 module "iam" {
-  source = "./modules/iam"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/iam"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -194,7 +217,9 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
-  source = "./modules/eks"
+  gateway_customer_role_arns          = var.gateway_customer_role_arns
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/eks"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -203,6 +228,14 @@ module "eks" {
   vpc_id                = module.networking.vpc_id
   private_subnet_ids    = module.networking.private_subnet_ids
   eks_security_group_id = module.networking.eks_security_group_id
+
+  # Reviewed additional EXISTING private capacity subnets for the cluster's own
+  # subnet set (#5830). Empty by default — the cluster's subnet set is then
+  # exactly module.networking.private_subnet_ids, as before. The AZ list lets the
+  # module refuse a subnet in a zone the cluster has no existing capacity in,
+  # without an extra API read.
+  additional_private_subnet_ids_by_az = var.additional_private_subnet_ids_by_az
+  private_subnet_availability_zones   = module.networking.private_subnet_availability_zones
 
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
   node_group_role_arn          = module.iam.eks_node_group_role_arn
@@ -276,7 +309,8 @@ resource "aws_security_group_rule" "vpc_endpoints_from_eks_cluster" {
 # ECR Repositories
 # -----------------------------------------------------------------------------
 module "ecr" {
-  source = "./modules/ecr"
+  source                   = "./modules/ecr"
+  manage_registry_scanning = var.manage_ecr_registry_scanning
 
   environment            = var.environment
   name_prefix            = local.name_prefix
@@ -298,6 +332,7 @@ module "codebuild" {
   security_scans_bucket_arn  = module.security_scans.bucket_arn
   security_scans_bucket_name = module.security_scans.bucket_name
   account_id                 = data.aws_caller_identity.current.account_id
+  aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 

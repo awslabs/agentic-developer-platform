@@ -42,8 +42,9 @@ def test_supported_input_and_four_service_runtime(environment, release):
         assert deployment["spec"]["strategy"] == {"type": "Recreate"}
     controller = deployments["superplane-controller"]["spec"]["template"]["spec"]
     env = {x["name"]: x.get("value") for x in controller["containers"][0]["env"]}
-    assert env["KUBECONFIG"] == "/workspace/kubeconfig"
-    assert env["EKS_CLUSTER_NAME"] == environment["workspace_cluster"]
+    assert env["SUPERPLANE_WORKSPACE_CREDENTIALS_DIR"] == "/workspace"
+    assert "KUBECONFIG" not in env and "SKYPILOT_SERVICE_TOKEN" not in env
+    assert controller["containers"][0]["args"] == ["--management-only"]
     assert not any(
         d["kind"]
         in {"ClusterRole", "ClusterRoleBinding", "Ingress", "PersistentVolume"}
@@ -221,8 +222,9 @@ def test_actual_44_char_workspace_cluster_name_is_accepted(
     deployments = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment"}
     controller = deployments["superplane-controller"]["spec"]["template"]["spec"]
     env_vars = {x["name"]: x.get("value") for x in controller["containers"][0]["env"]}
-    # The actual cluster name must propagate to the controller's EKS_CLUSTER_NAME env var.
-    assert env_vars["EKS_CLUSTER_NAME"] == ACTUAL_WORKSPACE_CLUSTER
+    # The durable registry supplies target identity; no ambient cluster selector.
+    assert env_vars["SUPERPLANE_WORKSPACE_CREDENTIALS_DIR"] == "/workspace"
+    assert "EKS_CLUSTER_NAME" not in env_vars
 
 
 @pytest.mark.parametrize(
@@ -288,7 +290,7 @@ def test_reject_stale_image_provenance_and_schema(environment, release):
         validate(environment, stale)
     stale = copy.deepcopy(release)
     stale["schema"]["observed"]["head"] = "013_add_provider_operations"
-    with pytest.raises(Refusal, match="014"):
+    with pytest.raises(Refusal, match="release schema"):
         validate(environment, stale)
 
 
@@ -384,6 +386,8 @@ def _cp_only_environment(environment):
     ):
         env.pop(key, None)
     env.pop("controller_ownership", None)
+    env.pop("execution", None)
+    env.pop("controller_profiles", None)
     # Remove workspace_access from secrets; only database and observation required.
     env["secrets"] = {
         k: v for k, v in env["secrets"].items() if k != "workspace_access"
@@ -423,7 +427,11 @@ def test_control_plane_only_renders_management_controller(environment, release):
     pod = controller["spec"]["template"]["spec"]
     assert pod["containers"][0]["args"] == ["--management-only"]
     assert pod["automountServiceAccountToken"] is False
-    assert not any("workspace" in volume["name"] for volume in pod["volumes"])
+    assert all(
+        volume["secret"]["optional"]
+        for volume in pod["volumes"]
+        if "workspace" in volume["name"]
+    )
     # API and monitor must still be present.
     assert "superplane-api" in names
     assert "superplane-platform-monitor" in names
@@ -434,11 +442,11 @@ def test_control_plane_only_render_has_no_workspace_references(environment, rele
     env = _cp_only_environment(environment)
     docs = render(env, release, control_plane_only=True)
     serialized = yaml.safe_dump_all(docs)
-    # workspace-access volume/secret must not appear
-    assert "workspace-access" not in serialized
-    # workspace_cluster, workspace_id and cluster_id must not appear since they
-    # are not present in the stripped environment.
-    assert "superplane-workspace-access" not in serialized
+    # Optional named projections permit later registration without making
+    # credentials a prerequisite for healthy zero-target startup.
+    assert "optional: true" in serialized
+    assert environment["workspace_id"] not in serialized
+    assert environment["cluster_id"] not in serialized
 
 
 def test_cli_mode_reaches_exact_bootstrap_payload(tmp_path, environment, release):
@@ -562,3 +570,25 @@ def test_prepare_database_cli_writes_sql_and_returns_zero(
     # No AWS calls should be in the output.
     assert "sts" not in result.stdout
     assert "aws" not in result.stderr
+
+
+def test_installer_pins_production_auth_and_reviewed_origin(environment, release):
+    docs = render(environment, release)
+    api = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "superplane-api"
+    )
+    variables = {
+        item["name"]: item
+        for item in api["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert variables["SUPERPLANE_SECURITY_PROFILE"]["value"] == "production"
+    assert variables["DOMAIN_AUTH_ENFORCED"]["value"] == "true"
+    assert variables["COGNITO_ISSUER"]["value"] == environment["auth"]["issuer"]
+    assert (
+        json.loads(variables["DOMAIN_AUTH_ALLOWED_CLIENT_IDS"]["value"])
+        == environment["auth"]["client_ids"]
+    )
+    assert json.loads(variables["CORS_ORIGINS"]["value"]) == [environment["origin"]]
+    assert "secretKeyRef" in variables["JWT_SECRET_KEY"]["valueFrom"]

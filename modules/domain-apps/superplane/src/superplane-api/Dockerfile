@@ -14,27 +14,18 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install .
 
-# The three in-repository source packages app/ imports at module scope: the domain
-# authorization policy (issue #5055, U14 — app/auth.py), the domain contracts
-# (issue #5053, U7b — app/main.py, and the routers/services under it), and the
-# shared durable-operation package (issue #5535, W6 — app/composition.py and the
-# adapters under app/adapters/). All three are maintained outside this component
-# and staged into this context by scripts/stage-domain-auth.sh, because
-# releases/build-image.sh pins the build context to this directory and Docker
-# cannot COPY from above it.
-#
-# None is optional and none is in pyproject.toml's dependency list: without the
-# first two `app.main` raises ModuleNotFoundError at startup. `harness_jobs` fails
-# differently and more quietly, which is why it went unnoticed — the app still
-# starts, and instead the packaged capability preflight reports three of its four
-# trust ports permanently absent. The installer requires all four, so the image
-# cannot pass its own gate however the deployment is configured. A build that
-# omits it produces an image that looks healthy and cannot be installed.
-#
-# The build fails here with a named cause rather than producing either failure.
+# Stage the maintained auth, contracts, shared executor, account and workspace
+# lifecycle packages from the same reviewed checkout. Docker's component context
+# cannot read their source directories directly. Missing source refuses the build
+# instead of producing an API whose preview or worker cannot import its runtime.
 COPY vendor/superplane-auth ./vendor/superplane-auth
 COPY vendor/superplane-contracts ./vendor/superplane-contracts
 COPY vendor/harness-jobs ./vendor/harness-jobs
+COPY vendor/account-factory ./vendor/account-factory
+COPY vendor/account-provisioning ./vendor/account-provisioning
+COPY vendor/superplane-bootstrap ./vendor/superplane-bootstrap
+COPY vendor/workspace-provisioning ./vendor/workspace-provisioning
+COPY vendor/superplane-executor ./vendor/superplane-executor
 # `set -e` plus one `if` per package rather than a chain of `||`/`&&`: those two
 # operators have equal precedence and associate left-to-right, so a mixed chain
 # guarding two tests reads as though each failure is caught independently when it
@@ -42,22 +33,34 @@ COPY vendor/harness-jobs ./vendor/harness-jobs
 RUN set -eu; \
     for pkg in "superplane-auth/superplane_auth/policy.py" \
                "superplane-contracts/superplane_contracts/emission.py" \
-               "harness-jobs/harness_jobs/facade.py"; do \
+               "harness-jobs/harness_jobs/facade.py" \
+               "account-factory/account_factory/modes.py" \
+               "account-provisioning/account_provisioning/creation_runner.py" \
+               "superplane-bootstrap/superplane_bootstrap/workspace.py" \
+               "workspace-provisioning/workspace_provisioning/preview.py" \
+               "superplane-executor/superplane_executor/inventory.py"; do \
       if [ ! -f "vendor/$pkg" ]; then \
         echo "error: vendor/$pkg is missing; run scripts/stage-domain-auth.sh before docker build" >&2; \
         exit 1; \
       fi; \
     done; \
-    pip install --no-cache-dir --prefix=/install ./vendor/superplane-auth; \
-    pip install --no-cache-dir --prefix=/install ./vendor/superplane-contracts; \
-    pip install --no-cache-dir --prefix=/install ./vendor/harness-jobs
+    pip install --no-cache-dir --prefix=/install \
+      ./vendor/superplane-auth ./vendor/superplane-contracts ./vendor/harness-jobs \
+      ./vendor/account-factory ./vendor/account-provisioning \
+      ./vendor/superplane-bootstrap ./vendor/workspace-provisioning \
+      ./vendor/superplane-executor
+
+# Exercise installed wheels and their maintained data during the remote image
+# build, without importing the source checkout or contacting a provider.
+RUN PYTHONPATH=/install/lib/python3.12/site-packages python -c \
+    'from workspace_provisioning.preview import preview_workspace; from superplane_bootstrap.admission import required_proofs; from account_factory.dependencies import load; from account_factory.bootstrap import policy_path; from account_provisioning.creation_runner import create_account; assert required_proofs(); load(); assert policy_path("bootstrap-trust-policy.json").is_file()'
 
 # Stage 2: Runtime image
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # Install runtime system deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

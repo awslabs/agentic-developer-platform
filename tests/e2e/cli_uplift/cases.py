@@ -20,6 +20,15 @@ is the point: three real deployment bindings do not exist yet, so these two grad
 BLOCKED, and because BLOCKED is not PASSED a `full` run stays red until the live
 multi-deployment evidence is actually collected. A checkpoint outside the matrix
 would instead have let full acceptance go green with those two never run.
+
+#5637 adds E18 (the `superplane` suite) on the same terms and for the same
+reason. Its live acceptance needs a deployed domain service behind the gateway,
+which no environment in this harness's config provides yet, so E18 grades BLOCKED
+and keeps `full` red until that evidence exists. The offline contract tests in
+`modules/gateway/tests/cli/test_superplane_contract.py` prove the requests match
+the gateway allowlist and the domain's request models; they cannot prove a live
+service accepts them, and E18 is where that distinction is recorded rather than
+assumed away.
 """
 
 from __future__ import annotations
@@ -36,6 +45,21 @@ STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
 # progress while a fixture class is still blocked.
 SUITES = (
     "full",
+    "nightly",
+    "capability-contrast",
+    "usage-exports",
+    "hosted-coding",
+    "hosted-chat",
+    "assistant",
+    "vault-lifecycle",
+    "knowledge-lifecycle",
+    "knowledge",
+    "machine-lifecycle",
+    "budget-lifecycle",
+    "hierarchy-lifecycle",
+    "story-reads",
+    "research",
+    "tenant-isolation",
     "login",
     "install",
     "admin",
@@ -49,6 +73,12 @@ SUITES = (
     # suite can express: every suite above runs a single deployment, so a crossed
     # endpoint, token or proxy is invisible to all of them.
     "multi-deployment",
+    # #5637. The served CLI's Superplane commands driven THROUGH the gateway to the
+    # real domain service. `parity` covers the routes ADP itself serves; this suite
+    # exists because the domain sits behind the gateway's forwarding allowlist, and
+    # a request that satisfies the allowlist can still be rejected by the domain's
+    # own schemas — which is exactly the class of defect #5637 repaired.
+    "superplane",
 )
 
 
@@ -71,6 +101,7 @@ class Case:
 
 # Fixture classes. Preflight proves each of these independently; a case is
 # blocked when any class it requires is unavailable.
+SUPERPLANE_RESEARCH = "superplane_research_read_fixture"
 PLATFORM = "platform"
 DESTINATION = "destination"
 SECOND_DESTINATION = "second_destination"
@@ -79,6 +110,13 @@ COGNITO = "cognito"
 GITHUB_APP = "github_app"
 GITHUB_REPO = "github_repo"
 HOSTED = "hosted"
+HUMAN_TASK_CODING = "human_task_coding"
+HUMAN_TASK_CHAT = "human_task_chat"
+VAULT_LIFECYCLE = "vault_lifecycle"
+KNOWLEDGE_LIFECYCLE = "knowledge_lifecycle"
+BUDGET_LIFECYCLE = "budget_lifecycle"
+MACHINE_LIFECYCLE = "machine_lifecycle"
+HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
 # AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
@@ -89,6 +127,32 @@ THREE_DEPLOYMENTS = "three_deployments"
 # A capability requirement, deliberately never granted by current preflight.
 # Gateway availability does not prove enforcement of inference spend limits.
 MULTI_DEPLOYMENT_MODEL_LIMITS = "multi_deployment_model_limits"
+# #5621 (CLI-08-AC-04): a deployment where one module is deliberately DISABLED
+# and one is enabled, plus an ordinary non-admin identity alongside the admin one.
+#
+# Its own class rather than a flag on PLATFORM, because the criterion is a
+# CONTRAST: proving the CLI distinguishes "switched off" from "not permitted" from
+# "available" needs a deployment configured to exhibit all three at once, and a
+# second identity that genuinely lacks a permission the first holds. A single
+# admin on a fully-enabled platform can demonstrate none of them — every answer
+# would be "available", so the four axes could all be collapsed into one boolean
+# and the case would still pass. Absent, E18 BLOCKS rather than testing the one
+# state that proves nothing.
+CAPABILITY_CONTRAST = "capability_contrast"
+# #5637: a deployed Superplane domain service reachable through the gateway's
+# forwarding allowlist, plus an ordinary and an admin identity in it.
+#
+# Its own class, not an extension of PLATFORM: the gateway is deployed in dev and
+# still forwards to a domain service that may not be. Folding this into PLATFORM
+# would mark E18 runnable whenever the gateway answers, and the case would then
+# fail mid-journey on a 502 from the proxy — reporting "the product is broken" for
+# what is actually an absent fixture. And it cannot be inferred from the allowlist
+# either: the allowlist is checked-in source, so it is present on every revision
+# whether or not anything is listening behind it.
+SUPERPLANE_DOMAIN = "superplane_domain"
+TENANT_ISOLATION = "tenant_isolation"
+ASSISTANT_USERS = "assistant_users"
+ASSISTANT_LEDGER = "assistant_installation_ledger"
 
 CASES = (
     Case(
@@ -210,6 +274,237 @@ CASES = (
         "Live default switch, refresh, and logout of one deployment leave the other two correctly routed; the logged-out one fails labelled without borrowing a session; teardown leaves no deployment state",
         (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
     ),
+    Case(
+        "E18",
+        "#5637",
+        "superplane",
+        "Served CLI traverses the gateway to the real domain: workspace create/read/kubeconfig/cost/events/quota/deploy and the provider credential handoff carry both identifiers; a failed second-stage registration compensates only its own credential; account registration reports unavailable without writing",
+        (EC2, PLATFORM, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E19",
+        "#5621",
+        "parity",
+        "Freshly served CLI on EC2: adp capabilities distinguishes an enabled operation from an intentionally disabled one and from one the caller may not perform; adp doctor reports read-only bounded findings with no mutation and no paid inference; a foreign request ID is indistinguishable from an absent one",
+        (EC2, PLATFORM, CAPABILITY_CONTRAST),
+    ),
+    Case(
+        "E20",
+        "#5621",
+        "story-reads",
+        "Served capabilities has distinct operation IDs; bounded auth/API doctor checks succeed",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E21",
+        "#5628",
+        "story-reads",
+        "Own usage views and bounded JSON/NDJSON/CSV exports preserve scope, shape and continuation/exit status; no spend reconciliation claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E22",
+        "#5629",
+        "story-reads",
+        "Own Activity pagination and missing-run status/state/detail errors are structured; no active-control claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E23",
+        "#5622",
+        "story-reads",
+        "Served tenant membership/current selection and unknown-selector refusal without global workspace changes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E24",
+        "#5631",
+        "story-reads",
+        "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E25",
+        "#5639",
+        "story-reads",
+        "Served research reads preserve scoped findings/proposal IDs and pagination; no scan, mutation or decision",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_RESEARCH),
+    ),
+    Case(
+        "E26",
+        "#5589",
+        "story-reads",
+        "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E27",
+        "#5622",
+        "tenant-isolation",
+        "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
+        (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
+    ),
+    Case(
+        "E28",
+        "#5634",
+        "story-reads",
+        "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E29",
+        "#5623",
+        "story-reads",
+        "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E30",
+        "#5635",
+        "story-reads",
+        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E31",
+        "#5624",
+        "story-reads",
+        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E32",
+        "#5632",
+        "story-reads",
+        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E33",
+        "#5625",
+        "story-reads",
+        "Tenant access status and bounded authorized request review; decision and revocation fixtures remain separate",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E34",
+        "#5633",
+        "story-reads",
+        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E35",
+        "#5626",
+        "story-reads",
+        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E36",
+        "#5627",
+        "story-reads",
+        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E37",
+        "#5630",
+        "story-reads",
+        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E38",
+        "#5636",
+        "story-reads",
+        "Persona cost/catalog readback retains unknown amounts and capability evidence; no platform mutation/inference claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E39",
+        "#5638",
+        "story-reads",
+        "Superplane workspace lifecycle preview and scoped audit reads; no provider mutation or compute qualification",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E40",
+        "#5640",
+        "story-reads",
+        "Hosted chat readiness and bounded own history; live multi-turn acceptance remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E41",
+        "#5641",
+        "story-reads",
+        "Platform status distinguishes selected-gateway capability metadata from unverified AWS/artifact readiness; no deployment invocation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E42",
+        "#5516",
+        "hosted-coding",
+        "One enrolled human repository Task uses canonical submit, replay, monitor and control with terminal readback",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CODING),
+    ),
+    Case(
+        "E43",
+        "#6931/#6932/#147 SEC/DATA/SES",
+        "assistant",
+        "Authenticated WebSocket turn, durable acknowledgement, tool stream, replay and history refresh",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E44",
+        "#6933/#6934 ACT/EXT",
+        "assistant",
+        "Grounded ADP and connected human activity, source coverage and citations",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E45",
+        "#6931/#6932 SEC/DATA",
+        "assistant",
+        "Two-user/two-tenant history, memory, artifact and installation isolation",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E46",
+        "#147 SES",
+        "assistant",
+        "Persistent and ephemeral sessions, concurrency, lease fencing and independent sandbox destruction",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E47",
+        "#147/#6937 SES/QUAL",
+        "assistant",
+        "Bounded worker and queue faults, reconnect and accepted-turn reconciliation",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E48",
+        "#6935 DEP/EXT",
+        "assistant",
+        "Authorized installation diagnostics and upgrade ledger states",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS, ASSISTANT_LEDGER),
+    ),
+    Case(
+        "E49",
+        "#183/#6937 WARM/QUAL",
+        "assistant",
+        "Headless protocol latency and idle capacity/model cost baseline",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E50",
+        "#6939 HEAD01/HEAD03/HEAD04",
+        "assistant",
+        "Supported authenticated WebSocket baseline with server-owned session and correlated final response",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -221,7 +516,51 @@ LOGIN_CHECKPOINT = Case(
     "Native Cognito admin login and refresh work on fresh EC2; no seeded session",
     (EC2, COGNITO),
 )
-BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT)}
+DIAGNOSTICS = (
+    Case(
+        "D04",
+        "#5632",
+        "knowledge-lifecycle",
+        "Owned document registration, watch, same-key reindex and terminal cleanup",
+        (EC2, PLATFORM, COGNITO, KNOWLEDGE_LIFECYCLE),
+    ),
+    Case(
+        "D06",
+        "#5589/#5627",
+        "budget-lifecycle",
+        "Owned ordinary budget periods/ledgers and rate-limit dimensions with revision-fenced cleanup; no inference",
+        (EC2, PLATFORM, COGNITO, BUDGET_LIFECYCLE),
+    ),
+    Case(
+        "D05",
+        "#5624/#5625",
+        "machine-lifecycle",
+        "Owned canonical principal lifecycle with ordinary access and session review boundary",
+        (EC2, PLATFORM, COGNITO, MACHINE_LIFECYCLE),
+    ),
+    Case(
+        "D03",
+        "#5623/#5622",
+        "hierarchy-lifecycle",
+        "Owned hierarchy lifecycle and ordinary tenant revocation/restoration",
+        (EC2, PLATFORM, COGNITO, HIERARCHY_LIFECYCLE),
+    ),
+    Case(
+        "D01",
+        "#5640",
+        "hosted-chat",
+        "Two bounded hosted chat turns with durable recovery and owned cleanup",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CHAT),
+    ),
+    Case(
+        "D02",
+        "#5631",
+        "vault-lifecycle",
+        "Owned synthetic credential and unverified identity lifecycle with cleanup",
+        (EC2, PLATFORM, COGNITO, VAULT_LIFECYCLE),
+    ),
+)
+BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
 
 
 def suite_cases(suite):
@@ -230,9 +569,27 @@ def suite_cases(suite):
         raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
     if suite == "full":
         return CASES
+    if suite == "knowledge":
+        return (BY_ID["E01"], LOGIN_CHECKPOINT, BY_ID["E32"])
+    if suite == "nightly":
+        return (
+            BY_ID["E01"],
+            LOGIN_CHECKPOINT,
+            *(
+                case
+                for case in CASES
+                if case.suite in {"story-reads", "hosted-coding", "tenant-isolation"}
+            ),
+        )
+    if suite == "capability-contrast":
+        return (BY_ID["E19"],)
+    if suite == "usage-exports":
+        return (BY_ID["E21"],)
+    if suite == "research":
+        return (BY_ID["E25"],)
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)
-    return tuple(case for case in CASES if case.suite == suite)
+    return tuple(case for case in (*CASES, *DIAGNOSTICS) if case.suite == suite)
 
 
 def resolve_suites(names):

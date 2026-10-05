@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 # The app refuses to import without these. Set before importing so this script can
@@ -161,12 +160,15 @@ def _success_model(operation: dict) -> str:
     for code, body in sorted(operation.get("responses", {}).items()):
         if not code.startswith("2"):
             continue
-        schema = (
-            body.get("content", {}).get("application/json", {}).get("schema", {})
-        )
+        schema = body.get("content", {}).get("application/json", {}).get("schema", {})
         reference = schema.get("$ref", "")
         if reference:
             return f"`{reference.rsplit('/', 1)[-1]}`"
+        alternatives = schema.get("anyOf", [])
+        if alternatives and all(item.get("$ref") for item in alternatives):
+            return " or ".join(
+                f"`{item['$ref'].rsplit('/', 1)[-1]}`" for item in alternatives
+            )
         if schema.get("type") == "array":
             item = schema.get("items", {}).get("$ref", "")
             if item:

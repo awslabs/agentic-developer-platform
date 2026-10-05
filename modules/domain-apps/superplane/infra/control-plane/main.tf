@@ -90,3 +90,19 @@ provider "aws" {
     tags = local.common_tags
   }
 }
+
+# Superplane image builders are installed from the Superplane state, alongside
+# the repositories and runtime roles they serve.
+module "image_builds" {
+  source                     = "../../../shared/infra/codebuild-projects"
+  domain_app                 = "superplane"
+  projects                   = jsondecode(file("${path.module}/../../codebuild/projects.json"))
+  name_prefix                = "adp-${var.environment}"
+  account_id                 = data.aws_caller_identity.current.account_id
+  aws_region                 = var.aws_region
+  state_bucket               = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  security_scans_bucket_name = data.terraform_remote_state.platform.outputs.security_scans_bucket_name
+  permissions_boundary_arn   = data.terraform_remote_state.platform.outputs.codebuild_boundary_arn
+  common_tags                = local.common_tags
+  allowed_artifact_writes    = []
+}

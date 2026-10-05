@@ -34,6 +34,7 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.RATELIMIT_READ,
         Permission.RATELIMIT_UPDATE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
@@ -84,7 +85,11 @@ class AccessControl:
         # Issue #3987: keyed by (user_id, tenant_id) — a role resolved in one
         # tenant must never be served for another. Entries carry a monotonic
         # deadline so a role change can't be masked forever by a stale entry.
-        self._role_cache: dict[tuple[str, str | None], tuple[float, tuple[AdminRole, str | None, str | None]]] = {}
+        self._role_cache: dict[
+            tuple[str, str | None],
+            tuple[float, tuple[AdminRole, str | None, str | None]],
+        ] = {}
+        self._discovery_role_unavailable: set[tuple[str, str | None]] = set()
 
     def _cache_get(self, key: tuple[str, str | None]) -> tuple[AdminRole, str | None, str | None] | None:
         """Return a cached role tuple if present and not expired."""
@@ -97,7 +102,11 @@ class AccessControl:
             return None
         return value
 
-    def _cache_put(self, key: tuple[str, str | None], value: tuple[AdminRole, str | None, str | None]) -> None:
+    def _cache_put(
+        self,
+        key: tuple[str, str | None],
+        value: tuple[AdminRole, str | None, str | None],
+    ) -> None:
         """Cache a resolved role tuple with a TTL deadline."""
         ttl = get_admin_config().rbac_role_cache_ttl_seconds
         self._role_cache[key] = (time.monotonic() + ttl, value)
@@ -202,6 +211,54 @@ class AccessControl:
         self._cache_put(cache_key, result)
         return result
 
+    async def get_user_role_for_discovery(self, context: TokenContext) -> tuple[AdminRole, str | None, str | None] | None:
+        """Resolve authority without converting a role-store outage into a role.
+
+        Authorization routes intentionally call :meth:`get_user_role`, whose
+        least-privilege fallback keeps them fail closed. Capability discovery has
+        a different output contract: it must distinguish a confirmed denial from
+        an authority it could not reach. ``None`` means the latter and grants no
+        permission.
+        """
+        if context.is_admin:
+            return (AdminRole.PLATFORM_ADMIN, None, None)
+
+        cache_key = (context.user_id, context.org_id)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        if cache_key in self._discovery_role_unavailable or self.db is None:
+            return None
+
+        try:
+            resolved = await self._resolve_membership_role(context)
+        except Exception as exc:
+            logger.warning(
+                "rbac_role_lookup_failed user=%s org=%s error=%s",
+                context.user_id,
+                context.org_id,
+                exc,
+            )
+            self._discovery_role_unavailable.add(cache_key)
+            return None
+
+        if resolved is not None:
+            role, tenant_id = resolved
+            result = (role, tenant_id, None)
+        else:
+            least_privilege = get_admin_config().rbac_least_privilege_default
+            role = AdminRole.MEMBER if least_privilege else AdminRole.ORG_ADMIN
+            logger.warning(
+                "rbac_role_fallback user=%s org=%s granted=%s reason=no_active_membership",
+                context.user_id,
+                context.org_id,
+                role.value,
+            )
+            result = (role, context.org_id, None)
+
+        self._cache_put(cache_key, result)
+        return result
+
     def get_role_permissions(self, role: AdminRole) -> set[Permission]:
         """
         Get all permissions for a given role.
@@ -215,6 +272,45 @@ class AccessControl:
         if role not in ROLE_PERMISSIONS:
             raise InvalidRoleError(role.value if hasattr(role, "value") else str(role))
         return ROLE_PERMISSIONS[role]
+
+    def _check_resolved_permission(
+        self,
+        role: AdminRole,
+        allowed_org_id: str | None,
+        allowed_dept_id: str | None,
+        permission: Permission,
+        target_org_id: str | None,
+        target_dept_id: str | None,
+    ) -> bool:
+        """Apply the authorization predicate to an already resolved role."""
+        permissions = self.get_role_permissions(role)
+        if permission not in permissions:
+            raise AccessDeniedError(
+                message=f"Permission '{permission.value}' is required for this operation",
+                required_permission=permission.value,
+                user_role=role.value,
+            )
+
+        if role != AdminRole.PLATFORM_ADMIN:
+            if not allowed_org_id and permission in _ORG_SCOPED_PERMISSIONS:
+                raise AccessDeniedError(
+                    message="No organization membership — cannot access admin resources",
+                    required_permission=permission.value,
+                    user_role=role.value,
+                )
+            if target_org_id and allowed_org_id and target_org_id != allowed_org_id:
+                raise InvalidScopeError(
+                    message="Cannot access resources from another organization",
+                    allowed_scope=f"org:{allowed_org_id}",
+                    requested_scope=f"org:{target_org_id}",
+                )
+            if target_dept_id and allowed_dept_id and target_dept_id != allowed_dept_id:
+                raise InvalidScopeError(
+                    message="Cannot access resources from another department",
+                    allowed_scope=f"dept:{allowed_dept_id}",
+                    requested_scope=f"dept:{target_dept_id}",
+                )
+        return True
 
     async def check_permission(
         self,
@@ -238,44 +334,27 @@ class AccessControl:
         Raises:
             AccessDeniedError: If the user does not have the permission
         """
-        role, allowed_org_id, allowed_dept_id = await self.get_user_role(context)
-        permissions = self.get_role_permissions(role)
+        resolved = await self.get_user_role(context)
+        return self._check_resolved_permission(*resolved, permission, target_org_id, target_dept_id)
 
-        # Check if the role has the permission
-        if permission not in permissions:
-            raise AccessDeniedError(
-                message=f"Permission '{permission.value}' is required for this operation",
-                required_permission=permission.value,
-                user_role=role.value,
-            )
+    async def check_permission_for_discovery(
+        self,
+        context: TokenContext,
+        permission: Permission,
+        target_org_id: str | None = None,
+        target_dept_id: str | None = None,
+    ) -> bool | None:
+        """Return a tri-state permission answer without authorizing an action."""
+        resolved = await self.get_user_role_for_discovery(context)
+        if resolved is None:
+            return None
 
-        # Check scope if not platform admin
-        if role != AdminRole.PLATFORM_ADMIN:
-            # Issue #60: Non-admin users with no org membership must be rejected
-            # for org-scoped permissions. Without this, they get 200 with empty
-            # data instead of 403, which is a silent RBAC bypass.
-            if not allowed_org_id and permission in _ORG_SCOPED_PERMISSIONS:
-                raise AccessDeniedError(
-                    message="No organization membership — cannot access admin resources",
-                    required_permission=permission.value,
-                    user_role=role.value,
-                )
-
-            if target_org_id and allowed_org_id and target_org_id != allowed_org_id:
-                raise InvalidScopeError(
-                    message="Cannot access resources from another organization",
-                    allowed_scope=f"org:{allowed_org_id}",
-                    requested_scope=f"org:{target_org_id}",
-                )
-
-            if target_dept_id and allowed_dept_id and target_dept_id != allowed_dept_id:
-                raise InvalidScopeError(
-                    message="Cannot access resources from another department",
-                    allowed_scope=f"dept:{allowed_dept_id}",
-                    requested_scope=f"dept:{target_dept_id}",
-                )
-
-        return True
+        try:
+            return self._check_resolved_permission(*resolved, permission, target_org_id, target_dept_id)
+        except (AccessDeniedError, InvalidScopeError):
+            return False
+        except Exception:
+            return None
 
     async def require_assignable_role(
         self,

@@ -72,13 +72,16 @@ finally:
             del sys.modules[_name]
 
 VERSION = "validated-version"
-VALUE = json.dumps({"role_arn": "arn:aws:iam::123456789012:role/synthetic-vault-role", "external_id": "synthetic-external"})
+VALUE = json.dumps(
+    {"account_id": "123456789012", "role_arn": "arn:aws:iam::123456789012:role/synthetic-vault-role", "external_id": "synthetic-external"}
+)
 ROLE = "arn:aws:iam::123456789012:role/superplane-executor"
 IAM = "arn:aws:sts::123456789012:assumed-role/superplane-executor/pod-a"
 
 
 @pytest.fixture
 async def pair(authority, pg_url, store, kubernetes, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "999999999999")
     engine = create_async_engine(to_async_url(pg_url), poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
@@ -100,9 +103,18 @@ async def pair(authority, pg_url, store, kubernetes, tmp_path, monkeypatch):  # 
                     credential_type="aws_role",
                     secret_arn="arn:test:" + credential,
                     strict=False,
+                    aws_external_id="synthetic-external",
+                    aws_verified_at=datetime.now(UTC),
+                    aws_verification_attempt="ownership-attempt",
+                    aws_verified_version_id=VERSION,
+                    scopes={"account_id": "123456789012", "role_arn": "arn:aws:iam::123456789012:role/synthetic-vault-role", "status": "verified"},
                 )
             )
             await db.flush()
+            from src.auth.aws_connection_authority import connection_binding
+
+            current = await db.get(UserCredential, credential)
+            current.aws_verified_binding = connection_binding(current)
         await db.execute(text("UPDATE harness_operation_leases SET holder='invocation#1'"))
         contract = identity_contract()
         request = contract.OperationRequest(
@@ -665,7 +677,7 @@ async def test_produced_validation_is_attested_without_echoing_a_report(pair):
     response = await asyncio.to_thread(
         pair.api.post,
         "/internal/v1/credential-evidence",
-        headers={"X-Internal-Api-Key": "evidence-key"},
+        headers={"X-Caller-Identity": IAM, "X-Adp-Edge-Provenance": "synthetic-api-gateway-provenance"},
         json={
             "org_id": "org",
             "workspace_id": "workspace",
@@ -691,7 +703,7 @@ async def test_rotation_during_validation_invalidates_the_old_positive_reading(p
 
 
 @pytest.mark.parametrize("rotated", [False, True])
-async def test_independently_validated_wrong_account_never_reaches_delivery(pair, rotated):
+async def test_replaced_account_is_refused_before_provider_validation_and_delivery(pair, rotated):
     if rotated:
         assert (await asyncio.to_thread(pair.adapter.fetch_material, pair.lease)).reveal() == VALUE
     other_material = json.dumps({"role_arn": "arn:aws:iam::999999999999:role/replacement"})
@@ -700,10 +712,7 @@ async def test_independently_validated_wrong_account_never_reaches_delivery(pair
     pair.sm.get_secret_at_version.return_value = (other_material, version)
     pair.provider_state["account"] = "999999999999"
     response = await asyncio.to_thread(pair.api.post, "/auth/credentials/cred-1/workspaces/workspace/validation")
-    assert response.status_code == 200, response.text
-    assert response.json()["provider_account_id"] == "999999999999"
-    assert response.json()["validated_version_id"] == version
-    assert response.json()["validation"]["credential_valid"] is True
+    assert response.status_code == 409, response.text
     pair.sm.reset_mock()
     with pytest.raises(DeliveryRefused):
         await asyncio.to_thread(pair.adapter.fetch_material, pair.lease)

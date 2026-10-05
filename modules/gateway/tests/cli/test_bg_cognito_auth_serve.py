@@ -206,32 +206,60 @@ def _seed_session(home: Path, gateway_url: str, expires_at: int) -> None:
     )
 
 
-def _wait_until_listening(port: int, deadline_seconds: float = 20.0) -> None:
+def _startup_error(process: subprocess.Popen, message: str) -> AssertionError:
+    """Retain the child failure instead of hiding it behind a readiness timeout."""
+    exit_code = process.poll()
+    stdout, stderr = _drain(process)
+    # Test sessions contain seeded credentials; failure diagnostics need only
+    # process state and the startup error, never those credential values.
+    for token in (SEEDED_ACCESS_TOKEN, SEEDED_REFRESH_TOKEN, REFRESHED_ACCESS_TOKEN):
+        stdout = stdout.replace(token, "[redacted]")
+        stderr = stderr.replace(token, "[redacted]")
+    return AssertionError(f"{message}; child_exit={exit_code}; stdout={stdout!r}; stderr={stderr!r}")
+
+
+def _wait_until_listening(port: int, process: subprocess.Popen, deadline_seconds: float = 20.0) -> None:
     deadline = time.monotonic() + deadline_seconds
     while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise _startup_error(process, "proxy exited before listening")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
         except OSError:
             time.sleep(0.05)
-    raise AssertionError(f"proxy never started listening on 127.0.0.1:{port}")
+    raise _startup_error(process, f"proxy never started listening on 127.0.0.1:{port}")
 
 
-def _wait_for_capability(identity_file: Path, deadline_seconds: float = 20.0) -> None:
-    """Block until the identity file carries a capability (#5686).
-
-    The proxy binds and then publishes; a client that raced in between would be
-    refused for having no capability rather than for the behaviour under test.
-    """
+def _wait_for_capability(
+    identity_file: Path,
+    process: subprocess.Popen,
+    gateway_url: str,
+    deadline_seconds: float = 20.0,
+) -> dict[str, Any]:
+    """Wait for this child to publish its capability and OS-assigned bound port."""
     deadline = time.monotonic() + deadline_seconds
     while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise _startup_error(process, "proxy exited before publishing capability")
         try:
-            if json.loads(identity_file.read_text()).get("capability"):
-                return
+            identity = json.loads(identity_file.read_text())
         except (OSError, json.JSONDecodeError):
-            pass
-        time.sleep(0.05)
-    raise AssertionError(f"proxy never published a capability to {identity_file}")
+            time.sleep(0.05)
+            continue
+        if (
+            not isinstance(identity, dict)
+            or identity.get("pid") != process.pid
+            or identity.get("proxy") != "adp-gateway-proxy"
+            or identity.get("gateway_url") != gateway_url
+            or type(identity.get("port")) is not int
+            or not 0 < identity["port"] <= 65535
+            or not isinstance(identity.get("capability"), str)
+            or not identity["capability"]
+        ):
+            raise _startup_error(process, "published proxy identity does not match this child")
+        return identity
+    raise _startup_error(process, f"proxy never published a capability to {identity_file}")
 
 
 def _dead_pid() -> int:
@@ -295,7 +323,9 @@ def start_proxy(bg_cognito_auth_script: Path, mock_aws_cli: Path, cognito_home: 
             expires_at = int(time.time()) + 3600
         _seed_session(cognito_home, gateway_url, expires_at)
 
-        chosen_port = port or _free_port()
+        # Reserve the listening port in the proxy itself. A bind-close probe
+        # races other xdist workers and can mistake their listener for ours.
+        chosen_port = 0 if port is None else port
         env = os.environ.copy()
         env.update(
             {
@@ -314,10 +344,13 @@ def start_proxy(bg_cognito_auth_script: Path, mock_aws_cli: Path, cognito_home: 
             env=env,
         )
         started.append(process)
-        _wait_until_listening(chosen_port)
         identity_file = cognito_home / ".bedrock-gateway" / "proxy.json"
-        _wait_for_capability(identity_file)
-        return RunningProxy(chosen_port, process, identity_file)
+        identity = _wait_for_capability(identity_file, process, gateway_url)
+        bound_port = identity["port"]
+        if chosen_port and bound_port != chosen_port:
+            raise _startup_error(process, "proxy published an unexpected explicit port")
+        _wait_until_listening(bound_port, process)
+        return RunningProxy(bound_port, process, identity_file)
 
     yield _start
 
@@ -860,3 +893,58 @@ class TestExistingCommandsUnchanged:
         result = run_bg_cognito_auth(["status"])
         assert result.returncode == 0
         assert "Token Status: Valid" in result.stdout
+
+
+class TestProxyReadiness:
+    """Fixture readiness must belong to the child, not another local listener."""
+
+    def test_os_assigned_port_survives_competing_listener(self, start_proxy, upstream: UpstreamGateway, monkeypatch) -> None:
+        with socket.socket() as competitor:
+            competitor.bind(("127.0.0.1", 0))
+            competitor.listen()
+            occupied_port = competitor.getsockname()[1]
+            # The old fixture would choose this occupied port and then accept
+            # the competitor's listener while its own child failed to bind.
+            monkeypatch.setitem(globals(), "_free_port", lambda: occupied_port)
+            proxy = start_proxy(upstream.url)
+            try:
+                assert proxy.port != occupied_port
+                identity = json.loads(proxy.identity_file.read_text())
+                assert identity["pid"] == proxy.process.pid
+                assert identity["port"] == proxy.port
+                status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "contention"}, headers=proxy.auth_headers)
+                assert status == 200
+                assert echoed["authorization"] == f"Bearer {SEEDED_ACCESS_TOKEN}"
+                assert proxy.capability not in json.dumps(echoed)
+            finally:
+                _drain(proxy.process)
+
+    def test_explicit_port_collision_reports_child_bind_error(self, start_proxy, upstream: UpstreamGateway) -> None:
+        with socket.socket() as competitor:
+            competitor.bind(("127.0.0.1", 0))
+            competitor.listen()
+            with pytest.raises(AssertionError, match="Address already in use") as failure:
+                start_proxy(upstream.url, port=competitor.getsockname()[1])
+            assert "child_exit=1" in str(failure.value)
+            assert SEEDED_ACCESS_TOKEN not in str(failure.value)
+
+    @pytest.mark.parametrize("changed", [{"pid": -1}, {"proxy": "other-service"}, {"gateway_url": "http://wrong"}])
+    def test_published_identity_must_match_child_and_gateway(self, tmp_path, changed) -> None:
+        from unittest.mock import Mock
+
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        identity = {
+            "pid": 123,
+            "proxy": "adp-gateway-proxy",
+            "gateway_url": "http://127.0.0.1:4321",
+            "port": 4322,
+            "capability": "test-capability",
+            **changed,
+        }
+        path = tmp_path / "proxy.json"
+        path.write_text(json.dumps(identity))
+        with pytest.raises(AssertionError, match="identity does not match"):
+            _wait_for_capability(path, process, "http://127.0.0.1:4321")
+        process.terminate.assert_called_once()

@@ -4,6 +4,7 @@ interface PullRequestResponse {
   number: number;
   state: string;
   merged?: boolean;
+  merge_commit_sha?: string | null;
   html_url: string;
   title: string;
   body: string | null;
@@ -64,6 +65,7 @@ export function formatIssueReviewComment(
 }
 
 interface IssueResponse {
+  comments?: number;
   number: number;
   title: string;
   body: string | null;
@@ -74,12 +76,12 @@ interface IssueCommentResponse {
 }
 
 interface CheckRunsResponse {
-  check_runs: Array<{ name: string; status: string; conclusion: string | null }>;
+  check_runs: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 interface CombinedStatusResponse {
   state: string;
-  statuses: Array<{ context: string; state: string }>;
+  statuses: Array<{ context: string; state: string; target_url?: string }>;
 }
 
 export interface ChecksState {
@@ -87,6 +89,8 @@ export interface ChecksState {
   failing: string[];
   pending: string[];
   total: number;
+  /** Named evidence for final-revision review, not just an aggregate boolean. */
+  observations?: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 // This live-fleet diagnostic is intentionally not a required merge context:
@@ -95,7 +99,7 @@ export interface ChecksState {
 // in .github/workflows/gitlab-integration-tests.yml.
 const NON_BLOCKING_CHECKS = new Set(["GitLab Live Fleet"]);
 
-class GitHubRequestError extends Error {
+export class GitHubRequestError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -132,15 +136,15 @@ function isRootedPath(path: string): boolean {
 export class GitHubClient {
   constructor(
     private readonly repository: string,
-    private readonly tokenProvider: () => Promise<string>,
+    private readonly tokenProvider: (force?: boolean) => Promise<string>,
   ) {}
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, refreshed = false): Promise<T> {
     if (!isRootedPath(path)) {
       throw new Error(`GitHub request path must start with "/": ${path}`);
     }
-    const token = await this.tokenProvider();
-    const response = await fetch(`${GITHUB_API_ORIGIN}${path}`, {
+    const token = await this.tokenProvider(refreshed);
+    const options: RequestInit = {
       ...init,
       headers: {
         accept: "application/vnd.github+json",
@@ -150,16 +154,39 @@ export class GitHubClient {
         ...(init.headers ?? {}),
       },
       signal: init.signal ?? AbortSignal.timeout(30_000),
-    });
-    // A cross-origin redirect cannot leak the token (Node strips Authorization
-    // when the origin changes) but it can substitute the response body — and
-    // these bodies drive the merge gate in `checks()`. Confirm the response
-    // actually came from GitHub. Same-origin redirects, which GitHub issues for
-    // renamed repositories, are unaffected.
+      redirect: "manual",
+    };
+    let url = `${GITHUB_API_ORIGIN}${path}`;
+    let response: Response;
+    for (let redirects = 0; ; redirects += 1) {
+      response = await fetch(url, options);
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      if (!location || redirects >= 3) throw new Error("GitHub redirect unavailable or limit exceeded");
+      const target = new URL(location, url);
+      if (target.origin !== GITHUB_API_ORIGIN || target.username || target.password) {
+        throw new Error("GitHub redirect must remain on api.github.com");
+      }
+      // Do not silently rewrite or replay mutations after method-changing redirects.
+      // 307/308 explicitly preserve the original method/body for renamed resources.
+      if (!["GET", "HEAD"].includes(options.method ?? "GET") && [301, 302, 303].includes(response.status)) {
+        throw new Error("GitHub mutation requires a method-preserving redirect");
+      }
+      url = target.href;
+    }
+    // Retain a final-origin defense as well as validating every hop before transit.
     if (response.url && new URL(response.url).origin !== GITHUB_API_ORIGIN) {
       throw new Error(
         `GitHub ${init.method ?? "GET"} ${path} was redirected off api.github.com`,
       );
+    }
+    // A rejected credential did not authorize the request. Refresh once for
+    // an explicit 401 only. Network errors and lost write replies are never
+    // replayed here; they retain operation-specific reconciliation.
+    if (response.status === 401 && !refreshed) {
+      await response.body?.cancel();
+      return this.request<T>(path, init, true);
     }
     if (!response.ok) {
       throw new GitHubRequestError(
@@ -181,6 +208,24 @@ export class GitHubClient {
 
   getIssue(number: number): Promise<IssueResponse> {
     return this.request(`/repos/${this.repository}/issues/${number}`);
+  }
+
+  /** Controller-owned PR description update (task board section). */
+  async updatePullRequestBody(number: number, body: string): Promise<void> {
+    await this.request(`/repos/${this.repository}/pulls/${number}`, { method: "PATCH", body: JSON.stringify({ body }) });
+  }
+
+  /** Recent persisted plans are task context, never verified acceptance evidence. */
+  async taskChecklists(number: number, total = 0): Promise<string[]> {
+    if (!Number.isSafeInteger(total) || total <= 0) return [];
+    const last = Math.ceil(total / 100);
+    const comments: IssueCommentResponse[] = [];
+    for (let page = Math.max(1, last - 1); page <= last; page++) {
+      comments.push(...await this.request<IssueCommentResponse[]>(
+        `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`));
+    }
+    return comments.filter(comment => comment.body?.includes('### Task checklist')).slice(-3)
+      .map(comment => comment.body!.slice(comment.body!.indexOf('### Task checklist')).split(/\n#{1,3} /)[0]!.slice(0, 8192));
   }
 
   async comment(number: number, body: string): Promise<void> {
@@ -235,19 +280,59 @@ export class GitHubClient {
       else if (status.state !== "success") failing.push(status.context);
     }
     const total = blockingChecks.length + blockingStatuses.length;
-    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
+    const observations = [
+      ...blockingChecks.map(({ name, status, conclusion, details_url }) =>
+        ({ name, status, conclusion, ...(details_url ? { details_url } : {}) })),
+      ...blockingStatuses.map(({ context, state, target_url }) => ({ name: context,
+        status: state === "pending" ? "pending" : "completed", conclusion: state === "pending" ? null : state,
+        ...(target_url ? { details_url: target_url } : {}) })),
+    ];
+    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total, observations };
   }
 
-  async merge(number: number, sha: string): Promise<string> {
+  async markReady(nodeId: string): Promise<void> {
+    const result = await this.request<{ errors?: unknown; data?: { markPullRequestReadyForReview?: { pullRequest?: { isDraft: boolean } } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+        variables: { id: nodeId },
+      }),
+    });
+    if (result.errors || result.data?.markPullRequestReadyForReview?.pullRequest?.isDraft !== false) {
+      throw new Error("Recovery PR readiness was not acknowledged");
+    }
+  }
+
+  async merge(number: number, sha: string, method: "squash" | "merge" | "rebase" = "squash"): Promise<string> {
     const result = await this.request<{ merged: boolean; message: string; sha?: string }>(
       `/repos/${this.repository}/pulls/${number}/merge`,
       {
         method: "PUT",
-        body: JSON.stringify({ sha, merge_method: "squash" }),
+        body: JSON.stringify({ sha, merge_method: method }),
       },
     );
     if (!result.merged) throw new Error(`GitHub refused merge: ${result.message}`);
     return result.sha ?? "";
+  }
+
+  async queueEntry(nodeId: string, sha: string): Promise<string | null> {
+    const result = await this.request<{ errors?: unknown; data?: { node?: { headRefOid: string; mergeQueueEntry: { id: string } | null } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "query($id:ID!) { node(id:$id) { ... on PullRequest { headRefOid mergeQueueEntry { id } } } }",
+        variables: { id: nodeId },
+      }),
+    });
+    if (result.errors || result.data?.node?.headRefOid !== sha) throw new Error("Merge queue observation unavailable or head changed");
+    return result.data.node.mergeQueueEntry?.id ?? null;
+  }
+
+  async enqueue(nodeId: string, sha: string, operation: string): Promise<void> {
+    const result = await this.request<{ errors?: unknown; data?: { enqueuePullRequest?: { mergeQueueEntry?: { id: string } } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "mutation($input:EnqueuePullRequestInput!) { enqueuePullRequest(input:$input) { mergeQueueEntry { id } } }",
+        variables: { input: { pullRequestId: nodeId, expectedHeadOid: sha, clientMutationId: operation } },
+      }),
+    });
+    if (result.errors || !result.data?.enqueuePullRequest?.mergeQueueEntry?.id) throw new Error("Merge queue admission outcome unknown");
   }
 }
 

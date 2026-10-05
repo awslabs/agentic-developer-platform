@@ -1,0 +1,101 @@
+name: Shared Codex Harness Tests
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/codex-harness/**'
+      - 'docs/task-api/contracts/v1/**'
+      - 'modules/gateway/src/agentauth/task*.py'
+      - 'modules/gateway/src/tasks/**'
+      - 'modules/tools/task-sdk/**'
+      - 'modules/tools/validation/**'
+      - 'modules/tools/adp_tools/**'
+      - 'modules/agent-factory/agent-worker-image/lib/task*.py'
+      - 'modules/agent-factory/agent-worker-image/lib/codex*.py'
+      - 'modules/agent-factory/agent-worker-image/Dockerfile'
+      - 'modules/agent-factory/task-agents/investigator/**'
+      - '.github/workflows/codex-harness-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/agent-factory/codex-harness/**'
+      - 'docs/task-api/contracts/v1/**'
+      - 'modules/gateway/src/agentauth/task*.py'
+      - 'modules/gateway/src/tasks/**'
+      - 'modules/tools/task-sdk/**'
+      - 'modules/tools/validation/**'
+      - 'modules/tools/adp_tools/**'
+      - 'modules/agent-factory/agent-worker-image/lib/task*.py'
+      - 'modules/agent-factory/agent-worker-image/lib/codex*.py'
+      - 'modules/agent-factory/agent-worker-image/Dockerfile'
+      - 'modules/agent-factory/task-agents/investigator/**'
+      - '.github/workflows/codex-harness-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: modules/agent-factory/codex-harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/codex-harness/package-lock.json
+      - run: python3 test/run-isolated.py -- npm ci --include=dev --ignore-scripts
+      - run: python3 test/run-isolated.py -- python3 -m unittest discover -s test
+      - name: Build shared Task report contracts
+        run: python3 test/run-isolated.py -- npm --prefix ../task-agents/investigator ci --include=dev --ignore-scripts
+      - run: python3 test/run-isolated.py -- npm --prefix ../task-agents/investigator run build
+      - run: python3 test/run-isolated.py -- npm test
+      - run: python3 test/run-isolated.py -- node scripts/github-catalogue.mjs --check
+      - run: python3 test/run-isolated.py -- node scripts/generate-report-probe-manifest.mjs --check
+      - run: python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --tool-error
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-repair
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-exhausted
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-revoked
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-unknown
+      - run: python3 test/run-isolated.py -- node test/sdk-proxy.mjs
+      - run: python3 test/run-isolated.py -- node --test test/task-bridge.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-session.mjs
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Create isolated fixture environment
+        run: python3 test/run-isolated.py -- python3 -m venv "$RUNNER_TEMP/codex-task-fixtures"
+      - name: Install fixture worker dependencies
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install pytest==9.0.3 requests==2.32.5 rfc8785==0.1.4 boto3==1.36.0 cryptography==50.0.1
+      - name: Workspace and run-bound worker client tests
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../agent-worker-image/tests/test_codex_workspace.py ../agent-worker-image/tests/test_codex_workspace_tools.py ../agent-worker-image/tests/test_codex_validation_source.py ../agent-worker-image/tests/test_codex_service_validation.py ../agent-worker-image/tests/test_task_run_client.py ../agent-worker-image/tests/test_codex_validation_tool.py ../agent-worker-image/tests/test_codex_kubernetes_validation.py ../agent-worker-image/tests/test_workspace_validation_binding.py -q
+      - name: Real worker and Codex SDK Task lifecycle with fixture inference
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py integration/test_github_codex_host.py -q
+      - name: Install gateway fixture dependencies
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install -e "../../gateway[dev]"
+      - name: Dedicated validation service admission and cancellation
+        run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../../tools/validation/tests -q
+      - name: Combined gateway, worker and SDK lifecycle with fixture inference
+        run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_gateway_runtime.py -q
+      - name: Task repository authority and staged source transfer
+        run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../../gateway/tests/agentauth/test_task_repository_policy.py ../../gateway/tests/agentauth/test_task_repository_source.py ../../gateway/tests/agentauth/test_task_source_staging.py ../../gateway/tests/agentauth/test_task_completion_service.py ../../gateway/tests/agentauth/test_task_harness.py ../../gateway/tests/agentauth/test_task_responses_tools_contract.py ../../gateway/tests/agentauth/test_task_tool_receipts.py -q

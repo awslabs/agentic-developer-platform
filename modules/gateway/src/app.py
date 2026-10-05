@@ -20,6 +20,7 @@ from src.shared.database_agent_context import get_agent_context_db  # Issue #218
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.logging import configure_logging
 from src.shared.middleware.logging_middleware import LoggingMiddleware
+from src.shared.middleware.request_identity import RequestIdentityMiddleware
 from src.shared.tracing import setup_tracing, shutdown_tracing
 
 logger = logging.getLogger("bedrockgateway")
@@ -27,6 +28,8 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.domain_proxy.superplane",
     "src.auth.routes",
+    "src.auth.workspaces",  # Process-local tenant discovery/context; retain /auth legacy aliases.
+    "src.auth.session_admin",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
@@ -40,6 +43,7 @@ UNIT_MODULES = [
     # pod (the shared worker IRSA identity cannot name one executor), and that
     # authorization deserves review on its own terms rather than by inheritance.
     "src.internal.vault_evidence_routes",
+    "src.internal.controller_execution_routes",
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
@@ -48,11 +52,14 @@ UNIT_MODULES = [
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.internal.persona_model_selection",
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.codex_github_session",
     "src.agentauth.arc_model",
     "src.agentauth.model_policy_keys",
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
+    "src.agentauth.chat_data_routes",
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
+    "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
@@ -60,7 +67,27 @@ UNIT_MODULES = [
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
+    # #5796: the publication protocol's claim/settle/sweep adapters. Separate
+    # from task_routes because these serve the platform's own publisher and
+    # scheduled reconciler (STS producer proof), not a TokenReview-bound pod, and
+    # recovery holds a distinct role allowlist from dispatch.
+    "src.agentauth.task_dispatch_routes",
+    "src.agentauth.task_runtime_routes",
+    "src.agentauth.task_tool_routes",  # Generic Task tool authorization, no domain execution.
+    # #5799: Task API v1 read, streaming, artifact and host-reporting surface.
+    # Mounted always and gated inside by ADP_TASK_API_READ_ENABLED /
+    # ADP_TASK_API_WORKER_ENABLED (both default false, design section 11), which is
+    # the repo's mount-always/503-when-disabled pattern: conditional registration
+    # would make a disabled surface return 404, indistinguishable from a routing
+    # mistake, and would leave the routes unimported and so unexercised by the
+    # app's own startup.
+    "src.tasks.routes",
+    "src.tasks.artifacts",
+    "src.tasks.internal_artifacts",
+    "src.tasks.report_routes",
+    "src.tasks.command_routes",
     "src.agentauth.artifact_service",
+    "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is
@@ -77,6 +104,7 @@ UNIT_MODULES = [
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
+    "src.admin.identity.github_enrollment_routes",
     "src.admin.identity.recovery_routes",  # Native Cognito recovery: no legacy /api prefix.
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
     # Issue #4842: platform-admin attach/detach of an ORG's GitHub connection.
@@ -148,6 +176,8 @@ UNIT_MODULES = [
     # checks ORG_UPDATE as its first statement.
     "src.admin.persona_models.self_routes",
     "src.admin.persona_models.routes",
+    "src.admin.persona_models.human_task_routes",
+    "src.admin.persona_models.task_policy_ui_routes",
     # Issue #5425 (PMM-07): the versioned runtime-posture mutation and its audited
     # operational rollback. A THIRD module because its gate is strictly stronger
     # than either router above: the policy-settings row carries no TenantMixin, so
@@ -157,6 +187,7 @@ UNIT_MODULES = [
     # tests/admin/persona_models/test_posture_authz.py.
     "src.admin.persona_models.posture_routes",
     "src.admin.persona_models.default_routes",
+    "src.admin.persona_models.persona_default_routes",
     # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
     # /me/persona-models namespace. Kept in a separate module so catalogue
     # policy/evidence logic does not broaden either PMM-02 write surface.
@@ -167,8 +198,15 @@ UNIT_MODULES = [
     "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
     "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
     "src.features.routes",  # Issue #3566: Feature-flag endpoint
+    "src.gitlab.routes",
     "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
     "src.cli_download.routes",  # Issue #4146: /setup page CLI helper-script download
+    # Issue #5621 (CLI-08): own-scope CLI capability discovery. Read-only, and
+    # deliberately separate from cli_download.routes — that router is public and
+    # unauthenticated by design, whereas this one is authenticated and
+    # tenant-scoped. Sharing a module would put a public route and a per-caller
+    # route behind one review.
+    "src.cli_capabilities.routes",
     # Issue #4200: orchestration plan amendment. OPERATOR plane (Cognito + the
     # PLAN_APPROVE permission), deliberately NOT src.internal.* — agent pods can
     # call any internal route with any method, so promotion state must never be
@@ -198,6 +236,8 @@ UNIT_MODULES = [
     # draft_routes.py is: routes.py's guarantee is "nothing here is reachable below
     # approval authority". Guarded by tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.intake_routes",
+    "src.orchestration.chat_history",
+    "src.orchestration.chat_tasks",
 ]
 
 
@@ -210,6 +250,7 @@ async def lifespan(app: FastAPI):
     # create_all shadows alembic (no alembic_version row, missing constraints/indexes)
     # and causes DuplicateTableError on fresh-account deploys.
     settings = get_settings()
+    await app.state.ratelimit_service.initialize()
     if settings.db_auto_create:
         try:
             # Import all models so Base.metadata knows about them
@@ -294,6 +335,8 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await claims_task
 
+    await app.state.ratelimit_service.close()
+
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()
 
@@ -351,17 +394,20 @@ def create_app() -> FastAPI:
 
     # Issue #992: Add request logging middleware to record requests in request_logs table
     # for the admin dashboard. Runs after LoggingMiddleware (i.e., sees the response status).
+    from src.ratelimit.service import RateLimitService
+
+    app.state.ratelimit_service = RateLimitService()
     app.add_middleware(create_request_logging_middleware())
 
     # Issue #131: Add enforcement middleware
     # Middleware order is important - they execute in reverse order of addition:
-    # Request → LoggingMiddleware → BudgetEnforcementMiddleware → RateLimitEnforcementMiddleware → Route Handler
-    # So we add rate limit first (executed second) then budget (executed first after logging)
+    # Request → Identity → Auth → Approval → ModelIdentity → Budget → RateLimit → Logging → Handler
+    # Registration is reversed: identity is added last to wrap admission.
     #
     # Note: Auth middleware sets request.state.token_context which enforcement middleware depends on
     # The enforcement middleware checks for token_context and skips if not present (auth handles 401)
     if os.environ.get("RATELIMIT_ENFORCEMENT_ENABLED", "true").lower() == "true":
-        app.add_middleware(RateLimitEnforcementMiddleware)
+        app.add_middleware(RateLimitEnforcementMiddleware, ratelimit_service=app.state.ratelimit_service)
         logger.info("Rate limit enforcement middleware enabled")
 
     app.add_middleware(BudgetEnforcementMiddleware)
@@ -375,9 +421,9 @@ def create_app() -> FastAPI:
     # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is
     # populated and before the budget/ledger read — rejecting an un-approved caller
     # without spending a DB round-trip on a request that is going to be denied anyway.
-    # Registered unconditionally: the BG_ENFORCE_ORG_ASSIGNMENT flag (default False)
-    # short-circuits inside the middleware, so it stays flippable by env change + pod
-    # recycle with no code-path difference.
+    # Registered unconditionally: the BG_ENFORCE_ORG_ASSIGNMENT flag (default True as
+    # of #5666 / A11) short-circuits inside the middleware, so it stays flippable by
+    # env change + pod recycle with no code-path difference.
     app.add_middleware(ApprovalEnforcementMiddleware)
     logger.info("Approval enforcement middleware enabled")
 
@@ -386,6 +432,8 @@ def create_app() -> FastAPI:
     # budget and rate-limit middleware access it.
     app.add_middleware(TokenContextMiddleware)
     logger.info("Token context middleware enabled")
+    # Outermost: every admission/settlement path sees one server-owned identity.
+    app.add_middleware(RequestIdentityMiddleware)
 
     # Error handler for BedrockGatewayError
     @app.exception_handler(BedrockGatewayError)  # nosemgrep: useless-inner-function

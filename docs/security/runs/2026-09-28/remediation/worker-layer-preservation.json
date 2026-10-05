@@ -1,0 +1,32 @@
+{
+  "base": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0a1818251face459588d3e7082649314de0a4512242a192bc95f88d9c8f7b2c",
+  "candidate": "security28/worker:security-source",
+  "base_layers_byte_identical": true,
+  "runtime_config_identical": true,
+  "new_layer_files": {
+    "app/dist/agent-pm.d.ts": "4acd0879ef7e63315ed2c757f787f9883ba3cffe0e85b1a7f4af205ff79d06a2",
+    "app/dist/agent-pm.d.ts.map": "c23f4f597f2d33887316607a7f94dc649476bb8691dbf2a38a3e1d23949e89fe",
+    "app/dist/agent-pm.js": "d16b9f836e5941bacb66b6c26647350184171ee5f0c3055c93c4f892e3de3f82",
+    "app/dist/agent-pm.js.map": "9dd4063cd6d03c1c5508bb3e05a02747bcd9f8be05526c9942317c74e76cc7a9",
+    "app/dist/memory.d.ts": "c10d03940d2a8651f72a8a17c36add5d85d941528e38f18de1b7071fe881f53c",
+    "app/dist/memory.d.ts.map": "b6ac6170a095f0318d79e0456e4735dedef6153036d3706453dabbce92dafc41",
+    "app/dist/memory.js": "0e272c7591561baf038a8211676571a6bd7c6fced443ea683707418c1cd436c2",
+    "app/dist/memory.js.map": "f6ae984d055a179cf42ef8f22ade6a83fe4a9d47aafc22f28bb899b87890015a",
+    "app/dist/reassessment.d.ts": "2c579ce4a59013bb34eb7883ce5fc0a819a9a073be0ea2c5cce9d46b11aa55e4",
+    "app/dist/reassessment.d.ts.map": "f719b2a5dfe1407a2739e3e2fff81c6f629d77973bdf5e987f1d44ea9d0e2dac",
+    "app/dist/reassessment.js": "d4db62aa734958c4762cad58a059efa79b86af0e97d88f9d668595386c8b4c04",
+    "app/dist/reassessment.js.map": "e7a07698c5ee3025953a3487d0aff2a178b287500475e565d0e201683df0c5a7",
+    "app/dist/skill-agent.d.ts": "176d2b47d4658a36c1bee4e9cc4b98f99b2dde72da12c546286928c1a4683a59",
+    "app/dist/skill-agent.d.ts.map": "256d37f38538660562fc6068d7ac757a190ec6d6b850a9278361c1f0412aec97",
+    "app/dist/skill-agent.js": "40efba7b38d82a98042193f19620f77ce279c7b1006b014e2aa24741ba16eff7",
+    "app/dist/skill-agent.js.map": "923e69de88101f37e65d3c3b0328fb6e90c54fa4507b418aa105a980e733f88c",
+    "app/dist/utils/comment-authority.d.ts": "328d062917f17aeab387ea43e5cd4b9be90c22f8f79151dafa0edf198632cb22",
+    "app/dist/utils/comment-authority.d.ts.map": "284f7712954a4fc731e22d15440721b6a46d6fd8be75c458e4411f4f10771787",
+    "app/dist/utils/comment-authority.js": "3f5d5426bcb8028ac70d72c7d855a05d31d266cf071263a21a19fb1d514b32b9",
+    "app/dist/utils/comment-authority.js.map": "3ea6c012255da389cde678cdc31ad638e42f34611e583beef9fa809aad0f9c60"
+  },
+  "source_base": "f3d47c739134bef162773fe3e457100f4362f7bb",
+  "reviewed_patch_merge": "02199115ab646a393a57d6a3283caa8d5ca63fe9",
+  "patch_sha256": "86ab360399bc4ff88be98c4761cdbc99c8182395d3ca77bc6bcde9c7007a3e52",
+  "baseline_compiler_parity": "all four changed existing JS modules match live bytes"
+}

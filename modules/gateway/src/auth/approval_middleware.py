@@ -1,46 +1,14 @@
-"""
-Approval (org-assignment) enforcement middleware (pure ASGI) — Issue #4144.
+"""Require current tenant membership or registered machine authority on spend paths.
 
-Authentication and authorization were decoupled on the inference path: any valid
-Cognito JWT built a ``TokenContext`` regardless of whether a platform admin had
-approved the caller, so an un-approved human could bill Bedrock directly (curl,
-SDK, Claude Code) while the SPA still showed them a "request access" screen. The
-``user_not_assigned_to_org`` 409 existed only on BYO-credential routes via
-``src/auth/org_id_resolver.py`` — never on inference.
-
-This middleware closes that gap: human callers who are not approved are rejected
-on the spend paths, while platform admins and agents are exempt.
-
-IMPORTANT: This is a raw ASGI middleware — NOT BaseHTTPMiddleware. Same reason as
-``src/budget/enforcement_middleware.py``: BaseHTTPMiddleware has a known Starlette
-bug where returning a response from dispatch() without calling call_next() hangs
-indefinitely. We write the 409 directly via the ASGI ``send`` callable. For the
-same reason we cannot reuse ``resolve_effective_org_id`` — it raises
-``HTTPException``, and no exception-handler middleware sits above this one, so the
-raise would never become a response. The query is reimplemented inline instead.
-
-"Approved" is resolved from Postgres, NOT from the token's ``org_id`` claim alone
-(Issue #600's precedent). Keying on the claim would lock out approved users: the
-login-time auto-match approval path calls ``attach_approved_member(...,
-sync_cognito_claims=False)`` (``src/admin/onboarding/handler.py``), and the
-pre-token-generation Lambda reads Cognito *user attributes* rather than Postgres,
-so those users are approved in the database and permanently org-less in every
-token they mint. Even on the admin-approval path ``sync_cognito_role_claims`` is
-explicitly best-effort. Postgres ``users`` is the source of truth; the claim is a
-cache and only ever used as a fast path.
-
-Fail-open policy: if the approval lookup itself raises, the request is ADMITTED
-and a warning + CloudWatch metric are emitted. This deliberately diverges from
-the budget middleware's fail-closed policy (Issue #4075). Budget failing open
-means uncapped spend with no cap to stop it; approval failing closed would mean a
-total inference outage for *every* user during a transient DB blip. The residual
-risk here is bounded — an un-approved user spends during a DB outage — and is
-still capped by budget and rate limits.
+Platform recovery administrators retain their existing exemption. Human org
+claims select a tenant but do not prove current membership. Database failures
+produce retryable 503; missing or ambiguous membership produces policy denial.
 """
 
 from __future__ import annotations
 
 import json
+from enum import Enum
 
 from sqlalchemy import select
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -60,6 +28,28 @@ _ERROR_CODE = "user_not_assigned_to_org"
 _ERROR_MESSAGE = "Your account is pending approval. Ask a platform admin to approve your access."
 
 _METRIC_NAMESPACE = "ADP/Approval"
+
+# #5666 (A11): the 503 counterpart to the 409 above, following the budget
+# middleware's #4075 split between "policy says no" and "policy is unknown".
+_UNAVAILABLE_CODE = "approval_check_unavailable"
+_UNAVAILABLE_MESSAGE = "Unable to verify your access approval right now. Please retry shortly."
+_UNAVAILABLE_RETRY_AFTER = b"2"
+
+
+class Verdict(Enum):
+    """Three-state approval outcome — #5666 (A11).
+
+    A bool cannot distinguish "proven not approved" from "could not determine",
+    and that is precisely how the fail-open defect hid: the error handler returned
+    the same ``True`` an approved user gets, so an admitted-because-unprovable
+    request was indistinguishable from an admitted-because-approved one at the
+    call site AND in the response. Naming INDETERMINATE forces every caller to say
+    what it does about it.
+    """
+
+    APPROVED = "approved"
+    NOT_APPROVED = "not_approved"
+    INDETERMINATE = "indeterminate"
 
 
 class ApprovalEnforcementMiddleware:
@@ -99,7 +89,8 @@ class ApprovalEnforcementMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if await self._is_approved(token_context):
+        verdict = await self._approval_verdict(token_context)
+        if verdict is Verdict.APPROVED:
             await self.app(scope, receive, send)
             return
 
@@ -114,67 +105,91 @@ class ApprovalEnforcementMiddleware:
             if not msg.get("more_body", False):
                 break
 
+        # #5666 (A11): an indeterminate verdict denies, but as a RETRYABLE 503
+        # rather than the 409 policy denial — the caller may well be approved and
+        # we simply could not read the database.
+        if verdict is Verdict.INDETERMINATE:
+            await self._send_check_unavailable(send, token_context)
+            return
+
         await self._send_not_approved(send, token_context)
 
     def _should_enforce(self, path: str) -> bool:
         return any(path.startswith(p) for p in ENFORCED_PATHS)
 
-    async def _is_approved(self, ctx: TokenContext) -> bool:
-        """Whether this caller may spend.
-
-        Order matters: every exemption is checked before the DB read, so the
-        hot path for an approved user with a populated claim stays DB-free.
-        """
+    async def _approval_verdict(self, ctx: TokenContext) -> Verdict:
+        """Evaluate supported authenticated principal types explicitly."""
         if not get_settings().enforce_org_assignment:
-            # Flag off — inert. Read per-request (not captured at import time)
-            # so the flag is flippable by env change + pod recycle.
-            return True
-
+            return Verdict.APPROVED
+        if ctx.account_type == "human" and ctx.is_admin:
+            return Verdict.APPROVED
         if ctx.account_type != "human":
-            # Agents / service accounts (IAM/SigV4 path). The pre-token-generation
-            # Lambda stamps custom:account_type="service" for the
-            # client-credentials flow. Note the default when the claim is absent
-            # is "human" (src/auth/middleware.py), which fails safe in the right
-            # direction: an unstamped caller is gated, not waved through.
-            return True
+            # These fields are populated only by authentication adapters after
+            # registry/alias resolution, never by request attribution headers.
+            if not ctx.org_id.strip():
+                return Verdict.NOT_APPROVED
+            if ctx.auth_source == "iam" and ctx.agent_registry_id:
+                return Verdict.APPROVED
+            if ctx.account_type == "service" and ctx.canonical_service_principal_id:
+                return await self._db_has_org(ctx.user_id, context=ctx)
+            return Verdict.NOT_APPROVED
+        return await self._db_has_org(ctx.user_id, context=ctx)
 
-        if ctx.is_admin:
-            # Platform admins are never gated. The admin who approves everyone
-            # would otherwise be locked out first (the #3984 self-lockout class).
-            # is_admin is derived from role/groups independently of org_id, so an
-            # admin with no org still passes.
-            return True
+    async def _db_has_org(self, user_id: str, *, context: TokenContext | None = None) -> Verdict:
+        """Require a current membership in the effective authenticated tenant.
 
-        if (ctx.org_id or "").strip():
-            # Fast path: the token already carries an org assignment.
-            return True
-
-        return await self._db_has_org(ctx.user_id)
-
-    async def _db_has_org(self, user_id: str) -> bool:
-        """Source-of-truth approval check: does Postgres have an org for this sub?
-
-        A ``users`` row exists only after approval (``/access/status`` returns
-        "registered" precisely when it does), and ``org_id`` is non-nullable on
-        the row, so "has a users row with a non-empty org_id" is the correct
-        DB-backed definition of approved. Mirrors ``resolve_effective_org_id``'s
-        query exactly; ``cognito_sub`` is indexed.
-
-        Fails OPEN on error — see the module docstring for why.
+        ``is_active`` is workspace selection, not a revocation flag. Multiple
+        org-local accounts are ordinary; absent selection is resolved only when
+        one current membership tenant remains. Ambiguity is a policy decision.
         """
         try:
             async with self._get_session() as session:
-                stmt = select(User.org_id).where(User.cognito_sub == user_id)
-                result = await session.execute(stmt)
-                return bool(result.scalar_one_or_none())
+                from src.shared.identity.workspaces import linked_user_ids
+                from src.shared.models.onboarding import TenantMembership
+                from src.shared.models.persona_models import ServicePrincipal
+
+                if context is not None and context.account_type == "service":
+                    principal = await session.scalar(
+                        select(ServicePrincipal.canonical_service_principal_id).where(
+                            ServicePrincipal.canonical_service_principal_id == context.canonical_service_principal_id,
+                            ServicePrincipal.org_id == context.org_id,
+                            ServicePrincipal.status == "active",
+                        )
+                    )
+                    return Verdict.APPROVED if principal else Verdict.NOT_APPROVED
+                users = (await session.scalars(select(User).where(User.cognito_sub == user_id))).all()
+                ids: set[str] = set()
+                for user in users:
+                    ids.update(await linked_user_ids(session, user, username=context.cognito_username if context else ""))
+                memberships = (
+                    await session.scalars(select(TenantMembership).where(TenantMembership.user_id.in_(ids), TenantMembership.revoked_at.is_(None)))
+                ).all()
+                tenant_ids = {row.tenant_id for row in memberships if row.tenant_id}
+                selected = context.org_id.strip() if context else ""
+                if not selected and len(tenant_ids) == 1:
+                    selected = next(iter(tenant_ids))
+                    if context is not None:
+                        context.org_id = selected
+                approved = bool(selected and selected in tenant_ids)
+            return Verdict.APPROVED if approved else Verdict.NOT_APPROVED
         except Exception as e:
+            if get_settings().approval_fail_open:
+                # Break-glass: opt-in, loud, and metered separately so an operator
+                # can see it is active and how much traffic it is admitting.
+                logger.warning(
+                    f"approval_check_failed_fail_open: BG_APPROVAL_FAIL_OPEN=true, admitting without approval check user_id={user_id} error={e}",
+                    extra={"event": "approval_check_failed_fail_open", "user_id": user_id},
+                )
+                self._emit_metric("ApprovalCheckFailedFailOpen")
+                return Verdict.APPROVED
+
             # Greppable marker for CloudWatch Logs Insights.
-            logger.warning(
-                f"approval_check_failed_fail_open: admitting request without approval check user_id={user_id} error={e}",
-                extra={"event": "approval_check_failed_fail_open", "user_id": user_id},
+            logger.error(
+                f"approval_check_failed_fail_closed: denying request, approval indeterminate user_id={user_id} error={e}",
+                extra={"event": "approval_check_failed_fail_closed", "user_id": user_id},
             )
-            self._emit_metric("ApprovalCheckFailedFailOpen")
-            return True
+            self._emit_metric("ApprovalCheckFailedFailClosed")
+            return Verdict.INDETERMINATE
 
     @staticmethod
     def _get_session():
@@ -187,7 +202,7 @@ class ApprovalEnforcementMiddleware:
         from src.shared.database import get_session_factory, reset_engine
 
         settings = get_settings()
-        if settings.rds_iam_auth and settings.rds_host:
+        if settings.rds_iam_auth and settings.rds_host and settings.rds_pool_enabled is not True:
             reset_engine()
         return get_session_factory()()
 
@@ -199,6 +214,37 @@ class ApprovalEnforcementMiddleware:
             emit_metric(_METRIC_NAMESPACE, metric_name)
         except Exception:  # pragma: no cover - metrics must never break a request
             logger.debug("Failed to emit approval metric", exc_info=True)
+
+    async def _send_check_unavailable(self, send: Send, ctx: TokenContext) -> None:
+        """Write the retryable 503 for an indeterminate approval — #5666 (A11).
+
+        Deliberately NOT the 409. A 409 tells this caller to go find an admin and
+        tells an operator's dashboard that an entitlement is missing; neither is
+        true here, and during a database incident the 409 rate would spike and send
+        someone hunting a phantom approvals bug. 503 + ``Retry-After`` is the
+        honest answer — the request may well be from an approved user — and clients
+        recover on their own once the database returns, with no operator action.
+        """
+        body_bytes = json.dumps({"detail": {"error": _UNAVAILABLE_CODE, "message": _UNAVAILABLE_MESSAGE}}).encode("utf-8")
+
+        logger.error(
+            f"Inference blocked - approval indeterminate (fail-closed): user_id={ctx.user_id}",
+            extra={"event": "approval_enforcement_unavailable", "user_id": ctx.user_id},
+        )
+        self._emit_metric("ApprovalEnforcementUnavailable")
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 503,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body_bytes)).encode()),
+                    (b"retry-after", _UNAVAILABLE_RETRY_AFTER),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body_bytes})
 
     async def _send_not_approved(self, send: Send, ctx: TokenContext) -> None:
         """Write the 409 JSON response directly via ASGI send().

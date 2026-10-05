@@ -73,25 +73,33 @@ export function StoryJourney({ node, execution }: { node: GraphNode; execution?:
           <li key={step.id} aria-current={step.progress === 'current' || (step.id === 'merged' && node.state === 'passed') ? 'step' : undefined}
             data-stage={step.id} data-progress={step.progress} className="relative text-xs">
             <span aria-hidden="true" className={`absolute -left-[1.15rem] top-0 rounded-full bg-white dark:bg-gray-900 ${step.progress === 'complete' ? 'text-green-700 dark:text-green-400' : step.progress === 'current' ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}`}>
-              {step.progress === 'complete' ? '✓' : step.progress === 'current' ? '▶' : step.progress === 'observed' ? '•' : '○'}
+              {step.progress === 'current' && step.run?.liveness === 'live' && step.run.status === 'in_progress'
+                ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none" />
+                : step.progress === 'complete' ? '✓' : step.progress === 'current' ? '▶' : step.progress === 'observed' ? '•' : '○'}
             </span>
-            <span className={`font-medium ${step.progress === 'current' ? 'text-blue-700 dark:text-blue-300' : 'text-gray-800 dark:text-gray-200'}`}>{step.label}</span>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className={`font-medium ${step.progress === 'current' ? 'text-blue-700 dark:text-blue-300' : 'text-gray-800 dark:text-gray-200'}`}>{step.label}</span>
+              {node.run_id && step.id === 'development' && (
+                <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline dark:text-blue-400">
+                  View development run
+                </Link>
+              )}
+              {node.run_id && step.run && step.id !== 'development' && (
+                <Link to={`/activity?chain=${encodeURIComponent(node.run_id)}&highlight=${encodeURIComponent(step.run.invocation_id)}`}
+                  className="text-blue-600 underline dark:text-blue-400">
+                  {step.id === 'review' ? 'View review run' : 'View fixes run'}
+                </Link>
+              )}
+              {step.id === 'merged' && node.bound_pull_request && (
+                <a href={node.bound_pull_request.url} target="_blank" rel="noreferrer" className="text-blue-600 underline dark:text-blue-400">
+                  Pull request #{node.bound_pull_request.pr_number}
+                </a>
+              )}
+            </div>
             <span className="block text-gray-600 dark:text-gray-400">{step.detail}</span>
-            {node.run_id && step.run && step.id !== 'development' && (
-              <Link to={`/activity?chain=${encodeURIComponent(node.run_id)}&highlight=${encodeURIComponent(step.run.invocation_id)}`}
-                className="text-blue-600 underline dark:text-blue-400">
-                {step.id === 'review' ? 'View review run' : 'View fixes run'}
-              </Link>
-            )}
           </li>
         ))}
       </ol>
-      {node.bound_pull_request && (
-        <a href={node.bound_pull_request.url} target="_blank" rel="noreferrer"
-          className="mt-2 inline-block text-xs text-blue-600 underline dark:text-blue-400">
-          Pull request #{node.bound_pull_request.pr_number}
-        </a>
-      )}
       {!progress && node.binding_hold && <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">{node.binding_hold}</p>}
       {historyNote && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{historyNote}</p>}
       {execution}

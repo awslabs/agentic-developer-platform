@@ -1,0 +1,35 @@
+{
+  "time": "2026-09-27T16:25:22.210652+00:00",
+  "requests": [
+    {
+      "path": "/health",
+      "invalid_token": false,
+      "status": 200,
+      "body": "{\"status\":\"healthy\",\"version\":\"0.1.0\",\"cognito_enabled\":true,\"domain_auth_enforced\":true}"
+    },
+    {
+      "path": "/readyz",
+      "invalid_token": false,
+      "status": 200,
+      "body": "{\"status\":\"ready\",\"mode\":\"management\"}"
+    },
+    {
+      "path": "/workspaces",
+      "invalid_token": false,
+      "status": 401,
+      "body": "{\"detail\":\"a bearer access token is required\"}"
+    },
+    {
+      "path": "/workspaces",
+      "invalid_token": true,
+      "status": 401,
+      "body": "{\"detail\":\"token header is unreadable\"}"
+    },
+    {
+      "path": "/internal/observations/clusters",
+      "invalid_token": false,
+      "status": 401,
+      "body": "{\"detail\":\"unauthenticated: credential not accepted\"}"
+    }
+  ]
+}

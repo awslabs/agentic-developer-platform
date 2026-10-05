@@ -15,17 +15,29 @@ spec:
   # momentarily resets scale to 2 and the HPA re-raises it within a sync
   # period (~15s).
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: bedrockgateway
   template:
     metadata:
+      # These services do not run a JVM; omit the unused Java agent and JARs.
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
       labels:
         app: bedrockgateway
         app.kubernetes.io/name: bedrockgateway
         app.kubernetes.io/part-of: bedrock-gateway
     spec:
       serviceAccountName: gateway-service
+      # Let endpoint removal propagate, then allow in-flight model streams to
+      # finish during Uvicorn shutdown (the ALB idle timeout is 900 seconds).
+      terminationGracePeriodSeconds: 960
       # Issue #5675: pod-level hardening. This pod holds BG_TOKEN_SECRET_KEY (the
       # platform's token-signing key), BG_INTERNAL_API_KEY (the internal shared
       # secret), BG_GITHUB_APP_PRIVATE_KEY and the two agent signing keys. Running
@@ -55,6 +67,10 @@ spec:
       containers:
         - name: bedrockgateway
           image: REPLACE_WITH_GATEWAY_IMAGE
+          lifecycle:
+            preStop:
+              exec:
+                command: ["python", "-S", "-c", "import time; time.sleep(30)"]
           # Container-level hardening (#5675). readOnlyRootFilesystem and
           # capabilities have NO pod-level equivalent — they only exist here — so
           # this block is required, not a restatement of the pod's.
@@ -161,12 +177,6 @@ spec:
                 secretKeyRef:
                   name: agent-run-services
                   key: marker-signing-key
-                  optional: true
-            - name: ADP_DOOR_SERVICE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: bedrockgateway-secrets
-                  key: internal-api-key
                   optional: true
             # Cap glibc's per-thread malloc arenas. Default is 8 x ncores, and
             # each arena grows in 64Mi steps that are never returned to the OS.
@@ -279,20 +289,9 @@ spec:
               value: "false"
             # Issue #4209: orchestration engine + graph UI. Fail-closed.
             #
-            # Rendered PER ENVIRONMENT, not hard-coded. This one file is applied
-            # verbatim to whichever environment gateway-deploy.yml targets, so a
-            # literal "true" here would opt EVERY environment in at once —
-            # including prod — which ruling D-R20 forbids: legacy GitHub-driven
-            # mode is a supported product mode, not a migration state.
-            #
-            # gateway-deploy.yml substitutes this placeholder from
-            # `/adp/<env>/gateway/feature-orchestration-engine`, defaulting to
-            # "false" when the parameter is absent — so the opt-in is an operator
-            # action on ONE environment and the default stays off. Nothing to
-            # merge, nothing to revert: `aws ssm put-parameter` in, delete out.
-            #
-            # Do NOT replace this with a literal, and do NOT use `kubectl set env`
-            # (every deploy re-applies this file and would silently revert it).
+            # Rendered from /adp/<env>/gateway/feature-orchestration-engine.
+            # Deployments default to true; an explicit false disables the engine.
+            # Keep the placeholder so each environment retains its override.
             - name: FEATURE_ORCHESTRATION_ENGINE_ENABLED
               value: "__FEATURE_ORCHESTRATION_ENGINE_ENABLED__"
             # Issue #4402 (U-5 of EPIC #4324): the Budget & Spend screen. Fail-closed
@@ -323,6 +322,8 @@ spec:
             # gates the route surface, the ping/state read path and the capability
             # report. It also cannot start a listener in an agent pod: the worker
             # reads its own copy of FEATURE_AGENT_CONTROL_ENABLED independently.
+            - name: FEATURE_AGENT_EXPLANATIONS_ENABLED
+              value: "__FEATURE_AGENT_EXPLANATIONS_ENABLED__"
             - name: FEATURE_AGENT_CONTROL_ENABLED
               value: "__FEATURE_AGENT_CONTROL_ENABLED__"
             # Issue #5079 (NUI-01 of EPIC #5078): the opt-in /next UI shell. Rendered
@@ -360,10 +361,12 @@ spec:
             # The SSM-backed placeholder is rendered by both deployment paths.
             - name: FEATURE_AGENT_MODELS_ENABLED
               value: "__FEATURE_AGENT_MODELS_ENABLED__"
-            # - name: FEATURE_KNOWLEDGE_ENABLED
-            #   value: "false"
-            # - name: FEATURE_INDEXING_ENABLED
-            #   value: "false"
+            - name: FEATURE_KNOWLEDGE_ENABLED
+              value: "__FEATURE_KNOWLEDGE_ENABLED__"
+            - name: FEATURE_INDEXING_ENABLED
+              value: "__FEATURE_INDEXING_ENABLED__"
+            - name: FEATURE_TENANT_ORG_LINKS_ENABLED
+              value: "__FEATURE_TENANT_ORG_LINKS_ENABLED__"
             # - name: FEATURE_CONNECTIONS_ENABLED
             #   value: "false"
             # - name: FEATURE_CREDENTIALS_ENABLED

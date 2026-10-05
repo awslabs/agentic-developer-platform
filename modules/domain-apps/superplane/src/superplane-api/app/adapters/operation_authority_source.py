@@ -74,40 +74,29 @@ tables. The unreadable case raises `_AuthorityUnreadable`, which the harness
 converts to `OperationUnavailable`, because `refused`, `unavailable` and
 `unknown` are three different answers and only the first one is about the caller.
 
-## Why approval is refused rather than auto-granted
+## Approval source
 
-`ApprovalSource.approval_for` may return a context whose `record is None`, and the
-gate refuses on it: *absence is not permission*. This implementation returns
-`record=None` in every case where the domain holds no explicit approval, which
-today is every case — the domain has no approval table (the only approval-shaped
-rows are `research_proposals`, which have no envelope, no expiry, no binding
-digest and no distinct-approver rule, so they cannot back an `ApprovalRecord`).
-
-That makes operation admission refuse for want of approval, which is the honest
-state and is deliberately **not** patched over by synthesizing a record. A
-synthesized `ApprovalRecord` naming the requester as its own approver would defeat
-`requires_distinct_approver` and turn the approval gate into a formality, while
-reporting the port as composed. Refusing names the missing thing; fabricating hides
-it.
-
-`approver_statuses` is still populated from real org and workspace grants, because
-that is the *current* authority of each approver and the gate needs it per request
-rather than cached — and because `ApproverStatus` distinguishes `revoked=True` from
-absence. Modelling a revoked approver as simply missing is the specific mistake
-`approval.py:254-257` calls out: it reads as "never had authority" when the truth
-is "had it and lost it", and only the second one means a decision already made
-under that authority must be re-examined.
+Explicit decisions live in `operation_approvals`, bound to the authenticated
+requester and exact harness request digest. Current human approver grants are
+re-read at admission. A missing decision refuses admission; an unreadable store
+raises unavailable. No approval is synthesized from a role or requester flag.
 """
 
 from __future__ import annotations
 
 import contextvars
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select
 
+from app.current_identity import (
+    CurrentIdentityReader,
+    IdentityUnavailable,
+    identity_checks_enabled,
+    require_current_identity,
+)
 from app.models.organization_grant import (
     ORGANIZATION_ADMINISTER,
     OrganizationGrantRecord,
@@ -151,6 +140,9 @@ class ActingPrincipal:
     org_id: str
     workspace_id: str
     account_type: str = "human"
+    adp_org_id: str | None = None
+    membership_id: str | None = None
+    identity_reader: CurrentIdentityReader | None = None
 
 
 # Request-scoped, so concurrent requests cannot observe each other's principal.
@@ -221,6 +213,38 @@ class GrantBackedAuthority:
         if caller is None:
             return None
 
+        if identity_checks_enabled():
+            from app.models.organization import Organization
+
+            # Missing optional context must not turn a mapped tenant into a
+            # legacy tenant. Resolve the binding from the authoritative store.
+            organization = await self._read(
+                "current identity organization",
+                lambda session: session.execute(
+                    select(Organization).where(Organization.id == _as_uuid(caller.org_id))
+                ),
+            )
+            if organization is _UNREADABLE:
+                raise _AuthorityUnreadable("current identity organization")
+            if organization is None:
+                return None
+            if organization.adp_org_id:
+                if (
+                    caller.adp_org_id != organization.adp_org_id
+                    or not caller.membership_id
+                ):
+                    return None
+                try:
+                    await require_current_identity(
+                        caller.identity_reader,
+                        subject=caller.subject,
+                        principal_type=caller.account_type,
+                        adp_org_id=organization.adp_org_id,
+                        membership_id=caller.membership_id,
+                    )
+                except IdentityUnavailable:
+                    return None
+
         if org_id and org_id != caller.org_id:
             # Never "corrected" to the real tenant. A caller naming another
             # tenant is refused, because a path that reads a caller-supplied
@@ -265,40 +289,82 @@ class GrantBackedAuthority:
     # ------------------------------------------------------------------
 
     async def approval_for(self, *, principal: Any, request: Any) -> Any:
-        """The approval context for one request.
-
-        Returns `record=None` because the domain holds no approval records — see
-        the module docstring on why that refusal is the honest answer and why
-        synthesizing a record would defeat the gate it is meant to satisfy.
-
-        `requested_envelope` is derived from the request's own parameters, clamped
-        to the workspace's configured ceilings. It is not read from a caller-
-        supplied field that could name a larger envelope than the workspace allows:
-        the parameters are already digest-bound into the approval binding, so a
-        changed envelope changes the plan digest and cannot be replayed against an
-        existing approval.
-
-        `ApprovalContext` is imported from `harness_jobs.facade`, which is where it
-        is defined — NOT from `harness_jobs.approval`, where this line looked for it
-        until a real end-to-end probe caught the mistake. The bug is worth recording
-        because of how completely it hid: `facade._approval_for` converts any
-        exception from this method into `OperationUnavailable`, so a plain
-        `ImportError` in the import above surfaced to the user as
-        `ProvisioningUnavailable: the approval for this request could not be
-        established` and, through `app/routers/workspaces.py`, as **HTTP 503**. The
-        intended answer is a refusal for want of approval. A wiring error was
-        therefore indistinguishable from an approval store outage, and the one
-        reachable behaviour of this method was never its documented one.
-        """
+        """Resolve a persisted decision and freshly recheck its approvers."""
+        from harness_jobs.approval import ApprovalBinding
         from harness_jobs.facade import ApprovalContext
 
-        envelope = _requested_envelope(request)
-        statuses = await self._approver_statuses(principal)
+        from app.models.operation_approval import OperationApproval
+        from app.services.operation_approvals import record_from_row
+
+        binding = ApprovalBinding.for_request(principal, request)
+        try:
+            async with self._session_factory() as session:
+                row = (
+                    await session.execute(
+                        select(OperationApproval).where(
+                            OperationApproval.org_id == binding.org_id,
+                            OperationApproval.workspace_id == binding.workspace_id,
+                            OperationApproval.requester == binding.requester,
+                            OperationApproval.plan_digest == binding.plan_digest,
+                        )
+                    )
+                ).scalar_one_or_none()
+                record = None if row is None else record_from_row(row)
+        except Exception:
+            raise _AuthorityUnreadable("operation approval") from None
         return ApprovalContext(
-            record=None,
-            requested_envelope=envelope,
-            approver_statuses=statuses,
+            record=record,
+            requested_envelope=_requested_envelope(request),
+            approver_statuses=await self._approver_statuses(
+                principal, organization_scope=bool(row and row.organization_scope)
+            ),
         )
+
+    async def budget_limits_for(self, *, org_id: str, workspace_id: str) -> Any:
+        """Read current tenant-owned caps; uncertainty must retain budget.
+
+        Reserve the whole approved ceiling against both time-window limits. This
+        is conservative until actual metered settlement can attribute charges to
+        hours/days: a runtime average cannot prove a peak-spend bound.
+        """
+        from decimal import Decimal
+
+        from app.adapters.operation_budget_ledger import WorkspaceBudgetLimits
+        from app.models.workspace import Workspace
+
+        try:
+            async with self._session_factory() as session:
+                workspace = (
+                    await session.execute(
+                        select(Workspace).where(Workspace.id == _as_uuid(workspace_id))
+                    )
+                ).scalar_one_or_none()
+                if workspace is None:
+                    # The first-workspace operation precedes its workspace row.
+                    return None
+                if str(workspace.org_id) != org_id:
+                    raise _AuthorityUnreadable("workspace budget tenant mismatch")
+                caps = [
+                    int(Decimal(value) * 1_000_000)
+                    for value in (
+                        workspace.budget_max_daily_usd,
+                        workspace.budget_max_hourly_usd,
+                    )
+                    if value is not None
+                ]
+                units = workspace.budget_max_gpus
+                if any(value < 0 for value in caps) or (
+                    units is not None and units < 0
+                ):
+                    raise _AuthorityUnreadable("invalid workspace budget")
+                return WorkspaceBudgetLimits(
+                    max_cost_micros=min(caps) if caps else None,
+                    max_resource_units=units,
+                )
+        except _AuthorityUnreadable:
+            raise
+        except Exception:
+            raise _AuthorityUnreadable("workspace budget") from None
 
     # ------------------------------------------------------------------
     # internals
@@ -523,7 +589,9 @@ class GrantBackedAuthority:
             )
             return _UNREADABLE
 
-    async def _approver_statuses(self, principal: Any) -> dict[str, Any]:
+    async def _approver_statuses(
+        self, principal: Any, *, organization_scope: bool = False
+    ) -> dict[str, Any]:
         """The current authority of each potential approver in this tenant.
 
         Read per request rather than stored on a record, because the question is
@@ -557,6 +625,7 @@ class GrantBackedAuthority:
                                 WorkspaceGrantRecord.workspace_id
                                 == _as_uuid(workspace_id),
                                 WorkspaceGrantRecord.org_id == _as_uuid(org_id),
+                                WorkspaceGrantRecord.principal_type == "human",
                             )
                         )
                     )
@@ -567,7 +636,8 @@ class GrantBackedAuthority:
                     (
                         await session.execute(
                             select(OrganizationGrantRecord).where(
-                                OrganizationGrantRecord.org_id == _as_uuid(org_id)
+                                OrganizationGrantRecord.org_id == _as_uuid(org_id),
+                                OrganizationGrantRecord.principal_type == "human",
                             )
                         )
                     )
@@ -596,6 +666,10 @@ class GrantBackedAuthority:
                 revoked=record.revoked_at is not None,
             )
 
+        # Org administration cannot override an existing workspace boundary.
+        if not organization_scope and await self._workspace_exists(workspace_id):
+            return await self._current_approvers(org_id, statuses)
+
         for record in org_grants:
             # An organization administrator holds workspace administration by
             # implication. Recorded only when the workspace grant did not already
@@ -613,6 +687,45 @@ class GrantBackedAuthority:
                 revoked=record.revoked_at is not None,
             )
 
+        return await self._current_approvers(org_id, statuses)
+
+    async def _current_approvers(self, org_id: str, statuses: dict[str, Any]) -> dict[str, Any]:
+        from app.models.organization import Organization
+
+        if not statuses or not identity_checks_enabled():
+            return statuses
+        organization = await self._read(
+            "approver organization",
+            lambda session: session.execute(
+                select(Organization).where(Organization.id == _as_uuid(org_id))
+            ),
+        )
+        if organization is _UNREADABLE:
+            raise _AuthorityUnreadable("approver organization")
+        if organization is None:
+            return {}
+        if not organization.adp_org_id:
+            return statuses
+        caller = _acting.get()
+        if (
+            caller is None
+            or caller.org_id != org_id
+            or caller.adp_org_id != organization.adp_org_id
+        ):
+            return {
+                subject: replace(status, is_member=False, revoked=True)
+                for subject, status in statuses.items()
+            }
+        for subject, status in statuses.items():
+            try:
+                await require_current_identity(
+                    caller.identity_reader,
+                    subject=subject,
+                    principal_type="human",
+                    adp_org_id=organization.adp_org_id,
+                )
+            except IdentityUnavailable:
+                statuses[subject] = replace(status, is_member=False, revoked=True)
         return statuses
 
 

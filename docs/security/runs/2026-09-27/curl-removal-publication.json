@@ -1,0 +1,18 @@
+[
+  {
+    "component": "gateway",
+    "source_commit": "7f91b7107",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:220380d2edc5c3865b14110cb1b7b765a89da2c9ac58311160c99c5b6efc09e1",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:security27-7f91b7107",
+    "matches_local_root": true,
+    "deployed": false
+  },
+  {
+    "component": "superplane-api",
+    "source_commit": "7f91b7107",
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2",
+    "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api:security27-7f91b7107",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]

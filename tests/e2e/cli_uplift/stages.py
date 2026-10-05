@@ -26,6 +26,7 @@ from __future__ import annotations
 import shlex
 
 from . import (
+    assistant_oracles,
     bundle,
     cases,
     cleanup,
@@ -34,6 +35,7 @@ from . import (
     ports as ports_module,
     preflight,
     release,
+    report,
 )
 
 # Stages that must exist in any assembled mapping. `evidence` and `cleanup` are
@@ -92,6 +94,24 @@ def _deployment_discovery(http):
         if status != 200:
             raise preflight.PreflightError(f"returned HTTP {status}")
         return document
+
+    return read
+
+
+def _superplane_probe(http):
+    """#5637: the domain mount check, read through the run's own transport.
+
+    Returns the STATUS, because an error status is the evidence here — 401 proves
+    the route forwards, 404 proves nothing is behind it. `expect=None` is what makes
+    `http.get` return a status instead of raising on a non-200.
+    """
+
+    def read(url):
+        try:
+            status, _document = http.get(url, expect=None)
+        except ports_module.PortError as exc:
+            raise preflight.PreflightError(str(exc)) from None
+        return status
 
     return read
 
@@ -183,12 +203,14 @@ def preflight_stage(cfg, ports):
         # installer's own CLI_FILES at that revision, so the set cannot silently
         # shrink back to a subset.
         expected_hashes = release.manifest(cfg["expected_revision"])
+        expected_cli_version = release.cli_version(cfg["expected_revision"])
         require(
             len(expected_hashes) >= 2,
             "The release manifest at the revision under test lists too few files to be a CLI release",
         )
         record["expected_release"] = {
             "revision": cfg["expected_revision"],
+            "cli_version": expected_cli_version,
             "files": dict(sorted(expected_hashes.items())),
         }
         # One comparison, in the reviewed helper, against hashes the gateway
@@ -199,6 +221,7 @@ def preflight_stage(cfg, ports):
         # Carried into the instance payload so "the gateway serves the release"
         # and "the instance installed the release" are the same assertion.
         ctx["expected_hashes"] = expected_hashes
+        ctx["expected_cli_version"] = expected_cli_version
 
         # E13's other consumer. Read from the same git object store, at the same
         # revision, for the same reason the hashes are: a contract the deployment
@@ -252,6 +275,31 @@ def preflight_stage(cfg, ports):
             "the disposable instance could not be launched with it",
         )
         record["instance_profile"] = profile.get("InstanceProfileName")
+        group_id = cfg.get("instance_security_group_id")
+        if group_id:
+            groups = aws.call(
+                "ec2", "describe_security_groups", GroupIds=[group_id]
+            ).get("SecurityGroups", [])
+            require(
+                len(groups) == 1 and groups[0].get("VpcId") == cfg["vpc_id"],
+                "Evaluation security group is not in the approved VPC",
+            )
+            require(
+                not groups[0].get("IpPermissions"),
+                "Evaluation security group must not allow inbound connections",
+            )
+            require(
+                any(
+                    rule.get("IpProtocol") == "-1"
+                    or (
+                        rule.get("IpProtocol") == "tcp"
+                        and rule.get("FromPort", 0) <= 443 <= rule.get("ToPort", 0)
+                    )
+                    for rule in groups[0].get("IpPermissionsEgress", [])
+                ),
+                "Evaluation security group has no HTTPS egress for SSM",
+            )
+            record["instance_security_group_id"] = group_id
 
         # SSM reachability, so an EC2 stage failure later is not a mystery.
         require(
@@ -268,6 +316,12 @@ def preflight_stage(cfg, ports):
             # more gateway reads and every other suite runs one deployment. The
             # check itself is read-only and never aborts: an unreachable binding
             # blocks E16/E17 and leaves the rest of the matrix to run.
+            capability_contrast_available=ports["capability_contrast_available"]()
+            if any(
+                cases.CAPABILITY_CONTRAST in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
             deployments_available=preflight.check_deployment_bindings(
                 cfg, record, fetch=_deployment_discovery(http)
             )
@@ -276,11 +330,46 @@ def preflight_stage(cfg, ports):
                 for case_id in ctx["matrix"]
             )
             else None,
+            # #5637. Validate the recovery prerequisite before E18 can allocate
+            # resources. A reachable gateway does not implement that producer.
+            superplane_available=preflight.check_superplane_domain(
+                cfg, record, probe=_superplane_probe(http)
+            )
+            if any(
+                cases.SUPERPLANE_DOMAIN in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
         )
         record["fixture_classes"] = sorted(available)
         record["missing_fixtures"] = preflight.missing_fixture_report(cfg, available)
         blocked = cases.block_missing_fixtures(ctx["matrix"], available)
         record["blocked_cases"] = {k: v for k, v in sorted(blocked.items())}
+        if set(ctx["document"].get("suites") or []) == {"assistant"}:
+            for case_id in ctx["matrix"]:
+                if selected(ctx, case_id):
+                    purpose = JOURNEY_DRIVERS[case_id]
+                    if purpose not in bundle.purposes():
+                        record_selected(
+                            ctx,
+                            case_id,
+                            cases.FAILED,
+                            {
+                                "unimplemented": True,
+                                "purpose": purpose,
+                                "detail": f"No reviewed remote/{purpose}.py driver; no assistant test was executed",
+                            },
+                        )
+            if not any(selected(ctx, case_id) for case_id in ctx["matrix"]):
+                raise StageError(
+                    "Assistant cases are blocked or unimplemented; no disposable EC2 instance was allocated"
+                )
+        if "E18" in blocked and not any(
+            selected(ctx, case_id) for case_id in ctx["matrix"]
+        ):
+            # The runner executes stages in order even when every case blocks.
+            # Stop this otherwise idle attempt before ec2/install_auth mutate.
+            raise StageError(cleanup.SUPERPLANE_RECOVERY_BLOCKER)
 
         if ctx["fault"] == "wrong_account":
             # Injection: prove a wrong-account run cannot go green.
@@ -314,7 +403,7 @@ def user_data(cfg, evaluation_id):
             # Self-destruct timer, armed before anything else can fail.
             f"shutdown -H +{ttl} 'cli-uplift-eval TTL reached' &",
             f"echo {shlex.quote(evaluation_id)} > /etc/cli-uplift-eval-id",
-            "dnf install -y jq >/dev/null 2>&1",
+            "dnf install -y jq libseccomp >/dev/null 2>&1",
             "dnf install -y nodejs22 nodejs22-npm >/dev/null 2>&1 || true",
             "ln -sf /usr/bin/node-22 /usr/local/bin/node || true",
             f"install -d -o ec2-user -g ec2-user -m 700 {WORK_DIR}",
@@ -346,10 +435,16 @@ def ec2_stage(cfg, ports):
             "ec2",
             "run_instances",
             ImageId=ami,
+            ClientToken=ctx["attempt_id"],
             InstanceType=cfg.get("instance_type", "t3.small"),
             MinCount=1,
             MaxCount=1,
             SubnetId=cfg["private_subnet_id"],
+            **(
+                {"SecurityGroupIds": [cfg["instance_security_group_id"]]}
+                if cfg.get("instance_security_group_id")
+                else {}
+            ),
             IamInstanceProfile={"Name": cfg["instance_profile"]},
             UserData=user_data(cfg, ctx["evaluation_id"]),
             # Belt and braces with the in-guest timer: a stop from any cause
@@ -704,6 +799,21 @@ def personal_aws_stage(cfg, ports):
 # The dispatcher purpose each case is driven by. A purpose with no shipped script
 # is an implementation gap: the case fails naming the module that must be written.
 JOURNEY_DRIVERS = {
+    "E43": "assistant_stream",
+    "E44": "assistant_sources",
+    "E45": "assistant_isolation",
+    "E46": "assistant_sessions",
+    "E47": "assistant_faults",
+    "E48": "assistant_installations",
+    "E49": "assistant_latency",
+    "E50": "assistant_baseline",
+    "D01": "hosted_chat",
+    "D02": "vault_lifecycle",
+    "D03": "hierarchy_lifecycle",
+    "D04": "knowledge_lifecycle",
+    "D05": "machine_lifecycle",
+    "D06": "budget_lifecycle",
+    "E42": "hosted_coding",
     "E06": "bedrock_routing",
     "E07": "bedrock_rungs",
     "E08": "personal_inference",
@@ -719,6 +829,34 @@ JOURNEY_DRIVERS = {
     # multi-deployment case failed" without saying which half.
     "E16": "multi_deployment_concurrency",
     "E17": "multi_deployment_lifecycle",
+    # #5637. One purpose: the workspace/deploy/cost/events half and the credential
+    # half are one journey because the credential is registered INTO a workspace
+    # this run created, and splitting them would mean either creating two
+    # workspaces or making one case depend on the other's leftovers.
+    "E18": "superplane_domain",
+    "E19": "capability_contrast",
+    "E20": "story_capabilities",
+    "E21": "story_usage",
+    "E22": "story_activity",
+    "E25": "story_research",
+    "E40": "story_chat",
+    "E23": "tenant_smoke",
+    "E27": "tenant_isolation",
+    "E29": "story_hierarchy",
+    "E24": "story_vault",
+    "E28": "story_github_maintenance",
+    "E33": "story_access",
+    "E31": "story_machine",
+    "E32": "story_knowledge",
+    "E30": "story_gitlab",
+    "E26": "story_budget",
+    "E36": "story_ratelimit",
+    "E35": "story_person_budget",
+    "E38": "story_model_policy",
+    "E34": "story_bedrock_lifecycle",
+    "E37": "story_recovery",
+    "E41": "story_platform",
+    "E39": "story_superplane_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports
@@ -764,7 +902,6 @@ def journeys_stage(cfg, ports):
                 )
                 continue
             evidence = driver(instance, ctx) or {}
-            ctx["transcript"].extend(evidence.get("transcript") or [])
             # Resources the journey itself removed AND asserted absent. A pair, so
             # a bare id cannot mark the wrong kind's record deleted.
             proved_removed = {
@@ -788,7 +925,6 @@ def journeys_stage(cfg, ports):
                 # removal; the mere absence of an error is not that claim.
                 if (str(kind), str(identifier)) in proved_removed:
                     ctx["manifest"].mark(kind, identifier, cleanup.DELETED)
-            ctx["correlation"].update(evidence.get("correlation") or {})
             if ctx["fault"] == "missing_usage" and case_id in ("E08", "E09"):
                 # Injection: usage evidence absent must fail the case, never pass.
                 evidence = {**evidence, "success": False, "usage": None}
@@ -799,12 +935,83 @@ def journeys_stage(cfg, ports):
             }
             if evidence.get("error"):
                 detail = {**detail, "error": evidence["error"]}
-            record_selected(
-                ctx,
-                case_id,
-                cases.PASSED if evidence.get("success") else cases.FAILED,
-                detail,
-            )
+            if case_id in {"E43", "E44"} and evidence.get("success"):
+                try:
+                    if case_id == "E43":
+                        observations = assistant_oracles.stream(
+                            evidence.get("events"),
+                            request_id=evidence.get("request_id"),
+                            canary=evidence.get("canary"),
+                            canary_check=evidence.get("canary_check"),
+                        )
+                    else:
+                        observations = assistant_oracles.sources(
+                            evidence.get("pages"),
+                            expected_ids=evidence.get("expected_ids"),
+                            allowed_ids=evidence.get("allowed_ids"),
+                            canary=evidence.get("canary"),
+                            canary_check=evidence.get("canary_check"),
+                            expected_timestamps=evidence.get("expected_timestamps"),
+                            window=evidence.get("window"),
+                        )
+                    detail = {**detail, "assistant_observations": observations}
+                except (assistant_oracles.EvidenceError, TypeError) as exc:
+                    evidence = {**evidence, "success": False}
+                    detail = {**detail, "oracle_error": str(exc)}
+            if case_id == "E50" and evidence.get("success"):
+                if not (
+                    detail.get("protocol") == "webchat-response-v1"
+                    and detail.get("phase") == "completed"
+                    and detail.get("history_verified") is True
+                    and all(
+                        detail.get(key)
+                        for key in (
+                            "session_id",
+                            "task_id",
+                            "request_id",
+                            "user_id",
+                            "tenant_id",
+                            "response_sha256",
+                        )
+                    )
+                ):
+                    evidence = {**evidence, "success": False}
+                    detail = {
+                        **detail,
+                        "oracle_error": "Supported assistant baseline evidence is incomplete",
+                    }
+            artifacts = {
+                "detail": detail,
+                "transcript": evidence.get("transcript") or [],
+                "correlation": evidence.get("correlation") or {},
+            }
+            if case_id in {f"E{index}" for index in range(43, 51)}:
+                artifacts = {
+                    name: assistant_oracles.redact_canary(
+                        report.redact(value), evidence.get("canary")
+                    )
+                    for name, value in artifacts.items()
+                }
+            detail = artifacts["detail"]
+            ctx["transcript"].extend(artifacts["transcript"])
+            ctx["correlation"].update(artifacts["correlation"])
+            if case_id in {"E45", "E46", "E47", "E48", "E49"}:
+                evidence = {**evidence, "success": False}
+                detail = {**detail, "unimplemented": True}
+            status = cases.PASSED if evidence.get("success") else cases.FAILED
+            if (
+                case_id in {"E28", "E37"}
+                and evidence.get("stage") == "blocked"
+                and evidence.get("success") is False
+                and not evidence.get("error")
+                and detail.get("unavailable_capability")
+                == {"E28": "github_app_registration", "E37": "orchestration_engine"}[
+                    case_id
+                ]
+                and detail.get("capability_supported") is False
+            ):
+                status = cases.BLOCKED
+            record_selected(ctx, case_id, status, detail)
 
     return run
 

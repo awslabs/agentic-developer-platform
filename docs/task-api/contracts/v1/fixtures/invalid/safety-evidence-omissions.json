@@ -1,0 +1,84 @@
+{
+  "$fixture": {
+    "description": "Safety-evidence mutation matrix. Each case starts from a positive fixture, removes one required honesty/fencing field or nulls an active attempt UUID, and must be rejected by its owning schema.",
+    "schema": "internal-adapters.schema.json#/$defs/adapter_catalog",
+    "expect": "invalid",
+    "reason": "model readiness, attempt fencing, validated exit and no-replay evidence are mandatory rather than optional annotations",
+    "owner": "T0",
+    "criteria": ["T0-AC02", "T0-AC03", "V0-03", "V0-04"],
+    "validation_stage": "schema_mutations"
+  },
+  "cases": [
+    {
+      "name": "bootstrap model binding requires pricing evidence",
+      "base_fixture": "fixtures/valid/bootstrap-response.json",
+      "operation": "remove",
+      "json_pointer": "/model_binding/pricing_evidence_version"
+    },
+    {
+      "name": "bootstrap model binding requires verified invocability",
+      "base_fixture": "fixtures/valid/bootstrap-response.json",
+      "operation": "remove",
+      "json_pointer": "/model_binding/invocability_verified"
+    },
+    {
+      "name": "attempt replacement requires old-attempt invalidation",
+      "base_fixture": "fixtures/valid/attempt-request.json",
+      "operation": "remove",
+      "json_pointer": "/old_attempt_invalidated"
+    },
+    {
+      "name": "active report requires a non-null runtime attempt UUID",
+      "base_fixture": "fixtures/valid/internal-adapter-catalog.json",
+      "operation": "replace",
+      "json_pointer": "/report/request/attempt/runtime_attempt_id",
+      "value": null
+    },
+    {
+      "name": "active turn requires a non-null runtime attempt UUID",
+      "base_fixture": "fixtures/valid/internal-adapter-catalog.json",
+      "operation": "replace",
+      "json_pointer": "/turn/request/attempt/runtime_attempt_id",
+      "value": null
+    },
+    {
+      "name": "active model call requires a non-null runtime attempt UUID",
+      "base_fixture": "fixtures/valid/internal-adapter-catalog.json",
+      "operation": "replace",
+      "json_pointer": "/model/request/attempt/runtime_attempt_id",
+      "value": null
+    },
+    {
+      "name": "active control poll requires a non-null runtime attempt UUID",
+      "base_fixture": "fixtures/valid/internal-adapter-catalog.json",
+      "operation": "replace",
+      "json_pointer": "/control/request/attempt/runtime_attempt_id",
+      "value": null
+    },
+    {
+      "name": "active finalization requires a non-null runtime attempt UUID",
+      "base_fixture": "fixtures/valid/internal-adapter-catalog.json",
+      "operation": "replace",
+      "json_pointer": "/finalize/request/attempt/runtime_attempt_id",
+      "value": null
+    },
+    {
+      "name": "completed result requires validated process exit evidence",
+      "base_fixture": "fixtures/valid/result-completed.json",
+      "operation": "remove",
+      "json_pointer": "/process_exit_validated"
+    },
+    {
+      "name": "unknown model receipt requires explicit handoff state",
+      "base_fixture": "fixtures/valid/model-receipt-unknown-handoff.json",
+      "operation": "remove",
+      "json_pointer": "/handoff"
+    },
+    {
+      "name": "unknown model receipt requires explicit no-replay state",
+      "base_fixture": "fixtures/valid/model-receipt-unknown-handoff.json",
+      "operation": "remove",
+      "json_pointer": "/automatic_replay_permitted"
+    }
+  ]
+}

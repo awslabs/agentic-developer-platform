@@ -1,0 +1,27 @@
+{
+  "time": "2026-09-28T18:30:19.888762+00:00",
+  "functions": [
+    {
+      "function": "adp-dev-github-webhook",
+      "state": "Active",
+      "last_update": "Successful",
+      "code_sha256": "pza3kJ4QtNGmr1kdr7UUQfN91S+duAUb5CNOF78c8oA="
+    },
+    {
+      "function": "bedrockgw-dev-github-auth-broker",
+      "state": "Active",
+      "last_update": "Successful",
+      "code_sha256": "z/H1C6iAnjiKgMmesvl8QtvY/ejfhRgViP2stLzmYvw=",
+      "ALLOWLIST_MODE": "platform",
+      "ALLOW_OPEN_SIGNUP": "false"
+    },
+    {
+      "function": "bedrockgw-dev-pre-signup-trigger",
+      "state": "Active",
+      "last_update": "Successful",
+      "code_sha256": "0oE4Ujz7kRJI8yzJAYvjJZv5Xi3Zlq5P4GFQFPvuRVk=",
+      "ALLOWLIST_MODE": "platform",
+      "ALLOW_OPEN_SIGNUP": "false"
+    }
+  ]
+}

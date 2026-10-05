@@ -127,7 +127,7 @@ Actions → **Platform Infra Apply** → Run workflow, with:
 | Input | Value |
 |---|---|
 | `environment` | `dev` |
-| `account_id` | `879318057152` |
+| `account_id` | `000000000101` |
 | `scope` | **`network-policy-controller`** |
 | `confirm_destructive_apply` | leave as `no` |
 
@@ -238,7 +238,7 @@ saved-plan guard under the actual CI identity and skip apply. Read its summary:
 it must show exactly one ConfigMap create/update, no access-entry or cluster
 change. Scoped paths skip Bedrock agreement setup and preserve live EKS CIDRs;
 the default full path keeps its existing commands. Controller scopes currently
-support only dev in account `879318057152`, region `us-east-1`.
+support only dev in account `000000000101`, region `us-east-1`.
 
 ## Section 4 — Rollback
 
@@ -250,7 +250,7 @@ regress. Enforcement being newly on is not by itself a reason to revert.
 | Input | Value |
 |---|---|
 | `environment` | `dev` |
-| `account_id` | `879318057152` |
+| `account_id` | `000000000101` |
 | `scope` | `network-policy-controller-rollback` |
 | `confirm_destructive_apply` | `yes` — explicit approval to remove this ConfigMap |
 | `plan_only` | `false` (`true` validates without applying) |

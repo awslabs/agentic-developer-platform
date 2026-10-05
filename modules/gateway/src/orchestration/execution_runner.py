@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.shared.logging import get_logger
@@ -42,9 +42,11 @@ from .execution_state import (
     PhaseAdvance,
 )
 from .execution_store import advance_execution, load_execution, record_observation
+from .flow_execution import flow_is_paused
 from .models import ClaimState, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
 from .notify import Notification, NotificationError, notify
 from .policy_admission import load_in_force_policy
+from .stage_attempts import stage_attempts
 from .work_claims import OwnerKind
 
 logger = get_logger(__name__)
@@ -454,7 +456,20 @@ async def verify_live_authority(
     """Fail closed on a withdrawn plan or work claim immediately before an effect."""
     async with factory() as session:
         admission = await load_in_force_policy(session, org_id=record.org_id, flow_id=record.flow_id)
-        if admission.refusal is not None or admission.policy is None or admission.plan_version != record.accepted_plan_version:
+        from .plan_lineage import execution_plan_matches
+
+        if (
+            admission.refusal is not None
+            or admission.policy is None
+            or not await execution_plan_matches(
+                session,
+                org_id=record.org_id,
+                flow_id=record.flow_id,
+                node_id=record.node_id,
+                version=record.accepted_plan_version,
+                current_version=admission.plan_version,
+            )
+        ):
             return BlockRecord(
                 code=BlockCode.AUTHORITY_UNVERIFIABLE,
                 owner="plan-owner",
@@ -496,13 +511,16 @@ async def verify_live_authority(
                 progressed_at=record.progressed_at,
                 detail="the in-force policy does not permit this effect autonomously",
             )
-        if record.attempts >= effective_policy.limits.max_attempts_per_node:
+        used = await stage_attempts(
+            session, org_id=record.org_id, node_id=record.node_id, action=effect.action, exclude_operation_key=effect.intent.operation_key
+        )
+        if used >= effective_policy.limits.max_attempts_per_node:
             return BlockRecord(
                 code=BlockCode.ATTEMPTS_EXHAUSTED,
                 owner="plan-owner",
-                required_input="authorized recovery after the accepted per-node attempt limit",
+                required_input="authorized recovery after the accepted stage attempt limit",
                 progressed_at=record.progressed_at,
-                detail="the in-force policy attempt allowance is exhausted",
+                detail=f"the {effect.action.value} stage attempt allowance is exhausted",
             )
 
         claim = (
@@ -1048,6 +1066,22 @@ async def _process_one(
 
     effect = decision.effect
     assert effect is not None
+    effect = replace(effect, intent=replace(effect.intent, detail={**effect.intent.detail, "attempt_stage": effect.action.value}))
+    # Observation, evidence and completion above continue while paused. Only
+    # new effects wait; neither attempts nor an existing block are cleared.
+    async with factory() as session:
+        if await flow_is_paused(session, org_id=initial.org_id, flow_id=initial.flow_id):
+            await session.execute(
+                update(OrchestrationExecution)
+                .where(
+                    OrchestrationExecution.org_id == initial.org_id,
+                    OrchestrationExecution.id == initial.id,
+                    OrchestrationExecution.revision == initial.revision,
+                )
+                .values(next_check_at=_next(now, config), revision=initial.revision + 1)
+            )
+            await session.commit()
+            return
     # Authority is time-limited, so the expiry fence is only meaningful when it is
     # asked at the moment permission is being claimed. `now` was captured before
     # `observe`, which is bounded only by `io_timeout_seconds` — comparing against it
@@ -1070,21 +1104,14 @@ async def _process_one(
         report.bump(initial.org_id, "blocked")
         return
 
-    attempt_limit = config.max_attempts
-    if initial.attempts >= attempt_limit:
-        # A human platform approval may lift this flow above the runner default.
-        # Only a verified supplement for this execution's exact plan can do so;
-        # unrelated flows and notification retries retain their configured cap.
-        async with factory() as session:
-            admission = await load_in_force_policy(session, org_id=initial.org_id, flow_id=initial.flow_id)
-            if (
-                admission.refusal is None
-                and admission.policy is not None
-                and admission.plan_version == initial.accepted_plan_version
-                and admission.policy._shared_retry_decision_id
-            ):
-                attempt_limit = admission.policy.limits.max_attempts_per_node
-    if initial.attempts >= attempt_limit:
+    # Review dispatches use the accepted stage allowance verified above. A
+    # second runner ceiling must not cancel an explicit owner retry supplement.
+    # Other effect adapters retain their existing runner ceiling.
+    async with factory() as session:
+        used = await stage_attempts(
+            session, org_id=initial.org_id, node_id=initial.node_id, action=effect.action, exclude_operation_key=effect.intent.operation_key
+        )
+    if used >= config.max_attempts and effect.intent.kind != "review_cycle_dispatch":
         await _notify_block(
             factory,
             record=initial,
@@ -1093,6 +1120,7 @@ async def _process_one(
                 owner="platform-operator",
                 required_input="authorized recovery decision",
                 progressed_at=initial.progressed_at,
+                detail=f"{effect.action.value} stage attempt limit exhausted ({used}/{config.max_attempts})",
             ),
             now=now,
             config=config,
@@ -1131,7 +1159,7 @@ async def _process_one(
     # expiry, permission and the work claim — is still re-read live from the database,
     # and the expiry is compared against a live clock reading rather than the loop-top
     # capture, so authority withdrawn by the passage of time is caught here too.
-    authority_block = await authority_verifier(factory, replace(prepared.record, attempts=initial.attempts), effect, clock.now())
+    authority_block = await authority_verifier(factory, prepared.record, effect, clock.now())
     if authority_block is not None:
         await _notify_block(
             factory,

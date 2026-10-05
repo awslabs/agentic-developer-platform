@@ -64,9 +64,8 @@ class BudgetEnforcementMiddleware:
     When budget is exceeded, writes a 402 response directly via ASGI send()
     — no BaseHTTPMiddleware, no Starlette Response objects, no hanging.
 
-    Note (Issue #234): Usage recording is now handled by the budget-usage-tracker
-    Lambda, which is triggered by S3 PutObject events when chat logs are written.
-    This provides accurate cost tracking from actual Bedrock response token counts.
+    Measured usage settles transactionally in UsageService. Optional transcript
+    events share its receipt through the budget-usage-tracker Lambda.
     """
 
     def __init__(
@@ -96,6 +95,9 @@ class BudgetEnforcementMiddleware:
             await self.app(scope, receive, send)
             return
 
+        if state.get("request_started_at") is not None:
+            token_context._budget_request_timestamp = state["request_started_at"]
+
         # Build a Request object for timing access (read-only, no body access)
         request = Request(scope, receive, send)
 
@@ -117,7 +119,7 @@ class BudgetEnforcementMiddleware:
             if result is None and not token_context._budget_enforcement_enabled:
                 # An uncapped call still needs a server-owned accounting identity.
                 # Caller trace IDs must never replace another request's charge.
-                token_context._policy_request_id = token_context._policy_request_id or str(uuid4())
+                token_context._policy_request_id = state.get("request_id") or token_context._policy_request_id or str(uuid4())
                 state["request_id"] = token_context._policy_request_id
             result = result or await self.enforcement_service.check_budget_hierarchy(
                 token_context,
@@ -125,7 +127,7 @@ class BudgetEnforcementMiddleware:
                 # Issue #4287: idempotency key for the live-denominator
                 # reservation, so the proxy can adjust THIS request's reservation
                 # to its real cost once the response lands. Set by
-                # LoggingMiddleware, which runs outside this one.
+                # the outer RequestIdentityMiddleware.
                 request_id=state.get("request_id"),
                 # Issue #4187: the caller's ASSERTED run id. Passed on as an
                 # assertion to be verified server-side against the webhook-events
@@ -160,16 +162,24 @@ class BudgetEnforcementMiddleware:
                 logger.info("Budget exceeded response sent successfully")
             return
 
-        # Let the request through to the next middleware/app
-        await self.app(scope, receive, send)
-
-        # Issue #234: Usage recording removed from middleware.
-        # Actual cost tracking is now handled by the budget-usage-tracker Lambda,
-        # which is triggered when chat logs are written to S3. This provides
-        # accurate token counts from Bedrock responses rather than estimates.
+        # Release only a request rejected before provider dispatch. Unknown
+        # provider outcomes retain their estimates, and measured charges must
+        # never be overwritten by a generic error-response cleanup.
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if not token_context._budget_provider_started:
+                await self.enforcement_service.reconcile_reservation(
+                    context=token_context,
+                    request_id=state.get("request_id"),
+                    model_id="pre-provider-rejection",
+                    input_tokens=0,
+                    output_tokens=0,
+                    actual_cost_usd=Decimal("0"),
+                )
 
     def _should_enforce(self, path: str) -> bool:
-        return any(path.startswith(p) for p in ENFORCED_PATHS)
+        return path != "/v1/messages/count_tokens" and any(path.startswith(p) for p in ENFORCED_PATHS)
 
     def _estimate_cost(self, scope: Scope, path: str) -> Decimal:
         """Estimate this request's cost from the ASGI scope alone (Issue #4287).

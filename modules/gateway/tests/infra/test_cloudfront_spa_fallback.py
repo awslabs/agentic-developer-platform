@@ -125,6 +125,6 @@ class TestSpaFallbackScoping:
         strip_api_prefix function must still be attached to the API behaviors, or
         every /api/* call breaks."""
         code = _main_tf_code()
-        assert code.count("aws_cloudfront_function.strip_api_prefix.arn") == 2, (
-            "Expected strip_api_prefix on exactly the /api/* and /.well-known/* behaviors; the count changed."
+        assert code.count("aws_cloudfront_function.strip_api_prefix.arn") == 3, (
+            "Expected strip_api_prefix on exactly the /api/v1/tasks, /api/* and /.well-known/* behaviors; the count changed."
         )

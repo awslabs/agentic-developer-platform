@@ -43,7 +43,7 @@ curl -X POST "${GATEWAY_API_URL}/api/admin/identity/organizations/acme-corp/user
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "alice@acme.com",
+    "email": "alice@example.com",
     "name": "Alice Smith",
     "role": "developer",
     "identities": [

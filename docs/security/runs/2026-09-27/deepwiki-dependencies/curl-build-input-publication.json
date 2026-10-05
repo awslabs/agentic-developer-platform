@@ -1,0 +1,6 @@
+{
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b",
+  "source_commit": "ea8987589ebbafb9718bb8af701573537242a1d2",
+  "purpose": "build input containing tested curl Debian packages and licenses; not a deployable application",
+  "tag": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki:build-input-curl-ea8987589"
+}

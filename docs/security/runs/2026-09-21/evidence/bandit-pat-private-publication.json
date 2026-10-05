@@ -1,0 +1,28 @@
+{
+  "issue": 6108,
+  "runtime_owner_issue": 6111,
+  "frozen_source": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "reviewed_delta": 2,
+  "reviewed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=595",
+      "file": "modules/agent-factory/agent-worker-image/entrypoint.py",
+      "original_line": 2233,
+      "rule": "B108",
+      "severity": "MEDIUM"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=597",
+      "file": "modules/agent-factory/agent-worker-image/entrypoint.py",
+      "original_line": 2234,
+      "rule": "B108",
+      "severity": "MEDIUM"
+    }
+  ],
+  "candidate_source_sha256": "a9590a0fbea8bdf807d9205c6f9e657027936f5ec47e58aac9b98f022e3ff879",
+  "fixture": "modules/agent-factory/agent-worker-image/tests/test_pat_token_file.py",
+  "baseline": "Three failures/six cases: predictable temporary symlink exports synthetic token and truncates target; preexisting readable temporary entry receives token; failed replace leaves credential temporary behind. Three destination replacement cases already safe. Executed the original five AST statements with only the two absolute paths relocated beneath an isolated temporary directory.",
+  "candidate": "Six real filesystem cases: no symlink/hardlink target modification, fresh0600 destination, old predictable entry untouched, clean failure preserving prior token. Full focused worker suite201pass.",
+  "source_limit": "Default final token path remains for existing askpass/wrapper compatibility. Exclusive creation protects initial publication; this does not claim isolation from malicious code already running with the same UID and access to the final token.",
+  "remaining_acceptance": "Final worker image must contain this helper/callsite and pass tests using installed source. Serving image rollout remains pending #6111."
+}

@@ -57,6 +57,12 @@ permissions:
 
 jobs:
   maintain:
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     runs-on: arc-runner-org
     timeout-minutes: 30
     env:
@@ -73,6 +79,19 @@ jobs:
       UNLOCK_KNOWN_ORPHAN: ${{ inputs.unlock_known_orphan }}
     steps:
       - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Validate stage inputs before tooling or runtime reads
         run: |
           set -euo pipefail
@@ -107,22 +126,9 @@ jobs:
       - name: Install missing runner CLI tools
         run: |
           set -euo pipefail
-          if ! command -v curl >/dev/null || ! command -v unzip >/dev/null || ! command -v gh >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends curl unzip gh
-          fi
-          if ! command -v aws >/dev/null; then
-            cli_arch="$(uname -m)"
-            case "$cli_arch" in x86_64|aarch64) ;; *) exit 1 ;; esac
-            cli_dir="$(mktemp -d "$RUNNER_TEMP/adp-awscli.XXXXXX")"
-            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${cli_arch}.zip" -o "$cli_dir/awscli.zip"
-            unzip -q "$cli_dir/awscli.zip" -d "$cli_dir"
-            sudo "$cli_dir/aws/install"
-            rm -rf "$cli_dir"
-          fi
-          command -v aws
-          command -v kubectl
-          command -v gh
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Run reviewed maintenance stage
         run: |
           set -euo pipefail

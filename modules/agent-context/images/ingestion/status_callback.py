@@ -41,6 +41,7 @@ def emit_status_callback(
     status_detail: dict[str, Any] | None = None,
     error: str | None = None,
     tenant_id: str | None = None,
+    callback_grant: str | None = None,
 ) -> None:
     """Post a status update to the gateway callback endpoint.
 
@@ -52,11 +53,20 @@ def emit_status_callback(
         status: One of "indexing", "complete", "failed".
         status_detail: Optional compact projection of run-state for status_detail JSONB.
         error: Optional error message (used when status is "failed").
-        tenant_id: Owning tenant of the asset (scope.tenant_id). Issue #3985 (A2):
-                   the gateway adds this to the UPDATE's WHERE clause so an
-                   asset_id alone cannot be used to write across tenants. Omitted
-                   for legacy/shared assets whose knowledge_assets.tenant_id is
-                   NULL, which the gateway still accepts.
+        tenant_id: Owning tenant of the asset (scope.tenant_id). Issue #5663 (A09):
+                   this is now only a CHECKED ASSERTION at the gateway — it no
+                   longer selects which row is written, and if it contradicts the
+                   grant the callback is refused. Still sent because a disagreement
+                   between the routing scope this pod ingested under and the tenant
+                   the gateway recorded is worth failing on rather than ignoring.
+        callback_grant: Opaque server-minted authority for this asset, taken
+                   verbatim from the SQS envelope's "callback_grant" field
+                   (issue #5663, A09). The worker cannot produce, inspect
+                   usefully, or retarget it; forwarding it unchanged is the whole
+                   contract. Without it the gateway has no server-owned fact to
+                   check the body against, and once the gateway enforces, such a
+                   callback is refused — so this must never be reconstructed or
+                   defaulted, only passed through.
     """
     # Skip if no asset_id (legacy messages without registry_asset_id)
     if not asset_id:
@@ -80,12 +90,12 @@ def emit_status_callback(
             payload["error"] = error[:1000]  # Truncate to match gateway limit
         if tenant_id:
             payload["tenant_id"] = tenant_id
+        if callback_grant:
+            payload["callback_grant"] = callback_grant
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
         }
-        if _GATEWAY_INTERNAL_API_KEY:
-            headers["X-Internal-Api-Key"] = _GATEWAY_INTERNAL_API_KEY
 
         resp = requests.post(
             url,

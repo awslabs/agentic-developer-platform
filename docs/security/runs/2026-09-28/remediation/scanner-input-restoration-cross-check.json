@@ -1,0 +1,45 @@
+{
+  "checked_at": "2026-09-28T18:36:25.297453+00:00",
+  "diagnostic_run": 36456950756,
+  "syft_additional_failed_targets": 2,
+  "cause": "Both failed resolving the same then-missing DeepWiki curl input sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b. Later Grype scans of both targets succeeded after the exact input was restored.",
+  "later_successful_grype_targets": [
+    {
+      "target": "modules-agent-factory-agent-worker-image",
+      "provenance_key": "repository-scans/36456950756/1/grype/provenance/modules-agent-factory-agent-worker-image.json",
+      "provenance": {
+        "artifact_sha256": "5e3d612ea2e0a94154dedde6170e6182973eb56cf7a237a4a918a25fc4d7ff63",
+        "build_args": {},
+        "digest": "sha256:cd441db9666a8216bd6c990d2c77e0e72ceb1ed528450998fb56e72f3c908de4",
+        "name": "modules-agent-factory-agent-worker-image",
+        "raw_artifact_sha256": "955e563d5fb7e5fd082d9a431ecb62a2b6106f964dfa613a6deb8f0768b69a1c",
+        "scanner_metadata_sha256": "c13ce0aae8601b9f5ba96ecaf9eaafcd94a00b5df1d046ae975e1ee3dedbfe93",
+        "source_revision": "8a2e7632b322e82e692587a1920042f2e2693976",
+        "suppression_summary_sha256": "ec2a28e096ecb5c864f336a98f2704376f6d5c82b7591ad1ee72ee7d1af6c920",
+        "tool": "grype"
+      },
+      "last_modified": "2026-09-28T17:54:55+00:00",
+      "content_length": 607,
+      "earlier_syft_failure_at": "2026-09-28T17:36:07.285000+00:00"
+    },
+    {
+      "target": "modules-agent-factory-gateway",
+      "provenance_key": "repository-scans/36456950756/1/grype/provenance/modules-agent-factory-gateway.json",
+      "provenance": {
+        "artifact_sha256": "f4bca062bab45c3c0490d7ebf3fb1a4875b705b84d5df27a853295209a4c2842",
+        "build_args": {},
+        "digest": "sha256:a28bb4a476dc68a70857a10210f51ee4fbc392e1e4619bf59530dd9f0b096de1",
+        "name": "modules-agent-factory-gateway",
+        "raw_artifact_sha256": "c9931648146f601119238c352cd826643f66b55df229c63f18c3368805d06b2f",
+        "scanner_metadata_sha256": "b16dfdc64e9f3161b55504b73dd451a2bae4c989bb48a5f5c4ea44b2cf80eb7c",
+        "source_revision": "8a2e7632b322e82e692587a1920042f2e2693976",
+        "suppression_summary_sha256": "ec2a28e096ecb5c864f336a98f2704376f6d5c82b7591ad1ee72ee7d1af6c920",
+        "tool": "grype"
+      },
+      "last_modified": "2026-09-28T17:58:38+00:00",
+      "content_length": 596,
+      "earlier_syft_failure_at": "2026-09-28T17:37:21.738000+00:00"
+    }
+  ],
+  "full_coverage_verified": false
+}

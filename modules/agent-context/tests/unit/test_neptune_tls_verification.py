@@ -169,8 +169,8 @@ class TestPersonalContextGraphTLS:
         assert "verify=False" not in source
         assert "NEPTUNE_CA_BUNDLE" in source
 
-    def test_execute_gremlin_uses_ca_bundle(self, monkeypatch):
-        """_execute_gremlin passes verify=NEPTUNE_CA_BUNDLE to httpx.post."""
+    def test_execute_cypher_uses_ca_bundle(self, monkeypatch):
+        """_execute_cypher passes verify=NEPTUNE_CA_BUNDLE to httpx.post."""
         monkeypatch.delenv("NEPTUNE_CA_BUNDLE_PATH", raising=False)
         monkeypatch.setenv("NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com")
         monkeypatch.setenv("PERSONAL_CONTEXT_GRAPH_ENABLED", "true")
@@ -193,8 +193,8 @@ class TestPersonalContextGraphTLS:
             # Verify constant
             assert graph_mod.NEPTUNE_CA_BUNDLE == EXPECTED_CA_BUNDLE_PATH
 
-            # Call _execute_gremlin
-            graph_mod._execute_gremlin("g.V().count()")
+            # Call _execute_cypher
+            graph_mod._execute_cypher("MATCH (n) RETURN count(n)", {})
 
             # Verify httpx.post was called with verify=CA_BUNDLE_PATH
             mock_httpx.post.assert_called_once()

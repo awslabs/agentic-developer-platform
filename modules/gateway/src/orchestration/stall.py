@@ -60,7 +60,12 @@ an opaque dispatch-guard refusal. If the cycle bound were the looser of the two,
 configurable, defaults to 5, and a config with `bound >= MAX_CHAIN_DEPTH` is
 rejected at construction rather than tolerated.
 
-The bound is also tunable per environment via `ORCH_DEFECT_CYCLE_BOUND` (issue
+For policy-governed flows the accepted retry limit (including audited supplements)
+replaces this legacy bound. Dispatch owns new-attempt admission; the current
+attempt is allowed to finish at its accepted limit. Stall-time detection still
+applies independently, and an already halted node still needs human recovery.
+
+The legacy bound is also tunable per environment via `ORCH_DEFECT_CYCLE_BOUND` (issue
 #4403), read by `StallConfig.from_env`. That reader routes through this same
 constructor rather than validating separately, so an env value outside `1 <= n < 8`
 is rejected by the invariant above and falls back to the default — the knob cannot
@@ -578,9 +583,58 @@ async def _examine(
     if state is None:
         return
 
-    elapsed = int((now - candidate.since).total_seconds())
+    # Pause holds an unstarted outbox. On Resume its waiting clock starts again
+    # from the existing audit event; a real worker keeps its own liveness clock.
+    from .flow_execution import flow_is_paused
+    from .run_reports import OrchestrationRunReport
 
-    if state in HALTABLE_STATES and candidate.attempts >= config.defect_cycle_bound:
+    since = candidate.since
+    if state is NodeState.RUNNING:
+        assignment = await session.scalar(
+            select(OrchestrationRunReport)
+            .where(
+                OrchestrationRunReport.org_id == candidate.org_id,
+                OrchestrationRunReport.node_id == candidate.node_id,
+                OrchestrationRunReport.attempt == candidate.attempts,
+            )
+            .order_by(OrchestrationRunReport.created_at.desc())
+            .limit(1)
+        )
+        if assignment is not None and not assignment.worker_receipt and not assignment.terminal_receipt:
+            if await flow_is_paused(session, org_id=candidate.org_id, flow_id=candidate.flow_id):
+                return
+            resumed = await session.scalar(
+                select(OrchestrationDecision.created_at)
+                .where(
+                    OrchestrationDecision.org_id == candidate.org_id,
+                    OrchestrationDecision.flow_id == candidate.flow_id,
+                    OrchestrationDecision.kind == "flow_resumed",
+                )
+                .order_by(OrchestrationDecision.created_at.desc())
+                .limit(1)
+            )
+            if resumed is not None:
+                since = max(since, resumed.replace(tzinfo=UTC) if resumed.tzinfo is None else resumed)
+
+    elapsed = int((now - since).total_seconds())
+
+    # A policy-governed flow already owns retry admission, including audited
+    # increases. The environment's legacy cycle bound must not cancel a worker
+    # admitted under that policy. attempts includes the CURRENT attempt, so the
+    # final admitted attempt may finish; dispatch refuses the next one.
+    bound = config.defect_cycle_bound
+    exhausted = candidate.attempts >= bound
+    bound_source = "legacy_defect_cycle_bound"
+    if state in HALTABLE_STATES:
+        from .policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=candidate.org_id, flow_id=candidate.flow_id)
+        if inputs.refusal is None and inputs.policy is not None:
+            bound = inputs.policy.limits.max_attempts_per_node
+            exhausted = candidate.attempts > bound
+            bound_source = "accepted_execution_policy"
+
+    if state in HALTABLE_STATES and exhausted:
         await _propose(
             session,
             candidate,
@@ -589,11 +643,12 @@ async def _examine(
             kind=DecisionKind.NODE_HALTED,
             reason=(
                 f"defect-cycle bound exhausted: {candidate.attempts} attempt(s) at a bound of "
-                f"{config.defect_cycle_bound}; halting rather than cycling again"
+                f"{bound} ({bound_source}); halting rather than cycling again"
             ),
             detail={
                 "attempts": candidate.attempts,
-                "defect_cycle_bound": config.defect_cycle_bound,
+                "defect_cycle_bound": bound,
+                "bound_source": bound_source,
                 "observed_state": candidate.observed_state,
             },
             detected_counter="halts_detected",
@@ -608,7 +663,7 @@ async def _examine(
             # the initial developer's pod deadline here kills review/merge work.
             if worker_since is None:
                 return
-            elapsed = int((now - max(candidate.since, worker_since)).total_seconds())
+            elapsed = int((now - max(since, worker_since)).total_seconds())
 
     if state in STALLABLE_STATES and elapsed > config.stall_threshold_seconds:
         await _propose(
@@ -634,36 +689,59 @@ async def _examine(
 
 async def _continuation_clock(session, candidate):
     """Measure the current assigned worker, never a previous worker's start."""
-    from .models import OrchestrationAcceptedPlan, OrchestrationExecution, OrchestrationWorkClaim
+    from .models import OrchestrationAcceptedPlan, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
     from .run_reports import OrchestrationRunReport
 
     row = (
         await session.execute(
-            select(OrchestrationRunReport)
-            .join(OrchestrationWorkClaim, OrchestrationWorkClaim.active_run_id == OrchestrationRunReport.run_id)
+            select(OrchestrationWorkClaim, OrchestrationExecution, OrchestrationAcceptedPlan)
             .join(OrchestrationExecution, OrchestrationExecution.claim_id == OrchestrationWorkClaim.id)
             .join(OrchestrationAcceptedPlan, OrchestrationAcceptedPlan.flow_id == OrchestrationExecution.flow_id)
             .where(
-                OrchestrationRunReport.org_id == candidate.org_id,
-                OrchestrationRunReport.flow_id == candidate.flow_id,
-                OrchestrationRunReport.node_id == candidate.node_id,
-                OrchestrationRunReport.attempt == candidate.attempts,
                 OrchestrationWorkClaim.org_id == candidate.org_id,
                 OrchestrationWorkClaim.owner_kind == "engine_flow",
                 OrchestrationWorkClaim.owner_ref == candidate.flow_id,
                 OrchestrationWorkClaim.state == "held",
                 OrchestrationWorkClaim.generation == OrchestrationExecution.claim_generation,
                 OrchestrationExecution.org_id == candidate.org_id,
+                OrchestrationExecution.flow_id == candidate.flow_id,
                 OrchestrationExecution.node_id == candidate.node_id,
                 OrchestrationExecution.cycle == candidate.attempts,
                 OrchestrationExecution.status.not_in({"concluded", "superseded"}),
                 OrchestrationAcceptedPlan.org_id == candidate.org_id,
-                OrchestrationAcceptedPlan.version == OrchestrationExecution.accepted_plan_version,
                 OrchestrationAcceptedPlan.superseded_at.is_(None),
             )
         )
-    ).scalar_one_or_none()
+    ).one_or_none()
     if row is None:
+        return False, None
+    claim, execution, plan = row
+    from .plan_lineage import ancestor_plan
+
+    if await ancestor_plan(session, plan, execution.accepted_plan_version, node_id=candidate.node_id) is None:
+        return False, None
+    row = await session.get(OrchestrationRunReport, claim.active_run_id)
+    if row is None:
+        # Protected workers have no SQL run report. Their committed dispatch
+        # starts the current pod's clock, not the original developer's clock.
+        from .review_cycle_dispatch import continuation_run_id
+
+        dispatch = await session.scalar(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == candidate.org_id,
+                OrchestrationAction.execution_id == execution.id,
+                OrchestrationAction.kind == "review_cycle_dispatch",
+                OrchestrationAction.status == "succeeded",
+            )
+            .order_by(OrchestrationAction.created_at.desc(), OrchestrationAction.id.desc())
+            .limit(1)
+        )
+        if dispatch is None or continuation_run_id(dispatch.operation_key) != claim.active_run_id:
+            return False, None
+        since = dispatch.created_at
+        return True, since.replace(tzinfo=UTC) if since.tzinfo is None else since
+    if (row.org_id, row.flow_id, row.node_id, row.attempt) != (candidate.org_id, candidate.flow_id, candidate.node_id, candidate.attempts):
         return False, None
     if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
         return True, None

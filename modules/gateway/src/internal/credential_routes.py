@@ -9,13 +9,17 @@ Endpoints (IAM-signed / shared-secret; internal only):
     POST /internal/v1/credential-raw-read   — escape hatch: return raw value (dual-gated)
 
 Authentication:
-    All endpoints require the X-Internal-Api-Key shared secret.
-    See src/internal/routes.py for the _verify_internal_key dependency.
+    The canonical verify_internal_or_irsa dependency accepts edge-verified IAM
+    identity with internal/platform scope, or the legacy shared key when no IAM
+    identity is asserted. Protected worker brokers additionally require their
+    run-bound identity. See src/internal/auth_deps.py.
 
-Scope gating:
-    materialize   — requires X-Agent-Scopes header to contain "credential:materialize"
-    raw-read      — requires X-Agent-Scopes to contain "credential:raw-read" AND
-                    BG_VAULT_RAW_READ_ENABLED=true (org-level feature flag)
+Scope gating (Issue #6050):
+    materialize   — requires registry-granted credential_scopes to contain
+                    "credential:materialize" (verified via token_context)
+    raw-read      — requires registry-granted credential_scopes to contain
+                    "credential:raw-read" AND BG_VAULT_RAW_READ_ENABLED=true
+                    (org-level feature flag)
 
 Every credential access (proxy, materialize, raw-read) writes an audit_log entry
 and updates UserCredential.last_used_at.
@@ -29,16 +33,16 @@ import logging
 import socket
 import uuid
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_authorization import require_credential_capability
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
@@ -228,34 +232,22 @@ async def _write_audit(
     await db.flush()
 
 
-def _check_agent_scope(x_agent_scopes: str | None, required: str) -> None:
-    """Raise 403 if the required scope is missing from X-Agent-Scopes."""
-    if not x_agent_scopes:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "insufficient_scope",
-                "message": f"Agent manifest scope {required!r} is required for this operation.",
-            },
-        )
-    scopes = {s.strip() for s in x_agent_scopes.split(",")}
-    if required not in scopes:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "insufficient_scope",
-                "message": f"Agent manifest scope {required!r} is required for this operation.",
-            },
-        )
+# Issue #6050: _check_agent_scope (header-based) removed.  Replaced by
+# require_credential_capability() in credential_authorization.py, which reads
+# the registry-granted credential_scopes from verified token_context.
 
 
-def _validate_proxy_url(url: str, settings: Settings) -> None:
-    """Validate the target URL for proxy-request against the host allowlist.
+def _validate_proxy_url(url: str, settings: Settings) -> httpx.URL:
+    """Validate the target URL and return a destination pinned to a public IP.
 
     Raises HTTPException(400) or HTTPException(403) on rejection.
     Issue #1158: SSRF + credential exfiltration mitigation.
     """
-    parsed = urlparse(url)
+    # Authorize with the same URL parser used by the sending client.
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL as exc:
+        raise HTTPException(400, detail={"error": "invalid_url", "message": "Malformed URL"}) from exc
 
     # 1. Scheme check — HTTPS only when vault_proxy_require_https=True
     if settings.vault_proxy_require_https and parsed.scheme != "https":
@@ -269,7 +261,7 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
             detail={"error": "invalid_url", "message": "Invalid URL scheme"},
         )
 
-    hostname = parsed.hostname
+    hostname = parsed.host
     if not hostname:
         raise HTTPException(
             status_code=400,
@@ -283,23 +275,7 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
             detail={"error": "invalid_url", "message": "URLs with embedded credentials are not allowed"},
         )
 
-    # 3. Resolve hostname; reject private/loopback/link-local/reserved IPs (anti-SSRF)
-    try:
-        for info in socket.getaddrinfo(hostname, None):
-            addr = ipaddress.ip_address(info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": "invalid_url",
-                        "message": "URLs targeting private/internal addresses are not allowed",
-                    },
-                )
-    except socket.gaierror:
-        # DNS resolution failure — let httpx surface it as a request error downstream
-        pass
-
-    # 4. FAIL-CLOSED allowlist check
+    # 3. FAIL-CLOSED allowlist check
     allowlist_raw = settings.vault_proxy_host_allowlist
     if not allowlist_raw:
         raise HTTPException(
@@ -314,7 +290,14 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
     # the credential->host binding check (#4076) cannot drift apart.
     allowed_hosts = {h.strip().lower() for h in allowlist_raw.split(",") if h.strip()}
     if host_matches(hostname, allowed_hosts):
-        return
+        # Resolve once and connect to this exact address to prevent DNS rebinding.
+        try:
+            addresses = [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(hostname, None)]
+        except (socket.gaierror, ValueError) as exc:
+            raise HTTPException(400, detail={"error": "invalid_url", "message": "Cannot resolve proxy host"}) from exc
+        if not addresses or any(not addr.is_global or addr.is_multicast for addr in addresses):
+            raise HTTPException(400, detail={"error": "invalid_url", "message": "URLs targeting private/internal addresses are not allowed"})
+        return parsed.copy_with(host=str(addresses[0]))
 
     # No match — reject
     raise HTTPException(
@@ -343,7 +326,7 @@ def _validate_credential_host_binding(cred_service: str, url: str, settings: Set
     False (shadow mode, the default) the violation is logged and allowed, so
     rollback is a config flip rather than a redeploy.
     """
-    hostname = urlparse(url).hostname or ""
+    hostname = httpx.URL(url).host
 
     if not is_binding_enforced(cred_service):
         logger.warning(
@@ -414,6 +397,7 @@ async def list_user_credentials(
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=invocation_id,
         body_user_id=user_id,
         settings=settings,
@@ -477,6 +461,7 @@ async def proxy_request(
     # If the caller isn't authorized, don't reveal whether the URL is allowlisted.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,
@@ -520,11 +505,12 @@ async def proxy_request(
             )
             await db.commit()
         except Exception:
-            pass  # Don't let audit-log failures mask the security rejection.
+            # Don't let audit-log failures mask the security rejection.
+            logger.warning("credential denial audit write failed")
 
     # Issue #1158: Validate target URL before resolving credentials or making requests.
     try:
-        _validate_proxy_url(body.url, settings)
+        target_url = await asyncio.to_thread(_validate_proxy_url, body.url, settings)
     except HTTPException as exc:
         await _audit_denial(exc)
         raise
@@ -560,13 +546,20 @@ async def proxy_request(
         body.headers or {},
     )
 
-    # Forward the HTTP request.
+    # Preserve the authorized virtual host and TLS identity when connecting to
+    # the validated IP. Caller-supplied Host must not select another service.
+    original_url = httpx.URL(body.url)
+    request_headers = {key: value for key, value in request_headers.items() if key.lower() != "host"}
+    request_headers["Host"] = original_url.netloc.decode("ascii")
+
+    # Environment proxies would bypass IP pinning; redirects must not escape it.
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False, follow_redirects=False) as client:
             response = await client.request(
                 method=body.method.upper(),
-                url=body.url,
+                url=target_url,
                 headers=request_headers,
+                extensions={"sni_hostname": original_url.host},
                 content=body.body.encode("utf-8") if body.body else None,
             )
     except httpx.RequestError as exc:
@@ -641,13 +634,12 @@ async def proxy_request(
         "Only valid for file-oriented credential types: ssh_key, certificate, config_file. "
         "Fetches the credential from Secrets Manager, writes it to a short-lived S3 object, "
         "and returns a presigned GET URL the agent can use to write the file to its tmpfs. "
-        "Requires X-Agent-Scopes: credential:materialize."
+        "Requires registry-granted credential:materialize capability."
     ),
 )
 async def credential_materialize(
     body: MaterializeBody,
     request: Request,
-    x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -659,14 +651,15 @@ async def credential_materialize(
     # If the caller isn't bound to a valid run, fail fast before checking scopes.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,
     )
     effective_user_id = binding.resolved_user_id
 
-    # Scope gate.
-    _check_agent_scope(x_agent_scopes, "credential:materialize")
+    # Issue #6050: registry-based scope gate (replaces header-based _check_agent_scope).
+    require_credential_capability(request, "credential:materialize")
 
     user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-materialize", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
@@ -779,14 +772,13 @@ async def credential_materialize(
     description=(
         "Returns the raw credential value. "
         "Gated by BG_VAULT_RAW_READ_ENABLED=true (per-deployment feature flag) AND "
-        "X-Agent-Scopes header containing 'credential:raw-read'. "
+        "registry-granted credential:raw-read capability. "
         "Every call is audit-logged regardless of outcome."
     ),
 )
 async def credential_raw_read(
     body: RawReadBody,
     request: Request,
-    x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -805,13 +797,14 @@ async def credential_raw_read(
             },
         )
 
-    # Scope gate.
-    _check_agent_scope(x_agent_scopes, "credential:raw-read")
+    # Issue #6050: registry-based scope gate (replaces header-based _check_agent_scope).
+    require_credential_capability(request, "credential:raw-read")
 
     # Issue #3175: Credential-authorization binding (S2).
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,

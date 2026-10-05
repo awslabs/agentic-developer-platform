@@ -77,3 +77,38 @@ def test_skypilot_proxy_requires_credential_and_strips_it(monkeypatch):
         assert result.status_code == 200
         assert str(calls[0].url) == "http://127.0.0.1:46580/api/health"
         assert "authorization" not in calls[0].headers
+
+
+def test_image_contract_is_offline_without_database_or_shared_credentials():
+    import os
+    import subprocess
+    import sys
+
+    environment = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in {
+            "DATABASE_URL",
+            "ADP_GATEWAY_INTERNAL_URL",
+            "ADP_GATEWAY_INTERNAL_API_KEY",
+            "SUPERPLANE_OPERATION_GATEWAY_URL",
+            "SUPERPLANE_OPERATION_GATEWAY_REGION",
+        }
+        and not k.startswith("AWS_")
+    }
+    environment["AWS_EC2_METADATA_DISABLED"] = "true"
+    result = subprocess.run(
+        [sys.executable, "-m", "app.installation", "image-contract"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout
+    report = json.loads(result.stdout)
+    assert report["image_contract_version"] == 1
+    assert report["configuration_verified"] is False
+    assert report["authority_verified"] is False
+    assert report["production_ready"] is False
+    assert "capabilities" not in report

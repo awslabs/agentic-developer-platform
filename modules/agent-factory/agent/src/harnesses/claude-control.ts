@@ -88,7 +88,7 @@ export const CLAUDE_ADAPTER_ID = 'claude';
  * are observed SDK behaviour, not a documented permanent guarantee. A version
  * bump is a prompt to re-run the contract suite, not a no-op.
  */
-export const CLAUDE_SDK_VERSION = '0.3.220';
+export const CLAUDE_SDK_VERSION = '0.3.283';
 
 /**
  * Reason `pause`/`resume` report unsupported when no gate is installed (#3961).
@@ -113,10 +113,6 @@ const NO_PAUSE_GATE_REASON =
  */
 const PAUSE_HOOK_TIMEOUT_MARGIN_SECONDS = 60;
 
-/** Reason steer/abort remain unsupported after S2. Their proofs are S4/S6's. */
-const NOT_YET_PROVEN_REASON =
-  'no proven runtime boundary for this verb yet: steering and abort are later stories';
-
 /**
  * What the model is told when a pause expires and the run continues by itself.
  *
@@ -138,8 +134,40 @@ export class AttemptInputChannel {
   readonly attemptId = newAttemptId();
   private reader: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
   private closed = false;
+  /** Fired when a reader parks, i.e. when this channel becomes deliverable. */
+  private onReady: (() => void) | undefined;
 
   constructor(private initial?: SDKUserMessage) {}
+
+  /**
+   * Subscribe to "a reader is now waiting" — Issue #3965.
+   *
+   * The steering pump needs to know when this channel can take input, and the
+   * only component that knows is this one: a parked reader is the SDK asking for
+   * the next message, and it is the difference between a push that lands and a
+   * push that is refused. Exposing it as a notification rather than having the
+   * pump poll is what keeps steering latency bounded by the tool call rather than
+   * by a poll interval.
+   *
+   * Deliberately *not* a buffer. The pump is told it may deliver; it still calls
+   * the shared journal's authorized-handoff path to actually do so, so the
+   * authority re-check still happens immediately before the push. A channel that
+   * held the message instead of announcing readiness would be the hidden queue
+   * {@link ClaudeAttemptEndpoint.deliver} forbids.
+   */
+  notifyWhenReady(listener: () => void): void {
+    this.onReady = listener;
+    // A reader may already be parked — the SDK asks for its next message as soon
+    // as it finishes consuming the previous one, which can be long before a
+    // steering command exists. Without this the pump would wait for an edge that
+    // has already passed and hold the instruction until the *next* one.
+    if (this.reader && !this.closed) listener();
+  }
+
+  /** Whether a push would land right now. The pump's boundary predicate. */
+  isDeliverable(): boolean {
+    return !this.closed && this.reader !== null;
+  }
 
   push(message: SDKUserMessage): boolean {
     if (this.closed || !this.reader) return false;
@@ -152,6 +180,7 @@ export class AttemptInputChannel {
   close(): void {
     this.closed = true;
     this.initial = undefined;
+    this.onReady = undefined;
     const reader = this.reader;
     this.reader = null;
     reader?.({ value: undefined, done: true });
@@ -172,7 +201,12 @@ export class AttemptInputChannel {
           return Promise.resolve({ value, done: false });
         }
         if (this.reader) return Promise.reject(new Error('concurrent input reads are unsupported'));
-        return new Promise<IteratorResult<SDKUserMessage>>((resolve) => { this.reader = resolve; });
+        return new Promise<IteratorResult<SDKUserMessage>>((resolve) => {
+          this.reader = resolve;
+          // Announced after the reader is installed, so a listener that delivers
+          // synchronously finds a channel that can actually take the push.
+          this.onReady?.();
+        });
       },
       return: async () => {
         this.close();
@@ -518,6 +552,26 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
     return this.channel.push(toSdkUserMessage(input)) ? 'delivered' : 'rejected';
   }
 
+  /**
+   * Claude's answer to "could a push land right now?" — Issue #3965.
+   *
+   * A parked stream reader, and nothing else. This is the SDK having consumed the
+   * previous message and asked for the next one, which is the only state in which
+   * {@link deliver} returns `delivered`. Mid-tool there is no parked reader, so
+   * this is `false` and the coordinator holds the instruction as `pending` —
+   * which is the "remains pending until an authorized supported handoff boundary"
+   * rule, implemented as an observed transport fact rather than as a guess about
+   * what the model is doing.
+   */
+  canAcceptInput(): boolean {
+    return this.channel.isDeliverable();
+  }
+
+  /** Forward the readiness edge. Announcement only — nothing is buffered. */
+  notifyWhenInputAccepted(listener: () => void): void {
+    this.channel.notifyWhenReady(listener);
+  }
+
   // `AttemptEndpoint`'s optional `requestPause`/`releasePause` are deliberately
   // not implemented here — Issue #3961. They look like the natural place for a
   // per-attempt barrier, and an earlier revision of this story did implement
@@ -629,19 +683,50 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
    *
    * `pause`/`resume` are claimed only with a gate installed, because the claim is
    * about a mechanism rather than about a build: two runs of the same binary, one
-   * with the barrier hooked up and one without, honestly differ here. `steer` and
-   * `abort` stay false — their runtime proofs are S4's and S6's, and this story
-   * widening them would be the "advertised but unproven" failure it exists to
-   * avoid.
+   * with the barrier hooked up and one without, honestly differ here.
+   *
+   * `abort` is claimed on a *different* mechanism, and that difference is why it
+   * is resolved before the barrier check below rather than alongside pause.
+   * Aborting is {@link cancel} — the attempt registry's cancellation signal, which
+   * fires the typed error `resilientQuery` checks ahead of any error-text
+   * classification. That exists in every run of this adapter, hooks or none. A
+   * run without a barrier can still be stopped, so refusing `abort` there would
+   * be a false negative in the one direction that strands work: an operator told
+   * a runaway run cannot be stopped, when in fact it can.
+   *
+   * The barrier is not irrelevant to an abort — cancellation denies anything held
+   * at it rather than flushing it — but it is an *additional* effect when a gate
+   * happens to be present, not the mechanism the claim rests on.
+   *
+   * `steer` is claimed as of Issue #3965, and — like abort — on a mechanism that
+   * is not the barrier. Steering is the streaming input channel: a message pushed
+   * to a parked reader with `shouldQuery: true`. That transport exists in every
+   * run of this adapter, gate or none, which is why it is resolved beside `abort`
+   * rather than behind the barrier check. A run without a barrier can still be
+   * corrected, and refusing there would tell an operator that the only lever left
+   * on a degraded run is to kill it.
+   *
+   * What makes the claim honest rather than the "advertised but unproven" failure
+   * this table exists to prevent is {@link ClaudeAttemptEndpoint.canAcceptInput}:
+   * the *capability* says this build has a steering transport, while readiness at
+   * any given instant is an observed fact the delivery pump consults before every
+   * handoff. The capability is not a promise that an instruction is deliverable
+   * right now — that distinction is what keeps a mid-tool command `pending`
+   * instead of refused.
    */
   adapterCapabilities(): Record<ControlAction, VerbSupport> {
-    if (!this.pauseGate) return noVerbsSupported(NO_PAUSE_GATE_REASON);
-    const unproven = boundReason(NOT_YET_PROVEN_REASON);
+    if (!this.pauseGate) {
+      return {
+        ...noVerbsSupported(NO_PAUSE_GATE_REASON),
+        steer: { supported: true },
+        abort: { supported: true },
+      };
+    }
     return {
       pause: { supported: true },
       resume: { supported: true },
-      steer: { supported: false, reason: unproven },
-      abort: { supported: false, reason: unproven },
+      steer: { supported: true },
+      abort: { supported: true },
     };
   }
 
@@ -656,15 +741,53 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
 
   /** Effective capabilities reflect live attempt and barrier availability. */
   capabilities(): Record<ControlAction, boolean> {
+    // A live attempt is the floor for every verb: with nothing attached there is
+    // nothing any of them could act on.
+    const noAttempt = this.registry.currentAttemptId() === null;
+    // Barrier health, which is a statement about *pausing*. A breached barrier, a
+    // cancelled gate or an unusable budget each mean the gate cannot hold work.
+    const barrierUnusable = this.pauseGate?.barrierBreached()
+      || this.pauseGate?.currentPhase() === 'cancelled' || this.pauseGate?.safeBudget() === null;
+
+    if (noAttempt) return intersectCapabilities({
+      implemented: this.implementedVerbs,
+      adapter: this.adapterCapabilities(),
+      available: new Set<ControlAction>(),
+    });
+
     return intersectCapabilities({
       implemented: this.implementedVerbs,
       adapter: this.adapterCapabilities(),
-      // Availability requires a live attempt: with no attempt attached there is
-      // nothing a verb could act on, so nothing may be advertised.
-      available: this.registry.currentAttemptId() === null || this.pauseGate?.barrierBreached()
-        || this.pauseGate?.currentPhase() === 'cancelled' || this.pauseGate?.safeBudget() === null
-        ? new Set<ControlAction>() : undefined,
+      // An unusable barrier withdraws pause and resume, but deliberately NOT
+      // abort (#3963). Abort does not run through the gate — it cancels the
+      // attempt — so a degraded barrier is exactly the situation where being able
+      // to stop the run matters most. Withdrawing abort here would mean a run
+      // whose pause mechanism has failed also reports itself unstoppable, leaving
+      // an operator with no lever at all on the run most likely to need one.
+      // Steering joins abort here for the same reason (#3965): it does not run
+      // through the gate, so a barrier that cannot hold work does not stop an
+      // instruction from reaching the model. Withdrawing it would leave an
+      // operator watching a run with a broken pause able only to abort.
+      available: barrierUnusable ? new Set<ControlAction>(['steer', 'abort']) : undefined,
     });
+  }
+
+  /**
+   * Whether the live attempt's transport could take input right now — #3965.
+   *
+   * Delegated to the registry so the answer is about whatever attempt is current
+   * *at call time*, which is the same rule `submitInput` follows and the property
+   * that keeps a queued instruction working across an in-process retry. A pause
+   * is deliberately not consulted here: this reports the transport's state, and
+   * the pump intersects it with the pause and work-count facts the worker owns.
+   */
+  canAcceptInput(): boolean {
+    return this.registry.canAcceptInput();
+  }
+
+  /** Subscribe to the current attempt's next readiness edge (#3965). */
+  notifyWhenInputAccepted(listener: () => void): void {
+    this.registry.notifyWhenInputAccepted(listener);
   }
 
   currentAttempt(): AttemptId | null {

@@ -1,0 +1,23 @@
+{
+    "update": {
+        "id": "a04ba96e-161f-300d-ae25-097fa3f2e2ad",
+        "status": "InProgress",
+        "type": "AddonUpdate",
+        "params": [
+            {
+                "type": "AddonVersion",
+                "value": "v6.7.0-eksbuild.1"
+            },
+            {
+                "type": "ServiceAccountRoleArn",
+                "value": "arn:aws:iam::000000000101:role/adp-dev-role-cw-observability"
+            },
+            {
+                "type": "ResolveConflicts",
+                "value": "PRESERVE"
+            }
+        ],
+        "createdAt": "2026-09-27T14:39:33.776000+00:00",
+        "errors": []
+    }
+}

@@ -9,6 +9,39 @@ interface NavItem {
   icon: string;
 }
 
+// Compact line icons keep the current navigation readable in the Blueprint shell.
+// The labels and route permissions remain the source of truth for each item.
+const iconPaths: Record<string, string> = {
+  '📊': 'M4 20v-7h4v7M10 20V4h4v16M16 20v-10h4v10',
+  '🔄': 'M20 7v5h-5M4 17v-5h5M5.5 9A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 12.5-2',
+  '📈': 'M3 19h18M4 15l5-5 4 3 7-8M16 5h4v4',
+  '🏢': 'M4 20V5h11v15M15 10h5v10M3 20h18M7 8h2M11 8h2M7 12h2M11 12h2M7 16h2M11 16h2',
+  '👥': 'M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6M22 20v-2a4 4 0 0 0-3-3.87M16 4.13a3 3 0 0 1 0 5.74',
+  '📝': 'M5 3h10l4 4v14H5zM14 3v5h5M8 12h8M8 16h7',
+  '🤖': 'M12 3v3M8 3h8M5 7h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2M8 13h.01M16 13h.01M8 17h8',
+  '🔀': 'M4 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4M20 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4M20 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4M6 7h6a5 5 0 0 1 5 5v7M6 7h6a5 5 0 0 0 5-2',
+  '⏱️': 'M12 8v5l3 2M9 2h6M12 4a9 9 0 1 0 0 18 9 9 0 0 0 0-18',
+  '📚': 'M4 4h7a3 3 0 0 1 3 3v14H7a3 3 0 0 0-3 1zM14 7a3 3 0 0 1 3-3h3v18a3 3 0 0 0-3-1h-3',
+  '📋': 'M8 4h8M9 2h6v4H9zM6 4H4v18h16V4h-2M8 11h8M8 15h8M8 19h5',
+  '💵': 'M3 6h18v14H3zM3 10h18M16 15h3M6 3h12',
+  '🛩️': 'M3 12 21 3l-6 18-3-8-9-1zM12 13l9-10',
+  '💬': 'M4 4h16v12H9l-5 4zM8 9h8M8 12h5',
+  '⚙️': 'M4 6h16M4 12h16M4 18h16M9 6a2 2 0 1 0 0 .01M16 12a2 2 0 1 0 0 .01M8 18a2 2 0 1 0 0 .01',
+  '🔗': 'M9 15l6-6M7 10l-2 2a4 4 0 0 0 6 6l2-2M17 14l2-2a4 4 0 0 0-6-6l-2 2',
+  '🔑': 'M14 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M10 12H3v3h3v3h3l2-3',
+  '🧠': 'M12 3v18M12 5a4 4 0 0 0-7 3 4 4 0 0 0 0 7 4 4 0 0 0 7 4M12 5a4 4 0 0 1 7 3 4 4 0 0 1 0 7 4 4 0 0 1-7 4',
+  '🖥️': 'M3 4h18v14H3zM8 22h8M12 18v4',
+  '🔍': 'M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16M17 17l4 4',
+};
+
+function NavIcon({ icon }: { icon: string }) {
+  return (
+    <svg className="blueprint-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={iconPaths[icon] ?? iconPaths['📊']} />
+    </svg>
+  );
+}
+
 export function Navigation() {
   const {
     isPlatformAdmin,
@@ -175,8 +208,8 @@ export function Navigation() {
     navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
   }
 
-  // Tenant Org Links page for platform admins (Issue #2954)
-  if (isPlatformAdmin()) {
+  // Legacy Tenant Org Links menu, controlled per deployment.
+  if (features.tenant_org_links && isPlatformAdmin()) {
     navItems.push({ to: '/admin/tenant-links', label: 'Tenant Org Links', icon: '🏢' });
   }
 
@@ -193,22 +226,14 @@ export function Navigation() {
   }
 
   return (
-    <nav className="flex flex-col gap-1" aria-label="Main navigation">
+    <nav className="blueprint-nav flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
-              isActive
-                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900 dark:text-primary-100'
-                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
-            }`
-          }
+          className={({ isActive }) => `blueprint-nav-link flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${isActive ? 'blueprint-nav-active' : ''}`}
         >
-          <span className="text-xl" aria-hidden="true">
-            {item.icon}
-          </span>
+          <NavIcon icon={item.icon} />
           <span>{item.label}</span>
         </NavLink>
       ))}
@@ -224,7 +249,7 @@ export function Navigation() {
         <a
           href={GITLAB_PATH}
           onClick={handleGitlabSsoClick}
-          className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+          className="blueprint-nav-link flex items-center gap-3 px-3 py-2 rounded-md transition-colors"
         >
           <span className="text-xl" aria-hidden="true">
             🦊

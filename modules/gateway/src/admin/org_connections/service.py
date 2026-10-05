@@ -30,10 +30,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
-from src.admin.installations.guards import InstallationClaimError, assert_installation_claimable_by
+from src.admin.installations.guards import InstallationClaimError, assert_installation_claimable_by, lock_installation_organization
 from src.admin.installations.resolver import OwnerState
 from src.shared.models.organization import Organization
 from src.shared.models.vault import ChannelTenantMap
@@ -51,12 +50,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
 
 logger = logging.getLogger(__name__)
-
-DETACH_WARNING = (
-    "Webhook dispatch for this GitHub organization has stopped. Events from it will no longer "
-    "resolve to a tenant and will be refused (fail-closed, by design). Re-attach the installation "
-    "to restore routing."
-)
 
 
 class OrganizationNotFoundError(Exception):
@@ -144,9 +137,44 @@ class OrgConnectionsService:
                 for a cross-tenant or disputed claim, 403 for one that cannot be
                 verified. Raised BEFORE any write.
         """
-        org = await self._get_org(org_id)
+        org = await lock_installation_organization(self._db, org_id)
+        if org is None:
+            raise OrganizationNotFoundError(f"Organization {org_id} not found")
         installation_id = req.installation_id
         install_id_str = str(installation_id)
+
+        if req.restore_revoked:
+            from src.admin.identity_index import IdentityIndexClient
+            from src.shared.models.base import utcnow
+            from src.shared.models.vault import InstallationRevocation
+
+            record = await self._db.scalar(
+                select(InstallationRevocation)
+                .where(InstallationRevocation.installation_id == install_id_str)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if record is None or record.org_id != org_id or record.provider_uninstall_requested or record.cleanup_pending:
+                raise InstallationClaimError(
+                    "Only a completed local detach owned by this tenant can be explicitly restored",
+                    status_code=409,
+                    state=OwnerState.REVOKED,
+                    installation_id=installation_id,
+                    org_id=org_id,
+                )
+            # The route is platform-admin-only. Keep SQL denial in place until
+            # the marker is cleared and the new canonical claim commits. A crash
+            # anywhere before that commit still denies, including during outage.
+            if not await IdentityIndexClient().clear_installation_revocation(install_id_str, org_id):
+                raise InstallationClaimError(
+                    "Restoration could not clear the denial projection; retry this explicit restore",
+                    status_code=409,
+                    state=OwnerState.REVOKED,
+                    installation_id=installation_id,
+                    org_id=org_id,
+                )
+            record.restored_at = utcnow()
+            await self._db.flush()
 
         # THE gate. Delegates to ·A0's single resolver via the shared guard, so
         # this writer cannot drift from the two #4072 writers that already use it.
@@ -278,97 +306,30 @@ class OrgConnectionsService:
         )
 
     async def detach_github(self, org_id: str, installation_id: int) -> GitHubConnectionDetachResponse:
-        """Unbind ``installation_id`` from ``org_id``.
+        """Revoke local routing without requesting a provider uninstall."""
+        from src.admin.connections.service import _cache_invalidate, _invalidate_verification_cache, _repo_cache_invalidate
+        from src.admin.installations.revocation import revoke_installation
 
-        Clears the org's assertion AND deletes the map row(s), then removes the
-        identity-index entry. Leaving the index row behind is the stale-routing
-        failure mode: the UI would show the org as disconnected while webhooks
-        kept resolving to it.
-
-        Raises:
-            OrganizationNotFoundError: no such org.
-            ConnectionNotFoundError: this installation is not bound to this org.
-                Includes the case where it is bound to a DIFFERENT org — reported
-                as not-found for this org rather than as a permission error,
-                because the operator's request names a connection that does not
-                exist here, and confirming another tenant's binding is not this
-                route's business.
-        """
-        org = await self._get_org(org_id)
-        install_id_str = str(installation_id)
-
-        old_github_ids = [str(i) for i in (org.github_installation_ids or [])]
-        mapped = (
-            (
-                await self._db.execute(
-                    select(ChannelTenantMap).where(
-                        ChannelTenantMap.provider == "github",
-                        ChannelTenantMap.org_id == org_id,
-                        ChannelTenantMap.installation_id == install_id_str,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        if install_id_str not in old_github_ids and not mapped:
-            raise ConnectionNotFoundError(f"Installation {installation_id} is not connected to organization {org_id}")
-
-        # 1. Drop the org's assertion.
-        remaining = [i for i in old_github_ids if i != install_id_str]
-        org.github_installation_ids = remaining
-
-        # 2. Drop the authoritative claim. Scoped to this org AND this
-        #    installation: an unscoped delete by org would also remove the org's
-        #    Slack and WhatsApp routing, which this operation never touched.
-        if mapped:
-            await self._db.execute(
-                sa_delete(ChannelTenantMap).where(
-                    ChannelTenantMap.provider == "github",
-                    ChannelTenantMap.org_id == org_id,
-                    ChannelTenantMap.installation_id == install_id_str,
-                )
-            )
-
-        # 3. Clear the GitHub identity fields once nothing is connected. Left in
-        #    place while other installations remain — they are per-account, not
-        #    per-installation, and clearing them early would make the survivors
-        #    UNATTESTABLE and break their routing.
-        if not remaining:
-            org.github_org_id = None
-            org.github_app_id = None
-
-        await self._db.commit()
-        await self._db.refresh(org)
-
-        logger.warning(
-            "event=org_github_connection_detached org=%s installation_id=%s remaining=%d outcome=webhook_dispatch_stopped_for_this_installation",
-            org_id,
-            install_id_str,
-            len(remaining),
-        )
-
-        # Post-commit, best-effort: remove the index row so webhook resolution
-        # fails closed. Passing the old list as `old_github_installation_ids`
-        # makes sync_org_channels delete exactly the ids that disappeared.
+        await self._get_org(org_id)
         try:
-            await self._writer().sync_org_channels(
+            result = await revoke_installation(
+                installation_id=installation_id,
                 org_id=org_id,
-                github_installation_ids=remaining,
-                cognito_client_ids=[str(c) for c in (org.cognito_client_ids or [])],
-                old_github_installation_ids=old_github_ids,
+                db=self._db,
+                user_id=None,
+                is_admin=True,
+                uninstall=False,
+                index=self._identity_index._client if self._identity_index is not None else None,
             )
-        except Exception:
-            logger.exception(
-                "event=org_github_connection_index_write_failed org=%s installation_id=%s phase=detach",
-                org_id,
-                install_id_str,
-            )
-
+        except (ValueError, PermissionError) as exc:
+            raise ConnectionNotFoundError(str(exc)) from exc
+        _cache_invalidate(installation_id)
+        _repo_cache_invalidate(installation_id)
+        _invalidate_verification_cache()
         return GitHubConnectionDetachResponse(
             detached=True,
             org_id=org_id,
-            installation_id=install_id_str,
-            warning=DETACH_WARNING,
+            installation_id=str(installation_id),
+            warning=result.warning or "Local access is revoked. The installation remains at GitHub.",
+            residual=result.residual,
         )

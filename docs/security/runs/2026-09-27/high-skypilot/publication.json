@@ -1,0 +1,13 @@
+{
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "platform_digest": "sha256:4c881a130e5e1abd5f70b7e518616bd62648d85c2f2cd919d8395bb9f48cf233",
+  "config_digest": "sha256:0f7ef7d2bae81dddef93f3007ecbbe7648009671ae7d285cdcea66900ea6d603",
+  "time": "2026-09-27T21:18:25.439520+00:00",
+  "scan_receipt": "/workspaces/projects/security27-high-closure/skypilot-high-openssh-scan/receipt.json",
+  "source_pr": "https://github.com/aws-e/adp/pull/6619",
+  "base_reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:b12f257ef5b5997b68d38798ac99d5257a5ca00855b5c072911f408d8bbdd1de",
+  "scope": "Published tested candidate, not live closure.",
+  "digest": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "registry": "000000000101.dkr.ecr.us-east-1.amazonaws.com",
+  "matches_scanned_local_root": true
+}

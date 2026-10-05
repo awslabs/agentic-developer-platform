@@ -44,13 +44,35 @@ env:
 jobs:
   run:
     name: Probe and (optionally) seed
+    if: github.ref == 'refs/heads/main'
+    env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
     runs-on: arc-runner-org
     steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Install psql + jq
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client jq
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       # Same IAM-auth sequence as postgres-schema-check.yml: the master user is
       # IAM-auth-only, the secret is read for the username only.
       - name: Resolve RDS connection (IAM auth token)
@@ -64,14 +86,7 @@ jobs:
             --name "/adp/${ENVIRONMENT}/gateway/rds-database-name" \
             --region "$AWS_REGION" \
             --query Parameter.Value --output text)
-          SECRET_ARN=$(aws secretsmanager list-secrets \
-            --region "$AWS_REGION" \
-            --filters Key=name,Values="rds!db-" \
-            --query 'SecretList[0].ARN' --output text)
-          PGUSER=$(aws secretsmanager get-secret-value \
-            --secret-id "$SECRET_ARN" \
-            --region "$AWS_REGION" \
-            --query SecretString --output text | jq -r .username)
+          PGUSER="${ADP_DB_USER:?Configure the reviewed database username in the protected deployment environment}"
           PGPASSWORD=$(aws rds generate-db-auth-token \
             --hostname "$PGHOST" --port 5432 \
             --username "$PGUSER" --region "$AWS_REGION")
@@ -128,13 +143,15 @@ jobs:
       # below the stall threshold (hours, derived from the pod deadline).
       - name: Seed scratch plan bound to issue
         if: inputs.do_seed == true && inputs.plan_issue_ref != ''
+        env:
+          ADP_INPUT_45206566FE: ${{ inputs.plan_issue_ref }}
         run: |
           set -euo pipefail
-          if [[ ! "${{ inputs.plan_issue_ref }}" =~ ^[0-9]+$ ]]; then
+          if [[ ! "${ADP_INPUT_45206566FE}" =~ ^[0-9]+$ ]]; then
             echo "::error::plan_issue_ref must be a positive integer"
             exit 1
           fi
-          ISSUE_REF='${{ inputs.plan_issue_ref }}'
+          ISSUE_REF="${ADP_INPUT_45206566FE}"
           psql -v ON_ERROR_STOP=1 <<SQL
           INSERT INTO orchestration_flows (id, org_id, slug, title, intent_ref, state, created_at)
           VALUES ('${SEED_FLOW_ID}', '${ORG_ID}', 'bridge-smoke-4527',

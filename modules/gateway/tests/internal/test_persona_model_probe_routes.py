@@ -55,7 +55,9 @@ def test_gateway_manifest_is_the_sdk_generated_artifact():
     sdk_manifest = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/request-shape-manifest.json"
     parsed = json.loads(gateway_manifest.read_text())
     assert parsed == json.loads(sdk_manifest.read_text())
-    assert set(parsed["models"]) == {model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE}
+    assert set(parsed["models"]) == {
+        model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == "claude-agent-sdk"
+    }
 
 
 @pytest.mark.asyncio
@@ -358,6 +360,7 @@ async def test_routes_forbid_worker_selected_target_and_default_to_no_work(db_se
     assert response.status_code == 200
     assert response.json() == {
         "claimed": False,
+        "task_probe_json": None,
         "reason": "disabled",
         "slot_id": None,
         "lease_token": None,
@@ -437,7 +440,8 @@ async def test_other_internal_irsa_principal_cannot_release_probe_credentials(pr
 
 
 @pytest.mark.asyncio
-async def test_dedicated_probe_irsa_is_the_only_accepted_principal():
+@pytest.mark.parametrize("display_name", ["persona-model-probe", "renamed-probe"])
+async def test_dedicated_probe_irsa_is_the_only_accepted_principal(display_name):
     request = Request(
         {
             "type": "http",
@@ -452,11 +456,16 @@ async def test_dedicated_probe_irsa_is_the_only_accepted_principal():
     )
 
     async def _verified_as_probe(request, **_kwargs):
-        request.state.token_context = SimpleNamespace(
-            user_id="persona-model-probe",
-            agent_registry_id="persona-model-probe",
-            org_id="__platform__",
-            scope="internal",
+        from src.auth.agent_registry import agent_entry_to_token_context
+
+        request.state.token_context = agent_entry_to_token_context(
+            {
+                "agent_id": "persona-model-probe",
+                "agent_name": display_name,
+                "org_id": "__platform__",
+                "team_id": "__agents__",
+                "scope": "internal",
+            }
         )
 
     with patch(
@@ -495,7 +504,8 @@ async def test_probe_name_lookalike_cannot_release_credentials(agent_registry_id
 
     async def _verified_as_lookalike(request, **_kwargs):
         request.state.token_context = SimpleNamespace(
-            user_id="persona-model-probe",
+            user_id=f"iam-agent:{agent_registry_id}",
+            auth_source="iam",
             agent_registry_id=agent_registry_id,
             org_id=org_id,
             scope=scope,
@@ -565,3 +575,154 @@ async def test_forged_lease_token_cannot_start_or_replay_completion(db_session, 
     with pytest.raises(ProbeConflictError) as replay_exc:
         await complete_probe(db_session, **{**completion, "lease_token": "forged-token" * 4})
     assert replay_exc.value.reason == "invalid_lease_token"
+
+
+def test_task_profiles_match_worker_and_do_not_change_legacy_cycle():
+    import hashlib
+
+    from src.internal.persona_model_probe_service import _cycle_key
+    from src.tasks.personas import TASK_PERSONAS
+
+    worker = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/task-profiles.json"
+    profiles = json.loads(worker.read_text())
+    for persona, profile in TASK_PERSONAS.items():
+        assert profiles[persona] == {
+            "revision": profile.harness_contract_revision,
+            "body": profile.probe_json,
+            "digest": profile.request_shape_sha256,
+            **({"transport": "openai_responses"} if profile.compatibility_class == "codex-sdk" else {}),
+        }
+        assert profile.probe_body.get("max_tokens", profile.probe_body.get("max_output_tokens")) in (16, 64, 128)
+    legacy = json.loads((Path(__file__).parents[2] / "src/admin/persona_models/request-shape-manifest.json").read_text())
+    fingerprint = hashlib.sha256(json.dumps(legacy["models"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert _cycle_key(datetime(2026, 9, 26, tzinfo=UTC)) == f"2026-09-26:{fingerprint}"
+
+
+@pytest.mark.asyncio
+async def test_task_probe_opt_in_shares_legacy_spend_envelope(db_session, monkeypatch):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch, slots=2, cycle_budget="0.02")
+    db_session.add(_destination())
+    await db_session.commit()
+    legacy = await claim_probe(db_session)
+    task = await claim_probe(db_session, task_persona="agent-task-cyber")
+    assert legacy.slot.compatibility_class == "claude-agent-sdk"
+    assert task.slot.compatibility_class == "anthropic_messages"
+    assert task.slot.expected_request_shape_sha256 == TASK_PERSONAS["agent-task-cyber"].request_shape_sha256
+    assert task.slot.cycle_id == legacy.slot.cycle_id
+    assert (await claim_probe(db_session, task_persona="agent-task-investigator")).reason == "cycle_budget_exhausted"
+    cycle = (await db_session.scalars(select(ModelProbeCycle))).one()
+    assert cycle.reserved_usd == Decimal("0.02")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-task-investigator", "agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"])
+async def test_task_probe_exact_profile_and_deduplication(db_session, monkeypatch, persona):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch)
+    monkeypatch.setenv("BG_MODEL_PROBE_MODEL_ALLOWLIST", '["us.anthropic.claude-sonnet-4-6"]')
+    db_session.add(_destination())
+    await db_session.commit()
+    task = await claim_probe(db_session, task_persona=persona)
+    assert task.slot.harness_contract_revision == TASK_PERSONAS[persona].harness_contract_revision
+    assert (await claim_probe(db_session, task_persona=persona)).reason == "no_candidates"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-task-cyber",
+        "agent-task-gpt-developer",
+        "agent-task-gpt-architect",
+        "agent-task-gpt-product",
+        "agent-task-gpt-pm",
+        "agent-task-gpt-intent-refinement",
+    ],
+)
+async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, monkeypatch, persona):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    app = FastAPI()
+    app.include_router(router)
+
+    async def _db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[verify_model_probe_irsa] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rejected = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": "unknown"})
+        response = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": persona})
+    assert rejected.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["task_probe_json"] == TASK_PERSONAS[persona].probe_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-task-gpt-developer", "agent-task-gpt-intent-refinement"])
+async def test_codex_task_probe_reserves_only_codex_model_and_exact_profile(db_session, monkeypatch, persona):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    result = await claim_probe(db_session, task_persona=persona)
+    assert result.claimed
+    assert result.slot.compatibility_class == "codex-sdk"
+    assert result.slot.canonical_model_id in {
+        model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == "codex-sdk"
+    }
+    assert result.slot.harness_contract_revision == TASK_PERSONAS[persona].harness_contract_revision
+    assert result.slot.expected_request_shape_sha256 == TASK_PERSONAS[persona].request_shape_sha256
+    assert len((await db_session.scalars(select(ModelProbeCycle))).all()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-codex-developer",
+        "agent-codex-reviewer",
+        "agent-codex-architect",
+        "agent-codex-product",
+        "agent-codex-pm",
+        "agent-codex-intent-refinement",
+    ],
+)
+async def test_native_claim_is_separate_from_task_registration(db_session, monkeypatch, persona):
+    from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_REVISION, native_request_shape
+    from src.tasks.personas import TASK_PERSONAS
+
+    assert persona not in TASK_PERSONAS
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    app = FastAPI()
+    app.include_router(router)
+
+    async def database():
+        yield db_session
+
+    app.dependency_overrides[get_db] = database
+    app.dependency_overrides[verify_model_probe_irsa] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for body in [
+            {"task_persona": persona},
+            {"native_persona": "agent-task-gpt-developer"},
+            {"native_persona": persona, "task_persona": "agent-task-gpt-developer"},
+        ]:
+            assert (await client.post("/internal/v1/persona-model-probes/claim", json=body)).status_code == 422
+        response = await client.post("/internal/v1/persona-model-probes/claim", json={"native_persona": persona})
+    assert response.status_code == 200, response.text
+    claim = response.json()
+    assert claim["claimed"]
+    assert claim["task_probe_json"] is None
+    assert claim["compatibility_class"] == "codex-sdk"
+    assert claim["harness_contract_revision"] == NATIVE_PROBE_REVISION
+    assert claim["expected_request_shape_sha256"] == native_request_shape(persona, claim["model_id"])

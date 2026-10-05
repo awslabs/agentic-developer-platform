@@ -8,6 +8,13 @@ on:
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/gateway/src/agentauth/model_policy.py'
       - '.github/workflows/persona-model-rollout-readiness.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +23,7 @@ permissions:
 jobs:
   validate:
     name: Validate PMM-09 evidence contract
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

@@ -1,5 +1,9 @@
 # Workspace bootstrap
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 The maintained entry point is `python -m workspace_bootstrap.superplane_bootstrap`
 from the Superplane domain directory. `plan` reads target identity; `bootstrap`
 executes the gated installation; `recover` restores an interrupted interlock;
@@ -144,3 +148,100 @@ cluster ARN, endpoint and CA are independently checked through its SDK client.
 EKS authentication must be `API`, matching the maintained workspace module.
 BYOC clusters using legacy `aws-auth` mappings refuse because EKS access-entry
 enumeration alone cannot prove the permissions of those additional identities.
+
+## Shared namespace composition
+
+`bootstrap_workspace(..., membership=SharedMembership, authority_factory=...)`
+selects the namespace-only branch. It requires `SharedBootstrapAuthorityFactory`
+from `superplane_bootstrap.shared_authority`; the dedicated factory cannot execute
+this placement. The API must already have reserved the exact membership. Shared
+members record cluster ownership as `adopted`: the physical cluster's lifecycle
+does not become a workspace's deletion authority.
+
+The shared factory uses the same registration, `AuthorityJournal`,
+`TemporaryAuthority`, and `ComponentJournal` as dedicated bootstrap. Its grant
+plan contains only the member Namespace. It reads existing CRDs/system workloads,
+then creates namespace-scoped credential delegation through
+`authority.establish_components(delegation_specs)`. It never installs CRDs,
+patches kube-system, changes node taints or installs a second controller.
+
+Trusted installation supplies `ClusterAuthorityReference`: exact organization,
+cluster ARN, issuer role/access-entry ARN, Kubernetes username/group, and admission
+policy/binding UIDs. `namespace_admission.policy_documents(group)` produces the
+required cluster-owned ValidatingAdmissionPolicy and binding for a separately
+authorized platform installation. Bootstrap only reads those documents. The
+policy denies Pod creation/update in closed member namespaces except to the
+explicit issuer group, allowing the existing restricted isolation probes to run.
+Opening/restoring a gate patches only the original namespace UID and
+resourceVersion. This is an admission interlock, not a networking policy or quota.
+
+`SharedBootstrapServices` requires six trusted callbacks:
+
+- `verify_membership(membership, recovery=...)`: fresh canonical reservation and
+  cluster-use/platform authorization; recovery retains original ownership.
+- `prepare_credentials(authority, namespace_uid)`: journal actual SA/RBAC, issue
+  separate reader/mutator tokens and publish their projections; return the opaque
+  issued credential reference, not the old static configuration placeholder.
+- `verify_credentials(authority, namespace_uid)`: recheck exact generation,
+  revision, namespace/SA UIDs and consumer acknowledgement; prove admission denial
+  using the delivered tenant identity while the gate is closed.
+- `withdraw_credentials(authority, namespace_uid)`: revoke/remove only the
+  original member credential projections before component cleanup.
+- `verify_cluster_dependencies(authority)`: verify pinned CRD schemas, approved
+  connectivity, compatible sole management controller and platform eligibility.
+- `tenant_principals(authority)`: freshly enumerate tenant EKS identities, keeping
+  explicitly registered platform authority separate. The existing isolation
+  verifier also checks namespace service accounts and RBAC.
+
+The existing scoped `ManagementObservation` remains mandatory. These callbacks
+belong to the protected operation/vault/controller composer and have no permissive
+defaults. They are not proofs supplied by an API caller. Without this composition,
+shared production creation remains unavailable.
+
+Failures retain the original claim. Public `recover_interrupted_bootstrap` routes
+the shared factory to namespace recovery, closes its gate, withdraws credentials,
+deletes only UID/version-matching journal-owned SA/RBAC and releases the claim.
+The namespace remains closed and can be adopted by a retry only through its
+original creation journal. Successful member retirement requires separate
+admitted authority consuming those ownership records; bootstrap never deletes a
+cluster-owned entry, policy or dependency.
+
+
+The service adapter is `workspace_provisioning.shared_bootstrap_runtime`.
+`bootstrap_runtime.bootstrap(..., shared_runtime=SharedRuntimeHooks(...))`
+selects it only for the original request's approved membership. It loads the
+installed credential authority from the domain registry, verifies the discovery
+artifact against its cluster ARN/endpoint/CA, then composes issuer-only bootstrap
+clients and the separately delivered management projection transport. No
+request field or static configuration enables this route. The lifecycle worker's
+shared capability remains disabled until deployment wires the hooks and renewal.
+
+`SharedRuntimeHooks` must provide an explicitly delivered management source
+session. The runtime requires an installed version-2 authority dependency descriptor
+and directly verifies pinned CRD/controller identities, platform policy and the
+supported private same-VPC network. It also directly composes the complete
+EKS tenant inventory through `shared_tenant_inventory.installed_tenant_principals`;
+only the exact installed issuer entry with no attached access policies is exempt.
+Other identities remain subject to the canonical namespace RBAC proof. The
+installed issuer needs the read/probe permissions exercised by `KubectlClusterAccess`, including the bounded namespace
+probes and authorization reviews. These remain installation-owned prerequisites.
+
+`SharedCredentialServices` implements the credential callbacks using the existing
+membership credential journal and the bootstrap claim's SQL connection. It commits
+revision/delegation intent before TokenRequest and commits the exact projection
+target/digest before Secret writes, then reacquires the claim/phase fence for each
+provider call. Reader and mutator stay projected through provisional management
+observation and activate together after both delivered credentials pass live
+verification. The consumer proof uses SelfSubjectReview UID/username, a namespaced
+read, denied namespace mutation and a denied closed-gate mutator dry run. It does
+not parse JWT claims as authentication evidence.
+
+Recovery fences revisions, removes only digest-owned projection bytes, revokes
+original SA UIDs, reconciles lost component-create acknowledgements, and records
+absence. An unacknowledged projection intent's public receipt is reconstructed
+from committed metadata/digest; actual Secret resourceVersion is read again for
+CAS cleanup. Bootstrap claims do not authorize renewal after publication: the
+installed credential controller's independent lease owns later revisions.
+
+The exact uncomposed dependency, management-delivery and partial-recovery contracts
+are documented in [shared-runtime-wiring.md](../workspace_provisioning/shared-runtime-wiring.md).

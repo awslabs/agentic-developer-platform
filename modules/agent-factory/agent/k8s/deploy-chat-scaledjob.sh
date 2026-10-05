@@ -6,10 +6,12 @@
 # Required env:
 #   AWS_PROFILE         (e.g. embark2)
 #   ENVIRONMENT         (e.g. dev)
-#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:<tag>)
+#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent:<tag>)
 #
 # Optional env:
 #   NAMESPACE           (default: adp-gateway-agents)
+#   ADP_CHAT_MODEL_ACCESS_MODE (prepare-and-verify by default; verify for CI)
+#   ADP_CHAT_EXISTING_NAMESPACE_ONLY (true for scoped CI deployment)
 #
 set -euo pipefail
 
@@ -25,9 +27,18 @@ MANIFEST="${SCRIPT_DIR}/chat-scaledjob.yaml"
 PREPULL_MANIFEST="${SCRIPT_DIR}/image-prepull-daemonset.yaml"
 INFRA_DIR="${SCRIPT_DIR}/../../infra"
 
+case "${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" in
+  verify|prepare-and-verify) ;;
+  *) echo "Unsupported chat model access mode" >&2; exit 1 ;;
+esac
+
 # Check account access before changing the ConfigMap or admitting new chat jobs.
 bash "${SCRIPT_DIR}/../../../../platform/scripts/enable-bedrock-models.sh" \
-  --prepare-and-verify --region "$AWS_REGION"
+  "--${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" --region "$AWS_REGION"
+
+# Verify the selected release before any cluster mutation; both consumers use this digest.
+AGENT_IMAGE=$(python3 "$SCRIPT_DIR/../../../../platform/scripts/resolve-ecr-image.py" "$AGENT_IMAGE")
+
 
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
 pushd "${INFRA_DIR}" > /dev/null
@@ -56,9 +67,8 @@ popd > /dev/null
 # SIGV4_PROXY_TARGET: the chat agent routes Bedrock through the gateway's REST
 # API (ADP_BEDROCK_VIA=gateway in the manifest), re-signing via a local
 # sigv4-proxy. Without this substitution the manifest ships the literal
-# placeholder, the proxy has no valid upstream, and the entrypoint's health check
-# falls back to direct Bedrock — so chat keeps working and gateway routing is
-# silently off, with nothing logged to say so.
+# placeholder and the proxy has no valid upstream. The worker refuses to run
+# without gateway routing; its dedicated IAM role also denies direct invocation.
 #
 # Read from SSM rather than a Terraform output because gateway-infra publishes it
 # and this module does not own it.
@@ -82,7 +92,9 @@ echo "  RESPONSE_QUEUE_URL=${RESPONSE_QUEUE_URL}"
 echo "  AGENT_IMAGE=${AGENT_IMAGE}"
 echo "  SIGV4_PROXY_TARGET=${SIGV4_PROXY_TARGET}"
 
-kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+if [[ "${ADP_CHAT_EXISTING_NAMESPACE_ONLY:-false}" != true ]]; then
+  kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 if [[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true ]]; then
   kubectl apply -f "${SCRIPT_DIR}/chat-model-rbac.yaml"

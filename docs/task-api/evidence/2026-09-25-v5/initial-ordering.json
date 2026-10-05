@@ -1,0 +1,201 @@
+{
+  "captured_at": "2026-09-25T00:16:30.779815+00:00",
+  "initial_task_capable_worker_digest": "sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3",
+  "producer_flags": {
+    "ADP_TASK_API_RECOVERY_ENABLED": "false",
+    "ADP_TASK_API_ADMISSION_ENABLED": "false",
+    "ADP_TASK_ADMIT_ENDPOINT": "https://gateway-1.example.com/dev",
+    "ADP_TASK_GATEWAY_ENDPOINT": "https://gateway-1.example.com/dev"
+  },
+  "gateway_flags": {
+    "ADP_TASK_ADMISSION_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+    "ADP_TASK_API_ADMISSION_ENABLED": "false",
+    "ADP_TASK_API_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000101/adp-dev-agent-submit.fifo",
+    "ADP_TASK_API_READ_ENABLED": "true",
+    "ADP_TASK_API_RECOVERY_ENABLED": "false",
+    "ADP_TASK_API_WORKER_ENABLED": "true",
+    "ADP_TASK_DISPATCH_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+    "ADP_TASK_QUALIFICATION_ID": "task-api-5792-20260925",
+    "ADP_TASK_RECOVERY_PRODUCER_ROLES": "arn:aws:iam::000000000101:role/adp-dev-webhook-lambda-role",
+    "ADP_TASK_WORKER_IMAGE_DIGESTS": "sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3",
+    "ADP_TASK_WORKER_SERVICE_ACCOUNT": "agent-scaledjob-sa",
+    "TASK_ARTIFACT_BUCKET_NAME": "adp-dev-chat-artifacts-000000000101"
+  },
+  "consumer_dispositions": [
+    {
+      "classification": {
+        "name": "agent-scaledjob-7j6c8",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-nzjkk",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "sha256:756a970bab04b876cc7f094ebc18f971dc49945caaebc0e35484f50bc6a28bd5",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-txz9n",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-vjnr9",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "sha256:805c6c38018f308702f57c5680fbb60f257b62e291f1df564723d752c6aa5ff5",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": false,
+        "acquisition_complete": true,
+        "one_acquisition_proven": true
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": [
+        {
+          "pod": "agent-scaledjob-vjnr9-tdksc",
+          "audit": {
+            "sha256": "d3b4cc104b0a1518e55d1ca8bba38dcbab30737715087250ff1e3e94bedef3b3",
+            "receive_call_sites": [
+              {
+                "function": "_receive_one_message",
+                "calls": 1,
+                "lines": [
+                  581
+                ]
+              },
+              {
+                "function": "_main",
+                "calls": 1,
+                "lines": [
+                  1448
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-vxnfz",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "sha256:719cf7dce7fd7799830c026c101a0733cd0e7bf07e7ef93784d1dab88c9e84e6",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-whftm",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "sha256:7ce8c81cecc76eb6b0a35411d60d95e5d514f5aa30b985ddb36b29f83fe2dde2",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-xlg5l",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "sha256:7ce8c81cecc76eb6b0a35411d60d95e5d514f5aa30b985ddb36b29f83fe2dde2",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": false,
+        "acquisition_complete": true,
+        "one_acquisition_proven": true
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": [
+        {
+          "pod": "agent-scaledjob-xlg5l-72r8j",
+          "audit": {
+            "sha256": "ffd5f6ddf4ad236f46a6e6f1db13cd27c452396d629ceee7ae62c6707d35bd5e",
+            "receive_call_sites": [
+              {
+                "function": "_receive_one_message",
+                "calls": 1,
+                "lines": [
+                  581
+                ]
+              },
+              {
+                "function": "_main",
+                "calls": 1,
+                "lines": [
+                  1448
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "classification": {
+        "name": "agent-scaledjob-zhtjh",
+        "source": "job",
+        "queue_arn": "arn:aws:sqs:us-east-1:000000000101:adp-dev-agent-submit.fifo",
+        "image_digest": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest",
+        "task_capable": false,
+        "can_receive_new_work": false,
+        "restart_disabled": true,
+        "terminal": true,
+        "acquisition_complete": false,
+        "one_acquisition_proven": false
+      },
+      "scope_note": "Existing bound security workers reviewed by runtime_contracts; no new queue receive after initial acquisition. Completed/failed Job controllers cannot restart.",
+      "source_call_audit": []
+    }
+  ],
+  "readiness_source_sha256": "3fb77b414c5fbfa03fb91d5d1171561a257df165c0e6608754dbbd1240e8736e"
+}

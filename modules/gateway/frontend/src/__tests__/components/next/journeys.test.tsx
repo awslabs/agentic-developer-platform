@@ -276,8 +276,9 @@ describe('journey model — Issue #5080', () => {
     });
 
     it('keeps GitHub organization links platform-admin-only', () => {
-      expect(adminIds({}, PLATFORM_ADMIN)).toContain('tenant-links');
-      expect(adminIds({}, ORG_ADMIN)).not.toContain('tenant-links');
+      expect(adminIds({ tenant_org_links: true }, PLATFORM_ADMIN)).toContain('tenant-links');
+      expect(adminIds({ tenant_org_links: false }, PLATFORM_ADMIN)).not.toContain('tenant-links');
+      expect(adminIds({ tenant_org_links: true }, ORG_ADMIN)).not.toContain('tenant-links');
     });
 
     it('keeps administration model access platform-admin-only for now', () => {

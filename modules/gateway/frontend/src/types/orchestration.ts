@@ -38,6 +38,7 @@ export type NodeEngineState =
   | 'awaiting_merge'
   | 'awaiting_gate'
   | 'passed'
+  | 'waived'
   | 'rejected_at_gate'
   | 'failed'
   | 'halted'
@@ -63,7 +64,7 @@ export interface AggregateCostFigure extends CostFigure {
 /** A persisted worker observation; successful exit is not review approval. */
 export interface StoryActivity {
   invocation_id: string;
-  persona: 'developer' | 'reviewer';
+  persona: 'developer' | 'agent-codex-developer' | 'reviewer' | 'agent-codex-reviewer';
   status: string;
   liveness: 'live' | 'unverifiable' | 'exited';
 }
@@ -97,6 +98,14 @@ export interface DeliveryProgress {
 }
 
 export interface GraphNode {
+  evaluation_waiver?: {
+    decision_id: string;
+    actor_id: string;
+    created_at: string;
+    reason: string;
+    criterion_ids: string[];
+    plan_version: number;
+  } | null;
   id: string;
   epic_ref: string;
   wave_ref: string;
@@ -238,7 +247,13 @@ export interface UserCredentialAuthority {
 }
 
 export interface PolicySummary {
-  user_credentials?: UserCredentialAuthority | null;
+  user_credentials?: {
+    permission_mode: 'user_configured';
+    lifetime: 'provider_managed';
+    vault_credential_count: number;
+    aws_role_count: number;
+    actions: PolicyAction[];
+  } | null;
   repository_ids: string[];
   environment_connection_ids: string[];
   team_ids: string[];
@@ -260,7 +275,24 @@ export interface PolicySummary {
   limits: PolicyLimits;
 }
 
+export interface EpicMetadata {
+  epic_ref: string;
+  title: string;
+  description: string;
+}
+
+export interface WaveMetadata {
+  epic_ref: string;
+  wave_ref: string;
+  title: string;
+  description?: string | null;
+}
+
 export interface FlowGraph {
+  execution_window?: ExecutionWindow | null;
+  wave_metadata?: WaveMetadata[];
+  epic_metadata?: EpicMetadata[];
+  execution_paused?: boolean;
   flow_id: string;
   slug: string;
   title: string;
@@ -377,6 +409,8 @@ export interface FlowDisplayCounts {
 export interface WaveSummary {
   epic_ref: string;
   wave_ref: string;
+  title?: string | null;
+  description?: string | null;
   total: number;
   done: number;
   story_count?: number;
@@ -435,6 +469,7 @@ export interface DesignHistory {
 
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
+  execution_paused?: boolean;
   id: string;
   slug: string;
   title: string;
@@ -472,6 +507,9 @@ export interface FlowSummary {
   eval_count?: number;
   changes_requested_count?: number;
   completed_story_count?: number;
+  /** Additional issue-linked evaluation stories; engine kind counts stay unchanged. */
+  eval_story_count?: number;
+  completed_eval_story_count?: number;
   epic_count: number;
   wave_count: number;
   /** The first wave with unfinished work; null when everything is done. */
@@ -656,6 +694,7 @@ export interface ExecutionSummary {
    * *progress* must not carry it. The authorizing plan is on the plans route.
    */
   attempts: number;
+  stage_attempts?: Record<string, number>;
   next_check_at: string | null;
   deadline_at: string | null;
   progressed_at: string | null;
@@ -754,4 +793,23 @@ export interface EvaluationSpecification {
   }>
   max_age_seconds: number
   max_duration_seconds: number
+}
+
+
+export interface WindowRenewalRequest {
+  expected_plan_version: number;
+  expected_plan_hash: string;
+  expires_at: string;
+  max_wall_clock_seconds: number | null;
+  resume_expired: boolean;
+  reason: string;
+}
+
+export interface ExecutionWindow {
+  status: 'active' | 'expired' | 'complete' | 'unavailable';
+  deadline_at?: string;
+  observed_at?: string;
+  reason?: string;
+  renewal_unavailable?: string;
+  renewal_request?: WindowRenewalRequest;
 }

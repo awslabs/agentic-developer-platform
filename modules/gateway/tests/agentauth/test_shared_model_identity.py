@@ -62,7 +62,8 @@ async def shared(session, assignment, model_path, monkeypatch):
 
 def context():
     return TokenContext(
-        user_id="scaledjob-worker",
+        user_id="iam-agent:scaledjob-worker",
+        agent_registry_id="scaledjob-worker",
         org_id="__platform__",
         team_id="",
         department_id="",
@@ -100,6 +101,8 @@ async def invoke(model_path, shared, *, headers=None, during_upload=None, enforc
         sent.append(frame)
 
     async def provider(scope, receive, send):
+        # This fake models a submitted paid call, including unknown usage/errors.
+        scope["state"]["token_context"]._budget_provider_started = True
         assert b"x-adp-report-credential" not in dict(scope["headers"])
         assert shared.credential not in str(token.model_dump())
         model_path.calls += 1

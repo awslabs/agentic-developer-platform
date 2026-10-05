@@ -1,0 +1,773 @@
+{
+  "advisory": "CVE-2026-85091",
+  "package_version": "1:1.3.dfsg+really1.3.1-1+b1",
+  "source_version": "1:1.3.dfsg+really1.3.1-1",
+  "binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e",
+  "gzwrite_sha256": "469b1e58932ea11bdda2a153f6655f7b3c13254240fae157181b49ed1bc93b47",
+  "matched_images": [
+    {
+      "key": "014097110e731b80",
+      "target": {
+        "key": "014097110e731b80",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:83e1ae341126eb83354080b58a70b87323e6bc012dad701d8b1910a3e50d05b9",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:14da4517dacd4711343376ccc0825d11a2bbee339ac31aa9cbd752f937b98691",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:83e1ae341126eb83354080b58a70b87323e6bc012dad701d8b1910a3e50d05b9"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:83e1ae341126eb83354080b58a70b87323e6bc012dad701d8b1910a3e50d05b9"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy:6c76582"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/014097110e731b80/manifest-verbose.json",
+            "sha256": "b7bafc0811e59fd2fbfecbfcb02859da649ba3c46e04832e107b22db55acaa33"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/2317f61fe53b8533/manifest-verbose.json",
+            "sha256": "d8770cd9f81b8cc63a61033a090b48ee70b9d5f0ae835c7c78479dc044f5862f"
+          }
+        ],
+        "compressed_layer_bytes": 239447867,
+        "active_pod_observations": 1,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.6&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "a36a2b5ea9818729",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:f2ec4de84f559f5c7be4233b589cdbdbb5507807e05621b77320edd55a1f2a0f"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "cd7423287ad90567",
+      "target": {
+        "key": "cd7423287ad90567",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:f5d6780de1bdfd5af7f48e8983930ef5819f5582c2613e7a14313ead7e899667",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/cd7423287ad90567/manifest-verbose.json",
+            "sha256": "9d66efb364352be97e4a468d56b5466205f9daaa29e5f6a0327a3fa2e1290219"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/cd7423287ad90567/manifest-verbose.json",
+            "sha256": "9d66efb364352be97e4a468d56b5466205f9daaa29e5f6a0327a3fa2e1290219"
+          }
+        ],
+        "compressed_layer_bytes": 111342126,
+        "active_pod_observations": 5,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "e057b7364a8a1c6b",
+      "target": {
+        "key": "e057b7364a8a1c6b",
+        "reference": "ghcr.io/asyncfuncai/deepwiki-open@sha256:1f24e9aba56305f3104bf9e7f19d12ed93817db77a025d7f38d7829a9ecfaf4c",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:b4721ac7746d29f14d06b6ea477cc661af2d6fbe2840ecaadfece28458afd442",
+        "root_references": [
+          "ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f"
+        ],
+        "observed_refs": [
+          "ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f"
+        ],
+        "desired_refs": [
+          "ghcr.io/asyncfuncai/deepwiki-open:latest"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/0522e8f4eb011d90/manifest-verbose.json",
+            "sha256": "336b1bc697ae35c6cd3e39d2f81d05f3c7dddb74f10fbbd2f42e3f6367abf291"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/67ffe6a765b6fd5d/manifest-verbose.json",
+            "sha256": "c0ee8b92fba5cf9ec47bc9af494b5f6d719dbd5b91e1bc4cb800e65db79e4994"
+          }
+        ],
+        "compressed_layer_bytes": 286847619,
+        "active_pod_observations": 1,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.6&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "38dacc5875403742",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:411a86676185cb54d695a805b238194a64e9b77e0c723f3802fbb87d333ea0b3"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "73f03cdaa660a95e",
+      "target": {
+        "key": "73f03cdaa660a95e",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:1e38960b870bd22edc3f98c8f7bb65ae4c91382035569456c8d2c80f0c3a5521",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:latest"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/73f03cdaa660a95e/manifest-verbose.json",
+            "sha256": "0207f0310555b11df54d926ab14a1606ace2ee3d07fc65673be73fdfdde2e694"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/7c28d8ae1b4f9c84/manifest-verbose.json",
+            "sha256": "9730748b183a0608183864d171490906add9a131856b5cc2048f1e9103e6ef11"
+          }
+        ],
+        "compressed_layer_bytes": 105808222,
+        "active_pod_observations": 1,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "e6779baaf5970629",
+      "target": {
+        "key": "e6779baaf5970629",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:6e3800817dfe1ef8c4e6c97fee9f3b704a7888d8ad4fc2c4f282ac0e019795a2",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:95b3484960d78c3de3ee996c6804cf8ff0390a8838a2524086394108d1baf69f",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:6e3800817dfe1ef8c4e6c97fee9f3b704a7888d8ad4fc2c4f282ac0e019795a2"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:6e3800817dfe1ef8c4e6c97fee9f3b704a7888d8ad4fc2c4f282ac0e019795a2"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:70c8d6b42700537f7dff04fb13f170043cd0c524"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/e6779baaf5970629/manifest-verbose.json",
+            "sha256": "462be4812a60ed16676b6fe3c3bd0efb34fe2fd2e9c060148947230668953652"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/861633907b505e36/manifest-verbose.json",
+            "sha256": "28ea1379ca84c930f5bf42b83d71cd488043f563a28b9350717f9ffa97045b11"
+          }
+        ],
+        "compressed_layer_bytes": 1586821641,
+        "active_pod_observations": 0,
+        "historical_pod_observations": 2
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "684753823ff5c2e2",
+      "target": {
+        "key": "684753823ff5c2e2",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:ee15b79112928aa833c41eabcc8b6703348b4f44bb712ba19a3494631def46ac",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/684753823ff5c2e2/manifest-verbose.json",
+            "sha256": "beb4e7ee885673709337f15f434d0d7484c1e0e5b4ab5ab8dd05e0599fbe4ff6"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/684753823ff5c2e2/manifest-verbose.json",
+            "sha256": "beb4e7ee885673709337f15f434d0d7484c1e0e5b4ab5ab8dd05e0599fbe4ff6"
+          }
+        ],
+        "compressed_layer_bytes": 1462303684,
+        "active_pod_observations": 21,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "7ee81298ae935c4e",
+      "target": {
+        "key": "7ee81298ae935c4e",
+        "reference": "docker.io/berkeleyskypilot/skypilot@sha256:ab4e67e79048c32e70c2803f548ccbefad2e980a4a7f9dd8d96001f81b04b318",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:528a1f792c49a53499b8d5a090d245c95d485967a25b2752f6728d5528ae62a1",
+        "root_references": [
+          "docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+        ],
+        "observed_refs": [
+          "docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+        ],
+        "desired_refs": [
+          "registry-1.docker.io/berkeleyskypilot/skypilot@sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/c096e7345a82fc96/manifest-verbose.json",
+            "sha256": "bf88be7a67b8ee7c2284041cd77bba6f1a29bb1ff59831823a2cafec63f00b55"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/26d7d5c3533e6ba6/manifest-verbose.json",
+            "sha256": "31033126ac3682dc2ad381c583367abe1cbab4c99aa026b7dbb16ba61a1646f3"
+          }
+        ],
+        "compressed_layer_bytes": 682694852,
+        "active_pod_observations": 1,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.4&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "bb6c76bf736e5d20",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a257f20c716c7b5d0474b1b5998f4d1090b573d90b82f764b8f1f1faeb4b524f"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "038ec204d94a5ce1",
+      "target": {
+        "key": "038ec204d94a5ce1",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:a0cdc1cf198b247ff26323949fbc3214a6901c76421d6b93429c19c88cfaa5f7",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/038ec204d94a5ce1/manifest-verbose.json",
+            "sha256": "94438408874949409bbb65188dd83c10cda6cded12fa15d927218b18464334ca"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/038ec204d94a5ce1/manifest-verbose.json",
+            "sha256": "94438408874949409bbb65188dd83c10cda6cded12fa15d927218b18464334ca"
+          }
+        ],
+        "compressed_layer_bytes": 111349125,
+        "active_pod_observations": 2,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "aa437ee4ad3d76ba",
+      "target": {
+        "key": "aa437ee4ad3d76ba",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:0b1be4edd944711f3ce8ff3565c3bcb39a2d0d7a7649154a14dd405217697d69",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:9235f799a43b9537e2c81e964e877b956b2f36cdd83ffbd574b18c10c879daf7",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:0b1be4edd944711f3ce8ff3565c3bcb39a2d0d7a7649154a14dd405217697d69"
+        ],
+        "observed_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:0b1be4edd944711f3ce8ff3565c3bcb39a2d0d7a7649154a14dd405217697d69"
+        ],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:95fb57109de5695a43b1380dd799e577031af5f0"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/aa437ee4ad3d76ba/manifest-verbose.json",
+            "sha256": "0f5726237fd72d4aa714cee07730f921885777212fb7bd64fa021098aa505ab5"
+          },
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/e2a2778afd02e8a1/manifest-verbose.json",
+            "sha256": "c9f70772795362fde31ff28ebdb69a2d8eaa7cdcb6eef134f2e697ecfa8c93be"
+          }
+        ],
+        "compressed_layer_bytes": 108084294,
+        "active_pod_observations": 1,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.7&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "7e53f3e63a79e345",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    },
+    {
+      "key": "c0f605eccb1218bd",
+      "target": {
+        "key": "c0f605eccb1218bd",
+        "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b042dba6023de433c4bd46702db792f4bb51fe5e7652288c1af407c72e9c9aa7",
+        "platform": "linux/amd64",
+        "expected_config_digest": "sha256:9311e167afd67bdaf137f4f1aa20776886afab917aae8fca003bc5865c4ad358",
+        "root_references": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b042dba6023de433c4bd46702db792f4bb51fe5e7652288c1af407c72e9c9aa7"
+        ],
+        "observed_refs": [],
+        "desired_refs": [
+          "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:062d3e08f5a8342383b2e7a71dde37309e34e419"
+        ],
+        "manifest_evidence": [
+          {
+            "path": "/workspaces/projects/security25/live-audit-20260927/manifests/3c0acd16ab6937ca/manifest-verbose.json",
+            "sha256": "6e2112cf82a7de7cba6d79f20ec51673fbd5ebf3b9c702d78acd7133b2edbab4"
+          }
+        ],
+        "compressed_layer_bytes": 173755454,
+        "active_pod_observations": 0,
+        "historical_pod_observations": 0
+      },
+      "purl": "pkg:deb/debian/zlib1g@1%3A1.3.dfsg%2Breally1.3.1-1%2Bb1?arch=amd64&distro=debian-13.4&upstream=zlib%401%3A1.3.dfsg%2Breally1.3.1-1",
+      "file": {
+        "id": "2859c6cfb695103b",
+        "location": {
+          "path": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1",
+          "layerID": "sha256:6d7c150df58d41c351cd9b03f1cda7a9a23d6fc91436e2bf0f098c6dd78c9c55"
+        },
+        "metadata": {
+          "mode": 644,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 125376
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "aab09a45af48784df643d1bbb2832828aa83edbf"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": true,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "partial",
+            "pie": false,
+            "dso": true,
+            "safeStack": false
+          }
+        }
+      },
+      "disposition": "not_affected",
+      "reason": "Affected gz_vacate/nonblocking gzwrite implementation is absent from authenticated source; binary bytes match authenticated Debian package",
+      "raw_scanner_finding_preserved": true
+    }
+  ]
+}

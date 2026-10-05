@@ -58,3 +58,8 @@
 # where the full suite passes unmodified.
 fastapi==0.115.6
 starlette==0.41.3
+
+# Shared credential consumer/renewal integration runs in the API dependency lane.
+# Exercise the SDK major used by workspace-provisioning[worker], not an unrelated
+# newest API-compatible version. This is CI resolution, not an image release.
+kubernetes==31.0.0

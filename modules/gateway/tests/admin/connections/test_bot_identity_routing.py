@@ -1,11 +1,14 @@
 """Review reproduction: installing a shared app must preserve earlier bot routing."""
 
+import importlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import boto3
 import pytest
+from fastapi import Request
 from moto import mock_aws
 from sqlalchemy import select
 
@@ -20,6 +23,13 @@ from src.shared.models.organization import User
 async def test_second_install_preserves_first_tenant_bot_resolution(db_session, monkeypatch, v2):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[4] / "agent-factory/webhook-ingress/lambda"))
     from common import identity_resolver
+
+    installation_owners = {"111": "org-a", "222": "org-b", "333": "org-unrelated"}
+    monkeypatch.setattr(
+        importlib.import_module("common.gateway_client"),
+        "resolve_installation_by_id",
+        lambda iid: {"state": "resolved", "tenant_id": installation_owners[str(iid)], "revocation_checked": True},
+    )
 
     monkeypatch.setenv("USER_IDENTITY_INDEX_V2_WRITE", str(v2).lower())
     monkeypatch.setenv("USER_IDENTITY_INDEX_V2_READ", str(v2).lower())
@@ -87,7 +97,15 @@ async def test_second_install_preserves_first_tenant_bot_resolution(db_session, 
         # Canonical Postgres resolution must agree with both DDB read paths.
         from src.internal.routes import ResolveUserRequest, resolve_user
 
-        canonical = await resolve_user(ResolveUserRequest(provider="github", provider_user_id="424242"), db=db_session, _=None)
+        request = Request({"type": "http"})
+        request.state.token_context = SimpleNamespace(
+            auth_source="iam",
+            user_id="iam-agent:ingress",
+            scope="internal",
+            org_id="org-a",
+            credential_scopes=["internal:identity:resolve"],
+        )
+        canonical = await resolve_user(ResolveUserRequest(provider="github", provider_user_id="424242"), request=request, db=db_session, _=None)
         assert canonical.user_id == initial_user_id
         assert canonical.org_id == "org-a"
 

@@ -27,7 +27,7 @@ Validation completed:
 - Deployment eligibility tests exercise real Git histories, held infrastructure
   and mixed releases, manual dispatch, code-only releases, and failure handling.
   The worker safety CI job runs these alongside the boundary/manifest tests.
-- Read-only AWS `SimulateCustomPolicy`, account `879318057152`: 16 expected
+- Read-only AWS `SimulateCustomPolicy`, account `000000000101`: 16 expected
   decisions with an Allow-all identity policy intersected by the new boundary.
   Denied self IAM mutation, tenant/marker secret reads, direct STS, Bedrock,
   Cognito admin, authoritative DynamoDB writes, unrelated gateway routes,

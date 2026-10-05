@@ -15,7 +15,9 @@ from src.admin.cognito_service import UserAlreadyExistsError
 from src.admin.config import membership_role_to_admin_role
 from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
 from src.shared.exceptions import BedrockGatewayError, ConflictError, NotFoundError
+from src.shared.identity.verification import ADMIN_ATTESTED
 from src.shared.identity.workspaces import link_login_to_workspace, login_subject_for_user
+from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, Team, User
 from src.shared.models.vault import UserIdentity
@@ -101,7 +103,8 @@ class UsersService:
                     provider=identity.provider,
                     provider_user_id=identity.provider_user_id,
                     provider_username=identity.provider_username,
-                    verification_method="admin_manual",
+                    verification_method=ADMIN_ATTESTED,
+                    verified_at=utcnow(),
                 )
             )
             if identity.provider == "github" and identity.provider_username:
@@ -124,8 +127,13 @@ class UsersService:
                     org_id=org_id,
                     identities=[
                         {
+                            "provider": ident.provider,
                             "provider_user_id": ident.provider_user_id,
                             "provider_username": ident.provider_username,
+                            # #5664 (A10): must match the verification_method the
+                            # UserIdentity rows above were created with, so the
+                            # projected row carries the same provenance Postgres has.
+                            "verification_method": ADMIN_ATTESTED,
                         }
                         for ident in req.identities
                     ],
@@ -287,7 +295,10 @@ class UsersService:
         identities = identities_result.scalars().all()
         # GitHub membership projection is handled by remove_user and must not
         # be deleted afterward: another org may still share that identity.
-        provider_user_ids = [i.provider_user_id for i in identities if i.provider not in {"github", "cognito"}]
+        provider_user_ids: dict[str, list[str]] = {}
+        for identity in identities:
+            if identity.provider not in {"github", "cognito"}:
+                provider_user_ids.setdefault(identity.provider, []).append(identity.provider_user_id)
 
         # Reuse the canonical membership removal guards and explicit FK cleanup.
         # In particular, deleting a login anchor must not strand another org's
@@ -298,11 +309,12 @@ class UsersService:
         await AdminService(self._db).remove_user(org_id, user_id, identity_writer=self._identity_writer)
 
         # Post-commit: remove channel_user entries from DDB (best-effort)
-        if self._identity_writer and provider_user_ids:
-            try:
-                await self._identity_writer.delete_all_user_identities(provider_user_ids)
-            except Exception:
-                logger.exception("DDB delete failed for user %s identities (non-fatal)", user_id)
+        if self._identity_writer:
+            for provider, ids in provider_user_ids.items():
+                try:
+                    await self._identity_writer.delete_all_user_identities(ids, provider=provider)
+                except Exception:
+                    logger.exception("DDB delete failed for user %s provider %s identities (non-fatal)", user_id, provider)
 
         # Post-commit: remove from Cognito (best-effort)
         if username:

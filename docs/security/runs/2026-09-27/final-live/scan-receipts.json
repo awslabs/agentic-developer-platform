@@ -1,0 +1,80 @@
+{
+  "arc-runner": {
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
+    "docker_root_descriptor": "sha256:f8b9ffc174f83380b4b81a5af9e29ede4043d99a68d3206463a4527edc6bf7fd",
+    "config_digest": "sha256:72dcc8f1a3cb8147fe4999bb291bfd53f50f0361c10fa79831e7494d92c547f8",
+    "time": "2026-09-27T10:55:03.865305+00:00",
+    "packages": 2778,
+    "native_counts": {
+      "Medium": 397,
+      "High": 105,
+      "Negligible": 10,
+      "Low": 71,
+      "Unknown": 11
+    },
+    "sbom_sha256": "32017b39f7e7233beccc918bbd0c98f4c5e0148d439997865f55385b0be0ac7a",
+    "grype_sha256": "262618b362170967835fc3d99c3e2340d4182dc15b2095b1b2bb269f5f3650ce",
+    "archive_sha256": "a49af5bbad8da88852d621c47e0722c7b65e5888dfb96ea7c1a8ddbbbf729123"
+  },
+  "chat": {
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
+    "docker_root_descriptor": "sha256:6c509cf1a822fc4ea52a40fb26037214f4d872639b77fa2d514df025e252d9d1",
+    "config_digest": "sha256:e3b0f14ae733ad098f33d4462bfe5c8b9a7c40003311e12cd12518107113d4cd",
+    "time": "2026-09-27T10:54:20.159303+00:00",
+    "packages": 431,
+    "native_counts": {
+      "Medium": 2
+    },
+    "sbom_sha256": "aaa03c2251b64b10bc8290dc67946f71f85ee841d968b233726a2514945adac6",
+    "grype_sha256": "05f826177167a95cc1a169a8fc0a5123b800ca6d96b18a0c5efc2d27dca7d364",
+    "archive_sha256": "f4a0caab8ba1ee922ce38eb3768bcfc49b3932a0fde7d8299b949d0c0a47227d"
+  },
+  "gateway": {
+    "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
+    "docker_root_descriptor": "sha256:9caaf925ea1e52424ac23aeea17f782b0fd081b98eda27c06e3953e200b73b17",
+    "config_digest": "sha256:d7c0e62d43c4ccb72b06ff3a3200726108e316eb829a78cd3516257b00c1fc32",
+    "time": "2026-09-27T10:54:54.460758+00:00",
+    "packages": 164,
+    "native_counts": {
+      "High": 50,
+      "Medium": 54,
+      "Negligible": 44,
+      "Low": 9
+    },
+    "sbom_sha256": "1dcbeccff75590c1d874111775b651dfda68b18d639bd943b27f0c321da36743",
+    "grype_sha256": "56ff94d1a404d85dbb6b9cce4a1547d67c89485e35a6fb2ee7b5e12f3f41b02f",
+    "archive_sha256": "7f6b9f08fb7a772dd7444d66aa5c5a7d752e200b2cc7e2ea868df199dd026bb6"
+  },
+  "context-mcp": {
+    "image": "security27/context-mcp:fixed",
+    "docker_root_descriptor": "sha256:1bc2c110f13d75cec6e2be4f4c498b955c169d55781378d086b9d5738778955c",
+    "config_digest": "sha256:3ba7471c0d81279a602db39ab88babb6fbb07c114e17ae4a71980cc87f94cd5c",
+    "time": "2026-09-27T08:19:45.322265+00:00",
+    "packages": 161,
+    "native_counts": {
+      "High": 50,
+      "Medium": 54,
+      "Negligible": 44,
+      "Low": 9
+    },
+    "sbom_sha256": "64087d26a189dc8cde7c4fcb64bad4e44c76948e7ff50a32da6fd7c38de9d905",
+    "grype_sha256": "b439d7420c8d6cd9378357617989b2d3ad3a824613bb2c2ccb22aeec248aff91",
+    "archive_sha256": "cb8bc5c314e848a8a93e03c51247de493d03d102a93b273c75b8f03807880de6"
+  },
+  "litellm": {
+    "image": "security27/litellm:rebuilt",
+    "docker_root_descriptor": "sha256:167084ca9cbc0457758481310b3e297f83a0734c2359769c9eeb8de633da657a",
+    "config_digest": "sha256:c8e870d7e9a5380dfb37ca50bdf734fb8d9b7c7eb27252d26b48b29853e0d8cb",
+    "time": "2026-09-27T09:21:38.785440+00:00",
+    "packages": 205,
+    "native_counts": {
+      "High": 50,
+      "Medium": 54,
+      "Negligible": 44,
+      "Low": 9
+    },
+    "sbom_sha256": "83e8cd76ea66eae8d883481b19c24e470f7fd894dc1eda2b3eaa4fe25c587ef3",
+    "grype_sha256": "64f014090022e361ad6096eb781568ad946908535d4f5ec7a94bdb527809a547",
+    "archive_sha256": "a56dbd3931c359b3252b5c6305c451fa847549d4e7968fa1d65b663e6d914c79"
+  }
+}

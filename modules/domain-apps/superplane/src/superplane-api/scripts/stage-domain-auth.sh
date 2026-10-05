@@ -53,7 +53,7 @@ set -euo pipefail
 component_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vendor_dir="$component_dir/vendor"
 
-# Each entry: <source dir, relative to the module root>:<import package>:<sentinel module>
+# Each entry: <source dir relative to the module root>:<import package>:<sentinel module>
 # The sentinel is a file that must exist for the copy to be worth making — a
 # directory that exists but is missing the module the app imports is the failure
 # this guard is for, and it is not the same as the directory being absent.
@@ -88,6 +88,11 @@ packages=(
   "auth:superplane_auth:policy.py"
   "contracts:superplane_contracts:emission.py"
   "../../harness/jobs:harness_jobs:facade.py"
+  "infra/account-factory:account_factory:modes.py"
+  "infra/account-provisioning:account_provisioning:creation_runner.py"
+  "workspace_bootstrap:superplane_bootstrap:workspace.py"
+  ".:workspace_provisioning:preview.py"
+  "executor:superplane_executor:inventory.py"
 )
 
 stage_one() {
@@ -99,15 +104,11 @@ stage_one() {
     exit 1
   }
 
-  # `cd` above resolved any `..` in the entry, so `$src` is now absolute and real.
-  # Require it to stay inside the repository. An entry may legitimately leave this
-  # module (harness_jobs does), but an entry that leaves the repository would stage
-  # something no reviewer of this repository has seen, and the copy is a build
-  # input. Checked on the RESOLVED path, because checking the unresolved entry
-  # string is defeated by any additional `..`.
+  # Packages may live outside the domain module (the shared harness does), but
+  # every reviewed source must remain within this checkout.
   repo_root="$(cd "$component_dir/../../../.." && pwd)"
   [[ "$src" == "$repo_root"/* ]] || {
-    echo "error: $pkg resolves to $src, outside the repository at $repo_root" >&2
+    echo "error: $pkg resolves outside the repository" >&2
     exit 1
   }
 
@@ -130,6 +131,23 @@ stage_one() {
   mkdir -p "$staged"
   cp "$src/pyproject.toml" "$staged/"
   cp -R "$src/$pkg" "$staged/$pkg"
+
+  # Preserve the authoritative non-Python runtime inputs inside the wheel.
+  # They remain generated build scratch, refreshed from source on every stage.
+  if [[ "$pkg" == "account_factory" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/dependencies.lock.yaml" "$staged/$pkg/_data/"
+    cp -R "$src/policies" "$src/manifests" "$src/vendor" "$staged/$pkg/_data/"
+  elif [[ "$pkg" == "superplane_bootstrap" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/../infra/workspaces/outputs.tf" "$staged/$pkg/_data/outputs.tf"
+  elif [[ "$pkg" == "workspace_provisioning" ]]; then
+    mkdir -p "$staged/$pkg/_data/workspaces"
+    cp "$src/infra/workspaces/"*.tf "$src/infra/workspaces/"*.json \
+      "$src/infra/workspaces/.terraform.lock.hcl" "$staged/$pkg/_data/workspaces/"
+    cp -R "$src/infra/workspaces/scripts" "$staged/$pkg/_data/workspaces/"
+    cp "$src/src/superplane-controller/deploy/crds.yaml" "$staged/$pkg/_data/crds.yaml"
+  fi
 
   echo "Staged $pkg from $src into $staged"
 }

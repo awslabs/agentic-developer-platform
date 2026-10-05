@@ -1,0 +1,36 @@
+{
+  "at": "2026-09-25T04:37:08.253928+00:00",
+  "task_id": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15",
+  "table_arn": "arn:aws:dynamodb:us-east-1:000000000101:table/adp-dev-webhook-events",
+  "table_created_at": "2026-05-01 21:46:39.015000+00:00",
+  "indexes": {
+    "tenant-index": [
+      "tenant_id",
+      "arrived_at"
+    ],
+    "user-index": [
+      "user_id",
+      "arrived_at"
+    ],
+    "task-work-index": [
+      "task_work_shard",
+      "task_due"
+    ],
+    "correlation-index": [
+      "correlation_id",
+      "arrived_at"
+    ],
+    "engine-command-index": [
+      "engine_command_status",
+      "arrived_at"
+    ],
+    "root-human-index": [
+      "root_human_id",
+      "arrived_at"
+    ]
+  },
+  "queried_partitions": 9,
+  "owned_rows": 12,
+  "legacy_index_violations": [],
+  "no_scans": true
+}

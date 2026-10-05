@@ -121,14 +121,17 @@ class TestCreateApiKeyEndpoint:
         assert response.status_code == 422
 
 
-# ===========================================================================
+# ====================================================================
+
 # Domain token policy + workspace authorization enforcement (issue #5055, U14)
-# ===========================================================================
+# ====================================================================
+
 
 from app import auth as domain_auth  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.endpoint_inventory import (  # noqa: E402
     DOMAIN_ROUTES,
+    PRIVATE_DOMAIN_ROUTES,
     WORKSPACE_PATH_PARAM,
     all_inventoried,
     classify,
@@ -232,7 +235,12 @@ def _mint(private_pem: str, **overrides) -> str:
     return jwt.encode(claims, private_pem, algorithm="RS256", headers={"kid": TEST_KID})
 
 
-async def _seed_workspace(permissions: str | None, principal="user-abc", org_id=None):
+async def _seed_workspace(
+    permissions: str | None,
+    principal="user-abc",
+    org_id=None,
+    principal_type="human",
+):
     """Create an org + workspace, optionally granting `principal` on it."""
     from tests.conftest import async_session_test
 
@@ -262,6 +270,7 @@ async def _seed_workspace(permissions: str | None, principal="user-abc", org_id=
                     workspace_id=workspace_id,
                     org_id=org_uuid,
                     principal=principal,
+                    principal_type=principal_type,
                     permissions=permissions,
                 )
             )
@@ -1013,6 +1022,53 @@ class TestWorkspaceAuthorizationEnforcement:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_a_service_credential_cannot_use_a_grant_issued_to_a_human(
+        self, client, enforcing
+    ):
+        """R5 acc. 6-7: a grant is bound to a principal AND its verified type.
+
+        The grant here was issued to the human ``user-abc``. A caller presenting
+        the identical subject string but authenticated as a service must not be
+        able to exercise it — a service's ability to authenticate never delegates
+        a human's authority to it. Before this fix, `load_workspace_authorization`
+        looked the grant up by subject alone, so this call succeeded.
+        """
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="user-abc", principal_type="human"
+        )
+        token = _mint(
+            enforcing,
+            sub="user-abc",
+            **{"custom:org_id": str(org_id), "custom:account_type": "service"},
+        )
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_a_human_credential_cannot_use_a_grant_issued_to_a_service(
+        self, client, enforcing
+    ):
+        """The converse of the case above, for the same reason.
+
+        The grant here was issued to a service principal. A human presenting the
+        same subject string must not inherit it.
+        """
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="worker-svc", principal_type="service"
+        )
+        token = _mint(
+            enforcing,
+            sub="worker-svc",
+            **{"custom:org_id": str(org_id), "custom:account_type": "human"},
+        )
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_administer_implies_read_via_policy_closure(self, client, enforcing):
         """The implication closure comes from the policy, not from this service."""
         org_id, workspace_id = await _seed_workspace("workspace:administer")
@@ -1030,6 +1086,256 @@ class TestWorkspaceAuthorizationEnforcement:
             headers={"Authorization": f"Bearer {_mint(enforcing)}"},
         )
         assert response.status_code in (401, 403)
+
+
+class TestNoPermissionUnionAcrossOrganizationsOrWorkspaces:
+    """DESIGN.md 2.2 acceptance: same subject/org is necessary, never sufficient.
+
+    Two scenarios the issue names explicitly:
+
+    1. One human, ADP-authenticated into two different organizations, must not
+       carry either organization's workspace access into the other — selecting
+       organization A must not expose what was only ever granted in B.
+    2. Two different principals in the SAME organization, each granted a
+       different workspace, must not reach each other's workspace even though
+       both hold a real grant and both authenticate for the same org.
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_human_in_two_organizations_never_unions_their_grants(
+        self, client, enforcing
+    ):
+        """Same verified subject, two organizations, disjoint authority.
+
+        The subject `shared-human` holds `workspace:administer` on a workspace
+        in org A and nothing at all in org B. Authenticating with org B in the
+        token's organization claim must refuse both — the workspace in A
+        (org mismatch) and any workspace in B (no grant there) — even though
+        it is genuinely the same ADP-verified human both times.
+        """
+        subject = "shared-human"
+        org_a, workspace_a = await _seed_workspace(
+            "workspace:administer", principal=subject
+        )
+        org_b, workspace_b = await _seed_workspace(None, principal=subject)
+
+        token_as_org_a = _mint(enforcing, sub=subject, **{"custom:org_id": str(org_a)})
+        token_as_org_b = _mint(enforcing, sub=subject, **{"custom:org_id": str(org_b)})
+
+        # Selecting org A: the grant that belongs there is honoured.
+        as_a = await client.get(
+            f"/workspaces/{workspace_a}",
+            headers={"Authorization": f"Bearer {token_as_org_a}"},
+        )
+        assert as_a.status_code not in (401, 403)
+
+        # The SAME human, now selecting org B, must not reach A's workspace —
+        # the token's organization claim does not match A's, so A's grant does
+        # not apply.
+        cannot_reach_a_as_b = await client.get(
+            f"/workspaces/{workspace_a}",
+            headers={"Authorization": f"Bearer {token_as_org_b}"},
+        )
+        assert cannot_reach_a_as_b.status_code == 403
+
+        # And selecting org B grants nothing there either — no grant was ever
+        # issued to this subject in B, so B's own membership is not a fallback.
+        cannot_reach_b_as_b = await client.get(
+            f"/workspaces/{workspace_b}",
+            headers={"Authorization": f"Bearer {token_as_org_b}"},
+        )
+        assert cannot_reach_b_as_b.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_same_organization_disjoint_workspace_grants_stay_isolated(
+        self, client, enforcing
+    ):
+        """Two principals, one organization, non-overlapping workspace grants.
+
+        `user-u` may administer workspace U; `user-v` may administer workspace V.
+        Both belong to the same organization and both hold a real, unrevoked
+        grant — so this is not the "no grant at all" case R6 already covers.
+        Neither may reach the other's workspace.
+        """
+        from tests.conftest import async_session_test
+
+        org_id, workspace_u = await _seed_workspace(
+            "workspace:administer", principal="user-u"
+        )
+        # A second workspace + grant in the SAME organization, added directly
+        # rather than through `_seed_workspace` again: that helper (re)creates
+        # the Organization row every call and would collide on its unique name.
+        workspace_v = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=workspace_v,
+                    org_id=org_id,
+                    name="ws-v",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            session.add(
+                WorkspaceGrantRecord(
+                    id=uuid.uuid4(),
+                    workspace_id=workspace_v,
+                    org_id=org_id,
+                    principal="user-v",
+                    principal_type="human",
+                    permissions="workspace:administer",
+                )
+            )
+            await session.commit()
+
+        token_u = _mint(enforcing, sub="user-u", **{"custom:org_id": str(org_id)})
+        token_v = _mint(enforcing, sub="user-v", **{"custom:org_id": str(org_id)})
+
+        u_reads_own = await client.get(
+            f"/workspaces/{workspace_u}",
+            headers={"Authorization": f"Bearer {token_u}"},
+        )
+        assert u_reads_own.status_code not in (401, 403)
+
+        v_reads_own = await client.get(
+            f"/workspaces/{workspace_v}",
+            headers={"Authorization": f"Bearer {token_v}"},
+        )
+        assert v_reads_own.status_code not in (401, 403)
+
+        u_reads_v = await client.get(
+            f"/workspaces/{workspace_v}",
+            headers={"Authorization": f"Bearer {token_u}"},
+        )
+        assert u_reads_v.status_code == 403
+
+        v_reads_u = await client.get(
+            f"/workspaces/{workspace_u}",
+            headers={"Authorization": f"Bearer {token_v}"},
+        )
+        assert v_reads_u.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_explicit_adp_org_switch_and_current_grant_revocation(client, enforcing, monkeypatch):
+    from app.current_identity import CurrentIdentity
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class Memberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(subject, principal_type, adp_org_id, "membership-1", True, True)
+
+    monkeypatch.setattr(fastapi_app.state, "current_identity_reader", Memberships(), raising=False)
+    from datetime import UTC, datetime
+    from sqlalchemy import select
+    from tests.conftest import async_session_test
+
+    scopes = [await _seed_workspace("workspace:read") for _ in range(2)]
+    async with async_session_test() as session:
+        for index, (org_id, _) in enumerate(scopes):
+            org = await session.get(Organization, org_id)
+            org.adp_org_id = f"adp-selected-{index}"
+        await session.commit()
+    for index, (_, workspace_id) in enumerate(scopes):
+        token = _mint(enforcing, **{"custom:org_id": f"adp-selected-{index}"})
+        headers = {"Authorization": f"Bearer {token}"}
+        assert (
+            await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        ).status_code == 200
+        peer = scopes[1 - index][1]
+        assert (
+            await client.get(f"/workspaces/{peer}", headers=headers)
+        ).status_code == 403
+    async with async_session_test() as session:
+        grant = await session.scalar(
+            select(WorkspaceGrantRecord).where(
+                WorkspaceGrantRecord.workspace_id == scopes[1][1]
+            )
+        )
+        grant.revoked_at = datetime.now(UTC)
+        await session.commit()
+    # Same signed token, fresh request/session: no cached grant survives.
+    assert (
+        await client.get(f"/workspaces/{scopes[1][1]}", headers=headers)
+    ).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account_type", ["human", "service"])
+async def test_bound_user_management_never_mutates_global_cognito(
+    client, enforcing, monkeypatch, account_type
+):
+    from unittest.mock import AsyncMock
+    from sqlalchemy import select
+    from app.models.user import User
+    from tests.conftest import async_session_test
+    from app.current_identity import CurrentIdentity
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class Memberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(
+                subject, principal_type, adp_org_id, "membership-1", True, True,
+                "delegation-1" if principal_type == "service" else None,
+            )
+
+    monkeypatch.setattr(fastapi_app.state, "current_identity_reader", Memberships(), raising=False)
+
+    org_id = uuid.uuid4()
+    member_id = uuid.uuid4()
+    await _seed_organization_grant(org_id, "user-abc", "organization:administer")
+    async with async_session_test() as session:
+        org = await session.get(Organization, org_id)
+        org.adp_org_id = "adp-managed-membership"
+        grant = await session.scalar(
+            select(OrganizationGrantRecord).where(
+                OrganizationGrantRecord.org_id == org_id
+            )
+        )
+        grant.principal_type = account_type
+        session.add(
+            User(
+                id=member_id,
+                org_id=org_id,
+                email="member@example.com",
+                cognito_sub="immutable-member",
+                role="developer",
+                status="active",
+            )
+        )
+        await session.commit()
+    create = AsyncMock()
+    disable, change_role = AsyncMock(), AsyncMock()
+    monkeypatch.setattr("app.routers.users.admin_create_user", create)
+    monkeypatch.setattr("app.routers.users.admin_disable_user", disable)
+    monkeypatch.setattr("app.routers.users.admin_update_user_role", change_role)
+    token = _mint(
+        enforcing,
+        **{
+            "custom:org_id": "adp-managed-membership",
+            "custom:account_type": account_type,
+        },
+    )
+    response = await client.post(
+        "/users/invite",
+        json={"email": "new-member@example.com", "role": "developer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == (409 if account_type == "human" else 403)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = await client.patch(
+        f"/users/{member_id}/role", json={"role": "workspace-admin"}, headers=headers
+    )
+    assert response.status_code == (409 if account_type == "human" else 403)
+    response = await client.delete(f"/users/{member_id}", headers=headers)
+    assert response.status_code == (409 if account_type == "human" else 403)
+    create.assert_not_awaited()
+    disable.assert_not_awaited()
+    change_role.assert_not_awaited()
 
 
 class TestIdentitySpoofing:
@@ -1256,7 +1562,8 @@ class TestRouteInventoryCoverage:
         """Two classifications for one route means one of them is not enforced."""
         from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES
 
-        domain = set(DOMAIN_ROUTES)
+        domain = set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)
+        assert not set(DOMAIN_ROUTES) & set(PRIVATE_DOMAIN_ROUTES)
         assert not domain & PUBLIC_ROUTES
         assert not domain & INTERNAL_ROUTES
         assert not PUBLIC_ROUTES & INTERNAL_ROUTES
@@ -1279,7 +1586,7 @@ class TestRouteInventoryCoverage:
             for method, path in self._mounted()
             if path.startswith("/api/v1/research/")
         }
-        assert len(served) == 12, (
+        assert len(served) == 13, (
             f"the research surface is now {len(served)} routes; update the count "
             "in endpoint_inventory.py and domain_guard.py docstrings"
         )
@@ -2249,6 +2556,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         path = template
         for placeholder in (
             "{workspace_id}",
+            "{connection_id}",
             "{dep_id}",
             "{event_id}",
             "{user_id}",
@@ -2264,7 +2572,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
     @pytest.mark.asyncio
     async def test_no_credential_is_always_401_or_403(self, client, enforcing):
         offenders = []
-        for method, template in sorted(DOMAIN_ROUTES):
+        for method, template in sorted(set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)):
             body = {} if method in {"POST", "PATCH", "PUT"} else None
             response = await client.request(method, self._concrete(template), json=body)
             if response.status_code not in (401, 403):
@@ -2279,7 +2587,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         """A 422 here would report an auth failure as a validation error."""
         offenders = []
         headers = {"Authorization": "Bearer forged.token.here"}
-        for method, template in sorted(DOMAIN_ROUTES):
+        for method, template in sorted(set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)):
             body = {} if method in {"POST", "PATCH", "PUT"} else None
             response = await client.request(
                 method, self._concrete(template), headers=headers, json=body
@@ -2314,3 +2622,197 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         assert not offenders, (
             f"internal routes admitted a domain user token: {offenders}"
         )
+
+
+def test_private_credential_evidence_retains_domain_workspace_authority():
+    from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES, RouteClass, Scope
+
+    key = (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    )
+    assert key in PRIVATE_DOMAIN_ROUTES
+    assert key not in DOMAIN_ROUTES
+    assert key not in INTERNAL_ROUTES | PUBLIC_ROUTES
+    assert classify(*key) == (
+        RouteClass.DOMAIN,
+        (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    )
+    assert key in all_inventoried()
+
+
+@pytest.fixture
+def jwks_http_fixture(rsa_keys, monkeypatch):
+    """Serve real signing keys only from ephemeral loopback HTTP endpoints."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    _, public_jwk = rsa_keys
+    state = {
+        "status": 200,
+        "origin": "cross-origin",
+        "destination_requests": 0,
+        "source_requests": 0,
+        "body": json.dumps({"keys": [public_jwk]}).encode(),
+    }
+
+    class Destination(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            state["destination_requests"] += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), Destination)
+
+    class Source(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == "/other-keys":
+                state["destination_requests"] += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(state["body"])
+                return
+            state["source_requests"] += 1
+            self.send_response(state["status"])
+            if state["status"] in [301, 302, 303, 307, 308]:
+                destination = (
+                    "/other-keys"
+                    if state["origin"] == "same-origin"
+                    else f"http://127.0.0.1:{target.server_port}/other-keys"
+                )
+                self.send_header("Location", destination)
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), Source)
+    threads = [
+        threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        for server in (source, target)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        yield f"http://127.0.0.1:{source.server_port}/jwks", state
+    finally:
+        for server in (source, target):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+class TestJWKSHTTPAuthority:
+    @pytest.mark.parametrize("origin", ["same-origin", "cross-origin"])
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_redirected_signing_keys_are_never_requested_or_accepted(
+        self, monkeypatch, rsa_keys, jwks_http_fixture, origin, status
+    ):
+        endpoint, state = jwks_http_fixture
+        state.update(status=status, origin=origin)
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        with pytest.raises(TokenRejectedError, match="signing key is unavailable"):
+            domain_auth.verify_access_token(token)
+        assert state["destination_requests"] == 0
+        assert state["source_requests"] == 1
+        assert not cache.loaded
+        # Failure is not cached: a restored direct configured endpoint recovers.
+        state["status"] = 200
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert cache.loaded
+        assert state["source_requests"] == 2
+        assert state["destination_requests"] == 0
+
+    def test_direct_endpoint_verifies_real_signature_and_caches_keys(
+        self, monkeypatch, rsa_keys, jwks_http_fixture
+    ):
+        endpoint, state = jwks_http_fixture
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert state["source_requests"] == 1
+        # A different RSA signer cannot use this endpoint's published key.
+        other_pem, _ = _rsa_keypair()
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(_mint(other_pem))
+        assert state["destination_requests"] == 0
+
+    @pytest.mark.parametrize(
+        "status,body",
+        [(503, b"{}"), (200, b"not-json"), (200, b'{"keys": null}'), (200, b"[]")],
+    )
+    def test_unavailable_or_malformed_endpoint_refuses_and_can_recover(
+        self, monkeypatch, rsa_keys, jwks_http_fixture, status, body
+    ):
+        endpoint, state = jwks_http_fixture
+        valid_body = state["body"]
+        state.update(status=status, body=body)
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        with pytest.raises(TokenRejectedError, match="signing key is unavailable"):
+            domain_auth.verify_access_token(token)
+        assert not cache.loaded
+        state.update(status=200, body=valid_body)
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert state["destination_requests"] == 0
+
+
+class TestJWKSEndpointConfiguration:
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "file:///tmp/synthetic-signing-keys.json",
+            "ftp://example.invalid/jwks",
+            "data:application/json,{}",
+            "gopher://example.invalid/jwks",
+            "/tmp/keys.json",
+            "//example.invalid/jwks",
+            "https:///jwks",
+            "https://user:password@example.invalid/jwks",
+            "https://@example.invalid/jwks",
+            "https://example.invalid/jwks#keys",
+            "https://example.invalid:invalid/jwks",
+            "https://example.invalid:99999/jwks",
+            "https://example.invalid/\x7fjwks",
+            "https://example.invalid/\\jwks",
+            "https://example.invalid/\njwks",
+        ],
+    )
+    def test_forbidden_or_malformed_endpoint_never_invokes_a_provider(
+        self, monkeypatch, endpoint
+    ):
+        import urllib.request
+
+        calls = []
+
+        def forbidden_opener(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("provider called before configuration validation")
+
+        monkeypatch.setattr(urllib.request, "build_opener", forbidden_opener)
+        monkeypatch.setattr(urllib.request, "urlopen", forbidden_opener)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        cache = type(domain_auth.jwks_cache)()
+        with pytest.raises(TokenPolicyError, match="JWKS URL"):
+            cache.get(TEST_KID)
+        assert not calls
+        assert not cache.loaded

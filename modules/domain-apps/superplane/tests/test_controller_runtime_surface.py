@@ -42,6 +42,10 @@ DOCKERFILE = CONTROLLER / "Dockerfile"
 
 # Removed by S01. Each entry is a package whose presence reintroduces named advisories.
 REMOVED_PACKAGES = {
+    "curl": (
+        "retains zlib CVE-2026-85091; the static controller starts no subprocess "
+        "and the existing e2e diagnostics use BusyBox wget"
+    ),
     "helm": (
         "CVE-2025-53547, plus GHSA-v778-237x-gjrc / GHSA-hcg3-q754-cr77 "
         "(golang.org/x/crypto) and GHSA-v23v-6jw2-98fq (github.com/docker/docker) "
@@ -139,6 +143,27 @@ def test_controller_still_runs_as_non_root() -> None:
         f"USER should be a numeric uid so Kubernetes runAsNonRoot can verify it "
         f"without resolving /etc/passwd: {last!r}"
     )
+
+
+def test_builder_uses_supported_go_version() -> None:
+    """The builder stage should use a supported Go version, not an EOL toolchain.
+
+    Go 1.23 reached end-of-life and its stdlib carries unpatched CVEs that show up
+    as scanner findings. Go supports the two most recent releases (N and N-1).
+    """
+    builder_froms = [
+        ln for ln in _effective_lines() if ln.startswith("FROM") and "golang:" in ln
+    ]
+    assert builder_froms, "no Go builder FROM found in the controller Dockerfile"
+
+    for line in builder_froms:
+        match = re.search(r"golang:(\d+)\.(\d+)", line)
+        assert match, f"builder must pin a Go major.minor version: {line!r}"
+        major, minor = int(match.group(1)), int(match.group(2))
+        assert minor >= 25, (
+            f"golang:{major}.{minor} is end-of-life. Go supports the two most recent "
+            f"releases. Update to a supported version to avoid stdlib CVE findings."
+        )
 
 
 def test_controller_starts_no_subprocess() -> None:

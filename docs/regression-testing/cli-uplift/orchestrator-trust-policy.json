@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "arn:aws:iam::000000000101:role/adp-dev-agent-scaledjob-role",
+          "arn:aws:iam::000000000101:role/adp-dev-agent-runner-role"
+        ]
+      },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ]
+    },
+    {
+      "Sid": "GithubOidcProtectedDev",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::000000000101:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:aws-e/adp:environment:dev"
+        }
+      }
+    }
+  ]
+}

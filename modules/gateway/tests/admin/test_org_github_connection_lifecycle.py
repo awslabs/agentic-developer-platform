@@ -61,10 +61,23 @@ FREE_INSTALL = 124731131
 FREE_ACCOUNT = "88881"
 
 
+@pytest.fixture(autouse=True)
+def forbid_real_aws(monkeypatch):
+    """These SQL/HTTP fixtures must never mutate a deployment through boto3."""
+
+    def refused(*args, **kwargs):
+        raise AssertionError("Lifecycle unit fixture attempted a real AWS API call")
+
+    monkeypatch.setattr("botocore.client.BaseClient._make_api_call", refused)
+
+
 @pytest.fixture
 def index() -> AsyncMock:
     mock = AsyncMock()
     mock.sync_org_channels = AsyncMock()
+    mock._client.put_installation_revocation = AsyncMock(return_value=True)
+    mock._client.delete_installation_projection = AsyncMock(return_value=True)
+    mock._client.delete_reverse_installation_if_matches = AsyncMock(return_value=True)
     return mock
 
 
@@ -367,6 +380,40 @@ class TestDetach:
         assert org.github_installation_ids == []
         assert await _github_rows(db_session, OWNER_ORG) == []
 
+    async def test_detach_keeps_identity_fields_while_a_map_only_install_survives(self, db_session: AsyncSession, index: AsyncMock):
+        """Step 3 must ask both stores whether anything is left.
+
+        A personal install is never written to ``github_installation_ids``
+        (``install_callback`` appends only for ``account_type == "Organization"``),
+        so an org can legitimately have an empty column and live
+        ``channel_tenant_map`` rows. Reading only the column made "nothing left"
+        true while a sibling was still connected, nulling ``github_org_id`` and
+        making the survivor UNATTESTABLE — the routing breakage the step's own
+        comment says it avoids.
+        """
+        await _mk_org(db_session, OWNER_ORG, installation_ids=[], github_org_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=FREE_INSTALL, account_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=VICTIM_INSTALL, account_id="77772")
+
+        svc = OrgConnectionsService(db_session, identity_index=index)
+        await svc.detach_github(OWNER_ORG, FREE_INSTALL)
+
+        org = await db_session.get(Organization, OWNER_ORG)
+        assert org.github_org_id == FREE_ACCOUNT
+        assert [r.installation_id for r in await _github_rows(db_session, OWNER_ORG)] == [str(VICTIM_INSTALL)]
+
+    async def test_detach_of_the_last_install_still_clears_identity_fields(self, db_session: AsyncSession, index: AsyncMock):
+        """The other half of the guard, so widening it cannot disable it."""
+        await _mk_org(db_session, OWNER_ORG, installation_ids=[str(FREE_INSTALL)], github_org_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=FREE_INSTALL, account_id=FREE_ACCOUNT)
+
+        svc = OrgConnectionsService(db_session, identity_index=index)
+        await svc.detach_github(OWNER_ORG, FREE_INSTALL)
+
+        org = await db_session.get(Organization, OWNER_ORG)
+        assert org.github_org_id is None
+        assert org.github_app_id is None
+
     async def test_detach_removes_the_identity_index_row(self, db_session: AsyncSession, index: AsyncMock):
         """The stale-routing failure mode from the issue's impact analysis.
 
@@ -381,10 +428,9 @@ class TestDetach:
         svc = OrgConnectionsService(db_session, identity_index=index)
         await svc.detach_github(OWNER_ORG, FREE_INSTALL)
 
-        index.sync_org_channels.assert_awaited_once()
-        kwargs = index.sync_org_channels.await_args.kwargs
-        assert kwargs["github_installation_ids"] == []
-        assert kwargs["old_github_installation_ids"] == [str(FREE_INSTALL)]
+        index._client.put_installation_revocation.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
+        index._client.delete_installation_projection.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
+        index._client.delete_reverse_installation_if_matches.assert_awaited_once_with(OWNER_ORG, str(FREE_INSTALL))
 
     async def test_detach_warns_that_webhook_dispatch_stops(self, db_session: AsyncSession, index: AsyncMock):
         """The consequence is in the response body, not only in a log line.
@@ -398,8 +444,8 @@ class TestDetach:
         svc = OrgConnectionsService(db_session, identity_index=index)
         result = await svc.detach_github(OWNER_ORG, FREE_INSTALL)
 
-        assert "Webhook dispatch" in result.warning
-        assert "fail-closed" in result.warning
+        assert "Local access is revoked" in result.warning
+        assert "GitHub" in result.warning
 
     async def test_detach_leaves_other_providers_alone(self, db_session: AsyncSession, index: AsyncMock):
         """Detaching GitHub must not drop the org's Slack routing.
@@ -557,7 +603,7 @@ def _client(*, user: TokenContext, db: AsyncSession) -> TestClient:
 
 
 @pytest.fixture
-def no_real_index(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+def no_real_index(monkeypatch: pytest.MonkeyPatch, index: AsyncMock) -> AsyncMock:
     """Stub the identity-index writer for the HTTP tests.
 
     The routes construct the service themselves (no injection point), and the
@@ -565,10 +611,12 @@ def no_real_index(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     ``_writer`` accessor — which exists for exactly this reason — so these tests
     exercise the real route/service wiring without reaching AWS.
     """
-    stub = AsyncMock()
-    stub.sync_org_channels = AsyncMock()
-    monkeypatch.setattr(OrgConnectionsService, "_writer", lambda self: stub)
-    return stub
+    # Detach now creates its durable revocation writer independently of the
+    # legacy projection accessor. Both boundaries must share the isolated fake:
+    # mocking only _writer allowed fixture installation IDs to reach real AWS.
+    monkeypatch.setattr(OrgConnectionsService, "_writer", lambda self: index)
+    monkeypatch.setattr("src.admin.installations.revocation.IdentityIndexClient", lambda: index._client)
+    return index
 
 
 @pytest.mark.usefixtures("no_real_index")
@@ -623,7 +671,7 @@ class TestRouteContract:
         response = client.post(f"/admin/organizations/{OWNER_ORG}/connections/github", json={"installation_id": 0})
         assert response.status_code == 422
 
-    async def test_the_lifecycle_round_trips_over_http(self, db_session: AsyncSession, platform_admin_context: TokenContext):
+    async def test_the_lifecycle_round_trips_over_http(self, db_session: AsyncSession, platform_admin_context: TokenContext, no_real_index):
         """The issue's smoke test, in CI: GitHub-free org → attach → detach.
 
         Exercises the sequence end-to-end through the real ASGI app so the route
@@ -646,5 +694,7 @@ class TestRouteContract:
         detached = client.delete(f"{base}/{FREE_INSTALL}")
         assert detached.status_code == 200
         assert detached.json()["detached"] is True
+        no_real_index._client.put_installation_revocation.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
+        no_real_index._client.delete_installation_projection.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
 
         assert client.get(base).json()["total"] == 0

@@ -86,8 +86,23 @@ if [ "$UPDATE_MODE" = true ]; then
   if [ "$DRY_RUN" = false ]; then
     case ",${UPGRADE_MODULES:-}," in *,webhook-ingress,*) ;; *) fail "--update requires existing webhook-ingress state" ;; esac
   fi
+  WEBHOOK_UPDATE_VAR_FILE="${ADP_WEBHOOK_UPDATE_TFVARS:-}"
+  if [ -z "$WEBHOOK_UPDATE_VAR_FILE" ]; then
+    for suffix in tfvars tfvars.json; do
+      candidate="$REPO_ROOT/environments/$ENVIRONMENT/modules/webhook-ingress.$suffix"
+      if [ -f "$candidate" ]; then
+        [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || fail "Multiple webhook update tfvars files; select one explicitly"
+        WEBHOOK_UPDATE_VAR_FILE="$candidate"
+      fi
+    done
+  fi
+  if [ -n "$WEBHOOK_UPDATE_VAR_FILE" ]; then
+    WEBHOOK_UPDATE_VAR_FILE=$(terraform_update_var_file "$WEBHOOK_UPDATE_VAR_FILE" \
+      "$WEBHOOK_UPDATE_VAR_FILE" "$ACCOUNT_ID") || fail "Webhook update needs target-specific tfvars"
+    ok "Webhook update tfvars: $WEBHOOK_UPDATE_VAR_FILE"
+  fi
 else
-  IMAGE_TAG="${IMAGE_TAG:-latest}"
+  IMAGE_TAG="${IMAGE_TAG:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 fi
 
 echo "deploy-webhook-ingress: env=$ENVIRONMENT region=$AWS_REGION account=$ACCOUNT_ID bucket=$STATE_BUCKET"
@@ -117,16 +132,33 @@ elif [ "$SKIP_IMAGE" = true ]; then
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-agent-runtime (with source-location-override)"
 else
-  # Use codebuild-run.sh which handles the source-SHA contract:
-  # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
-  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
-    bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
-      "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
-      "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
-      "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
-      "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
-      "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
-  ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
+  EXISTING_IMAGE=""
+  if [ "$UPDATE_MODE" = true ]; then
+    EXISTING_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/upgrade-image-cache.py" \
+      "${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}") \
+      || fail "Could not verify the existing agent-runtime image"
+  fi
+  if [ -n "$EXISTING_IMAGE" ]; then
+    ok "Reusing immutable upgrade image: $EXISTING_IMAGE"
+  else
+    # Use codebuild-run.sh which handles the source-SHA contract:
+    # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
+    ADP_RELEASE_BUILD=true SOURCE_SHA="$IMAGE_TAG" STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
+      bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
+        "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
+        "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
+        "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
+        "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
+        "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
+    ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
+  fi
+fi
+
+# Resolve and validate the image before Lambda upload, Terraform import or apply.
+if [ "$DRY_RUN" = false ] && [ "$SKIP_TF" = false ]; then
+  VERIFIED_AGENT_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/resolve-ecr-image.py" \
+    "${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}")
+  export TF_VAR_agent_image="$VERIFIED_AGENT_IMAGE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -186,8 +218,8 @@ if [ "$UPDATE_MODE" = false ] && ! aws secretsmanager describe-secret --secret-i
 fi
 
 # Resolve the internal-api-key ARN so the webhook Lambda can call the gateway's
-# /internal/v1/* endpoints. Empty string is safe (Lambda falls back to DDB-only
-# identity resolution, but gateway-canonical resolution is disabled).
+# /internal/v1/* endpoints. Both fresh installs and upgrades need this binding;
+# otherwise canonical identity and persona-model resolution fail at runtime.
 INTERNAL_API_KEY_OVERRIDE=""
 INTERNAL_API_KEY_ARN=$(aws secretsmanager describe-secret \
   --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" \
@@ -234,10 +266,14 @@ import_bootstrap_log_group() {
   warn "Bootstrap log group exists in AWS but not in state — importing (#4051)"
   local import_args=()
   if [ "$UPDATE_MODE" = true ]; then
+    import_args+=(-var-file=terraform.tfvars)
+    [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || import_args+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
     import_args+=(-var-file="$UPGRADE_RUN_DIR/webhook-ingress.tfvars.json")
+    import_args+=(-var="environment=$ENVIRONMENT" -var="aws_region=$AWS_REGION")
+    terraform import "${import_args[@]}" aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
+  else
+    bash "$TF_WEBHOOK" import aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   fi
-  bash "$TF_WEBHOOK" import ${import_args[@]+"${import_args[@]}"} \
-    aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
 }
 
@@ -254,7 +290,7 @@ else
     TF_ARGS=(
       -var="environment=${ENVIRONMENT}"
       -var="aws_region=${AWS_REGION}"
-      -var="agent_image=${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}"
+      -var="agent_image=$VERIFIED_AGENT_IMAGE"
     )
     if [ "$UPDATE_MODE" = false ]; then
       TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")
@@ -266,13 +302,24 @@ else
       [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
     fi
     if [ "$UPDATE_MODE" = true ]; then
-      # Match the fresh-deploy/CI overlay order while preserving the saved-plan
-      # upgrade gate and the discovered context's existing integration values.
       OVERLAY_ARGS=()
-      for suffix in tfvars tfvars.json; do
-        overlay="$REPO_ROOT/environments/$ENVIRONMENT/modules/webhook-ingress.$suffix"
-        [ ! -f "$overlay" ] || OVERLAY_ARGS+=("-var-file=$overlay")
-      done
+      # Supply discovered wiring as defaults, before operator configuration and
+      # recovered live settings. This repairs empty legacy bindings without
+      # replacing a configured key or gateway URL during an upgrade.
+      WIRING_DEFAULTS=$(mktemp "${UPGRADE_RUN_DIR:-${TMPDIR:-/tmp}}/webhook-wiring.XXXXXX.tfvars.json")
+      python3 - "$WIRING_DEFAULTS" "$GATEWAY_API_URL" "$INTERNAL_API_KEY_ARN" <<'PY'
+import json
+import sys
+
+values = {}
+for key, value in zip(("gateway_api_url", "internal_api_key_arn"), sys.argv[2:]):
+    if value and value != "None":
+        values[key] = value
+with open(sys.argv[1], "w") as output:
+    json.dump(values, output)
+PY
+      OVERLAY_ARGS+=("-var-file=$WIRING_DEFAULTS")
+      [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || OVERLAY_ARGS+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
       terraform_update_apply webhook-ingress terraform.tfvars ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} "${TF_ARGS[@]}"
     else
       bash "$TF_WEBHOOK" apply "${TF_ARGS[@]}" -input=false -auto-approve

@@ -72,8 +72,12 @@ def rule(group, resources, verbs, names=()):
     return value
 
 
-def compile_grants(journal, release: BootstrapRelease, principals):
+def compile_grants(
+    journal, release: BootstrapRelease, principals, *, controller_mode="management"
+):
     """Names and usernames bind to this real reservation generation."""
+    if controller_mode not in {"management", "legacy"}:
+        raise BootstrapRefused("bootstrap controller mode is not recognized")
     if (
         set(principals) != {"registrar", "installer", "supervisor"}
         or len(set(principals.values())) != 3
@@ -275,9 +279,20 @@ def compile_grants(journal, release: BootstrapRelease, principals):
                 ["imds-probe-ipv4", "imds-probe-ipv6"],
             ),
             rule("", ["pods/log"], ["get"], ["imds-probe-ipv4", "imds-probe-ipv6"]),
-            rule("apps", ["deployments"], ["create"]),
-            rule(
-                "apps", ["deployments"], ["get", "patch", "watch"], [release.controller]
+            # Only recovery of a historical per-workspace controller needs
+            # Deployment writes. The canonical manager lives elsewhere.
+            *(
+                [
+                    rule("apps", ["deployments"], ["create"]),
+                    rule(
+                        "apps",
+                        ["deployments"],
+                        ["get", "patch", "watch"],
+                        [release.controller],
+                    ),
+                ]
+                if controller_mode == "legacy"
+                else []
             ),
             rule(RBAC, ["roles", "rolebindings"], ["create", "list"]),
             rule(

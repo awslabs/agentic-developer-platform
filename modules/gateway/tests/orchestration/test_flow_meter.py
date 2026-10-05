@@ -127,7 +127,8 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
     monkeypatch.setattr(service, "_get_session", session)
     monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
     context = TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         attributed_org_id=meter.policy.org_id,
         team_id="",
@@ -184,7 +185,8 @@ async def test_a_policy_cost_with_no_quote_behind_it_is_never_reserved(meter, mo
     monkeypatch.setattr(service, "_get_session", session)
     monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
     context = TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         attributed_org_id=meter.policy.org_id,
         team_id="",

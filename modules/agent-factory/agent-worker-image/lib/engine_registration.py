@@ -75,9 +75,10 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from lib.amendment_input import AMENDMENT_BASE_PATH_ENV
+from lib.authenticated_http import open_authenticated as urlopen
 
 logger = logging.getLogger(__name__)
 

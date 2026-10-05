@@ -1,0 +1,36 @@
+{
+  "issue": 6124,
+  "baseline_version": "2.31.22",
+  "candidate_version": "2.37.4",
+  "zip_sha256": "0c59444563f4df735eeb5481f6165f95dae546c33761760d8be9855d5cfe2d12",
+  "signing_key_fingerprint": "FB5DB77FD5C118B80511ADA8A6310ACC4672475C",
+  "signature_verified": true,
+  "scans": {
+    "baseline": {
+      "raw_sha256": "f187ad7e55cecd3222209c8d64f8816c272f936b147384b1225f984de7c272aa",
+      "native_findings": {
+        "High": 14,
+        "Medium": 26,
+        "Low": 6,
+        "Negligible": 1
+      },
+      "total": 47,
+      "db_built": "2026-09-25T06:31:49Z"
+    },
+    "candidate": {
+      "raw_sha256": "4d1bca3f3f93877b1411e9c4728d54af7d049e741c63343fcb926ba7afb86008",
+      "native_findings": {
+        "High": 3,
+        "Medium": 9,
+        "Low": 3
+      },
+      "total": 15,
+      "db_built": "2026-09-25T06:31:49Z"
+    }
+  },
+  "scope": "offline local bundle checks; no publication, cloud calls, or credentials",
+  "limitations": [
+    "Image and directory scanner package attribution can differ; do not subtract directory counts from image baseline",
+    "Bundle retains 15 raw findings; no whole family acceptance"
+  ]
+}

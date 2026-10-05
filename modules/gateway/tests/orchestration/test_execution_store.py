@@ -132,7 +132,7 @@ async def graph(session):
     """
     made: dict[str, str] = {}
     for org, key in ((ORG_A, "a"), (ORG_B, "b")):
-        flow = OrchestrationFlow(org_id=org, slug=f"flow-{key}", title=f"Flow {key}", state="draft")
+        flow = OrchestrationFlow(execution_paused=False, org_id=org, slug=f"flow-{key}", title=f"Flow {key}", state="draft")
         session.add(flow)
         await session.flush()
         made[f"flow_{key}"] = flow.id
@@ -1544,6 +1544,7 @@ class TestOuterStatesUnchanged:
             "awaiting_merge",
             "awaiting_gate",
             "passed",
+            "waived",
             "rejected_at_gate",
             "failed",
             "halted",
@@ -1552,7 +1553,7 @@ class TestOuterStatesUnchanged:
 
     def test_terminal_node_states_are_untouched(self):
         assert state_module.TERMINAL_STATES == frozenset(
-            {NodeState.PASSED, NodeState.REJECTED_AT_GATE, NodeState.FAILED, NodeState.HALTED, NodeState.SUPERSEDED}
+            {NodeState.PASSED, NodeState.WAIVED, NodeState.REJECTED_AT_GATE, NodeState.FAILED, NodeState.HALTED, NodeState.SUPERSEDED}
         )
 
     def test_the_human_only_gate_transitions_are_untouched(self):

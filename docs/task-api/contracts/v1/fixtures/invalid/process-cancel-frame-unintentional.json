@@ -1,0 +1,24 @@
+{
+  "$fixture": {
+    "description": "A cancel frame that does not assert intent. Cancellation must be a deliberate act attributable to a recorded command; an unintentional cancel frame is indistinguishable from a bug terminating the client's work.",
+    "schema": "process-protocol.schema.json#/$defs/cancel_frame",
+    "expect": "invalid",
+    "reason": "intentional is fixed true on a cancel frame",
+    "violates": [
+      "process-protocol.schema.json#/$defs/cancel_frame"
+    ],
+    "owner": "T7",
+    "criteria": [
+      "T0-AC02",
+      "T7-AC03",
+      "V0-02"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "cancel",
+  "request_id": "331bac1b-b49e-43bb-b67e-a1f0a1a56755",
+  "task_id": "tsk_9e1b3d5f-7a9c-4e3b-8d7f-9a1c3e5b7d9f",
+  "command_id": "f6071829-3a4b-4c5d-9f70-000000000227",
+  "reason": "Client no longer needs the investigation.",
+  "intentional": false
+}

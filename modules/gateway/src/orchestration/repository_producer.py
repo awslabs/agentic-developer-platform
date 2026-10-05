@@ -1,6 +1,7 @@
 """Admit one real scan execution, using the normal claim and action ledgers."""
 
 import hashlib
+import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -27,6 +28,11 @@ from .work_claims import ClaimBinding, ClaimOwner, Disposition, OwnerKind, claim
 CONTEXT_KIND = "repository_scan_context"
 PRODUCER_KIND = "repository_scan_dispatch"
 CLI_PRODUCER_KIND = "cli_qualification_dispatch"
+
+# Collection-only compatibility for the verifier that admitted bounded knowledge
+# runs but rejected their shared workflow triggers at settlement. It cannot admit
+# or dispatch new work. All run/context/source/artifact checks still apply.
+COLLECTION_COMPATIBLE_HARNESSES = frozenset({"1ac0df68d1dd5c762d704148f43b7026ea1515becd6f55c08485f0c20d6ff74d"})
 
 
 def producer_kind(spec):
@@ -90,10 +96,19 @@ class RepositoryScanProvider(WorkflowProvider):
 
     async def preflight(self, binding, spec, sources):
         producer, workflow = spec.producer, spec.workflows[0]
-        require(producer is not None and producer.target.resource_id == binding.repo, "producer_target_repository_changed")
+        require(producer is not None, "producer_specification_missing")
+        if spec.evidence_schema != "workflow-evaluation/v1":
+            require(producer.target.resource_id == binding.repo, "producer_target_repository_changed")
         _, revisions = await self.evidence.verify_sources(binding, spec, sources)
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition_revision = workflow.definition.revision or revisions[workflow.definition.predecessor]
+        if spec.evidence_schema == "workflow-evaluation/v1":
+            _, config_content = await self.evidence.definition_blob(binding, "tests/e2e/cli_uplift/config.example.json", source)
+            target_config = json.loads(config_content)
+            require(
+                (producer.target.account_id, producer.target.region) == (target_config.get("platform_account"), target_config.get("region")),
+                "qualification_target_configuration_changed",
+            )
         ref = WorkflowRef(
             path=workflow.path,
             definition_revision=definition_revision,
@@ -110,6 +125,8 @@ class RepositoryScanProvider(WorkflowProvider):
         expected_events = (
             {"workflow_dispatch", "schedule", "pull_request"} if spec.evidence_schema == "cli-live-evaluation/v1" else {"workflow_dispatch"}
         )
+        if spec.evidence_schema == "workflow-evaluation/v1":
+            expected_events = {"workflow_dispatch", "workflow_call", "pull_request"}
         require(names == expected_events, "producer_workflow_events_changed")
         if spec.evidence_schema == "cli-live-evaluation/v1":
             from .cli_live_contract import NIGHTLY_SCHEDULE
@@ -173,10 +190,24 @@ async def producer_state(session, context):
         and data["specification_hash"] == digest(spec.model_dump(mode="json")),
         "producer_acceptance_changed",
     )
-    require(
-        data["plan_id"] == plan.id and data["plan_hash"] == plan.plan_hash and spec.runner.harness_sha256 == harness_digest(),
-        "producer_plan_or_harness_changed",
-    )
+    require(data["plan_id"] == plan.id and data["plan_hash"] == plan.plan_hash, "producer_plan_or_harness_changed")
+    if spec.runner.harness_sha256 != harness_digest():
+        require(
+            spec.evidence_schema == "workflow-evaluation/v1" and spec.runner.harness_sha256 in COLLECTION_COMPATIBLE_HARNESSES,
+            "producer_plan_or_harness_changed",
+        )
+        dispatched = await session.scalar(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == node.org_id,
+                OrchestrationAction.execution_id == context.execution.id,
+                OrchestrationAction.kind == producer_kind(spec),
+                OrchestrationAction.detail["dispatch_started"].as_boolean().is_(True),
+                OrchestrationAction.detail["acceptance_decision_id"].as_string() == attached[0].id,
+            )
+            .limit(1)
+        )
+        require(dispatched is not None, "producer_legacy_collection_requires_dispatch")
     claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
     require(
         claim is not None
@@ -221,7 +252,7 @@ async def admit_producer(session, node, *, provider=None):
     node = await session.scalar(
         select(OrchestrationNode).where(OrchestrationNode.id == node.id).with_for_update().execution_options(populate_existing=True)
     )
-    require(flow.state == "running" and node.state == "ready", "producer_admission_raced")
+    require(flow.state in {"pending", "running"} and node.state == "ready", "producer_admission_raced")
     require(spec.runner.harness_sha256 == harness_digest(), "producer_harness_changed")
     fresh = await accepted_contract(session, node=node, plan=current)
     require(

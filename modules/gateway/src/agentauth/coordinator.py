@@ -63,9 +63,9 @@ async def resolve_repository_fan_out(*, session, execution, grant, target_repo: 
     # repository is therefore not graph-owned by this engine. Without this
     # repository check an unrelated `other/repo#42` flow could pin or block
     # `target/repo#42` merely because the numbers collide.
-    if not orchestration_repo:
-        return False
-    if target_repo != orchestration_repo:
+    # With no configured engine repository, check every matching tenant flow
+    # conservatively. Absence of configuration is not proof of graph ownership.
+    if orchestration_repo and target_repo != orchestration_repo:
         return True
     try:
         launch_issue = int(execution["issue_number"]["N"])

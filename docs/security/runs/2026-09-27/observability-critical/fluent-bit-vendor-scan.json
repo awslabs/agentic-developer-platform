@@ -1,0 +1,15 @@
+{
+  "image": "000000000217.dkr.ecr.us-east-1.amazonaws.com/eks/observability/aws-for-fluent-bit:3.4.16",
+  "docker_root_descriptor": "sha256:7bece8651fc81b1bd7f904f7b71a3542b1abc8ba94dc989b4a326b576ab8f6bc",
+  "config_digest": "sha256:bb6722f9ecd95e79deddf4998a52b5ad1ddc64225347447bfa012f4e73aa0883",
+  "time": "2026-09-27T13:06:48.209793+00:00",
+  "packages": 141,
+  "native_counts": {
+    "High": 2,
+    "Medium": 4,
+    "Low": 3
+  },
+  "sbom_sha256": "81c25fd3c5d0d4eb281d72f8f056a6710d43cc8a9d4cb5824953e8be71ee2388",
+  "grype_sha256": "d8e6d092dead0647484ca2df3508725254b2591f63e92643cd909fe6d7c2387f",
+  "archive_sha256": "9dc2ee9057d1c6d248842496b6af024df87bc16cea529fb0c647601c8c24eca0"
+}

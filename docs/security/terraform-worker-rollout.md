@@ -80,8 +80,14 @@ or live preservation evidence.
 
 ## Run services (#5195 / #5513)
 
-Protected workers have an explicit deny for **all direct S3 and SQS operations**,
-including their own environment's queue and archive bucket. The gateway receives
+Protected workers can receive messages, change visibility, delete messages and
+read attributes on their environment's agent input queue. These are fixed IAM
+permissions shared by workers using the role, not permissions changed per task.
+Other queues and queue sending/administration remain denied. This grants access
+to the shared input queue; IAM does not restrict a consumer to an assigned message.
+The protected runtime still uses gateway task delivery for its run binding and
+durable acknowledgement records; these IAM grants do not change that protocol.
+All direct S3 operations, including access to the run archive bucket, remain denied. The gateway receives
 receive/change-visibility/delete on the task queue and PutObject on the archive
 bucket's `runs/*` prefix. It selects the run/attempt path after authentication.
 KEDA uses its own operator identity to poll queue depth. Shared Beads/Dolt S3
@@ -137,6 +143,16 @@ The matching gateway setting is `orchestration_agent_authority_enabled=true` in
 its environment Terraform configuration. Separate
 `orchestration_agent_authority_prepared=true` prepares IAM without dispatch.
 Keep admissions paused while updating and verifying these deployment units.
+
+Each producer derives `AGENT_AUTHORITY_ENABLED` and `ADP_WORK_CLAIMS_ENABLED`
+from its same authority rollout input. The tick, gateway and webhook therefore
+enable ownership tracking together with protected authority; there is no separate
+work-claim switch to remember during setup. Keep the gateway environment's
+`orchestration_agent_authority_enabled` aligned with webhook
+`agent_authority_enabled`. The standard gateway release verification reads a
+running gateway pod and the Lambda configuration and refuses completion if these
+controls disagree within either runtime or across them. It does not activate
+authority or resume flows to resolve a mismatch.
 
 For platform-owned EKS entries, set `agent_legacy_worker_admin_retired=true` and
 `agent_authority_legacy_workers_drained=true` in each owning platform state. The

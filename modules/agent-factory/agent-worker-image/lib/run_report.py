@@ -59,7 +59,9 @@ def configure(envelope: dict) -> None:
         "bound_pull_request": envelope.get("bound_pull_request"),
         "tenant_id": envelope["tenant_id"],
         "repo": envelope["source_ref"]["repo"],
+        "reviewer_owned_delivery": (envelope.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True,
     }
+    os.environ["ADP_RUN_REPORT_OWNERSHIP_NONCE"] = _assignment["ownership_nonce"]
 
 
 def assigned_pull_request(repo: str) -> str:
@@ -145,8 +147,8 @@ def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> d
     return result
 
 
-def terminal(outcome: str) -> dict:
-    result = request("/terminal", {"outcome": outcome})
+def terminal(outcome: str, *, failure: dict | None = None) -> dict:
+    result = request("/terminal", {"outcome": outcome, **({"failure": failure} if failure is not None else {})})
     receipt = result.get("terminal_receipt") or {}
     if (
         receipt.get("outcome") != outcome
@@ -176,8 +178,8 @@ def read_spool() -> dict | None:
     try:
         response = _spool_client().get_object(Bucket=bucket, Key=key)
         with response["Body"] as stream:
-            raw = stream.read(16385)
-        if len(raw) > 16384:
+            raw = stream.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
             raise RunReportError("invalid_report_spool", retryable=False)
         body = json.loads(raw)
     except ClientError as exc:
@@ -190,17 +192,30 @@ def read_spool() -> dict | None:
         not isinstance(body, dict)
         or body.get("contract_version") != 1
         or any(body.get(field) != _assignment[field] for field in ("run_id", "attempt", "repo"))
-        or body.get("phase") not in {"executing", "candidate", "failed"}
+        or body.get("phase") not in {"executing", "candidate", "failed", "review"}
+    ):
+        raise RunReportError("report_spool_scope_mismatch", retryable=False)
+    if body["phase"] == "review" and (
+        not isinstance(body.get("review_content"), str)
+        or not 0 < len(body["review_content"].encode()) <= 256 * 1024
+        or not isinstance(body.get("ownership_nonce"), str)
+        or len(body["ownership_nonce"]) != 32
     ):
         raise RunReportError("report_spool_scope_mismatch", retryable=False)
     if body["phase"] == "failed" and (
-        set(body) != {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr", "ownership_nonce"}
+        set(body) - {"failure"} != {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr", "ownership_nonce"}
         or body.get("candidate_pr") is not None
         or not isinstance(body.get("ownership_nonce"), str)
         or len(body["ownership_nonce"]) != 32
         or any(char not in "0123456789abcdef" for char in body["ownership_nonce"])
     ):
         raise RunReportError("report_spool_scope_mismatch", retryable=False)
+    if "failure" in body:
+        failure = body["failure"]
+        if (not isinstance(failure, dict) or set(failure) != {"category", "exit_code"}
+                or failure.get("category") not in {"unknown", "cancelled", "deadline", "signal", "policy", "provider_refusal", "authentication", "transport", "stale_head", "git_validation", "inspection", "contract"}
+                or type(failure.get("exit_code")) is not int or not -255 <= failure["exit_code"] <= 255):
+            raise RunReportError("report_spool_scope_mismatch", retryable=False)
     return body
 
 
@@ -231,11 +246,15 @@ def can_retry_start(spool: dict, snapshot: dict) -> bool:
     )
 
 
-def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False) -> None:
+def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False, review_content: str | None = None, failure: dict | None = None) -> None:
     bucket, key = _spool_location()
     body = _spool_document(phase, candidate)
-    if phase == "failed":
+    if phase in {"failed", "review"}:
         body["ownership_nonce"] = _assignment["ownership_nonce"]
+    if phase == "review":
+        body["review_content"] = review_content
+    if failure is not None:
+        body["failure"] = failure
     options = {"IfNoneMatch": "*"} if create else {}
     try:
         _spool_client().put_object(
@@ -280,7 +299,7 @@ def begin_delivery() -> None:
         raise RunReportError("delivery_start_unacknowledged")
 
 
-def spool_undelivered_failure() -> None:
+def spool_undelivered_failure(*, failure: dict | None = None) -> None:
     """Keep a failed owner's report retryable without starting another worker.
 
     Delivered PR candidates retain their existing handoff recovery. Only the
@@ -292,17 +311,35 @@ def spool_undelivered_failure() -> None:
         raise RunReportError("delivery_recovery_required", retryable=False)
     if spool["phase"] == "candidate":
         return
+    if spool["phase"] == "review":
+        if spool.get("ownership_nonce") != _assignment["ownership_nonce"]:
+            raise RunReportError("delivery_recovery_required", retryable=False)
+        return  # Preserve produced evidence alongside the actual failed exit.
     if spool["phase"] == "failed":
         if spool["ownership_nonce"] != _assignment["ownership_nonce"]:
             raise RunReportError("delivery_recovery_required", retryable=False)
         return
     if spool != _spool_document("executing"):
         raise RunReportError("delivery_recovery_required", retryable=False)
-    _write_spool("failed")
+    _write_spool("failed", failure=failure)
 
 
 def spool_candidate(candidate: dict) -> None:
     _write_spool("candidate", candidate)
+
+
+def spool_review(data: bytes) -> None:
+    """Retain exact completed review bytes before upload or merge, in our spool."""
+    if not enabled() or not _assignment.get("reviewer_owned_delivery"):
+        return
+    if not 0 < len(data) <= 256 * 1024:
+        raise RunReportError("invalid_review_spool", retryable=False)
+    spool = read_spool()
+    if spool is None or spool["phase"] not in {"executing", "review"}:
+        raise RunReportError("delivery_recovery_required", retryable=False)
+    if spool["phase"] == "review" and spool.get("ownership_nonce") != _assignment["ownership_nonce"]:
+        raise RunReportError("delivery_recovery_required", retryable=False)
+    _write_spool("review", review_content=data.decode("utf-8"))
 
 
 def report_block(code: str) -> None:

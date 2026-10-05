@@ -272,7 +272,8 @@ def test_reset_409_rereads_and_reports_revision_without_echoing_body() -> None:
             parse("mappings", "reset", "--persona", "architect", "--yes"),
             Conflicting(before=mapping(CANONICAL, 8)),
         )
-    assert raised.value.code == "revision_conflict"
+    assert raised.value.code == "stale_revision"
+    assert raised.value.exit_code == 4
     assert "12 was current as of the re-read" in str(raised.value)
 
 
@@ -406,7 +407,7 @@ def test_stale_marked_2xx_write_json_uses_unavailable_status(monkeypatch, capsys
     assert result["detail"]["changed"] is None
     assert result["detail"]["reason"] == "evidence_stale"
     assert "saved state is unknown" in result["next_action"]
-    assert captured.err == ""
+    assert "Capability discovery for models.mapping.self.write is unconfirmed" in captured.err
 
 
 def test_noninteractive_write_requires_yes(monkeypatch) -> None:
@@ -432,7 +433,8 @@ def test_concurrent_change_before_write_is_refused() -> None:
     client = Racing()
     with pytest.raises(cli.CliError) as raised:
         cli.run(parse("mappings", "set", "--persona", "architect", "--model", CANONICAL, "--yes"), client)
-    assert raised.value.code == "revision_conflict"
+    assert raised.value.code == "stale_revision"
+    assert raised.value.exit_code == 4
     assert not any(method == "PUT" for method, _path, _body in client.calls)
 
 
@@ -446,7 +448,8 @@ def test_409_rereads_and_reports_revision_without_echoing_body() -> None:
 
     with pytest.raises(cli.CliError) as raised:
         cli.run(parse("mappings", "set", "--persona", "architect", "--model", CANONICAL, "--yes"), Conflicting())
-    assert raised.value.code == "revision_conflict"
+    assert raised.value.code == "stale_revision"
+    assert raised.value.exit_code == 4
     assert "12 was current as of the re-read" in str(raised.value)
 
 
@@ -580,7 +583,7 @@ def test_signed_machine_mutation_names_service_account_on_first_line(monkeypatch
     assert "service account sp-canonical-1" in first_line
     assert "organization org-1" in first_line
     assert "SigV4" not in first_line
-    assert captured.err == ""
+    assert "Capability discovery for models.mapping.self.write is unconfirmed" in captured.err
 
 
 def test_json_usage_failure_is_one_parseable_document(capsys) -> None:

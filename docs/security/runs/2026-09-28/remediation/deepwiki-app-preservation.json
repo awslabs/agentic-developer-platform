@@ -1,0 +1,33 @@
+{
+  "before": {
+    "/app": {
+      "sha256": "64d85121ab8c38e3b9cfa4e7c90a9753adb50baed603d79e11a86a1d35d44e72",
+      "files": 2484
+    },
+    "/opt/venv": {
+      "sha256": "63ab6b9e7e9c0b99ad4ea112f59a4362f7719c21371722939e551af26d40872c",
+      "files": 10947
+    },
+    "/usr/local/lib/python3.11": {
+      "sha256": "34f750cceafe967f22f451519d924ed2f58c3c0b3101800a2f32274918872c43",
+      "files": 1787
+    },
+    "uid": 10001
+  },
+  "candidate": {
+    "/app": {
+      "sha256": "64d85121ab8c38e3b9cfa4e7c90a9753adb50baed603d79e11a86a1d35d44e72",
+      "files": 2484
+    },
+    "/opt/venv": {
+      "sha256": "63ab6b9e7e9c0b99ad4ea112f59a4362f7719c21371722939e551af26d40872c",
+      "files": 10947
+    },
+    "/usr/local/lib/python3.11": {
+      "sha256": "34f750cceafe967f22f451519d924ed2f58c3c0b3101800a2f32274918872c43",
+      "files": 1787
+    },
+    "uid": 10001
+  },
+  "preserved": true
+}

@@ -1,7 +1,7 @@
 # Expedited PMM rollout — dev, 2026-09-20
 
 The operator requested PMM live without the seven-day soak on 2026-09-20.
-Target: account `879318057152`, region `us-east-1`, AWS profile `embark1`.
+Target: account `000000000101`, region `us-east-1`, AWS profile `example-profile`.
 This supersedes the elapsed-time prerequisite in the earlier dated PMM readiness
 report for this dev rollout. Profiles remain deferred.
 
@@ -13,7 +13,7 @@ model for any of the 14 personas. Direct/delegated, chat, AI-DLC and replan
 adapters use the same preference. Worker-security migration, role retirement,
 protected policy enforcement and profiles are separate work, not prerequisites.
 
-Live settings: <https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models>.
+Live settings: <https://gateway-101.example.com/settings/agent-models>.
 The authenticated feature endpoint reports `agent_models=true`; the settings
 route and published JavaScript return 200. No visual browser check was available.
 
@@ -22,7 +22,7 @@ At 15:24 UTC, a Cognito-authenticated user saved
 that persona through the real WebSocket ingress. The worker used saved Haiku,
 returned `PMM_LIVE_OK`, and emitted `RUN_FINISHED`. Gateway usage records confirm
 two HTTP 200 provider calls under invocation
-`0ed70fc1-918b-4cea-91fc-fb5969549721`, both to Haiku in account `879318057152`.
+`0ed70fc1-918b-4cea-91fc-fb5969549721`, both to Haiku in account `000000000101`.
 Their settled costs were $0.000513 and $0.028871, totaling **$0.029384**.
 Direct/delegation and AI-DLC/replan paths passed automated adapter tests; they
 were not each separately invoked live. Customer-linked accounts remain outside
@@ -90,7 +90,7 @@ security-cutover blockers do not block this basic release.
   execution flag is false; gateway probe admission and budgets remain disabled.
 - Worker image build `35505332757` succeeded from `ed897ee42f0e224268ee1e87ad871c7d15aa016e`.
   The probe CronJob pins
-  `879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e`.
+  `000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e`.
   The ordinary ScaledJob has not switched to it.
 - The live Door ACL and server hashes match the current source, including
   tenant enforcement for gateway-mediated runs. Its ingress policy omitted the
@@ -198,7 +198,7 @@ three-slot Job completed with **three proven invocations and no errors**:
 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | `6bff8dcc-7c40-45c8-bad9-3f24bc9d20e4` |
 | `us.anthropic.claude-sonnet-4-6` | `91cc993a-2fde-4a8b-9ff7-652c77abbdbc` |
 
-The evidence is scoped to account `879318057152`, region `us-east-1`, the pinned
+The evidence is scoped to account `000000000101`, region `us-east-1`, the pinned
 SDK contract `0.3.220` and v3 request shapes. It expires on 2026-09-21 at roughly
 13:41 UTC. This is real model qualification, not end-to-end persona execution.
 The private ledger retains $4 conservatively against the $10 ceiling, including

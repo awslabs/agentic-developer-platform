@@ -2,6 +2,14 @@
 # Shared saved-plan gate for platform and delegated webhook upgrades.
 _UPDATE_PLAN_HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Environment tfvars can contain operator-activated settings for a different
+# account. A saved plan is too late to catch cross-account references in every
+# policy, URL and ConfigMap, so reject them before planning an update.
+terraform_update_var_file() {
+  local DEFAULT_FILE="$1" EXPLICIT_FILE="${2:-}" TARGET_ACCOUNT="$3"
+  python3 "$_UPDATE_PLAN_HELPER_DIR/tfvars-account-check.py" "${EXPLICIT_FILE:-$DEFAULT_FILE}" "$TARGET_ACCOUNT"
+}
+
 terraform_update_apply() {
   local MODULE_NAME="$1"
   local VAR_FILE="$2"
@@ -31,6 +39,18 @@ PY
       *) PLAN_ARGS+=("$1"); shift ;;
     esac
   done
+
+  # Every pre-final gateway pass must keep the engine paused. In particular,
+  # a newly created engine cannot run against the old database schema. Preserve
+  # the desired schedule setting independently so retries don't enable a schedule
+  # the operator had intentionally disabled before this upgrade.
+  if [ "$CONTEXT_MODULE" = gateway ]; then
+    if [ "$MODULE_NAME" = gateway-final ]; then
+      PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=false)
+    else
+      PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=true)
+    fi
+  fi
 
   # 1. Plan to a file (captures the plan for inspection)
   local PLAN_DIR

@@ -89,9 +89,12 @@ from src.orchestration.dispatch_pass import (
     routing_blocker_for_node,
 )
 from src.orchestration.display_state import FlowStatus
+from src.orchestration.draft_revision_routes import router as draft_revision_router
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
+from src.orchestration.evaluation_waiver_routes import router as evaluation_waiver_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
+from src.orchestration.flow_controls import router as flow_controls_router
 from src.orchestration.models import DecisionKind, NodeState
 from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
@@ -105,7 +108,7 @@ from src.orchestration.pr_bindings import (
     recover_binding,
 )
 from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
-from src.orchestration.proposal import LoopProposal, split_address
+from src.orchestration.proposal import EpicMetadata, LoopProposal, WaveMetadata, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.orchestration.run_report_read import MAX_REPORTS_PER_PAGE, FlowRunReportsResponse, load_flow_run_reports
 from src.orchestration.shared_amendment_routes import router as shared_amendment_router
@@ -116,7 +119,7 @@ from src.orchestration.shared_window_routes import router as shared_window_route
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from .delivery_progress import DeliveryProgress, current_executions, node_progress
+from .delivery_progress import DeliveryProgress, current_executions, is_preserved_execution, node_progress
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
@@ -521,6 +524,8 @@ class RecoverBindingRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
     provider_repository_id: int | None = Field(default=None, gt=0)
     provider_pr_node_id: str | None = Field(default=None, min_length=1, max_length=255)
     repo: str = Field(min_length=3, max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -595,6 +600,11 @@ async def recover_story_binding(
     node = await repo_reader.get_node(org_id=current_user.org_id, node_id=node_id)
     if node is None or node.flow_id != flow.id or node.kind != "story":
         raise HTTPException(status_code=404, detail="story not found in this flow")
+
+    if body.expected_revision is not None:
+        from .recovery_snapshot import require_snapshot
+
+        node = await require_snapshot(db, org_id=current_user.org_id, node_id=node_id, flow_id=flow_id, expected_revision=body.expected_revision)
 
     adoption_scope = None
     if body.adopt_delivery:
@@ -1034,6 +1044,8 @@ class WaveSummaryResponse(BaseModel):
 
     epic_ref: str
     wave_ref: str
+    title: str | None = None
+    description: str | None = None
     total: int
     done: int
     story_count: int
@@ -1056,6 +1068,7 @@ class FlowSummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    execution_paused: bool = True
     slug: str
     title: str
     intent_ref: str | None
@@ -1085,6 +1098,8 @@ class FlowSummaryResponse(BaseModel):
     eval_count: int
     changes_requested_count: int
     completed_story_count: int
+    eval_story_count: int
+    completed_eval_story_count: int
     epic_count: int
     wave_count: int
     current_wave_ref: str | None
@@ -1119,10 +1134,12 @@ class FlowListResponse(BaseModel):
     status_counts: dict[str, int]
 
 
-def _wave_summary(wave: WaveAggregate) -> WaveSummaryResponse:
+def _wave_summary(wave: WaveAggregate, metadata: dict | None = None) -> WaveSummaryResponse:
     return WaveSummaryResponse(
         epic_ref=wave.epic_ref,
         wave_ref=wave.wave_ref,
+        title=(metadata or {}).get("title"),
+        description=(metadata or {}).get("description"),
         total=wave.total,
         done=wave.done,
         story_count=wave.story_count,
@@ -1213,11 +1230,14 @@ async def list_flows_route(
             continue
         measured[flow_slug].append(node_cost)
 
+    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[aggregate.flow.id for aggregate in page.flows])
     flows: list[FlowSummaryResponse] = []
     for aggregate in page.flows:
+        wave_metadata = {(item["epic_ref"], item["wave_ref"]): item for item in display_metadata.get(aggregate.flow.id, {}).get("wave_metadata", [])}
         flows.append(
             FlowSummaryResponse(
                 id=aggregate.flow.id,
+                execution_paused=aggregate.flow.execution_paused,
                 slug=aggregate.flow.slug,
                 title=aggregate.flow.title,
                 intent_ref=aggregate.flow.intent_ref,
@@ -1233,10 +1253,12 @@ async def list_flows_route(
                 eval_count=aggregate.eval_count,
                 changes_requested_count=aggregate.changes_requested_count,
                 completed_story_count=aggregate.completed_story_count,
+                eval_story_count=aggregate.eval_story_count,
+                completed_eval_story_count=aggregate.completed_eval_story_count,
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,
-                waves=[_wave_summary(wave) for wave in aggregate.waves],
+                waves=[_wave_summary(wave, wave_metadata.get((wave.epic_ref, wave.wave_ref))) for wave in aggregate.waves],
                 delivery_cost=_node_cost_response(_roll_up_delivery_cost(aggregate.flow.slug, measured.get(aggregate.flow.slug, []))),
                 created_at=aggregate.flow.created_at.isoformat(),
                 updated_at=aggregate.flow.updated_at.isoformat() if aggregate.flow.updated_at else None,
@@ -1350,6 +1372,7 @@ class GraphNodeResponse(BaseModel):
     # generic message — so this never claims a binding exists where one does not.
     bound_pull_request: dict | None = None
     binding_hold: str | None = None
+    evaluation_waiver: dict | None = None
     cost: NodeCostResponse
     created_at: str
     updated_at: str | None
@@ -1386,6 +1409,7 @@ class FlowGraphResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     flow_id: str
+    execution_paused: bool = True
     slug: str
     title: str
     intent_ref: str | None
@@ -1394,6 +1418,8 @@ class FlowGraphResponse(BaseModel):
     updated_at: str | None
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
+    wave_metadata: list[WaveMetadata] = Field(default_factory=list)
+    epic_metadata: list[EpicMetadata] = Field(default_factory=list)
     cost: FlowCostResponse
     # What the owner authorized for this delivery, or `None` when no policy is in
     # force (#5128). `None` is a real and permanent state, not a transitional one:
@@ -1403,6 +1429,7 @@ class FlowGraphResponse(BaseModel):
     # $0.00" describes a policy that authorizes nothing, which is the opposite of
     # what an unpolicied flow does.
     execution_policy: PolicySummary | None = None
+    execution_window: dict | None = None
 
 
 @router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
@@ -1446,6 +1473,10 @@ async def get_flow_graph(
     # the version currently in force, which is what makes an amendment show up here
     # without a superseded version ever being shown as current.
     policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
+    from .window_view import execution_window_view
+
+    window_view = await execution_window_view(db, flow=flow, nodes=nodes, inputs=policy_inputs)
+    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[flow.id])
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     display_states = await repo.node_display_states(org_id=current_user.org_id, flow_id=flow.id)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
@@ -1455,12 +1486,34 @@ async def get_flow_graph(
     dispatches: dict[str, dict] = {}
     result_summaries: dict[str, dict] = {}
     gate_decisions: dict[str, GateDecisionSummary] = {}
+    waivers: dict[str, dict] = {}
     observed_at: dict[str, tuple[int, str]] = {}
     admission_refusals: dict[str, dict] = {}
+    developer_retries: dict[str, dict] = {}
     from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
     from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
 
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind == "developer_retry_checked" and decision.actor_id == "system:developer-recovery" and decision.actor_kind == "service":
+            try:
+                retry = json.loads(decision.reason or "{}")
+                if isinstance(retry, dict):
+                    developer_retries[decision.node_id] = retry
+            except (ValueError, TypeError):
+                pass
+        if decision.kind == "evaluation_waived" and decision.actor_kind == "human":
+            try:
+                content = json.loads(decision.reason or "{}")
+                waivers[decision.node_id] = dict(
+                    decision_id=decision.id,
+                    actor_id=decision.actor_id,
+                    created_at=decision.created_at.isoformat(),
+                    reason=content["reason"],
+                    criterion_ids=content["criterion_ids"],
+                    plan_version=content["plan_version"],
+                )
+            except (ValueError, KeyError, TypeError):
+                pass
         if decision.kind == DecisionKind.TRANSITION_REJECTED.value and decision.actor_id == ADMISSION_ACTOR and decision.actor_kind == "service":
             try:
                 refusal = json.loads(decision.rejection_reason or "{}")
@@ -1500,6 +1553,9 @@ async def get_flow_graph(
     cost_by_address = {node_cost.address: node_cost for node_cost in aggregate.nodes}
 
     graph_nodes: list[GraphNodeResponse] = []
+    from .plan_lineage import preserved_execution_pairs
+
+    preserved = set(await preserved_execution_pairs(db, org_id=current_user.org_id, flow_ids=[flow_id]))
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
@@ -1568,11 +1624,14 @@ async def get_flow_graph(
                     execution=executions_by_node.get(node.id),
                     policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
                     plan_version=policy_inputs.plan_version,
+                    preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
                     policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
                     admission_refusal=admission_refusals.get(node.id),
+                    developer_retry=developer_retries.get(node.id),
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
                 ),
                 last_gate_decision=gate_decisions.get(node.id),
+                evaluation_waiver=waivers.get(node.id) if node.state == "waived" else None,
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
@@ -1615,6 +1674,7 @@ async def get_flow_graph(
 
     return FlowGraphResponse(
         flow_id=flow.id,
+        execution_paused=flow.execution_paused,
         slug=flow.slug,
         title=flow.title,
         intent_ref=flow.intent_ref,
@@ -1622,9 +1682,12 @@ async def get_flow_graph(
         created_at=flow.created_at.isoformat(),
         updated_at=flow.updated_at.isoformat() if flow.updated_at else None,
         nodes=graph_nodes,
+        wave_metadata=display_metadata.get(flow.id, {}).get("wave_metadata", []),
+        epic_metadata=display_metadata.get(flow.id, {}).get("epic_metadata", []),
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
+        execution_window=window_view,
     )
 
 
@@ -1724,6 +1787,7 @@ class ExecutionSummaryResponse(BaseModel):
     status: str
     revision: int
     attempts: int
+    stage_attempts: dict[str, int] = Field(default_factory=dict)
     next_check_at: str | None
     deadline_at: str | None
     progressed_at: str | None
@@ -1851,6 +1915,7 @@ async def get_flow_execution(
                 status=execution.status.value,
                 revision=execution.revision,
                 attempts=execution.attempts,
+                stage_attempts=execution.stage_attempts,
                 next_check_at=_iso(execution.next_check_at),
                 deadline_at=_iso(execution.deadline_at),
                 progressed_at=_iso(execution.progressed_at),
@@ -1895,9 +1960,13 @@ async def get_flow_execution(
 
 
 router.include_router(continuation_router)
+router.include_router(flow_controls_router)
 router.include_router(shared_amendment_router)
 router.include_router(shared_budget_router)
 router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+router.include_router(evaluation_waiver_router)
+
+router.include_router(draft_revision_router)

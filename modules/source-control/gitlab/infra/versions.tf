@@ -3,7 +3,7 @@
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.7"
 
   backend "s3" {
     # Configured via -backend-config during terraform init

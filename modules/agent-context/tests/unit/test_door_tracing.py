@@ -357,7 +357,9 @@ class TestBackendSubSpan:
         original_tracer = search_backend._search_tracer
         search_backend._search_tracer = mock_tracer
         try:
-            backend = search_backend.ZoektSearchBackend("http://zoekt:6070", timeout=5.0)
+            backend = search_backend.ZoektSearchBackend(
+                "http://zoekt:6070", timeout=5.0, api_key="test-zoekt-tracing-key-with-32-characters"
+            )
 
             # Mock httpx to avoid real network calls
             mock_response = MagicMock()

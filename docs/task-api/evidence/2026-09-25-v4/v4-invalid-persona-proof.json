@@ -1,0 +1,66 @@
+{
+  "at": "2026-09-25T05:36:51.314029+00:00",
+  "request": {
+    "schema_version": "1.0",
+    "persona": "agent-task-not-registered-5792",
+    "instructions": "Invalid persona denial fixture. Must not launch."
+  },
+  "key": "task-api-5792-v4-invalid-persona",
+  "status": 403,
+  "response": {
+    "schema_version": "1.0",
+    "code": "disallowed_persona",
+    "message": "The requested task persona is not allowed.",
+    "request_id": "effbad1e-4da8-434c-ba4b-cda6fe6b88aa",
+    "http_status": 403
+  },
+  "request_id": "effbad1e-4da8-434c-ba4b-cda6fe6b88aa",
+  "before": {
+    "idempotency": null,
+    "capacity": {
+      "active_count": {
+        "N": "0"
+      },
+      "capacity_limit": {
+        "N": "20"
+      },
+      "pk": {
+        "S": "TASK_CAPACITY#3ae3f89bc5d3bf04e2697692161ae5a0a988d8d45c51098eb917cf63a4f82878"
+      },
+      "reservations": {
+        "M": {}
+      },
+      "updated_at": {
+        "S": "2026-09-25T05:12:43Z"
+      },
+      "sk": {
+        "S": "ACTIVE"
+      }
+    }
+  },
+  "after": {
+    "idempotency": null,
+    "capacity": {
+      "active_count": {
+        "N": "0"
+      },
+      "capacity_limit": {
+        "N": "20"
+      },
+      "pk": {
+        "S": "TASK_CAPACITY#3ae3f89bc5d3bf04e2697692161ae5a0a988d8d45c51098eb917cf63a4f82878"
+      },
+      "reservations": {
+        "M": {}
+      },
+      "updated_at": {
+        "S": "2026-09-25T05:12:43Z"
+      },
+      "sk": {
+        "S": "ACTIVE"
+      }
+    }
+  },
+  "no_acceptance_record": true,
+  "capacity_unchanged": true
+}

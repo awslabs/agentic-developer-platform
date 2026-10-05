@@ -33,6 +33,7 @@
  */
 
 import * as http from 'http';
+import { ExplanationEvents, explanationsEnabled, HISTORY_BYTES } from './explanation-events';
 import { timingSafeEqual, type KeyObject } from 'crypto';
 import { AddressInfo } from 'net';
 
@@ -123,6 +124,7 @@ export interface ControlListenerConfig {
   /** Run generation. A request declaring a different generation is stale. */
   generation: number;
   store: ControlStateStore;
+  events?: ExplanationEvents;
   /** Structured log sink. Injected so tests observe diagnostics without stdout capture. */
   logger?: (level: string, message: string, context?: Record<string, unknown>) => void;
 
@@ -141,8 +143,30 @@ export interface ControlListenerConfig {
    * Invoked *through* the journal's delivery gate rather than directly, so an
    * envelope-bearing command is revalidated against the gateway first. The
    * executor itself must therefore settle the command it is handed.
+   *
+   * `reason` is the operator's own words, already length-bounded by payload
+   * validation, and `null` when none was supplied. It exists for `abort`
+   * (Issue #3963), whose terminal outcome quotes it back in the closing comment;
+   * verbs that do not use it ignore the argument.
+   *
+   * `instruction` is the steering text (Issue #3965), `null` for every other
+   * verb. It is passed as a *separate* parameter rather than folded into
+   * `reason` because the two have opposite trust handling: `reason` is quoted
+   * back into an operator-facing comment, while `instruction` crosses into a
+   * model prompt and must be wrapped as untrusted input first. Merging them
+   * would make it possible to route steering text down the quoting path, or an
+   * abort reason down the prompt path, by changing one call site.
+   *
+   * Validation is the only place that has seen the request body — the journal
+   * deliberately does not store instruction text, because `CommandRecord` is
+   * re-projected to the browser — so if it is not carried here it is gone.
    */
-  executor?: (action: ControlAction, commandId: string) => Promise<void>;
+  executor?: (
+    action: ControlAction,
+    commandId: string,
+    reason: string | null,
+    instruction: string | null,
+  ) => Promise<void>;
 
   /**
    * This run's own id — Issue #5028.
@@ -182,6 +206,9 @@ export type StartOutcome =
 
 export class ControlListener {
   private server: http.Server | null = null;
+  private mutationsEnabled = false;
+  private readsEnabled = false;
+  private streams = new Set<http.ServerResponse>();
   // Serialize revalidation and executor *start* in journal acceptance order.
   // Never wait for pause settlement here: resume must be able to cancel it.
   private deliveryTail: Promise<void> = Promise.resolve();
@@ -217,7 +244,9 @@ export class ControlListener {
    * hardening decision gets undone by an unrelated deployment change.
    */
   async start(env: NodeJS.ProcessEnv = process.env): Promise<StartOutcome> {
-    if (!isAgentControlEnabled(env)) {
+    this.mutationsEnabled = isAgentControlEnabled(env);
+    this.readsEnabled = explanationsEnabled(env);
+    if (!this.mutationsEnabled && !this.readsEnabled) {
       // No server object, no port, no journal activity. The flag-off path must
       // leave the ordinary run byte-identical in its observable behaviour.
       return { started: false, reason: 'disabled' };
@@ -290,6 +319,8 @@ export class ControlListener {
     const server = this.server;
     if (!server) return;
     this.server = null;
+    this.config.events?.finish();
+    for (const response of this.streams) response.end();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
@@ -331,7 +362,7 @@ export class ControlListener {
       // served entirely from recorded state (revival-design §2).
       const state = this.config.store.snapshot();
       const keyIds = this.verificationKeyIds();
-      const ready = keyIds.length > 0;
+      const ready = this.mutationsEnabled && keyIds.length > 0;
       this.writeJson(res, 200, {
         ...state,
         verification_key_ids: keyIds,
@@ -345,14 +376,15 @@ export class ControlListener {
       return;
     }
     if (path === RESERVED_EVENTS_PATH) {
-      // Reserved, not implemented. 501 rather than 404 so the path is visibly
-      // claimed: a 404 would invite a later story to mount something else here.
-      this.writeJson(res, 501, { error: 'not_implemented', detail: 'event stream is reserved' });
-      return;
+      if (method !== 'GET' || !this.readsEnabled || !this.config.events) {
+        this.writeJson(res, 501, { error: 'not_implemented' }); return;
+      }
+      this.streamEvents(req, res); return;
     }
 
     const action = this.actionFromPath(method, path);
     if (action) {
+      if (!this.mutationsEnabled) { this.writeJson(res, 503, { error: 'controls_disabled' }); return; }
       await this.handleCommand(action, req, res);
       return;
     }
@@ -398,6 +430,73 @@ export class ControlListener {
       }
     }
     return true;
+  }
+
+  private streamEvents(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const events = this.config.events!;
+    const cursor = req.headers['last-event-id'];
+    if ((cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 256)) ||
+        req.headers['x-adp-control-generation'] !== String(this.config.generation)) {
+      this.writeJson(res, 400, { error: 'invalid_cursor_or_generation' }); return;
+    }
+    let unsubscribe: () => void;
+    let blocked = false, ending = false, queuedBytes = 0;
+    let drainTimeout: ReturnType<typeof setTimeout> | undefined;
+    const queue: string[] = [];
+    const flush = () => {
+      if (blocked || res.destroyed || res.writableEnded) return;
+      while (queue.length) {
+        const next = queue.shift()!;
+        queuedBytes -= Buffer.byteLength(next);
+        // false means the frame was accepted but the socket needs time to drain.
+        // Destroying here drops ordinary retained-history replay on reconnect.
+        if (!res.write(next)) {
+          blocked = true;
+          drainTimeout = setTimeout(() => res.destroy(), 5000);
+          drainTimeout.unref();
+          return;
+        }
+      }
+      if (ending) res.end();
+    };
+    const enqueue = (frame: string) => {
+      if (res.destroyed || res.writableEnded) return;
+      queuedBytes += Buffer.byteLength(frame);
+      // Allow retained history plus SSE framing and concurrent updates, while
+      // keeping a genuinely stalled subscriber from accumulating live data.
+      if (queuedBytes > HISTORY_BYTES * 2) { res.destroy(); return; }
+      queue.push(frame);
+      flush();
+    };
+    const drained = () => {
+      clearTimeout(drainTimeout);
+      blocked = false;
+      flush();
+    };
+    const send = (event: import('./explanation-events').ExplanationEvent) => {
+      if (ending) return;
+      if (event.kind === 'terminal') ending = true;
+      enqueue(`id: ${events.cursor(event.sequence)}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+    try { unsubscribe = events.subscribe(send); }
+    catch { this.writeJson(res, 429, { error: 'subscriber_limit' }); return; }
+    this.streams.add(res);
+    res.on('drain', drained);
+    const heartbeat = setInterval(() => {
+      if (!this.authenticate(req)) { res.destroy(); return; }
+      if (!ending) enqueue(`event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`);
+    }, 2000);
+    heartbeat.unref();
+    res.on('close', () => {
+      clearInterval(heartbeat); clearTimeout(drainTimeout); res.off('drain', drained);
+      queue.length = 0; queuedBytes = 0;
+      unsubscribe(); this.streams.delete(res);
+    });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    const replay = events.replay(cursor as string | undefined);
+    if (replay.reset) enqueue('event: reset\ndata: {"reason":"History unavailable; showing retained updates."}\n\n');
+    for (const event of replay.events) { if (res.destroyed || res.writableEnded) break; send(event); }
   }
 
   /** Map `POST /agent/<verb>` to a known verb, or null. */
@@ -493,7 +592,9 @@ export class ControlListener {
         authority_reference_id: authorization.envelope.authorityReferenceId,
       });
       queuedAuthorization = { envelope: req.headers[ENVELOPE_HEADER] as string, action,
-        command_id: validation.commandId, body_base64: raw.toString('base64') };
+        command_id: validation.commandId, body_base64: raw.toString('base64'),
+        principal: authorization.envelope.principal,
+        authorityKind: authorization.envelope.authorityKind ?? 'delegated_grant' };
     }
 
     const outcome = this.config.store.submit(action, validation.commandId, fingerprintPayload(payload), queuedAuthorization);
@@ -522,7 +623,8 @@ export class ControlListener {
         // journal is the durable record, and the dashboard polls state, so the
         // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
-        this.deliveryTail = this.deliveryTail.then(() => this.applyAccepted(action, validation.commandId));
+        this.deliveryTail = this.deliveryTail.then(() =>
+          this.applyAccepted(action, validation.commandId, validation.reason, validation.instruction));
         return;
     }
   }
@@ -547,8 +649,31 @@ export class ControlListener {
    * the truth for a run whose harness cannot perform the verb, and it keeps the
    * pending cap doing its job. Auto-rejecting here instead would silently drain
    * the queue and disable the 429 backpressure the cap exists to provide.
+   *
+   * **`steer` takes neither branch — Issue #3965.** Both of the paths above mark
+   * the command `delivered` before the executor runs, because for pause, resume
+   * and abort the executor *is* the effect: the moment it starts, the run is
+   * being paused or stopped. Steering is the one verb where acceptance and
+   * delivery are genuinely separated in time — the instruction has to wait for a
+   * point at which the harness can take input, which may be twenty minutes away
+   * in the middle of a long tool call. Marking it `delivered` here would place
+   * the acknowledgement at enqueue time, which is precisely the overclaim the
+   * story forbids: the dashboard would report an instruction as handed to the
+   * model while it sat in a queue.
+   *
+   * It would also move the authority re-check to the wrong moment. Running
+   * `deliverAuthorized` now would validate the grant at acceptance and then
+   * deliver against that stale decision later, so a revocation during the wait
+   * would have no effect. So the steering executor is invoked directly, leaves
+   * the command `pending`, and the delivery pump calls `deliverAuthorized`
+   * itself immediately before the physical handoff.
    */
-  private async applyAccepted(action: ControlAction, commandId: string): Promise<void> {
+  private async applyAccepted(
+    action: ControlAction,
+    commandId: string,
+    reason: string | null,
+    instruction: string | null = null,
+  ): Promise<void> {
     const executor = this.config.executor;
     if (!executor) {
       // Nothing to apply it with. Logged, not settled — see above.
@@ -564,12 +689,21 @@ export class ControlListener {
       // rejection would surface as an unhandled rejection and could take the
       // worker down over a control command.
       const run = () => {
-        void store.executeDelivered(commandId, () => executor(action, commandId)).catch((err: unknown) => {
+        void store.executeDelivered(commandId, () => executor(action, commandId, reason, instruction)).catch((err: unknown) => {
           this.log('warn', 'control executor failed', { action, command_id: commandId,
             detail: (err as Error)?.message ?? String(err) });
           store.settle(commandId, 'rejected', 'control executor failed');
         });
       };
+      // Issue #3965: steering is handed over while still `pending`, and the pump
+      // owns both the journal transition and the authority re-check. Not wrapped
+      // in `executeDelivered` either — that helper holds a pending-cap slot for
+      // the executor's lifetime, and this executor returns as soon as the
+      // instruction is queued, which is not when the command finishes.
+      if (action === 'steer') {
+        await executor(action, commandId, reason, instruction);
+        return;
+      }
       // `deliverAuthorized` returns false when the re-check fails, having already
       // settled the command `rejected`. Nothing more to do on that path.
       if (this.requiresEnvelope(action)) {
@@ -660,7 +794,7 @@ export class ControlListener {
   private validatePayload(
     action: ControlAction,
     payload: Record<string, unknown>,
-  ): { ok: true; commandId: string } | { ok: false; detail: string } {
+  ): { ok: true; commandId: string; reason: string | null; instruction: string | null } | { ok: false; detail: string } {
     const allowed = action === 'steer' ? ['command_id', 'instruction'] : ['command_id', 'reason'];
     for (const key of Object.keys(payload)) {
       if (!allowed.includes(key)) {
@@ -681,14 +815,25 @@ export class ControlListener {
       if (instruction.length > MAX_INSTRUCTION_CHARS) {
         return { ok: false, detail: 'instruction is too long' };
       }
+      // Returned rather than discarded — Issue #3965. Until this story the text
+      // was validated here and then dropped, which was harmless only while
+      // `steer` answered 501: the moment the verb is implemented, dropping it
+      // would accept an instruction and deliver an empty one.
+      return { ok: true, commandId, reason: null, instruction };
     } else if (payload.reason !== undefined) {
       const reason = payload.reason;
       if (typeof reason !== 'string' || reason.length > MAX_REASON_CHARS) {
         return { ok: false, detail: 'reason is invalid' };
       }
+      // Returned so the executor can carry it into the abort record and from
+      // there into the operator-facing closing comment — Issue #3963. Validation
+      // is the only place that has seen the body, and the journal's own `reason`
+      // field is the command's *outcome* annotation, not the request, so there is
+      // nowhere else to read it back from.
+      return { ok: true, commandId, reason, instruction: null };
     }
 
-    return { ok: true, commandId };
+    return { ok: true, commandId, reason: null, instruction: null };
   }
 
   /**

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.onboarding import TenantMembership
 
 if TYPE_CHECKING:
@@ -117,6 +118,9 @@ async def set_membership_role(
     has_other_active = any(m.is_active for m in rows if m.tenant_id != tenant_id)
 
     if existing is not None:
+        from src.admin.membership_revocation import require_not_revoked
+
+        require_not_revoked(existing)
         if existing.role != desired_role:
             logger.info(
                 "membership set_role: user=%s tenant=%s %r -> %r (joined_via=%s)",
@@ -194,6 +198,9 @@ async def upsert_tenant_membership(
     has_other_active = any(m.is_active for m in rows if m.tenant_id != tenant_id)
 
     if existing is not None:
+        from src.admin.membership_revocation import require_not_revoked
+
+        require_not_revoked(existing)
         # Only ever raise privilege, never lower it: a user who is already
         # org_admin here must not be demoted by a later member-level write.
         if is_admin_level_role(desired_role) and not is_admin_level_role(existing.role):
@@ -281,10 +288,16 @@ async def project_member_org_ids(
     GitHub id 123 would shrink the key to ``["org2"]`` and a fail-closed reader
     would start denying the same account's real org1 memberships. So for each
     GitHub id this user holds, the projected list is the UNION of
-    ``tenant_memberships.tenant_id`` across ALL user rows holding that identity —
-    exactly the GROUP BY-``provider_user_id`` semantics of the reconciliation
-    script (``scripts/backfill_member_org_ids.py``), so reconciliation and
-    write-through can never disagree.
+    ``tenant_memberships.tenant_id`` across user rows with a PROVEN binding to
+    that account. The projection grants sign-in eligibility and satisfies the
+    webhook's ``home_tenant_only`` policy, so a channel placement or self-asserted
+    identity must not add another user's memberships to the account's authority.
+    Reconciliation must apply the same proof filter.
+
+    The set of IDs to REFRESH stays unfiltered, including a removed user's
+    snapshot: an unproven row may have contributed stale memberships before this
+    check existed. Refreshing that key must clear those memberships while
+    retaining any proven siblings, rather than leave the old permissive list.
 
     Args:
         db: Session to read committed membership state through.
@@ -330,9 +343,9 @@ async def project_member_org_ids(
         writer = writer or IdentityIndexWriter()
         ok = True
         for provider_user_id in sorted(provider_user_ids):
-            # Union across every user row holding this GitHub identity — the
-            # backfill script's semantics (see docstring). NOT just this user's
-            # memberships: that would clobber sibling users off the shared key.
+            # Keep every proven sibling's memberships on the shared key. The
+            # unfiltered ID snapshot chooses what to refresh, not whose
+            # memberships may confer authority through this GitHub account.
             member_org_ids = sorted(
                 set(
                     (
@@ -340,8 +353,10 @@ async def project_member_org_ids(
                             select(TenantMembership.tenant_id)
                             .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
                             .where(
+                                TenantMembership.revoked_at.is_(None),
                                 UserIdentity.provider == "github",
                                 UserIdentity.provider_user_id == provider_user_id,
+                                UserIdentity.verification_method.in_(PROVEN_METHODS),
                             )
                             .distinct()
                         )

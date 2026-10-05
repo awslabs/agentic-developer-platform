@@ -1,74 +1,8 @@
-"""The production `provider_authority` adapter over `harness_jobs`.
+"""Compare every provider handle field to the approved request and protected run.
 
-Issue #5535 (Superplane W6), EPIC #4910.
-
-Implements the `ProviderAuthorityValidator` Protocol declared at
-`app/services/provider_authority.py:35`. That module's docstring states the
-requirement this adapter has to meet: "A future trusted adapter must verify B's
-live authority and resolve its authenticated executor and exact operation context.
-The opaque request value is never persisted or treated as proof on its own."
-
-## Resolve, then compare — never echo
-
-The consumer (`provider_handles._verify_authority`) requires the returned binding's
-`handle` to equal `replace(handle, provider_reference=None)` field for field. It is
-worth being precise about why that does *not* make this an echo, because an earlier
-revision of `app/composition.py` concluded it did, and left the port permanently
-uncomposed on that basis:
-
-> `_verify_authority` requires the resolved binding to equal the request handle
-> field for field, so an adapter cannot synthesize the missing values by echoing
-> the request — that is precisely the "create a binding from the supplied handle
-> alone" the port forbids.
-
-The equality check is the consumer's way of asking "did you agree with what I
-presented?", and the only safe way to answer it is to resolve the authoritative
-values independently and *compare*. That is what `_authorized_handle` does. It
-returns the presented identity only after every field that carries authority has
-been checked against server-held state, and returns `None` on any disagreement —
-never a corrected handle, because a validator that silently substituted the real
-allocation would authorize a call against an allocation the caller did not ask
-about.
-
-The fields divide into three kinds, and each is handled differently:
-
-* **Resolved from the approved plan.** `allocation_id` is read by
-  `allocation_id_for(record)` from the digest-bound admitted request — a value a
-  human approved — and compared. The harness explains why that source and no
-  other (`allocation.py:119-124`): a worker-supplied allocation id "would let an
-  executor with a valid lease publish a valid report naming somebody else's
-  allocation and collect cleanup authority over resources it was never approved
-  to touch."
-* **Resolved from the live lease.** `workspace` is compared against
-  `lease.workspace_id`, and the presented `submitter_id` against `lease.holder`.
-  Both come off the lease row this process just locked, so they are the
-  database's answer about the present, not the caller's claim.
-* **Bound but not independently derivable.** `provider`, `resource_name`,
-  `idempotency_key` and `operation` describe *what call to make*, not *whose
-  authority to make it under*. When the approved plan declares them they are
-  compared like the first kind; when it does not, they are carried through
-  unchecked and that is stated rather than hidden. This is safe for one specific
-  reason: none of them widens authority. The allocation, the workspace and the
-  holder — the three values that decide what may be touched and by whom — are all
-  in the first two kinds. What the last kind does affect is the durable pre-call
-  record, and `record_handle` persists it under a unique idempotency key before
-  the provider call, with `conclude_operation` re-verifying the same triple
-  afterwards.
-
-## `run_id`, which the lease does not have a field for
-
-Derived by `harness_execution_authority.run_id_for` from
-`(operation_id, fence_token)`. See that module's docstring for why the fence *is*
-the run identity and why deriving it from server state rather than from the request
-is what makes a recovery takeover refuse the previous attempt's conclusion.
-
-## Why this never raises
-
-`NONE_MEANS_UNVERIFIED`. `_verify_authority` catches every exception and answers
-503 "B operation authority is unavailable", so a raise would report a caller's
-lack of authority as an outage — a 503 where the truth is a refusal, telling the
-caller to retry something no retry will make permissible. Every refusal path here
-returns `None`; `asyncio.CancelledError` is a `BaseException` and still propagates.
+An omitted plan field cannot authorize an arbitrary provider target. The actual
+ADP invocation identity comes from Gateway verification, separately from its lease
+fence and original admission identity.
 """
 
 from __future__ import annotations
@@ -83,16 +17,12 @@ from superplane_contracts import ProviderHandle, Submitter
 
 from app.adapters.harness_execution_authority import (
     MAX_IDENTIFIER_LENGTH,
-    run_id_for,
 )
 from app.services.provider_authority import VerifiedProviderAuthority
 
 logger = logging.getLogger(__name__)
 
-# Plan parameter names that, when the approved plan declares them, are compared
-# against the presented handle. Absent from a plan is normal and is not a refusal
-# — see the module docstring on the third kind of field. Present and disagreeing
-# is always a refusal.
+# All provider target fields must be bound by the approved request.
 _PLAN_BOUND_HANDLE_FIELDS: tuple[tuple[str, str], ...] = (
     ("provider", "provider"),
     ("resource_name", "resource_name"),
@@ -131,7 +61,9 @@ class HarnessProviderAuthority:
         ):
             return None
 
-        resolved = await self._authority.resolve_execution(authority)
+        resolved = await self._authority.resolve_submitter(
+            authority, submitter=submitter, workspace=handle.workspace
+        )
         if resolved is None:
             return None
 
@@ -151,13 +83,13 @@ class HarnessProviderAuthority:
         # database says holds the operation now.
         if submitter.submitter_id != lease.holder:
             return None
-        if submitter.workspaces and identity.workspace not in submitter.workspaces:
+        if identity.workspace not in submitter.workspaces:
             # A submitter presenting a workspace outside its own grant. The
             # consumer checks this too (`_authorize_workspace`); both check it
             # because each guards a different mistake, and this one is free.
             return None
 
-        expires_at = lease.expires_at
+        expires_at = min(lease.expires_at, lease.runtime_deadline, resolved.not_after)
         if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
             return None
         if expires_at.utcoffset() is None:
@@ -170,7 +102,7 @@ class HarnessProviderAuthority:
             # further from where it was known.
             return None
 
-        run_id = run_id_for(lease)
+        run_id = resolved.run_id
         identifiers = (lease.operation_id, run_id, lease.attempt_id)
         if not all(
             isinstance(value, str)
@@ -230,7 +162,7 @@ def _authorized_handle(
     for parameter, field_name in _PLAN_BOUND_HANDLE_FIELDS:
         declared = parameters.get(parameter)
         if declared is None:
-            continue
+            return None
         presented = getattr(identity, field_name)
         # `OperationKind` is `str`-valued, so its wire form compares directly
         # against a plan parameter without converting either side.

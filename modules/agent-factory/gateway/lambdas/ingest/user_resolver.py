@@ -14,10 +14,25 @@ import os
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class _NoResolverRedirect(urllib.request.HTTPRedirectHandler):
+    """Identity resolution has one endpoint; never forward its internal key."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            fp.close()
+        raise urllib.error.HTTPError(req.full_url, code, "resolver redirect refused", headers, None)
+
+
+def _open_resolver(req, *, timeout):
+    return urllib.request.build_opener(_NoResolverRedirect()).open(req, timeout=timeout)
+
 
 # Feature flag — when False, resolver is bypassed entirely.
 ENABLE_USER_IDENTITIES = os.environ.get("ENABLE_USER_IDENTITIES", "").lower() in (
@@ -28,9 +43,6 @@ ENABLE_USER_IDENTITIES = os.environ.get("ENABLE_USER_IDENTITIES", "").lower() in
 
 # Gateway internal endpoint base URL (e.g. http://bedrockgateway.adp-gateway:8080)
 RESOLVER_BASE_URL = os.environ.get("RESOLVER_BASE_URL", "")
-
-# Shared secret for internal API authentication
-RESOLVER_API_KEY = os.environ.get("BG_INTERNAL_API_KEY", "")
 
 # Cache TTL in seconds
 _CACHE_TTL_SECONDS = 300  # 5 minutes
@@ -90,6 +102,27 @@ def cache_clear() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _sign_resolution_request(req):
+    """Only the IAM API endpoint may receive an execution identity."""
+    endpoint = urllib.parse.urlsplit(req.full_url)
+    url, data, headers = req.full_url, req.data, dict(req.header_items())
+    host = endpoint.hostname or ""
+    if endpoint.scheme != "https" or ".execute-api." not in host or not host.endswith(".amazonaws.com"):
+        raise ValueError("Resolver requires an IAM execute-api endpoint")
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    credentials = boto3.Session().get_credentials()
+    if credentials is None:
+        raise ValueError("Resolver IAM credentials unavailable")
+    signed = AWSRequest(method="POST", url=url, data=data, headers=headers)
+    region = host.split(".execute-api.", 1)[1].split(".", 1)[0]
+    SigV4Auth(credentials.get_frozen_credentials(), "execute-api", region).add_auth(signed)
+    for name, value in signed.headers.items():
+        req.add_header(name, value)
+    return req
+
+
 def resolve_user(
     provider: str,
     provider_user_id: str,
@@ -117,6 +150,24 @@ def resolve_user(
     if cached is not None:
         return cached
 
+    # Only an explicitly configured HTTP(S) endpoint may receive the internal key.
+    # Plain HTTP remains supported for the existing internal service endpoint.
+    try:
+        endpoint = urllib.parse.urlsplit(RESOLVER_BASE_URL)
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.hostname
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError("invalid resolver endpoint")
+        endpoint.port  # Reject malformed ports before creating a request.
+    except ValueError:
+        logger.error("Invalid resolver endpoint configuration")
+        return None
+
     # Call the gateway endpoint
     url = f"{RESOLVER_BASE_URL.rstrip('/')}/internal/v1/resolve-user"
     payload: dict[str, Any] = {
@@ -129,14 +180,13 @@ def resolve_user(
     headers = {
         "Content-Type": "application/json",
     }
-    if RESOLVER_API_KEY:
-        headers["X-Internal-Api-Key"] = RESOLVER_API_KEY
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        req = _sign_resolution_request(req)
+        with _open_resolver(req, timeout=5) as resp:
             body = json.loads(resp.read())
             result = ResolvedUser(
                 user_id=body["user_id"],
@@ -158,9 +208,9 @@ def resolve_user(
             # Cache 404s too — prevents spamming the user with links on every message
             _cache_set(provider, provider_user_id, result_404)
             return result_404
-        logger.error("resolve-user returned HTTP %d: %s", e.code, e.reason)
+        logger.error("resolve-user returned HTTP %d", e.code)
         return None
 
-    except Exception as e:
-        logger.error("resolve-user call failed: %s", e)
+    except Exception:
+        logger.error("resolve-user call failed")
         return None

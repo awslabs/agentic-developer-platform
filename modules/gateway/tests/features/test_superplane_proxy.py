@@ -103,6 +103,64 @@ def test_forward_only_trusted_transport_headers_and_preserve_denial(client, monk
     assert "set-cookie" not in response.headers and "x-org-id" not in response.headers
 
 
+@pytest.mark.parametrize("status", [200, 403])
+def test_retained_batch_result_reaches_domain_without_caching(client, monkeypatch, status):
+    calls = []
+    path = "/workspaces/ws-1/batch-jobs/job-1/result"
+    payload = {"content": "accuracy=0.95"} if status == 200 else {"detail": "workspace access denied"}
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(status, json=payload, headers={"cache-control": "no-store"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    assert client.get("/superplane/v1" + path).status_code == 401
+    response = client.get("/superplane/v1" + path, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == status
+    assert response.json() == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0].url.path == path
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert client.post("/superplane/v1" + path, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "workspaces/preview"),
+        ("POST", "workspaces/adopt"),
+        ("GET", "workspaces/ws-1/lifecycle-proposals"),
+        ("POST", "workspaces/ws-1/lifecycle-proposals/artifact-1/preview"),
+        ("POST", "workspaces/ws-1/lifecycle-proposals/artifact-1/continue"),
+        ("GET", "operations/op-1"),
+        ("GET", "operations/by-idempotency/request-1"),
+        ("POST", "operation-approvals"),
+        ("GET", "operation-approvals/approval-1"),
+        ("POST", "operation-approvals/approval-1/decision"),
+    ],
+)
+def test_governed_onboarding_routes_forward_exact_body_and_preserve_denial(client, monkeypatch, method, path):
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(403, json={"detail": "operation authority refused"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    body = {"operation_id": "request-1", "approval_id": "approval-1"}
+    assert client.request(method, "/superplane/v1/" + path).status_code == 401
+    response = client.request(method, "/superplane/v1/" + path, json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == 403
+    assert len(calls) == 1
+    assert calls[0].url.path == "/" + path
+    assert calls[0].method == method
+    assert json.loads(calls[0].content) == body
+
+
 def test_default_has_no_registration_and_no_network(monkeypatch):
     monkeypatch.delenv("BG_ENVIRONMENT", raising=False)
     monkeypatch.setattr(proxy, "_cache", (0, {}))
@@ -170,14 +228,67 @@ def test_route_read_failure_is_off_and_never_falls_back_to_ssm(route_store, monk
 def test_unconfigured_route_store_does_not_use_ambient_aws(monkeypatch):
     monkeypatch.setenv("BG_ENVIRONMENT", "dev")
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET", raising=False)
+    monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     monkeypatch.setattr(proxy, "_cache", (0, {}))
     monkeypatch.setattr(proxy.boto3, "client", lambda *a, **kw: pytest.fail("unexpected AWS call"))
     assert proxy.registration() == {}
+
+
+def test_route_bucket_uses_existing_platform_identity(monkeypatch):
+    monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET", raising=False)
+    monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "123456789012")
+    assert proxy.route_bucket() == "adp-terraform-state-123456789012"
+    assert "BG_SUPERPLANE_ROUTE_BUCKET" not in (Path(__file__).resolve().parents[2] / "k8s/configmap.yaml").read_text()
 
 
 async def test_transport_capability_requires_deployed_configuration(route_store, monkeypatch):
     result = await proxy.installation_support()
     assert result["version"] == 2 and result["configured"] is True
     assert result["transport"] == "s3-conditional-domain-registration"
+    assert result["features"] == ["account-vault-reference-v1"]
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
+    monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     assert (await proxy.installation_support())["configured"] is False
+
+
+def test_kubeconfig_post_forwards_only_bearer_and_preserves_domain_denial(client, monkeypatch):
+    forwarded = []
+
+    def upstream(request):
+        forwarded.append(request)
+        return httpx.Response(403, json={"detail": "workspace access denied"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        proxy.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    path = "/superplane/v1/workspaces/example/kubeconfig"
+    assert client.post(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer example-token"}).status_code == 404
+    assert (
+        client.post(
+            "/superplane/v1/internal/workspaces/example/kubeconfig",
+            headers={"Authorization": "Bearer example-token"},
+        ).status_code
+        == 404
+    )
+    assert forwarded == []
+
+    response = client.post(
+        path,
+        headers={
+            "Authorization": "Bearer example-token",
+            "X-Org-Id": "another-org",
+            "X-ADP-Principal": "workspace-owner",
+            "X-Workspace-Id": "other-workspace",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "workspace access denied"}
+    assert len(forwarded) == 1
+    assert forwarded[0].method == "POST"
+    assert forwarded[0].url.path == "/workspaces/example/kubeconfig"
+    assert forwarded[0].headers["authorization"] == "Bearer example-token"
+    assert all(header not in forwarded[0].headers for header in ("x-org-id", "x-adp-principal", "x-workspace-id"))

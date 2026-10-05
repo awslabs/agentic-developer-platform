@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import runpy
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -21,6 +22,15 @@ ACCOUNT = "123456789012"
 IMAGE = f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:" + "a" * 40
 FUNCTION = "bedrockgw-dev-pricing-refresh"
 ARN = f"arn:aws:lambda:us-east-1:{ACCOUNT}:function:{FUNCTION}"
+KNOWN_CLAUDE_MODELS = [
+    "anthropic.claude-fable-5",
+    "anthropic.claude-fable-5-1",
+    "anthropic.claude-mythos-5-1",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-opus-5",
+    "anthropic.claude-sonnet-5",
+]
 
 
 def pod(name, image=IMAGE, ready=True, terminating=False):
@@ -41,6 +51,10 @@ class FakeCLI:
         self.published = False
         self.function_error = False
         self.refresh_status = "published"
+        self.partial = False
+        self.retained_variants = 30
+        self.retained_models = []
+        self.failed_sources = []
         self.timeout = 180
         self.confirm_enable = True
         self.pods = [pod("new"), pod("old", "old:sha", terminating=True)]
@@ -93,7 +107,19 @@ class FakeCLI:
         elif cmd[2] == "invoke":
             self.published = True
             Path(cmd[cmd.index("--payload") + 2]).write_text(
-                json.dumps({"status": self.refresh_status, "generation_id": 2, "pointer_revision": 2, "variants": 330})
+                json.dumps(
+                    {
+                        "status": self.refresh_status,
+                        "generation_id": 2,
+                        "pointer_revision": 2,
+                        "variants": 330,
+                        "partial": self.partial,
+                        "fresh_variants": 300,
+                        "retained_variants": self.retained_variants if self.partial else 0,
+                        "retained_models": self.retained_models if self.partial else [],
+                        "failed_sources": self.failed_sources,
+                    }
+                )
             )
             result = {"StatusCode": 200, **({"FunctionError": "Unhandled"} if self.function_error else {})}
         else:
@@ -298,8 +324,17 @@ def test_workflows_serialize_and_pin_release_image():
     jobs = workflows["gateway-deploy.yml"]["jobs"]
     assert jobs["finalize-pricing"]["needs"] == ["deploy-backend", "run-migrations"]
     assert "finalize-pricing" in jobs["smoke-test"]["needs"]
-    assert jobs["run-migrations"]["with"]["expected_image"] == "${{ needs.deploy-backend.outputs.release_image }}"
-    assert "github.sha" in jobs["deploy-backend"]["outputs"]["release_image"]
+    assert jobs["run-migrations"]["with"]["expected_image_digest"] == "${{ needs.deploy-backend.outputs.release_digest }}"
+    assert "release_image" not in jobs["deploy-backend"].get("outputs", {})
+    finalize = next(step for step in jobs["finalize-pricing"]["steps"] if step.get("name") == "Verify release pricing and enable the schedule")
+    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_RELEASE_DIGEST}" in finalize["run"]
+    migration = yaml.load((root / ".github/workflows/run-gateway-migrations.yml").read_text(), Loader=yaml.BaseLoader)
+    migrate_steps = migration["jobs"]["migrate"]["steps"]
+    context = next(i for i, step in enumerate(migrate_steps) if step.get("name") == "Select trusted EKS context")
+    execute = next(i for i, step in enumerate(migrate_steps) if step.get("name") == "Migrate and verify activated pricing on the release image")
+    assert context < execute
+    assert "aws eks update-kubeconfig" in migrate_steps[context]["run"]
+    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_EXPECTED_IMAGE_TAG}" in migrate_steps[execute]["run"]
 
 
 @pytest.mark.parametrize(
@@ -406,3 +441,87 @@ def test_readiness_wait_cannot_hide_wrong_release(cli, args, monkeypatch):
     monkeypatch.setattr(rollout.time, "sleep", unexpected_sleep)
     with pytest.raises(RuntimeError, match="expected release image"):
         rollout.ready_pods(args)
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_partial_finalization_requires_explicit_recovery_option(cli, args, approved):
+    cli.partial = True
+    args.allow_partial_refresh = approved
+    if approved:
+        rollout.finalize(args)
+        assert cli.state == "ENABLED"
+    else:
+        with pytest.raises(RuntimeError, match="retained older rates"):
+            rollout.finalize(args)
+        assert cli.state == "DISABLED"
+
+
+def test_partial_recovery_cannot_hide_transport_failure(cli, args):
+    cli.partial = True
+    cli.failed_sources = ["https://aws.example/failed"]
+    args.allow_partial_refresh = True
+    with pytest.raises(AssertionError, match="Transport failures"):
+        rollout.finalize(args)
+    assert cli.state == "DISABLED"
+
+
+@pytest.mark.parametrize("change", [None, "account", "environment", "region", "count", "models", "failed_source"])
+def test_known_gap_recovery_is_portable_but_rejects_unreviewed_results(cli, args, change):
+    cli.partial = True
+    cli.retained_variants = 264
+    cli.retained_models = KNOWN_CLAUDE_MODELS.copy()
+    args.account_id = "879318057152"
+    args.allow_known_claude_gap = True
+    if change == "account":
+        args.account_id = ACCOUNT
+    elif change == "environment":
+        args.environment = "prod"
+    elif change == "region":
+        args.region = "eu-west-1"
+    elif change == "count":
+        cli.retained_variants = 265
+    elif change == "models":
+        cli.retained_models.append("anthropic.unreviewed")
+    elif change == "failed_source":
+        cli.failed_sources = ["https://aws.example/failed"]
+    if change in (None, "account", "environment", "region"):
+        rollout.finalize(args)
+        assert cli.state == "ENABLED"
+    else:
+        with pytest.raises((RuntimeError, AssertionError)):
+            rollout.finalize(args)
+        assert cli.state == "DISABLED"
+
+
+@pytest.mark.parametrize(
+    "digest,tag,ok",
+    [
+        ("sha256:" + "a" * 64, "", True),
+        ("sha256:bad", "", False),
+        ("sha256:" + "a" * 64, "b" * 40, False),
+    ],
+)
+def test_migration_workflow_accepts_only_unambiguous_digest(digest, tag, ok):
+    workflow = yaml.load(
+        (GATEWAY.parents[1] / ".github/workflows/run-gateway-migrations.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(s for s in workflow["jobs"]["migrate"]["steps"] if s.get("name") == "Migrate and verify activated pricing on the release image")
+    # Intercept only the final Python invocation; exercise the actual shell validation.
+    result = subprocess.run(
+        ["bash", "-c", 'python3() { printf "%s\\n" "$@"; };\n' + step["run"]],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "ACCOUNT_ID": ACCOUNT,
+            "AWS_REGION": "us-east-1",
+            "ENVIRONMENT": "dev",
+            "PRICING_EXPECTED_IMAGE": "",
+            "PRICING_EXPECTED_IMAGE_TAG": tag,
+            "PRICING_EXPECTED_IMAGE_DIGEST": digest,
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) is ok
+    if ok:
+        assert f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@{digest}" in result.stdout

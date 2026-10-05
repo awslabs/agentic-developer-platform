@@ -411,7 +411,7 @@ function buildAdministration(
       currentUi: true,
     });
   }
-  if (perms.isPlatformAdmin) {
+  if (features.tenant_org_links && perms.isPlatformAdmin) {
     people.push({
       id: 'tenant-links',
       to: '/admin/tenant-links',

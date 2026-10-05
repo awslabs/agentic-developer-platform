@@ -10,7 +10,7 @@
  * `actor_kind` attribution is deliberately NOT asserted as a body field here,
  * because the whole point is that this component never sends one — the backend
  * derives it from the session. The assertion is that the request body contains
- * only `reason`; `tests/orchestration/test_controls.py` covers the server side.
+ * `reason` and the reviewed revision hash; `tests/orchestration/test_controls.py` covers the server side.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -24,6 +24,7 @@ vi.mock('@/services/orchestration', () => ({
   approveGate: vi.fn(),
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
+  getGatePlanPreview: vi.fn(),
 }));
 
 const mockHasPermission = vi.fn();
@@ -36,8 +37,11 @@ vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockUseFeatures(),
 }));
 
-import { approveGate, rejectGate, resumeNode } from '@/services/orchestration';
+import { approveGate, rejectGate, resumeNode, getGatePlanPreview } from '@/services/orchestration';
 
+const hash = 'a'.repeat(64);
+const plan = { version: 1, plan_hash: hash, superseded_at: null, plan_document: { title: 'Repair plan', nodes: [{address: 'flow/epic-1/wave-1/gate-a', title: 'Design gate', kind: 'gate'}], proposed_execution_policy: {allowed_actions: ['review', 'merge']} } };
+const mockPreview = vi.mocked(getGatePlanPreview);
 const mockApprove = approveGate as ReturnType<typeof vi.fn>;
 const mockReject = rejectGate as ReturnType<typeof vi.fn>;
 const mockResume = resumeNode as ReturnType<typeof vi.fn>;
@@ -72,7 +76,8 @@ function renderControls(node: GraphNode) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  mockPreview.mockResolvedValue(plan);
   mockHasPermission.mockReturnValue(true);
   mockUseFeatures.mockReturnValue({ orchestration_engine: true });
   mockApprove.mockResolvedValue({
@@ -149,8 +154,9 @@ describe('which control a state earns', () => {
   it('offers evidence acceptance on a finished evaluation', async () => {
     const user = userEvent.setup();
     renderControls(makeNode('awaiting_gate', 'eval'));
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Accept evaluation' }));
-    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined);
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined);
   });
 
   it('reopens a gate after requested changes', async () => {
@@ -215,21 +221,23 @@ describe('recording a decision', () => {
     renderControls(makeNode('awaiting_gate'));
 
     await user.type(screen.getByTestId('gate-controls-reason'), 'looks right');
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
-    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', 'looks right'));
+    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', 'looks right', hash, undefined));
   });
 
   it('sends no actor_kind — attribution is the session\'s to decide, not the caller\'s', async () => {
     const user = userEvent.setup();
     renderControls(makeNode('awaiting_gate'));
 
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
     await waitFor(() => expect(mockApprove).toHaveBeenCalled());
-    // The service takes (id, reason) only. There is no argument position in which
+    // The service takes id, reason, revision hash and the execution preview. There is no argument position in which
     // this component could assert who the actor is.
-    expect(mockApprove.mock.calls[0]).toHaveLength(2);
+    expect(mockApprove.mock.calls[0]).toHaveLength(4);
     expect(mockApprove.mock.calls[0][1]).toBeUndefined();
   });
 
@@ -241,7 +249,7 @@ describe('recording a decision', () => {
     await user.type(screen.getByTestId('gate-controls-reason'), 'Clarify the migration plan');
     await user.click(screen.getByTestId('gate-reject'));
 
-    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', 'Clarify the migration plan'));
+    await waitFor(() => expect(mockReject).toHaveBeenCalledWith('node-1', 'Clarify the migration plan', hash));
     expect(screen.getByRole('status')).toHaveTextContent('No revision agent has been started');
     expect(mockApprove).not.toHaveBeenCalled();
   });
@@ -251,9 +259,10 @@ describe('recording a decision', () => {
     renderControls(makeNode('awaiting_gate'));
 
     await user.type(screen.getByTestId('gate-controls-reason'), '   ');
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
-    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', undefined));
+    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined));
   });
 
   it('resuming posts to the resume endpoint', async () => {
@@ -272,6 +281,7 @@ describe('recording a decision', () => {
 
     const input = screen.getByTestId('gate-controls-reason');
     await user.type(input, 'one-off justification');
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
     await waitFor(() => expect(input).toHaveValue(''));
@@ -283,6 +293,7 @@ describe('recording a decision', () => {
     mockApprove.mockReturnValue(new Promise((resolve) => { release = resolve; }));
 
     renderControls(makeNode('awaiting_gate'));
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
     await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeDisabled());
@@ -298,6 +309,7 @@ describe('a refused decision', () => {
     mockApprove.mockRejectedValue(new Error('this gate was already answered'));
 
     renderControls(makeNode('awaiting_gate'));
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
     expect(await screen.findByText(/already answered/i)).toBeInTheDocument();
@@ -308,8 +320,66 @@ describe('a refused decision', () => {
     mockApprove.mockRejectedValue(new Error(''));
 
     renderControls(makeNode('awaiting_gate'));
+    await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
     expect(await screen.findByText(/decision was refused/i)).toBeInTheDocument();
+  });
+});
+
+
+describe('reviewed revision binding', () => {
+  it('blocks approval while the plan is loading', () => {
+    mockPreview.mockReturnValue(new Promise(() => {}));
+    renderControls(makeNode('awaiting_gate'));
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+  it('blocks approval when preview cannot be loaded', async () => {
+    mockPreview.mockRejectedValue({detail: 'Plan read unavailable'});
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText('Plan read unavailable')).toBeInTheDocument();
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+  });
+  it('blocks a gate absent from the displayed revision', async () => {
+    mockPreview.mockResolvedValue({...plan, plan_document: {...plan.plan_document, nodes: []}});
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText(/gate is absent/)).toBeInTheDocument();
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+  });
+  it.each(['Plan changed; review again', {message: 'Plan changed; review again'}])('shows server detail and requires an explicit decision after reloading', async detail => {
+    const user = userEvent.setup();
+    mockApprove.mockRejectedValue({detail});
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText(/Proposed execution authority/)).toBeInTheDocument();
+    await user.click(screen.getByTestId('gate-approve'));
+    expect(await screen.findByText('Plan changed; review again')).toBeInTheDocument();
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined);
+    mockPreview.mockResolvedValue({...plan, version: 2, plan_hash: 'b'.repeat(64)});
+    await user.click(screen.getByText('Reload plan preview'));
+    expect(await screen.findByText(/Review plan version 2/)).toBeInTheDocument();
+    expect(mockApprove).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByTestId('gate-approve'));
+    expect(mockApprove).toHaveBeenLastCalledWith('node-1', undefined, 'b'.repeat(64), undefined);
+  });
+});
+
+describe('executable next step', () => {
+  it('explains missing configuration and keeps approval disabled', async () => {
+    mockPreview.mockResolvedValue({ ...plan, execution: { required: true, ready: false, runs: [], problems: ['E32 needs a workflow binding'] } });
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText('E32 needs a workflow binding')).toBeInTheDocument();
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+
+  it('shows the target and sends the reviewed execution with one approval', async () => {
+    const execution = { required: true, ready: true, snapshot: 'b'.repeat(64), problems: [], runs: [{ node_id: 'eval-1', title: 'E32', workflow: 'eval-cli-uplift.yml', target: { account_id: '123456789012', region: 'us-east-1', resource_id: 'dev' }, acceptance: 'human', criteria: ['cleanup', 'E32'] }] };
+    mockPreview.mockResolvedValue({ ...plan, execution });
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText(/Account 123456789012/)).toBeInTheDocument();
+    await user.click(screen.getByTestId('gate-approve'));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, execution);
   });
 });

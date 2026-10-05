@@ -3,11 +3,17 @@
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 root = Path(__file__).resolve().parents[1] / 'infra'
 blocks = '\n'.join(block for file in ('scaledjob-iam.tf', 'agent-authority-boundary.tf') for block in re.findall(r'^locals \{.*?^\}', (root / file).read_text(), re.S | re.M))
 values = {
+ 'var.task_tool_invoke_resources': json.dumps(json.loads(sys.argv[1]) if len(sys.argv) > 1 else []),
+ # App outputs are provider-independent inputs, like the fixture resource ARNs below.
+ 'local.domain_worker_browser_permissions': '[]',
+ 'local.domain_worker_artifact_resources': '["arn:aws:s3:::fixture-domain-artifacts/*"]',
+ 'local.domain_worker_tool_invoke_resources': '[]',
  'var.agent_authority_enabled': 'true', 'var.aws_region': '"us-east-1"', 'var.environment': '"dev"',
  'local.account_id': '"879318057152"', 'local.name_prefix': '"adp-dev"',
  'local.webhook_secrets_kms_key_arn': '"arn:aws:kms:us-east-1:879318057152:key/shared-secret-key"',

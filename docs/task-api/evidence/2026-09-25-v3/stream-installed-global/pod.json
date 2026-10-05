@@ -1,0 +1,55 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "task-api-5792-stream-global-bound",
+    "namespace": "adp-agents",
+    "labels": {
+      "task-api-5792-stream-fixture": "true"
+    }
+  },
+  "spec": {
+    "automountServiceAccountToken": false,
+    "restartPolicy": "Never",
+    "activeDeadlineSeconds": 180,
+    "containers": [
+      {
+        "name": "fixture",
+        "image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+        "command": [
+          "python",
+          "-c",
+          "import time;time.sleep(170)"
+        ],
+        "env": [
+          {
+            "name": "AWS_EC2_METADATA_DISABLED",
+            "value": "true"
+          },
+          {
+            "name": "PYTHONDONTWRITEBYTECODE",
+            "value": "1"
+          }
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "100m",
+            "memory": "256Mi"
+          },
+          "limits": {
+            "cpu": "1",
+            "memory": "512Mi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

@@ -221,6 +221,30 @@ def test_codebuild_runs_the_exact_image_with_manifest_restrictions():
     assert "-e DATABASE_URL=" not in buildspec, "gateway settings ignore database overrides without the BG_ prefix"
 
 
+@pytest.mark.parametrize(
+    "project_arn,exit_code", [("", 1), ("None", 1), ("arn:aws:codebuild:us-east-1:123456789012:project/adp-dev-gateway-build", 0)]
+)
+def test_smoke_project_preflight_refuses_before_upload_without_provisioning(tmp_path, project_arn, exit_code):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-ci.yml").read_text())
+    job = workflow["jobs"]["build"]
+    assert job["runs-on"] == "arc-runner-org"
+    steps = job["steps"]
+    guard = next(step for step in steps if step.get("name") == "Verify gateway build project exists")
+    upload = next(step for step in steps if step.get("id") == "smoke-source")
+    assert steps.index(guard) < steps.index(upload)
+    aws = tmp_path / "aws"
+    aws.write_text('#!/bin/sh\ntest "$1 $2" = "codebuild batch-get-projects" || exit 90\nprintf "%s\\n" "$PROJECT_ARN"\n')
+    aws.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", guard["run"]],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PROJECT_ARN": project_arn},
+        capture_output=True,
+    )
+    assert result.returncode == exit_code
+    if exit_code:
+        assert b"Existing gateway CodeBuild project" in result.stdout
+
+
 def test_overlapping_smoke_builds_consume_their_own_source(tmp_path):
     """Run the workflow shells with interleaved uploads against a fake cloud.
 
@@ -232,6 +256,7 @@ def test_overlapping_smoke_builds_consume_their_own_source(tmp_path):
     upload = next(step for step in steps if step.get("id") == "smoke-source")
     start = next(step for step in steps if step.get("name") == "Smoke-build image (CodeBuild, no push)")
     assert start["env"]["SMOKE_SOURCE_LOCATION"] == "${{ steps.smoke-source.outputs.location }}"
+    assert start["env"]["SMOKE_SERVICE_ROLE"] == "${{ steps.smoke-source.outputs.role }}"
     binaries = tmp_path / "bin"
     binaries.mkdir()
     scripts = tmp_path / "platform/scripts"
@@ -252,7 +277,10 @@ elif args[:2] == ["s3", "cp"]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args[2], destination)
 elif args[:2] == ["codebuild", "start-build"]:
+    assert args[args.index("--project-name") + 1] == "adp-dev-gateway-build"
+    assert args[args.index("--service-role-override") + 1] == "arn:aws:iam::123456789012:role/adp-dev-codebuild-gateway-pr"
     source = args[args.index("--source-location-override") + 1]
+    assert "/codebuild/src/adp-dev-gateway-build-pr/" in source
     with (cloud / "builds.jsonl").open("a") as log:
         log.write(json.dumps({"source": source, "revision": (cloud / source).read_text()}) + "\\n")
     print("smoke:build")
@@ -282,8 +310,8 @@ else:
             RUNNER_TEMP=str(tmp_path),
         )
         subprocess.run(["bash", "-c", upload["run"]], cwd=tmp_path, env=env, check=True, capture_output=True)
-        location = output.read_text().strip().removeprefix("location=")
-        pending.append((revision, dict(env, SMOKE_SOURCE_LOCATION=location)))
+        outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        pending.append((revision, dict(env, SMOKE_SOURCE_LOCATION=outputs["location"], SMOKE_SERVICE_ROLE=outputs["role"])))
     for _, env in pending:
         subprocess.run(["bash", "-c", start["run"]], cwd=tmp_path, env=env, check=True, capture_output=True)
     builds = [json.loads(line) for line in (tmp_path / "cloud/builds.jsonl").read_text().splitlines()]
@@ -350,19 +378,33 @@ def test_root_based_eval_pods_use_the_dedicated_namespace():
     assert '"deployments"' not in eval_role
 
 
-def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
+def test_automatic_deploy_never_mutates_platform_owned_cluster_resources():
     workflow = (ROOT / ".github/workflows/gateway-deploy.yml").read_text()
     assert "kubectl create namespace ${{ env.NAMESPACE }}" not in workflow
-    assert "kubectl get namespace ${{ env.NAMESPACE }}" in workflow
+    assert 'kubectl create namespace "${NAMESPACE}"' not in workflow
+    # The deploy role has namespaced access only, so probe a resource that
+    # exists in every initialized namespace without reading Namespace objects.
+    assert 'kubectl get serviceaccount default -n "${NAMESPACE}"' in workflow
+    assert 'kubectl get namespace "${NAMESPACE}"' not in workflow
     assert "kubectl apply -f modules/gateway/k8s/namespace.yaml" not in workflow
     assert "verify-restricted-admission.sh" not in workflow
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in workflow
-    assert "grep -qx Namespace" in workflow
+    assert "grep -Eq '^(Namespace|IngressClass)$'" in workflow
 
     rbac = (ROOT / "modules/agent-factory/infra/runner-rbac.tf").read_text()
     namespace_role = rbac[rbac.index('resource "kubernetes_cluster_role" "runner_namespace_manage"') :]
     assert "adp-gateway-evals" not in namespace_role
     assert 'verbs          = ["get", "list", "delete"]' in namespace_role
+
+
+def test_long_gateway_deploy_scripts_do_not_become_github_expressions():
+    """GitHub rejects interpolated scripts exceeding its expression-size limit."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-deploy.yml").read_text())
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            script = step.get("run", "")
+            if len(script) > 21000:
+                assert "${{" not in script, step.get("name", step.get("id"))
 
 
 def test_deploy_all_enforces_after_rollout_and_probes_admission():
@@ -372,8 +414,8 @@ def test_deploy_all_enforces_after_rollout_and_probes_admission():
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in deploy_all
     assert "grep -qx Namespace" in deploy_all
 
-    update_rollout = deploy_all.index("kubectl rollout status deployment/bedrockgateway", deploy_all.index('if [ "$UPDATE_MODE" = true ]'))
-    fresh_rollout = deploy_all.index("kubectl rollout status deployment/bedrockgateway", update_rollout + 1)
+    update_rollout = deploy_all.index("wait_for_gateway_rollout", deploy_all.index('if [ "$UPDATE_MODE" = true ]'))
+    fresh_rollout = deploy_all.index("wait_for_gateway_rollout", update_rollout + 1)
     enforce = deploy_all.index("kubectl apply -f k8s/namespace.yaml", fresh_rollout)
     probe = deploy_all.index("scripts/verify-restricted-admission.sh adp-gateway", enforce)
     assert update_rollout < fresh_rollout < enforce < probe

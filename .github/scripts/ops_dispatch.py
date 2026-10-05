@@ -120,8 +120,8 @@ ROOT_EVENT_DETAIL_TYPE = "ADP Agent Dispatch"
 
 # Deliberately NOT sent: persona, service_identity, and the target repo. All
 # three are Terraform literals in the rule's InputTransformer, which is the
-# primary control on this path (#4559 §5) -- `events:PutEvents` cannot be scoped
-# to an event source, so the transformer is what stops a compromised runner
+# primary payload control on this path (#4559 §5). IAM bounds the bus, source
+# and detail type; the transformer additionally stops a compromised runner
 # choosing a persona, an identity, or a target repo. Adding any of them to the
 # detail below, even "for clarity", deletes that control.
 DEFAULT_ROOT_REASON = "nightly security remediation plan ready"
@@ -144,8 +144,8 @@ _DISPATCHING_LABEL_RE = re.compile(r"^agent-", re.IGNORECASE)
 # the string it sits in and append a duplicate key -- and since JSON parsers take
 # the last occurrence of a repeated key, an injected `"persona"` would override
 # the Terraform literal that #4559 §5 calls the primary control on this path.
-# `events:PutEvents` cannot be scoped to an event source, so that literal is what
-# stops a compromised runner choosing its own persona, identity or target repo;
+# IAM source/detail-type conditions do not constrain these payload fields; the
+# literal stops a compromised runner choosing its own persona, identity or target repo;
 # defeating it is a privilege escalation, not a formatting bug.
 #
 # Quotes and braces are the injection primitives and are rejected. `:` is allowed

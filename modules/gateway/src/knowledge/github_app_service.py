@@ -328,14 +328,17 @@ async def mint_installation_token(
 
 # Least-privilege default for agent runs (issue #4272). The GitHub App's full
 # permission set is much broader; an agent run needs to read/write code, open and
-# update pull requests, and comment on issues. Anything else (members, admin,
-# secrets, workflows...) is deliberately withheld so a hijacked run's live token
-# is narrower than the App that minted it.
+# update pull requests, comment on issues, and run and repair CI workflows.
+# Tokens remain limited to the assigned repository. Organization administration,
+# membership and secrets management are withheld; accepted execution policies
+# and the independent reviewer identity apply their own narrower permission sets.
 AGENT_RUN_PERMISSIONS: dict[str, str] = {
     "contents": "write",
     "pull_requests": "write",
     "issues": "write",
     "checks": "write",
+    "actions": "write",
+    "workflows": "write",
     "metadata": "read",
 }
 

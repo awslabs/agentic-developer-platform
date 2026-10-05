@@ -1,0 +1,176 @@
+{
+  "flow_slug": "claude-desktop-6850",
+  "title": "Claude Desktop via ADP \u2014 Bedrock proof, delivery and cloud acceptance",
+  "org_id": "",
+  "spec_revision": "c92a14251ed96d3f9555d9be596f69f2b98be54c",
+  "intent_ref": "6850",
+  "description": "AUTHORING DRAFT ONLY. Do not register/accept this graph before binding the policy and both machine evaluations specified in evaluation-plan.json. Missing evaluation fields default to human in the engine; that default is not this proposal\u2019s intent. Preserve the direct-Bedrock GO barrier and final explicit Desktop smoke. No product changes before GO. See README.md in this proposal bundle.",
+  "nodes": [
+    {
+      "address": "claude-desktop-6850/epic-6850/proof/bedrock-proof",
+      "kind": "story",
+      "title": "Direct Bedrock capability proof; probe/evidence files only",
+      "issue_ref": "6851",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "kind": "eval",
+      "title": "Machine GO: authenticated direct tool-loop and streaming evidence"
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/requests",
+      "kind": "story",
+      "title": "Preserve proven request fields; reconcile #790 once",
+      "issue_ref": "6852",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/responses",
+      "kind": "story",
+      "title": "Preserve non-stream and streamed tool responses",
+      "issue_ref": "6853",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/models",
+      "kind": "story",
+      "title": "Entitlement-safe models and validated token counting",
+      "issue_ref": "6854",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/setup",
+      "kind": "story",
+      "title": "Deployment-pinned Desktop setup and credential helper",
+      "issue_ref": "6855",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/cloud-harness",
+      "kind": "story",
+      "title": "Cloud acceptance harness, runbook and engine evaluation integration",
+      "issue_ref": "6856",
+      "executor": {
+        "schema_version": 1,
+        "kind": "agent",
+        "role": "develop",
+        "persona": "agent-codex-developer"
+      }
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance",
+      "kind": "eval",
+      "title": "Machine acceptance: exact deployed revision, complete cloud criteria and cleanup",
+      "issue_ref": "6850"
+    },
+    {
+      "address": "claude-desktop-6850/epic-6850/acceptance/desktop-smoke",
+      "kind": "gate",
+      "title": "Human Desktop smoke: settings/helper and basic chat on supported desktop"
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-proof",
+      "to_address": "claude-desktop-6850/epic-6850/proof/bedrock-go"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/requests"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/responses"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/models"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/setup"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/proof/bedrock-go",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/requests",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/responses"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/requests",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/models"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/models",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/setup"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/requests",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/responses",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/models",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/setup",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/requests",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/responses",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/models",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/setup",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/cloud-harness",
+      "to_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance"
+    },
+    {
+      "from_address": "claude-desktop-6850/epic-6850/delivery/cloud-acceptance",
+      "to_address": "claude-desktop-6850/epic-6850/acceptance/desktop-smoke"
+    }
+  ]
+}

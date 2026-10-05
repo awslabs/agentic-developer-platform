@@ -24,11 +24,21 @@ or Codex.
 | `adp-aws.py` | Personal AWS account connection — `adp aws` ([guide](aws.md)) |
 | `adp-github.py` | Connect a repository you have access to — `adp github` ([guide](github.md)) |
 | `adp-github-admin.py` | GitHub App registration and status for administrators — `adp admin github` ([guide](github-admin.md)) |
-| `adp-superplane.py` | Provider configuration — `adp superplane` |
+| `adp-superplane.py` | Workspaces, GPU deployments, cloud accounts and provider credentials — `adp superplane` ([guide](../../../docs/adp-cli/superplane.md)) |
+| `adp-superplane-onboarding.py` | Workspace and provider onboarding — `adp superplane onboarding`: capability and readiness reporting, plan review, credential-reference binding, durable operation receipts |
+| `adp-task.py`, `adp_task_client.py` | Submit, monitor and abort work as a registered Task principal — `adp task` ([guide](../../../docs/adp-cli/tasks.md)) |
 | `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
+| `adp-doctor.py` | What this deployment offers you, and why a call failed — `adp capabilities`, `adp doctor` ([guide](doctor.md)). Read-only |
+| `command-manifest.json` | The checked list of commands, their mutation class and required capability. Held against the real dispatcher, install/update lists, download allowlist and server contract by `tests/cli/test_command_manifest.py` |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
+
+Superplane workspace and deployment creates keep their private operation receipts
+after success, so an identical invocation reconciles the same resource even when
+the earlier command's output was lost. Failed or deleted operations retain their
+receipts and block identical creates. See the [Superplane guide](../../../docs/adp-cli/superplane.md)
+before starting a separate create with a different name.
 
 ## Quick Start (New Machine)
 
@@ -227,6 +237,8 @@ adp flow list                    # your flows, worst news first
 adp flow show FLOW_ID            # progress, blockers, gates, next eligible work
 adp flow watch FLOW_ID           # follow it; Ctrl-C detaches, it does NOT cancel
 adp flow plans FLOW_ID           # plan versions, and which revision is proposed
+adp flow draft preview --help    # preview a revision of an existing unapproved draft
+adp flow draft save --help       # save the reviewed revision without approving execution
 adp flow gate approve GATE_ID --expect-plan-hash HASH
 ```
 
@@ -751,3 +763,17 @@ and `ADP_NATIVE_LIVE_CLIENT` to the **CLI** app client ID (not the discovery
 raw SDK failures out of output. It creates no users or grants and changes no
 passwords. Its native routes/database run locally; deployment, gateway IAM and
 PostgreSQL rate-limit concurrency still require release verification.
+
+Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.md).
+Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.
+
+GitHub maintenance: `adp github disconnect`, `adp admin github status --maintenance`, `rotate-key`, `disconnect`, and `org-binding list|add|remove` are documented in [GitHub maintenance](../../../docs/adp-cli/github-maintenance.md). Preview with `--dry-run`; App writes require reviewed App/key versions and `--yes`.
+
+GitLab: `adp gitlab status|connect|disconnect` and `adp admin gitlab status|configure|revalidate` use deployment-approved providers and owned vault references. See the [GitLab command/API contract](../../../docs/adp-cli/gitlab.md) for operation IDs, exact project scope and live evidence holds.
+
+`adp superplane research` reads findings/sources/stats and reviews proposals through the domain API. See `docs/adp-cli/research.md` for revision-bound decisions and unavailable scan/generation boundaries.
+
+Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).
+
+`adp access`, `adp admin access-request`, and `adp admin session revoke-user` are
+documented in [access and sessions](../../../docs/adp-cli/access-and-sessions.md).

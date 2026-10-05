@@ -17,10 +17,12 @@ from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
 
+from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, Decision, DenyReason, ExecutionPolicy, ResourceRef, authorize_action
 from .models import DecisionKind, NodeKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .policy_admission import AdmissionInputs, SpendObservation, load_in_force_policy, resolve_authorization_context
+from .stage_attempts import stage_attempts
 from .state import NodeState
 
 
@@ -64,7 +66,10 @@ def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[s
     if action is Action.REVIEW:
         return {**permissions, "pull_requests": "write", "issues": "write"}
     if action in {Action.DEVELOP, Action.REPAIR} and policy.permits(Action.MERGE):
-        return {**permissions, "contents": "write", "pull_requests": "write", "issues": "write"}
+        # Workflow files are repository code too. GitHub requires this additional
+        # permission to publish their repairs; contents-write alone fails at push.
+        # The existing code-write + merge policy gate applies to both scopes.
+        return {**permissions, "contents": "write", "pull_requests": "write", "issues": "write", "workflows": "write"}
     # A provider token that can write contents cannot enforce a human-only merge
     # gate. That needs mediated writes/scoped branch capabilities, not a broad
     # installation-token fallback.
@@ -112,7 +117,7 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
     persona = execution.get("persona", {}).get("S")
     if execution.get("orchestration_continuation_receipt"):
         action = execution.get("orchestration_continuation_action", {}).get("S")
-        if action == Action.REPAIR.value and persona in {"developer", "agent-codex-reviewer"}:
+        if action == Action.REPAIR.value and persona in (DEVELOPER_PERSONAS | {"agent-codex-reviewer"}):
             return Action.REPAIR
         if action == Action.REVIEW.value and persona in {"reviewer", "agent-codex-reviewer"}:
             return Action.REVIEW
@@ -124,13 +129,13 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
         # returning `None` refuses it rather than guessing which field to trust.
         return Action.COORDINATE if persona in {"operations", "aidlc"} else None
     if execution.get("orchestration_correction_receipt"):
-        return Action.REPAIR if node.kind == NodeKind.STORY.value and persona == "developer" else None
+        return Action.REPAIR if node.kind == NodeKind.STORY.value and persona in DEVELOPER_PERSONAS else None
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:
         if persona == "reviewer":
             return Action.REVIEW
-        if persona == "developer":
+        if persona in DEVELOPER_PERSONAS:
             return Action.REPAIR if node.attempts > 1 else Action.DEVELOP
     return None
 
@@ -240,7 +245,14 @@ async def authorize_worker_credential(
     repo = execution.get("repo", {}).get("S")
     repository_id = execution.get("provider_repository_id", {}).get("N", "")
     scope = CredentialScope.UNSCOPABLE
-    permissions = policy_github_permissions(policy, action)
+    review_repairs = (
+        action is Action.REVIEW
+        and execution.get("persona") == {"S": "agent-codex-reviewer"}
+        and execution.get("orchestration_continuation_receipt")
+        and execution.get("orchestration_review_repairs") == {"BOOL": True}
+        and broker_path == "/internal/v1/github-installation-token"
+    )
+    permissions = policy_github_permissions(policy, Action.REPAIR if review_repairs else action)
     not_after = min(policy.expires_at, started + timedelta(seconds=policy.limits.max_wall_clock_seconds))
     if grant.expires_at is not None:
         not_after = min(not_after, grant.expires_at)
@@ -335,7 +347,15 @@ async def authorize_worker_credential(
         now=now,
         grant_revoked=not grant.is_live(now),
         # Revalidating an admitted action does not consume another slot/attempt.
-        observed_attempts=max(0, node.attempts - 1),
+        observed_attempts=max(
+            0,
+            (
+                await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
+                if execution.get("orchestration_continuation_receipt")
+                else node.attempts
+            )
+            - 1,
+        ),
         observed_concurrency=max(0, context.observed_concurrency - 1),
     )
     decision = authorize_action(
@@ -350,6 +370,16 @@ async def authorize_worker_credential(
         ),
         accepted_version,
     )
+    if decision.permitted and review_repairs:
+        # Repair adds a capability while retaining the independent review identity.
+        repair_decision = authorize_action(
+            context,
+            Action.REPAIR,
+            ResourceRef(repository_id=repo, org_id=grant.tenant_id, node_address=graph_address(node, flow_slug=flow.slug)),
+            accepted_version,
+        )
+        if not repair_decision.permitted:
+            return repair_decision
     if decision.permitted and scope is CredentialScope.USER_GRANTED:
         return WorkerCredentialDecision(
             permitted=True,

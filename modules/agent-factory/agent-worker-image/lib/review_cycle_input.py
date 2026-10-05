@@ -19,9 +19,12 @@ def prepare_review_history(metadata, *, run, cwd):
     command = ["git", "fetch", "--no-tags"]
     if shallow == "true":
         command.append("--unshallow")
-    # origin is the existing base repository. Fetch only its provider-reported
-    # immutable base and ancestors; never use repository URLs from story text.
-    run([*command, "origin", base], cwd=cwd, timeout=120)
+    # origin is the already-authorized base repository. Include sibling branches
+    # because accepted contracts may pin commits from another open story. Update
+    # remote-tracking refs only; never move the assigned HEAD or local branches,
+    # and never use repository URLs or refspecs supplied by story text.
+    run([*command, "origin", base, "+refs/heads/*:refs/remotes/origin/*"],
+        cwd=cwd, timeout=120)
     run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=cwd, timeout=30)
 
 

@@ -25,7 +25,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 # ---------------------------------------------------------------------------
 # Helpers to import the handler with mocked env / boto3
@@ -61,7 +61,7 @@ def mock_env(monkeypatch):
 def mock_env_with_resolver(monkeypatch, mock_env):
     """Environment with user identity resolution enabled."""
     monkeypatch.setenv("ENABLE_USER_IDENTITIES", "true")
-    monkeypatch.setenv("RESOLVER_BASE_URL", "http://gateway.internal:8080")
+    monkeypatch.setenv("RESOLVER_BASE_URL", "https://example123.execute-api.us-east-1.amazonaws.com/dev")
     monkeypatch.setenv("BG_INTERNAL_API_KEY", "test-secret-key")
 
 
@@ -142,7 +142,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -167,14 +167,14 @@ class TestResolverModule:
         import urllib.error
         error_body = json.dumps({"magic_link_url": "https://gw.example.com/auth/link/magic?token=abc"}).encode()
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-user",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user",
             code=404,
             msg="Not Found",
             hdrs={},
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             result = user_resolver.resolve_user("slack", "T01ABC:U999")
 
         assert isinstance(result, user_resolver.UnresolvedUser)
@@ -194,7 +194,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -224,7 +224,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -375,18 +375,18 @@ class TestHandlerResolverIntegration:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        handler = _import_fresh(mock_bedrock=mock_bedrock)
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = resolver_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
 
-            handler = _import_fresh(mock_bedrock=mock_bedrock)
             # Force module-level flag on after fresh import
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
             # Simulate a Slack event (non-WebSocket)
@@ -439,18 +439,18 @@ class TestHandlerResolverIntegration:
 
         error_body = json.dumps({"magic_link_url": "https://gw.example.com/auth/link/magic?token=xyz"}).encode()
         http_error = urllib.error.HTTPError(
-            url="http://gateway.internal:8080/internal/v1/resolve-user",
+            url="https://example123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/resolve-user",
             code=404,
             msg="Not Found",
             hdrs={},
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
-            handler = _import_fresh()
+        handler = _import_fresh()
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
             event = {
@@ -499,21 +499,24 @@ class TestHandlerResolverIntegration:
             "reasoning": "Greeting",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
-            user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
+            user_resolver.RESOLVER_BASE_URL = "https://example123.execute-api.us-east-1.amazonaws.com/dev"
             user_resolver.cache_clear()
 
+            claims = {
+                "sub": "cognito-user-1", "email": "u@e.com",
+                "custom:tenant_id": "test-tenant",
+            }
+            # #5615: the server issues the session id; a browser cannot invent one.
+            session_id = start_webchat_session(handler, claims, connection_id="conn-wc")
             event = mock_apigw_event(
                 route_key="$default",
-                body={"action": "message", "text": "Hello!", "session_id": "sess-wc"},
+                body={"action": "message", "text": "Hello!", "session_id": session_id},
                 connection_id="conn-wc",
-                authorizer_claims={
-                    "sub": "cognito-user-1", "email": "u@e.com",
-                    "custom:tenant_id": "test-tenant",
-                },
+                authorizer_claims=claims,
             )
             result = handler.lambda_handler(event, None)
 
@@ -534,7 +537,7 @@ class TestHandlerResolverIntegration:
             "reasoning": "Work",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = False

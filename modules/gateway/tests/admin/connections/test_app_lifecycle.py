@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import (
@@ -27,6 +28,17 @@ from src.admin.connections.schemas import (
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+
+
+@pytest.fixture(autouse=True)
+def _isolate_durable_audit_sink(monkeypatch):
+    # These provider/response unit tests do not test SQL. Keep their provider
+    # assertions intact; real request teardown, intent and terminal persistence
+    # are exercised without this stub in test_admin_audit_durability.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -59,7 +71,7 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return MagicMock()
+    return AsyncMock(spec=AsyncSession)
 
 
 def _make_client(
@@ -689,3 +701,41 @@ class TestInvalidateAppCredentialsCache:
         invalidate_app_credentials_cache()
 
         assert len(_metadata_cache) == 0
+
+
+class TestAppSetupGuide:
+    def test_non_admin_cannot_read_setup(self, app, mock_db):
+        client = _make_client(app, user=_make_user(is_admin=False), mock_db=mock_db)
+        with patch("src.admin.connections.service.get_app_setup_guide", new_callable=AsyncMock) as resolve:
+            assert client.get("/admin/connections/github/app/setup-guide").status_code == 403
+            resolve.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "base,domain,expected",
+        [
+            ("https://preprod.example/", "", "https://preprod.example"),
+            ("", "d123.cloudfront.net", "https://d123.cloudfront.net"),
+            ("", "", ""),
+        ],
+    )
+    def test_setup_uses_current_deployment_and_manifest_contract(self, app, mock_db, base, domain, expected):
+        from src.admin.connections import service
+
+        client = _make_client(app, user=_make_user(is_admin=True), mock_db=mock_db)
+        with (
+            patch.object(service, "get_settings", return_value=MagicMock(gateway_base_url=base)),
+            patch.object(service, "_read_ssm_string", return_value=domain),
+            patch.object(service, "_resolve_expected_oauth_callback_url", return_value="https://broker.example/callback"),
+            patch.object(service, "_resolve_expected_webhook_url", return_value="https://hooks.example/github"),
+        ):
+            response = client.get("/admin/connections/github/app/setup-guide")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["homepage_url"] == expected
+        assert body["setup_url"] == (f"{expected}/api/admin/connections/github/install-callback" if expected else "")
+        assert body["callback_url"] == "https://broker.example/callback"
+        assert body["webhook_url"] == "https://hooks.example/github"
+        manifest = service._build_app_manifest(webhook_url="", callback_url="")
+        assert body["permissions"] == manifest["default_permissions"]
+        assert body["events"] == manifest["default_events"]
+        assert set(body) == {"homepage_url", "setup_url", "callback_url", "webhook_url", "permissions", "events"}

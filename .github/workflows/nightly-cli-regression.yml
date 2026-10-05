@@ -10,10 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       ec2_scope:
-        description: 'login = nightly key scenarios; full = all 17 acceptance cases (requires additional fixtures)'
+        description: 'nightly = install/login plus CLI story read regressions; login = install/login only; full = all acceptance cases'
         type: choice
-        options: [login, full]
-        default: login
+        options: [nightly, login, full]
+        default: nightly
+      fixtures_json:
+        description: 'Optional non-secret existing fixture JSON for the EC2 child; validated by CLI Uplift'
+        required: false
+        type: string
+        default: ''
   pull_request:
     branches: [main]
     paths:
@@ -26,7 +31,13 @@ on:
       - 'platform/evals/cli-onboarding/**'
       - 'platform/evals/budget-ratelimit/**'
       - 'platform/evals/lib/**'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 
@@ -39,7 +50,7 @@ concurrency:
 jobs:
   guards:
     name: Regression orchestration guards
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -56,7 +67,11 @@ jobs:
     name: Resolve the deployed dev revision
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: guards
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-runner-org
     timeout-minutes: 10
     outputs:
       revision: ${{ steps.snapshot.outputs.revision }}
@@ -66,6 +81,36 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install boto3
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
+          role-skip-session-tagging: true
+          role-duration-seconds: 900
+          role-session-name: cli-nightly-snapshot-${{ github.run_id }}
+
       - name: Snapshot deployment identity (read only)
         id: snapshot
         run: python -m tests.e2e.cli_regression.prepare
@@ -74,6 +119,9 @@ jobs:
     name: CLI onboarding and agent conversations
     needs: prepare
     if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-cli-onboarding.yml
     with:
       environment: dev
@@ -84,6 +132,9 @@ jobs:
     # A failed onboarding assertion must not hide budget regressions. The called
     # workflow must verify cleanup before this next suite obtains the live lock.
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.onboarding.outputs.cleanup_ok == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-budget-ratelimit.yml
     with:
       environment: dev
@@ -101,13 +152,14 @@ jobs:
       environment: dev
       expected_revision: ${{ needs.prepare.outputs.revision }}
       resolve_revision: true
-      suites: ${{ inputs.ec2_scope || 'login' }}
+      suites: ${{ inputs.ec2_scope || 'nightly' }}
+      fixtures_json: ${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
 
   summary:
     name: Nightly regression result
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [guards, prepare, onboarding, budgets, ec2]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -123,5 +175,5 @@ jobs:
           CLI_REGRESSION_JOBS: ${{ toJSON(needs) }}
           CLI_REGRESSION_REVISION: ${{ needs.prepare.outputs.revision }}
           CLI_REGRESSION_EC2_REVISION: ${{ needs.ec2.outputs.revision }}
-          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'login' }}
+          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'nightly' }}
         run: python -m tests.e2e.cli_regression.report

@@ -36,7 +36,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.agent_onboarding_schemas import AgentOnboardRequest
+from src.admin.agent_onboarding_schemas import AgentOnboardRequest, AgentOnboardResponse
 from src.admin.agent_onboarding_service import AgentOnboardingService
 from src.admin.agent_registry_schemas import (
     AgentRegistryCreateRequest,
@@ -152,17 +152,19 @@ def seeded_db(db_session: AsyncSession) -> AsyncSession:
 def onboarding_service() -> MagicMock:
     service = MagicMock(spec=AgentOnboardingService)
     service.onboard_agent = AsyncMock(
-        return_value={
-            "agent_id": "agent-uuid",
-            "service_account_name": "agent-x-sa",
-            "runs_on_label": "arc-runner-x",
-            "scale_set_name": "arc-runner-x",
-            "team_namespace": "arc-runners-team-a1",
-            "api_gateway_invoke_url": "https://api.example.test",
-            "irsa_trust_policy_snippet": {},
-            "budget_config_id": None,
-            "message": "ok",
-        }
+        return_value=AgentOnboardResponse.model_validate(
+            {
+                "agent_id": "agent-uuid",
+                "service_account_name": "agent-x-sa",
+                "runs_on_label": "arc-runner-x",
+                "scale_set_name": "arc-runner-x",
+                "team_namespace": "arc-runners-team-a1",
+                "api_gateway_invoke_url": "https://api.example.test",
+                "irsa_trust_policy_snippet": {},
+                "budget_config_id": None,
+                "message": "ok",
+            }
+        )
     )
     return service
 

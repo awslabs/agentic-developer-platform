@@ -79,6 +79,10 @@ class StatusGatewayError(Exception):
     callers that log it, and a gateway refusal reason is not theirs to disclose.
     """
 
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
 
 def authority_enabled() -> bool:
     """True when writes must go through the gateway.
@@ -148,7 +152,7 @@ def _post(path: str, body: dict, *, success_statuses: tuple[int, ...] = (200,)) 
     return _post_bytes(path, json.dumps(body).encode(), content_type="application/json", success_statuses=success_statuses)
 
 
-def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: tuple[int, ...] = (200,), timeout_seconds: int = _TIMEOUT_SECONDS) -> dict:
+def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: tuple[int, ...] = (200,), timeout_seconds: int = _TIMEOUT_SECONDS, max_response_bytes: int = _MAX_RESPONSE_BYTES) -> dict:
     url = _base_url() + path
     try:
         workload_token = read_workload_token()
@@ -192,10 +196,11 @@ def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: 
                     # gateway's refusal reason, and the gateway deliberately keeps
                     # those uniform to the caller.
                     raise StatusGatewayError(
-                        f"gateway refused the write (status {response.status_code})"
+                        f"gateway refused the write (status {response.status_code})",
+                        retryable=response.status_code == 429 or response.status_code >= 500,
                     )
-                raw = response.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
-                if len(raw) > _MAX_RESPONSE_BYTES:
+                raw = response.raw.read(max_response_bytes + 1, decode_content=True)
+                if len(raw) > max_response_bytes:
                     raise StatusGatewayError("gateway response was oversized")
                 return json.loads(raw or b"{}")
     except StatusGatewayError:
@@ -203,7 +208,7 @@ def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: 
     except (requests.RequestException, ValueError, OSError):
         # Never let the underlying exception through: request exceptions stringify
         # to include the full URL and can include headers.
-        raise StatusGatewayError("agent authority service unavailable") from None
+        raise StatusGatewayError("agent authority service unavailable", retryable=True) from None
 
 
 def record_status(status: str, fields: dict[str, str]) -> None:

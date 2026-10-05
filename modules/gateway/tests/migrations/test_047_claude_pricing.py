@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from alembic.script import ScriptDirectory
 from pricing_policy import RateRow, load_snapshot
 from pricing_policy.refresh import canonical_content_hash
 from tests.migrations.conftest_postgres import downgrade, upgrade
@@ -78,7 +77,7 @@ def test_seed_keeps_fetched_unknown_and_newer_existing_rows():
 
 
 def test_fresh_chain_seeds_complete_combined_generation_and_retries_are_noop(pg_url, connect):
-    upgrade(pg_url, "head")
+    upgrade(pg_url, REVISION)
     conn = connect()
     state = adapter.read_active(conn)
     assert len(state.rows) == 1336
@@ -160,7 +159,7 @@ def test_policy_one_active_generation_can_publish_policy_two_after_schema_upgrad
     conn.autocommit = False
     rows = tuple(
         replace(row, source="pricing_page" if row.model_id.startswith("anthropic.") else row.source, snapshot_version=None)
-        for row in load_snapshot().rates
+        for row in load_snapshot("2026-09-12.2").rates
     )
     generation, _, candidate = adapter.publish(conn, before.revision, rows, frozenset(row.variant_key for row in rows))
     conn.commit()
@@ -267,10 +266,9 @@ def test_upgrade_preserves_fetched_openai_prices_age_and_provenance(pg_url, conn
 def test_downgrade_and_reupgrade_preserve_schema_history_and_operator_state(pg_url, connect, operator_state):
     from psycopg2.extras import register_default_jsonb
 
-    # Keep exercising the entire current chain when later migrations are added;
-    # upgrading to head no longer implies that 047 is the version-table value.
-    expected_head = ScriptDirectory(str(ROOT / "alembic")).get_current_head()
-    upgrade(pg_url, "head")
+    # This round trip owns 047; later settlement receipts deliberately forbid rollback.
+    expected_head = REVISION
+    upgrade(pg_url, REVISION)
     conn = connect()
     # PostgreSQL JSON numerics must stay Decimal when verifying historical hashes.
     register_default_jsonb(conn, loads=lambda value: json.loads(value, parse_float=Decimal))
@@ -309,7 +307,7 @@ def test_downgrade_and_reupgrade_preserve_schema_history_and_operator_state(pg_u
                 "WHERE table_name='model_pricing_rates_v2' AND column_name='cache_write_1h_price_per_1k_tokens'"
             )
             assert cursor.fetchone() == (14, 10, "YES")
-        upgrade(pg_url, "head")
+        upgrade(pg_url, REVISION)
         assert history() == before
         with conn.cursor() as cursor:
             cursor.execute("SELECT version_num FROM alembic_version")

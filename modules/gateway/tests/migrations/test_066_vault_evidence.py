@@ -11,7 +11,8 @@ def test_vault_migration_is_on_the_single_head_chain():
     config = Config(str(GATEWAY_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(GATEWAY_ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["066_cred_evidence_delegation"]
+    assert len(script.get_heads()) == 1
+    assert "066_cred_evidence_delegation" in {revision.revision for revision in script.walk_revisions()}
     assert script.get_revision("066_cred_evidence_delegation").down_revision == "065_budget_enforcement_controls"
 
 
@@ -21,7 +22,7 @@ def test_current_database_upgrades_and_vault_downgrade_preserves_controls(pg_url
     try:
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO budget_enforcement_settings VALUES ('global', false, 1, 'operator', NOW())"))
-        upgrade(pg_url, "head")
+        upgrade(pg_url, "066_cred_evidence_delegation")
         with engine.connect() as connection:
             tables = inspect(connection).get_table_names()
             assert {"credential_workspace_delegations", "credential_validation_evidence"} <= set(tables)

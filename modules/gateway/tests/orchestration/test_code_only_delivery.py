@@ -21,8 +21,7 @@ async def test_explicit_code_only_concludes_after_verified_merge_without_deploym
     async with protocol.prepared_merge(shared, monkeypatch) as ctx:
         ctx.remote["rules"], ctx.remote["protection"], ctx.remote["reviews"] = [], None, []
         ctx.remote["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
-        assert (await protocol.tick(ctx)).effects_succeeded == 1
-        assert (await protocol.state(ctx))[2].state == "running"
+        ctx.merge_remote()  # The reviewer merges; this controller observes its evidence.
         await protocol.tick(ctx)
         execution, claim, node, _ = await protocol.state(ctx)
         assert node.state == "passed"
@@ -38,4 +37,4 @@ async def test_explicit_code_only_concludes_after_verified_merge_without_deploym
             handlers=dict.fromkeys(PHASES, MergeController(ctx.factory, ctx.merge_services)),
             config=RunnerConfig(enabled=True),
         )
-        assert result.examined == 0 and len(ctx.mutations) == 1
+        assert result.examined == 0 and ctx.mutations == []

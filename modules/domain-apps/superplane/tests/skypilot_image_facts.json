@@ -1,56 +1,59 @@
 {
   "_comment": [
-    "Facts about the SkyPilot image pinned by releases/superplane.lock.yaml, recorded from",
-    "the Docker registry so the regression tests that depend on them stay OFFLINE.",
-    "",
-    "These are not assumptions. Each was fetched and hashed: the image index body hashes to",
-    "image_index_digest (which is the digest the lock pins, so the lock and this file are",
-    "verified against each other), the amd64 manifest body hashes to amd64_manifest_digest,",
-    "and the config blob body hashes to config_blob_digest. `config` is that blob's",
-    "`.config` object verbatim.",
-    "",
-    "`etc_passwd_uids` and `home_entries` come from extracting EVERY layer of the amd64",
-    "manifest and reading the last /etc/passwd to win (layer 5), plus scanning all layers",
-    "for any path under home/. There is no uid 1000 and no /home entry, which is why the",
-    "Deployment must set HOME explicitly — see test_skypilot_startup_contract.py.",
-    "",
-    "TO RE-VERIFY (needs network; the tests do not):",
-    "  TOK=$(curl -s 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:berkeleyskypilot/skypilot:pull' | jq -r .token)",
-    "  curl -s -H \"Authorization: Bearer $TOK\" -H 'Accept: application/vnd.oci.image.index.v1+json' \\",
-    "    https://registry-1.docker.io/v2/berkeleyskypilot/skypilot/manifests/<image_index_digest> | sha256sum",
-    "The printed hash must equal image_index_digest's hex. Repeat for the manifest and blob."
+    "Facts re-collected from the final High-maintenance image. All SkyPilot Python source files match the previous published image; package startup facts remain applicable.",
+    "Exact source-file hash inventory and collector are retained with high-skypilot evidence."
   ],
-  "image_reference": "berkeleyskypilot/skypilot:0.12.0",
-  "skypilot_version": "0.12.0",
-  "image_index_digest": "sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019",
-  "amd64_manifest_digest": "sha256:ab4e67e79048c32e70c2803f548ccbefad2e980a4a7f9dd8d96001f81b04b318",
-  "config_blob_digest": "sha256:528a1f792c49a53499b8d5a090d245c95d485967a25b2752f6728d5528ae62a1",
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "skypilot_version": "0.12.3",
+  "image_index_digest": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "amd64_manifest_digest": "sha256:4c881a130e5e1abd5f70b7e518616bd62648d85c2f2cd919d8395bb9f48cf233",
+  "config_blob_digest": "sha256:0f7ef7d2bae81dddef93f3007ecbbe7648009671ae7d285cdcea66900ea6d603",
   "config": {
     "Entrypoint": null,
-    "Cmd": ["python3"],
-    "User": null,
+    "Cmd": [
+      "python3"
+    ],
+    "User": "1000:1000",
     "WorkingDir": null,
     "Env": [
       "PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "LANG=C.UTF-8",
       "GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D",
-      "PYTHON_VERSION=3.10.19",
-      "PYTHON_SHA256=c8f4a596572201d81dd7df91f70e177e19a70f1d489968b54b5fbbf29a97c076"
+      "PYTHON_VERSION=3.10.21",
+      "PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04",
+      "DEBIAN_FRONTEND=noninteractive"
     ]
   },
   "etc_passwd_uids": [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 33, 34, 38, 39, 42, 996, 998, 65534
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    13,
+    33,
+    34,
+    38,
+    39,
+    42,
+    996,
+    998,
+    1000,
+    65534
   ],
-  "has_uid_1000": false,
-  "home_entries": [],
+  "has_uid_1000": true,
+  "home_entries": [
+    "sky"
+  ],
   "package_facts": {
     "_comment": [
-      "Read from the skypilot==0.12.0 wheel — the same version the image installs — so the",
-      "manifest's command/args/env are checked against the code that will run, not against",
-      "an upstream doc or a controller-side constant.",
-      "",
-      "TO RE-VERIFY: pip download skypilot==0.12.0 --no-deps, unzip, and grep the cited",
-      "files. Each value below names its source path."
+      "SkyPilot0.12.3 startup contract retained; isolated API startup/restart/status tests pass on Python3.10.21."
     ],
     "api_server_cmd": "-m sky.server.server",
     "api_server_cmd_source": "sky/server/common.py: API_SERVER_CMD",
@@ -68,7 +71,10 @@
       "~/.sky/locks/.skypilot_config.lock",
       "~/.sky/generated"
     ],
-    "module_name_guards": ["__main__", "sky.server.server"],
+    "module_name_guards": [
+      "__main__",
+      "sky.server.server"
+    ],
     "has_server_dunder_main_module": false,
     "deploy_flag_enables_consolidation_mode": true,
     "deploy_flag_source": "sky/jobs/utils.py: setup_consolidation_mode_on_startup(deploy)"

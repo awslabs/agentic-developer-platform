@@ -2,10 +2,17 @@
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from app.models.credential import validate_adp_credential_id
+from app.models.credential import (
+    MAX_ADP_REFERENCE_COUNT,
+    MAX_ADP_REFERENCE_LENGTH,
+    validate_adp_credential_id,
+)
+
+ADPReference = Annotated[str, StringConstraints(max_length=MAX_ADP_REFERENCE_LENGTH)]
 
 # ── Account (POST /accounts, GET /accounts, DELETE /accounts/{id}) ──
 
@@ -38,8 +45,9 @@ class RegisterAccountRequest(BaseModel):
     # Issue #5046 (U13b): ADP credential IDs, not Secrets Manager ARNs. A copied secret
     # ARN is a second route to the secret material outside the vault; an ADP credential ID
     # is an opaque handle only the vault can resolve.
-    adp_credential_ids: list[str] = Field(
+    adp_credential_ids: list[ADPReference] = Field(
         default_factory=list,
+        max_length=MAX_ADP_REFERENCE_COUNT,
         description="ADP credential IDs (opaque vault references) for neocloud credentials",
     )
 
@@ -72,8 +80,6 @@ class AccountResponse(BaseModel):
     name: str
     provider: str
     account_id: str
-    role_arn: str | None = None
-    external_id: str | None = None
     status: str
     adp_credential_ids: list[str] = Field(default_factory=list)
     irsa_role_arns: list[str] = Field(default_factory=list)

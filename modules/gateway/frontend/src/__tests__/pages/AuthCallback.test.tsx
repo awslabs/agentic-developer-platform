@@ -5,9 +5,10 @@
  *  - a callback this browser did not initiate is rejected (login CSRF / fixation)
  *  - the exchange code is swapped for tokens over POST, not read from the URL
  *  - token material is scrubbed from the address bar after storage
- *  - the legacy tokens-in-query transport still works during rollout skew
+ *  - both transports require a matching, single-use browser nonce
  */
 
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -170,15 +171,12 @@ describe('AuthCallback — GitHub broker handoff (#4133)', () => {
     });
   });
 
-  describe('legacy tokens-in-query transport (rollout skew)', () => {
-    // The SPA bundle and the broker Lambda deploy on separate workflows. Until
-    // the Lambda is republished it still redirects with tokens in the URL, and
-    // rejecting that here would take out every login in the skew window.
-    it('still signs the user in when the broker sends tokens in the URL', async () => {
-      vi.mocked(authService.getBrokerState).mockReturnValue(null);
+  describe('legacy tokens-in-query transport with mandatory state', () => {
+    it('accepts legacy tokens only with the browser nonce', async () => {
+      vi.mocked(authService.getBrokerState).mockReturnValue('nonce-abc');
 
       renderAt(
-        '?source=github_broker&id_token=idt&access_token=at&refresh_token=rt&expires_in=3600'
+        '?source=github_broker&id_token=idt&access_token=at&refresh_token=rt&expires_in=3600&state=nonce-abc'
       );
 
       await waitFor(() => {
@@ -195,9 +193,9 @@ describe('AuthCallback — GitHub broker handoff (#4133)', () => {
     });
 
     it('still scrubs tokens from the address bar on the legacy path', async () => {
-      vi.mocked(authService.getBrokerState).mockReturnValue(null);
+      vi.mocked(authService.getBrokerState).mockReturnValue('nonce-abc');
 
-      renderAt('?source=github_broker&id_token=idt&access_token=at');
+      renderAt('?source=github_broker&id_token=idt&access_token=at&state=nonce-abc');
 
       await waitFor(() => {
         expect(window.history.replaceState).toHaveBeenCalledWith({}, '', '/auth/callback');
@@ -220,15 +218,32 @@ describe('AuthCallback — GitHub broker handoff (#4133)', () => {
     });
 
     it('errors when the legacy callback has no tokens', async () => {
-      vi.mocked(authService.getBrokerState).mockReturnValue(null);
+      vi.mocked(authService.getBrokerState).mockReturnValue('nonce-abc');
 
-      renderAt('?source=github_broker');
+      renderAt('?source=github_broker&state=nonce-abc');
 
       await waitFor(() => {
         expect(screen.getByText(/missing tokens/i)).toBeInTheDocument();
       });
       expect(authService.storeTokens).not.toHaveBeenCalled();
     });
+  });
+
+  it.each([null, 'victim-nonce'])('rejects a stateless legacy callback (stored=%s)', async stored => {
+    vi.mocked(authService.getBrokerState).mockReturnValue(stored);
+    renderAt('?source=github_broker&id_token=attacker&access_token=attacker');
+    await screen.findByText(/did not come from a login started in this browser/i);
+    expect(authService.storeTokens).not.toHaveBeenCalled();
+    expect(mockSetAuthState).not.toHaveBeenCalled();
+    expect(window.history.replaceState).toHaveBeenCalledWith({}, '', '/auth/callback');
+  });
+
+  it('processes a one-time nonce once under StrictMode', async () => {
+    vi.mocked(authService.getBrokerState).mockReturnValueOnce('nonce-abc').mockReturnValue(null);
+    render(<StrictMode><MemoryRouter initialEntries={['/auth/callback?source=github_broker&code=code&state=nonce-abc']}><AuthCallback /></MemoryRouter></StrictMode>);
+    await waitFor(() => expect(mockSetAuthState).toHaveBeenCalledTimes(1));
+    expect(authService.getBrokerState).toHaveBeenCalledTimes(1);
+    expect(authService.exchangeBrokerCode).toHaveBeenCalledTimes(1);
   });
 
   describe('unchanged paths', () => {

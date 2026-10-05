@@ -149,9 +149,9 @@ class Permission(StrEnum):
     """What a caller may do inside one workspace.
 
     Deliberately coarse. These are *domain* permissions, and they are separate
-    from ADP's role names on purpose (see :data:`ADP_ROLE_PERMISSIONS`): the two
-    products do not share a role vocabulary and assuming they did is how a role
-    rename upstream silently widens access here.
+    from ADP's role names on purpose. The unused candidate presets in
+    :data:`ADP_ROLE_PERMISSIONS` are not ADP platform or membership roles;
+    interpreting an upstream role rename as domain authority widens access.
     """
 
     READ = "workspace:read"
@@ -199,11 +199,10 @@ def expand_permissions(granted: Iterable[Permission]) -> frozenset[Permission]:
     return frozenset(result)
 
 
-# ADP role name -> domain permissions. The mapping is explicit and total: a role
-# absent from this table grants nothing, so an unrecognized or renamed role is a
-# denial rather than a default. R6's design note is specific that ADP roles map
-# to domain permissions "without assuming the products' role names match" — hence
-# a table rather than passing the role string through.
+# Candidate domain presets from #5044. These names are NOT ADP platform or
+# membership roles, and no production authorization path calls this helper.
+# An explicit, live, typed workspace grant remains required for every operation.
+# Do not apply this mapping to arbitrary JWT role strings.
 ADP_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
     "workspace_viewer": frozenset({Permission.READ}),
     "workspace_operator": frozenset({Permission.SPEND}),
@@ -215,11 +214,10 @@ ADP_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
 
 
 def permissions_for_adp_role(role: str) -> frozenset[Permission]:
-    """Translate one ADP role name into domain permissions.
+    """Describe one candidate domain preset; never authorize a token with it.
 
-    An unknown role yields the empty set. This is the fail-closed direction: a
-    role that ADP adds, or renames, is unprivileged here until someone decides
-    what it means, rather than inheriting whatever the name resembles.
+    An unknown name yields the empty set. The caller must still hold a live
+    workspace grant; this compatibility helper is not a grant assignment path.
     """
     return expand_permissions(ADP_ROLE_PERMISSIONS.get(role, frozenset()))
 
@@ -245,6 +243,10 @@ def permissions_for_adp_role(role: str) -> frozenset[Permission]:
 WORKSPACE_PATH_PLACEHOLDER = "{workspace}"
 
 ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
+    ("GET", "/superplane/v1/capabilities"): Permission.READ,
+    # Requesting review cannot decide approval or admit the operation. The API
+    # independently verifies its workspace scope and eligible human decision.
+    ("POST", "/superplane/v1/operation-approvals"): Permission.READ,
     # Workspace lifecycle. `create` and `list` are org-scoped: there is no
     # workspace yet. Their required permissions are inventoried, but U14 must
     # implement an org-scoped grant path; the workspace composer refuses them.
@@ -254,8 +256,12 @@ ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
     # Cluster credentials. R6 acc. 1's regression target: this succeeds today for
     # any org-mate of the workspace's org. A kubeconfig is cluster access, so it
     # is PROVISION, not READ — the name "get kubeconfig" reads like a read.
+    #
+    # POST, not GET: it mints credentials with an expiry rather than returning a
+    # stored document. #5637 corrected the client, which had been sending a GET
+    # the gateway allowlist does not carry.
     (
-        "GET",
+        "POST",
         f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/kubeconfig",
     ): Permission.PROVISION,
     (
@@ -275,6 +281,14 @@ ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
         "DELETE",
         f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/{{deployment}}",
     ): Permission.SPEND,
+    (
+        "POST",
+        f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/preview",
+    ): Permission.SPEND,
+    (
+        "POST",
+        f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/{{deployment}}/teardown-preview",
+    ): Permission.SPEND,
     # Quota. Reading a limit is READ; raising one is the authority to spend more.
     (
         "GET",
@@ -284,26 +298,46 @@ ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
         "PATCH",
         f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/quota",
     ): Permission.SPEND,
-    # Cost and events are workspace-scoped reads via a query parameter.
-    ("GET", "/superplane/v1/cost/summary"): Permission.READ,
+    # Cost. There is no `/cost/summary` with a workspace query parameter: the
+    # service has two separate routes, and the scope is carried by the path
+    # rather than by a filter (#5637). The org collection is org-scoped; the
+    # per-workspace read is workspace-scoped, which is what lets a workspace
+    # grant authorize one without authorizing the other.
+    (
+        "GET",
+        f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/cost",
+    ): Permission.READ,
+    ("GET", "/superplane/v1/orgs/cost"): Permission.READ,
+    # Events is an org collection. It has no workspace parameter at all — the
+    # client used to send one and the service ignored it.
     ("GET", "/superplane/v1/events"): Permission.READ,
-    # Cloud accounts and provider credentials.
+    # Cloud accounts. The gateway resolves the caller-owned vault reference before
+    # forwarding the domain schema; domain authorization remains authoritative.
     ("GET", "/superplane/v1/accounts"): Permission.READ,
     ("POST", "/superplane/v1/accounts"): Permission.PROVISION,
     ("DELETE", "/superplane/v1/accounts/{account}"): Permission.PROVISION,
-    ("GET", "/superplane/v1/providers"): Permission.READ,
-    ("POST", "/superplane/v1/providers"): Permission.RENEW_CREDENTIAL,
-    ("DELETE", "/superplane/v1/providers/{credential}"): Permission.RENEW_CREDENTIAL,
+    # Provider credentials live at `/vault/credentials`, holding only a reference
+    # to the secret ADP's own vault stores. `/providers` was never served.
+    ("GET", "/superplane/v1/vault/credentials"): Permission.READ,
+    ("POST", "/superplane/v1/vault/credentials"): Permission.RENEW_CREDENTIAL,
+    (
+        "DELETE",
+        "/superplane/v1/vault/credentials/{credential}",
+    ): Permission.RENEW_CREDENTIAL,
 }
 
 
-# Scope is explicit for every inventoried endpoint. Cost/events are workspace
-# queries: U14 must require a workspace selector and resolve it server-side.
-# No arbitrary workspace grant may stand in for authority over org collections.
+# Scope is explicit for every inventoried endpoint, and derived from the path
+# alone: an endpoint is workspace-scoped exactly when it names a workspace.
+#
+# Cost and events used to be special-cased here as workspace queries, on the
+# assumption that both took a workspace selector the server would resolve. They
+# do not (#5637). Per-workspace cost is a distinct path and is covered by the
+# placeholder test below; `/orgs/cost` and `/events` are org collections, and an
+# arbitrary workspace grant must not stand in for authority over those.
 ENDPOINT_SCOPES: Mapping[tuple[str, str], str] = {
     endpoint: "workspace"
-    if "{workspace}" in endpoint[1]
-    or endpoint[1] in {"/superplane/v1/cost/summary", "/superplane/v1/events"}
+    if WORKSPACE_PATH_PLACEHOLDER in endpoint[1]
     else "organization"
     for endpoint in ENDPOINT_INVENTORY
 }
@@ -686,8 +720,11 @@ def authorize_request(
     steps out of order or skip one. Returns principal, grant and sanitized headers;
     ingress consumers must forward only that returned mapping. The input mapping
     remains untouched. Org-scoped routes are deliberately refused until U14 supplies
-    their separate grant/operation path. Workspace IDs and ownership must be resolved
-    by the server, including query-scoped cost/events and nested resource ownership.
+    their separate grant/operation path — which now includes `/events` and
+    `/orgs/cost`, both org collections rather than the workspace-filtered queries
+    this comment previously assumed (#5637). Workspace IDs and ownership must be
+    resolved by the server, including per-workspace cost and nested resource
+    ownership.
     Header stripping comes first because the
     later steps must not be able to read a client-supplied identity even by
     mistake; the endpoint's permission is resolved from the inventory rather than

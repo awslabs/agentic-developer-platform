@@ -10,6 +10,7 @@
 
 import { validateBaseUrl } from './lib/url-guard';
 import { truncateUtf8 } from './reporting-text';
+import { containsSecret } from './experience-save-hook';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ export class LiveStatusComment {
   private runStartTime: number;
   private latestMessage = '';
   private latestExplanation = '';
+  private taskChecklist = '';
   private explanationAt = '';
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
@@ -184,6 +186,23 @@ export class LiveStatusComment {
     this.scheduleUpdate();
   }
 
+  /** A task list is a progress snapshot, separate from the rolling tool log. */
+  setTaskChecklist(text: string): void {
+    if (this.finished || !text.trim()) return;
+    if (containsSecret(text) || Object.entries(process.env).some(([key, value]) =>
+      /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|API_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
+      text = '[Checklist omitted because it contains credential-like content.]';
+    }
+    const checklist = truncateUtf8(text.trim(), 8 * 1024, '\n[Checklist shortened for display.]');
+    if (checklist === this.taskChecklist) return;
+    this.taskChecklist = checklist;
+    this.scheduleUpdate();
+  }
+
+  private checklistLines(): string[] {
+    return this.taskChecklist ? ['', '### Task checklist', '', this.taskChecklist] : [];
+  }
+
   /** Keep the latest authored explanation visible, separate from tool/heartbeat activity. */
   setExplanation(text: string): void {
     if (this.finished || !text.trim()) return;
@@ -234,6 +253,7 @@ export class LiveStatusComment {
       '',
       summary.details || 'No outcome report was provided. Task completion has not been verified.',
     ];
+    lines.push(...this.checklistLines());
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
     }
@@ -257,6 +277,20 @@ export class LiveStatusComment {
     }
     lines.push('', '</details>');
     await this.updateComment(lines.join('\n'));
+  }
+
+  /** Stop progress reporting while the supervisor completes abort finalization. */
+  async finalizeAbortRequested(): Promise<void> {
+    this.finished = true;
+    this.cancelPendingUpdate();
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+    await Promise.allSettled([...this.inFlightUpdates]);
+    await this.updateComment([
+      '## Agent stopping', '',
+      'An operator requested an abort. Finalization is in progress; the final run status will confirm the outcome.',
+      ...this.checklistLines(),
+      ...this.explanationLines(),
+    ].join('\n'));
   }
 
   /**
@@ -286,7 +320,7 @@ export class LiveStatusComment {
         lines.push(`- ${step}`);
       }
     }
-    lines.push(...this.explanationLines());
+    lines.push(...this.checklistLines(), ...this.explanationLines());
     // Include stage summary showing where it failed
     lines.push('', '### Stages');
     for (const stage of this.stages) {
@@ -324,6 +358,7 @@ export class LiveStatusComment {
     const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
       `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
+      ...this.checklistLines(),
       ...this.explanationLines(),
       '',
       '### Progress',
@@ -412,6 +447,8 @@ export class LiveStatusComment {
     const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || this.options.token;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — url is built from this.options.apiBaseUrl, validated at construction via validateBaseUrl() (default https://api.github.com); only static repo/issue paths are interpolated
     return fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method,
       headers: {
         'Authorization': `token ${token}`,

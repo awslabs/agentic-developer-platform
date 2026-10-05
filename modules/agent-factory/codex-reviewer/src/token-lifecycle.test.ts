@@ -63,3 +63,14 @@ test("transient proactive renewal failure is sanitized and retried before delive
     return calls === 1 ? "bootstrap-token" : "fresh-token";
   } }), 300_000, (...args) => { assert.equal(args.length, 0); warnings++; });
 });
+
+test("authentication rejection forces refresh through the runtime manager", async () => {
+  const forced: boolean[] = [];
+  await withGitHubTokenRenewal(async getToken => {
+    assert.equal(await getToken(true), "fresh");
+  }, async () => ({ getRuntimeGitHubToken: async force => {
+    forced.push(force === true);
+    return force ? "fresh" : "cached";
+  } }));
+  assert.deepEqual(forced, [false, true]);
+});

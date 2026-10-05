@@ -3,6 +3,85 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+run "domain_apps_are_absent_without_an_explicit_opt_in" {
+  command = plan
+  assert {
+    condition = (
+      length(data.terraform_remote_state.cyber) == 0 &&
+      length(local.domain_worker_environment) == 0 &&
+      length(local.domain_worker_artifact_resources) == 0 &&
+      length(local.domain_worker_egress) == 0
+    )
+    error_message = "A basic webhook platform deploy must not install cyber or grant its worker integrations."
+  }
+}
+
+run "cyber_settings_install_the_domain_app" {
+  command = plan
+  variables {
+    enabled_domain_integrations = ["cyber"]
+  }
+  override_data {
+    target = data.terraform_remote_state.cyber[0]
+    values = {
+      outputs = {
+        worker_environment         = { URL_ANALYSIS_BROWSER_MODE = "broker" }
+        worker_artifact_resources  = ["arn:aws:s3:::adp-dev-url-analysis-evidence-v2-111122223333/*"]
+        worker_egress              = []
+        worker_browser_permissions = []
+        worker_image               = "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-hosted-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  }
+  assert {
+    condition     = length(data.terraform_remote_state.cyber) == 1 && length(local.domain_worker_artifact_resources) == 1
+    error_message = "Explicit Cyber integration must read its app-owned worker configuration."
+  }
+}
+
+run "codex_validation_is_off_by_default" {
+  command = plan
+  assert {
+    condition     = length(kubernetes_namespace.codex_validation) == 0 && length(kubernetes_service_account.codex_validation_host) == 0
+    error_message = "Validation must not provision resources or grant credentials by default."
+  }
+}
+
+run "codex_validation_uses_a_dedicated_identity" {
+  command = plan
+  variables {
+    codex_kubernetes_validation_enabled = true
+    codex_validation_api_cidrs          = ["10.0.0.20/32"]
+    task_api_worker_enabled             = true
+  }
+  assert {
+    condition = (
+      one(kubernetes_role_binding.codex_validation[0].subject).name == "validation-host" &&
+      one(kubernetes_role_binding.codex_validation[0].subject).namespace == "adp-codex-validation-hosts" &&
+      local.agent_worker_sa_name != "validation-host" &&
+      !strcontains(local.agent_authority_env_block, "ADP_CODEX_VALIDATION_BACKEND")
+    )
+    error_message = "Validation API access must not be assigned to the shared worker fleet."
+  }
+  assert {
+    condition = (
+      kubernetes_namespace.codex_validation[0].metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].egress) == 0 &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].ingress) == 0 &&
+      kubernetes_resource_quota.codex_validation[0].spec[0].hard["pods"] == "8"
+    )
+    error_message = "Validation must retain restricted Pods, deny all network traffic and bound resource creation."
+  }
+}
+
+run "codex_validation_refuses_subnet_api_access" {
+  command = plan
+  variables {
+    codex_validation_api_cidrs = ["10.0.0.0/8"]
+  }
+  expect_failures = [var.codex_validation_api_cidrs]
+}
+
 variables {
   # Enabling authority requires an approved immutable worker digest; the variable
   # validation rejects tags, so a plausible digest is supplied rather than "".
@@ -150,6 +229,13 @@ override_resource {
   values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-agent-authority-boundary" }
 }
 
+# Pin the role ARN so the configured registry JSON is known during plan.
+override_resource {
+  target          = aws_iam_role.agent_authority_worker
+  override_during = plan
+  values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-agent-authority-worker-role" }
+}
+
 override_resource {
   target          = aws_iam_role.keda_operator
   override_during = plan
@@ -166,8 +252,8 @@ run "prepare_without_activating_workers" {
     agent_authority_worker_image_digests = []
   }
   assert {
-    condition     = local.agent_worker_pause_annotation == "" && !contains(keys(kubernetes_config_map.worker_gateway[0].data), "AGENT_DISPATCH_QUEUE_URL")
-    error_message = "Preparation must neither pause KEDA nor enable a previously unwired dispatch queue."
+    condition     = local.agent_worker_pause_annotation != "" && !contains(keys(kubernetes_config_map.worker_gateway[0].data), "AGENT_DISPATCH_QUEUE_URL")
+    error_message = "Preparation must keep worker admission paused and leave dispatch unwired until protected cutover."
   }
   assert {
     condition     = length(aws_iam_role.agent_authority_worker) == 1 && length(kubernetes_secret.agent_authority) == 1
@@ -218,13 +304,13 @@ run "activation_refuses_missing_release_acceptance" {
   expect_failures = [terraform_data.worker_security_rollout]
 }
 
-run "activation_refuses_mutable_worker_image" {
+run "activation_refuses_non_digest_worker_image" {
   command = plan
   variables {
     agent_authority_enabled                = true
     agent_authority_runtime_ready          = true
     agent_authority_legacy_workers_drained = true
-    agent_image                            = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+    agent_image                            = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }
   expect_failures = [terraform_data.worker_security_rollout]
 }
@@ -248,7 +334,16 @@ run "activated_worker_uses_protected_identity" {
     agent_authority_runtime_ready          = true
     agent_authority_legacy_workers_drained = true
     agent_worker_admission_paused          = true
+    task_api_worker_enabled                = true
   }
+  assert {
+    condition = toset(jsondecode(aws_dynamodb_table_item.agent_authority_worker[0].item).credential_scopes.SS) == toset([
+      "credential:list", "credential:proxy", "credential:assume-role",
+      "credential:task-session", "credential:raw-read", "credential:materialize"
+    ])
+    error_message = "Protected worker capabilities must match the reviewed adp-cred producer inventory."
+  }
+
   assert {
     condition     = strcontains(local.agent_worker_pause_annotation, "autoscaling.keda.sh/paused")
     error_message = "The staged activation must keep admissions paused."
@@ -260,6 +355,13 @@ run "activated_worker_uses_protected_identity" {
   assert {
     condition     = aws_lambda_function.github_webhook.environment[0].variables.ADP_WORK_CLAIMS_ENABLED == "true"
     error_message = "Protected producers must use work admission."
+  }
+  assert {
+    condition = (
+      kubernetes_config_map.worker_gateway[0].data.ADP_TASK_WORKER_SERVICE_ACCOUNT == local.agent_worker_sa_name &&
+      kubernetes_config_map.worker_gateway[0].data.ADP_TASK_WORKER_IMAGE_DIGESTS == kubernetes_config_map.worker_gateway[0].data.AGENT_WORKER_IMAGE_DIGESTS
+    )
+    error_message = "Task API admission must accept the protected worker identity and approved image."
   }
 }
 
@@ -365,6 +467,11 @@ run "managed_gateway_grants_do_not_consume_inline_quota" {
     gateway_authority_managed_policies = true
   }
   override_resource {
+    target          = aws_dynamodb_table.agent_authority
+    override_during = plan
+    values          = { arn = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-authority" }
+  }
+  override_resource {
     target          = aws_iam_role.agent_scaledjob
     override_during = plan
     values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role" }
@@ -379,16 +486,32 @@ run "managed_gateway_grants_do_not_consume_inline_quota" {
     override_during = plan
     values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-task-source" }
   }
+  override_resource {
+    target          = aws_iam_policy.gateway_task_storage
+    override_during = plan
+    values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-task-storage" }
+  }
   assert {
     condition = (
       length(aws_iam_role_policy.gateway_authorized_dispatch) == 0 &&
       length(aws_iam_role_policy.gateway_task_source) == 0 &&
+      length(aws_iam_role_policy.gateway_task_storage) == 0 &&
       aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].role == "adp-dev-role-gateway-service" &&
       aws_iam_role_policy_attachment.gateway_task_source[0].role == "adp-dev-role-gateway-service" &&
+      aws_iam_role_policy_attachment.gateway_task_storage[0].role == "adp-dev-role-gateway-service" &&
       aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].policy_arn == aws_iam_policy.gateway_authorized_dispatch[0].arn &&
-      aws_iam_role_policy_attachment.gateway_task_source[0].policy_arn == aws_iam_policy.gateway_task_source[0].arn
+      aws_iam_role_policy_attachment.gateway_task_source[0].policy_arn == aws_iam_policy.gateway_task_source[0].arn &&
+      aws_iam_role_policy_attachment.gateway_task_storage[0].policy_arn == aws_iam_policy.gateway_task_storage[0].arn
     )
-    error_message = "Managed mode must attach both scoped policies to the gateway without consuming inline quota."
+    error_message = "Managed mode must attach scoped gateway policies without consuming inline quota."
+  }
+  assert {
+    condition = jsondecode(aws_iam_policy.gateway_task_storage[0].policy).Statement[2] == {
+      Sid       = "TaskLocatorRetentionDelete", Effect = "Allow", Action = ["dynamodb:DeleteItem"],
+      Resource  = [aws_dynamodb_table.agent_authority.arn],
+      Condition = { "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] } }
+    }
+    error_message = "Managed task storage must retain the exact locator-delete scope."
   }
   assert {
     condition = jsondecode(aws_iam_policy.gateway_authorized_dispatch[0].policy).Statement[2] == {
@@ -461,4 +584,113 @@ run "continuation_cannot_outrun_reporting" {
     shared_worker_continuation_enabled = true
   }
   expect_failures = [kubernetes_config_map.worker_gateway]
+}
+
+run "native_browser_preserves_protected_worker_boundary" {
+  command = plan
+  variables {
+    agent_authority_prepared    = true
+    agent_authority_enabled     = false
+    enabled_domain_integrations = ["cyber"]
+  }
+  override_data {
+    target = data.terraform_remote_state.cyber[0]
+    values = {
+      outputs = {
+        worker_environment        = { URL_ANALYSIS_BROWSER_MODE = "native" }
+        worker_artifact_resources = ["arn:aws:s3:::adp-dev-url-analysis-evidence-v2-111122223333/*"]
+        worker_egress             = []
+        worker_browser_permissions = [{
+          Sid       = "DirectAgentCoreBrowser", Effect = "Allow",
+          Action    = ["bedrock-agentcore:StartBrowserSession"], Resource = "*",
+          Condition = { StringEquals = { "aws:RequestedRegion" = "us-east-1" } }
+        }]
+        worker_image = "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-hosted-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  }
+  assert {
+    condition = length([
+      for statement in jsondecode(aws_iam_policy.agent_authority_boundary[0].policy).Statement : statement
+      if try(statement.Sid, "") == "DirectAgentCoreBrowser" && try(statement.Effect, "") == "Allow"
+    ]) == 1
+    error_message = "Protected worker boundary must allow the configured native Browser lifecycle."
+  }
+  assert {
+    condition = alltrue([
+      for sid in ["DenyDirectArtifacts", "DenyAllSecrets", "DenyDirectModelInvocation"] :
+      length([for statement in jsondecode(aws_iam_policy.agent_authority_boundary[0].policy).Statement : statement if statement.Sid == sid && statement.Effect == "Deny"]) == 1
+    ])
+    error_message = "Browser access must preserve artifact, secret and model-invocation restrictions."
+  }
+}
+
+run "missing_worker_image_is_rejected" {
+  command = plan
+  variables {
+    agent_image = ""
+  }
+  expect_failures = [var.agent_image]
+}
+
+run "mutable_worker_image_is_rejected" {
+  command = plan
+  variables {
+    agent_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+  }
+  expect_failures = [var.agent_image]
+}
+
+run "validation_service_endpoint_is_opt_in" {
+  command = plan
+  assert {
+    condition     = length(local.codex_validation_service_environment) == 0
+    error_message = "Default workers must not require the validation service."
+  }
+}
+run "validation_service_passes_only_the_api_endpoint" {
+  command = plan
+  variables {
+    codex_validation_service_endpoint = "https://api.example/dev/tools/validation"
+  }
+  assert {
+    condition     = local.codex_validation_service_environment == tomap({ ADP_CODEX_VALIDATION_BACKEND = "service", ADP_CODEX_VALIDATION_SERVICE_ENDPOINT = "https://api.example/dev/tools/validation" })
+    error_message = "Shared workers receive only the service endpoint, never Kubernetes credentials."
+  }
+}
+
+run "codex_dashboards_require_explicit_enablement" {
+  command = plan
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 0 && length(aws_cloudwatch_metric_alarm.codex_execution) == 0
+    error_message = "Codex operational telemetry is opt-in."
+  }
+}
+run "codex_alarms_use_bounded_outcome_dimensions" {
+  command = plan
+  variables {
+    enable_agent_otel           = true
+    codex_observability_enabled = true
+  }
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 1 && length(aws_cloudwatch_metric_alarm.codex_execution) == 2 && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].dimensions == tomap({ outcome = "unknown" }) && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].threshold == 1
+    error_message = "Unknown outcomes need an alert using a fixed outcome dimension, not Task/user IDs."
+  }
+}
+
+run "unprotected_admission_is_rejected" {
+  command = plan
+  variables {
+    agent_authority_enabled       = false
+    agent_worker_admission_paused = false
+  }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
+run "workers_cannot_read_internal_authority" {
+  command = plan
+  assert {
+    condition     = length([for s in local.agent_worker_scoped_policy.Statement : s if try(s.Sid, "") == "DenyInternalAuthoritySecrets" && s.Effect == "Deny"]) == 1
+    error_message = "Even legacy worker policies must explicitly deny internal authority secret access."
+  }
 }

@@ -157,29 +157,18 @@ else
 fi
 
 # Check tool listing (confirms the 6 verbs are registered).
-# /tools requires the shared secret (#4073 finding #8) — only /health is public.
-# This runs INSIDE the Door pod, so it reads the key from the pod's own env
-# (DOOR_API_KEY, mounted from the agent-context-gateway-callback secret) rather
-# than passing a credential across the kubectl boundary.
-MCP_TOOLS=$(kubectl exec deploy/context-mcp -n "${NAMESPACE}" -- python3 -c "
-import urllib.request, json, os
+# Readiness reveals no tenant data. Positive verb checks require an authenticated run.
+MCP_ACL_READY=$(kubectl exec deploy/context-mcp -n "${NAMESPACE}" -- python3 -c "
+import urllib.request
 try:
-    key = os.environ.get('DOOR_API_KEY', '')
-    req = urllib.request.Request(
-        'http://localhost:5100/tools',
-        headers={'X-Internal-Api-Key': key} if key else {},
-    )
-    r = urllib.request.urlopen(req, timeout=5)
-    tools = json.loads(r.read())
-    names = [t['name'] for t in tools]
-    print(','.join(names))
-except Exception as e:
-    print(f'FAILED: {e}')
+    print(urllib.request.urlopen('http://localhost:5100/ready', timeout=5).status)
+except Exception:
+    print('FAILED')
 " 2>/dev/null || echo "FAILED")
-if echo "${MCP_TOOLS}" | grep -q "search"; then
-  check_pass "Context MCP /tools: verbs registered (${MCP_TOOLS})"
+if [ "${MCP_ACL_READY}" = "200" ]; then
+  check_pass "Context MCP /ready: ACL store available"
 else
-  check_warn "Context MCP /tools: could not verify tool listing"
+  check_warn "Context MCP /ready: ACL store not ready"
 fi
 
 # ─── Check 4: Ingestion Refresh CronJob ──────────────────────────────────────
@@ -342,7 +331,7 @@ fi
 echo ""
 echo "--- Check 10: Ingestion Pipeline RBAC ---"
 
-RUNNER_NS="${RUNNER_NAMESPACE:-arc-runners-org}"
+RUNNER_NS="${RUNNER_NAMESPACE:-arc-runners}"
 RUNNER_SA="${RUNNER_SERVICE_ACCOUNT:-github-runner-sa}"
 
 # Check that the Role exists
@@ -361,29 +350,31 @@ else
   check_fail "RoleBinding arc-runner-ingestion-access: not found in ${NAMESPACE}"
 fi
 
-# Verify actual permissions with kubectl auth can-i
+# Authorization checks do not retrieve secrets or execute a pod command.
+# An API/impersonation error is not evidence of a denied capability.
 SA_SUBJECT="system:serviceaccount:${RUNNER_NS}:${RUNNER_SA}"
-
-CAN_GET_SECRET=$(kubectl auth can-i get secrets/agent-context-secrets -n "${NAMESPACE}" --as="${SA_SUBJECT}" 2>/dev/null || echo "no")
-if [ "${CAN_GET_SECRET}" = "yes" ]; then
-  check_pass "Runner SA can read agent-context-secrets"
-else
-  check_fail "Runner SA cannot read agent-context-secrets (${SA_SUBJECT})"
-fi
-
-CAN_CREATE_JOB=$(kubectl auth can-i create jobs -n "${NAMESPACE}" --as="${SA_SUBJECT}" 2>/dev/null || echo "no")
-if [ "${CAN_CREATE_JOB}" = "yes" ]; then
-  check_pass "Runner SA can create Jobs"
-else
-  check_fail "Runner SA cannot create Jobs (${SA_SUBJECT})"
-fi
-
-CAN_EXEC_POD=$(kubectl auth can-i create pods/exec -n "${NAMESPACE}" --as="${SA_SUBJECT}" 2>/dev/null || echo "no")
-if [ "${CAN_EXEC_POD}" = "yes" ]; then
-  check_pass "Runner SA can exec into pods"
-else
-  check_fail "Runner SA cannot exec into pods (${SA_SUBJECT})"
-fi
+for operation in "get secrets/agent-context-secrets" "create jobs" "create pods/exec"; do
+  read -r verb resource <<< "$operation"
+  if result=$(kubectl auth can-i "$verb" "$resource" -n "${NAMESPACE}" \
+      --as="adp-trusted-deployment-validation" --as-group="adp:trusted-deployment" 2>&1); then
+    if [ "$result" = "yes" ]; then
+      check_pass "Trusted deployment group can $operation"
+    else
+      check_fail "Unexpected authorization response for deployment group: $operation"
+    fi
+  else
+    check_fail "Cannot verify trusted deployment group: $operation"
+  fi
+  if result=$(kubectl auth can-i "$verb" "$resource" -n "${NAMESPACE}" \
+      --as="${SA_SUBJECT}" --as-group="system:serviceaccounts" \
+      --as-group="system:serviceaccounts:${RUNNER_NS}" --as-group="system:authenticated" 2>&1); then
+    check_fail "Shared runner retains $operation"
+  elif [ "$result" = "no" ]; then
+    check_pass "Shared runner is denied $operation"
+  else
+    check_fail "Cannot verify shared runner denial: $operation"
+  fi
+done
 
 # ─── Check 11: GraphRAG (Neptune + OpenSearch Serverless) ────────────────────
 echo ""

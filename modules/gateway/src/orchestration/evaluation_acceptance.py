@@ -12,11 +12,11 @@ from sqlalchemy.exc import DBAPIError
 
 from .compile import ApprovalContext
 from .dispatch import graph_address
-from .execution_policy import _STAMPED_FIELDS, AcceptanceMode, Action, ExecutionPolicy, stamp_policy
+from .evaluation_authority import evaluation_inputs
+from .execution_policy import _STAMPED_FIELDS, Action, ExecutionPolicy, stamp_policy
 from .models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
 from .repository_evaluation_contract import canonical, harness_digest, native_specification
 from .review_cycle import CycleBlockedError
-from .shared_policy import shared_inputs
 from .state import ActorKind
 
 ACCEPTANCE_KIND = "evaluation_contract_accepted"
@@ -56,14 +56,16 @@ def node_scope(node):
     return {key: getattr(node, key) for key in ("kind", "title", "issue_ref")}
 
 
-def evaluation_policy(base, *, actor_id, address):
+def evaluation_policy(base, *, actor_id, address, acceptance_mode="machine"):
     """A strict subset except the single explicitly accepted evaluate action.
 
     This policy never replaces the worker policy or keys a new budget meter.
     Its receipt explicitly retains the original policy/meter reference.
     """
     raw = base.model_dump(mode="json", exclude=_STAMPED_FIELDS)
-    raw.update(allowed_actions=["evaluate"], human_gates=[], evaluation_acceptance={address: "machine"}, user_credentials=None, coordination=None)
+    raw.update(
+        allowed_actions=["evaluate"], human_gates=[], evaluation_acceptance={address: acceptance_mode}, user_credentials=None, coordination=None
+    )
     return stamp_policy(ExecutionPolicy.model_validate(raw), principal_id=actor_id, org_id=base.org_id)
 
 
@@ -90,16 +92,17 @@ async def accepted_contract(session, *, node, plan):
         return None
     try:
         data = json.loads(decision.reason)
-        # A plan amendment invalidates the extension; never carry it across a
-        # changed plan implicitly or mistake an older contract for current scope.
-        if (data.get("plan_id"), data.get("plan_version"), data.get("plan_hash")) != (plan.id, plan.version, plan.plan_hash):
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data, node_id=node.id)
+        if plan is None or data.get("plan_id") != plan.id:
             return None
         base = ExecutionPolicy.model_validate((plan.plan_document or {}).get("execution_policy"))
         address = data["address"]
         flow = await session.get(OrchestrationFlow, node.flow_id)
         require(flow is not None and address == graph_address(node, flow_slug=flow.slug), "evaluation_address_changed")
         spec = native_specification(data["specification"])
-        policy = evaluation_policy(base, actor_id=decision.actor_id, address=address)
+        policy = evaluation_policy(base, actor_id=decision.actor_id, address=address, acceptance_mode=spec.acceptance_mode)
         require(
             decision.actor_kind == ActorKind.HUMAN.value
             and data["contract"] == CONTRACT
@@ -109,7 +112,7 @@ async def accepted_contract(session, *, node, plan):
             and data["base_policy_hash"] == base.policy_hash
             and data["specification_hash"] == digest(spec.model_dump(mode="json"))
             and data["evaluation_policy"] == policy.model_dump(mode="json")
-            and base.evaluation_acceptance.get(address) is AcceptanceMode.MACHINE
+            and base.evaluation_acceptance.get(address) == spec.acceptance_mode
             and Action.EVALUATE not in base.human_gates
             and (Action.EVALUATE in base.allowed_actions or data["authorize_evaluate"] is True),
             "evaluation_acceptance_unverifiable",
@@ -117,6 +120,12 @@ async def accepted_contract(session, *, node, plan):
         is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
         grant = "authorize_cli_qualification_dispatch" if is_cli else "authorize_workflow_dispatch"
         require(spec.producer is None or data.get(grant) is True, "producer_authorization_required")
+        # Renewal supplements change time/attempt bounds, not accepted scope.
+        from .policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+        require(inputs.refusal is None and inputs.policy is not None, "evaluation_policy_unverifiable")
+        policy = evaluation_policy(inputs.policy, actor_id=decision.actor_id, address=address, acceptance_mode=spec.acceptance_mode)
         return decision, spec, policy
     except (ValueError, KeyError, TypeError):
         raise CycleBlockedError("evaluation_acceptance_unverifiable") from None
@@ -172,17 +181,18 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     flow, plan, node = await current_target(session, flow_id=flow_id, actor=actor, request=request, lock=lock)
     require(flow.state in {"pending", "running"}, "flow_not_active")
     require(node.state in {"pending", "ready"}, "evaluation_not_pending")
-    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    inputs, _ = await evaluation_inputs(session, org_id=actor.org_id, flow_id=flow_id)
     address = graph_address(node, flow_slug=flow.slug)
     nodes = [row for row in (plan.plan_document or {}).get("nodes", []) if row.get("address") == address]
     require(len(nodes) == 1 and {key: nodes[0].get(key) for key in node_scope(node)} == node_scope(node), "accepted_node_changed")
     original = nodes[0].get("evaluation")
     require(
-        original is None or original.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1"},
+        original is None or original.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"},
         "live_contract_cannot_be_replaced",
     )
-    base = inputs.policy
-    require(base.evaluation_acceptance.get(address) is AcceptanceMode.MACHINE, "machine_acceptance_not_in_plan")
+    base = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
+    spec = native_specification(request.specification)
+    require(base.evaluation_acceptance.get(address) == spec.acceptance_mode, "evaluation_acceptance_mode_changed")
     require(Action.EVALUATE not in base.human_gates, "explicit_human_gate_preserved")
     require(Action.EVALUATE in base.allowed_actions or request.authorize_evaluate, "explicit_evaluate_authorization_required")
     spec = native_specification(request.specification)
@@ -221,7 +231,7 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     require(
         {graph_address(parent, flow_slug=flow.slug) for parent in parents} == {item.address for item in spec.predecessors}, "predecessor_set_changed"
     )
-    policy = evaluation_policy(base, actor_id=actor.actor_id, address=address)
+    policy = evaluation_policy(base, actor_id=actor.actor_id, address=address, acceptance_mode=spec.acceptance_mode)
     previous = await latest_acceptance(session, node=node, plan=plan)
     content = dict(
         contract=CONTRACT,

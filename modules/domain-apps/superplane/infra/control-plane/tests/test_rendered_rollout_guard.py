@@ -56,23 +56,21 @@ SKYPILOT_NAMESPACE = "skypilot"
 
 # The digest U2's lock actually resolves for skypilot-api. Read from the lock rather than
 # copied, so this test cannot drift from the contract it is asserting against.
-PINNED_DIGEST = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))["images"][
-    "skypilot-api"
-]
-PINNED_IMAGE = f"registry-1.docker.io/berkeleyskypilot/skypilot@{PINNED_DIGEST}"
+RELEASE_LOCK = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))
+PINNED_DIGEST = RELEASE_LOCK["images"]["skypilot-api"]
+SKYPILOT_SOURCE = RELEASE_LOCK["image_sources"]["skypilot-api"]
+PINNED_IMAGE = (
+    f"{SKYPILOT_SOURCE['registry']}/{SKYPILOT_SOURCE['repository']}@{PINNED_DIGEST}"
+)
 
 # A syntactically perfect digest that the lock does not pin. This is the distinction the old
 # guard could not make: 64 hex characters is a shape, not a provenance.
 UNPINNED_IMAGE = "registry-1.docker.io/berkeleyskypilot/skypilot@sha256:" + "ab" * 32
 
 RENDER_ENV = {
-    "SP_NAMESPACE": NAMESPACE,
     "SP_SKYPILOT_NAMESPACE": SKYPILOT_NAMESPACE,
-    "SP_CONTROL_PLANE_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/adp-{ENVIRONMENT}-superplane-control-plane",
     "SP_SKYPILOT_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/adp-{ENVIRONMENT}-superplane-skypilot-api",
     "SP_SKYPILOT_IMAGE": PINNED_IMAGE,
-    "SP_DATABASE_SECRET_NAME": f"adp/{ENVIRONMENT}/superplane/database",
-    "SP_JWT_SECRET_NAME": f"adp/{ENVIRONMENT}/superplane/jwt-signing-key",
     "SP_AWS_REGION": "us-east-1",
 }
 
@@ -721,17 +719,106 @@ def test_workload_without_a_networkpolicy_is_reported(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The guard must see the whole rendered set, not just its top level — A18 (#5674).
+#
+# The guard walked the rendered directory with iterdir(), which yields only the
+# top level. The apply step hands kubectl the directory, and kubectl reads the
+# files inside a directory it is given. So a manifest one level down was applied
+# but never validated, and the guard printed "RBAC scope ... conform" over it and
+# exited 0. Same class of false green as the digest-only check this suite already
+# covers: a report on the subset it happened to look at, phrased as the whole set.
+#
+# test_the_flat_scan_would_have_passed_the_nested_fixture runs the superseded
+# iterdir() logic against the same fixture, so these tests establish that the
+# guard CHANGED rather than that a cluster-admin binding is obviously invalid —
+# the same discipline as test_the_old_digest_only_check_would_have_passed_it.
+# ---------------------------------------------------------------------------
+
+
+def _nested_hostile_set(root: Path) -> Path:
+    """A compliant top level plus a deliberately non-compliant manifest one level down."""
+    directory = _write(root / "rendered", _deployment(), _network_policy())
+    nested = directory / "extra"
+    nested.mkdir()
+    (nested / "hostile.yaml").write_text(
+        yaml.safe_dump(CLUSTER_ADMIN_BINDING, sort_keys=False), encoding="utf-8"
+    )
+    return directory
+
+
+def test_a_nested_manifest_is_validated(tmp_path):
+    """The fixture the flat scan missed: valid top level, cluster-admin binding below it."""
+    directory = _nested_hostile_set(tmp_path)
+    result = _run_guard(directory)
+    assert result.returncode != 0, (
+        "a ClusterRoleBinding to cluster-admin in a subdirectory of the rendered set was "
+        f"accepted, so the guard is still only checking the top level\n{result.stdout}"
+    )
+    assert "ClusterRoleBinding" in result.stdout
+    assert "extra/hostile.yaml" in result.stdout, (
+        "the violation does not identify which nested file it came from, so two same-named "
+        f"files in different subdirectories would be indistinguishable\n{result.stdout}"
+    )
+
+
+def test_the_flat_scan_would_have_passed_the_nested_fixture(tmp_path):
+    """Run the SUPERSEDED discovery against the same fixture.
+
+    Without this, the test above proves only that a cluster-admin binding fails — not that
+    the recursion is what changed. The body is the pre-fix discovery from
+    `_iter_documents`, reproduced in substance: iterdir(), filtered to YAML suffixes.
+    """
+    directory = _nested_hostile_set(tmp_path)
+
+    seen = sorted(p.name for p in directory.iterdir() if p.suffix in {".yaml", ".yml"})
+    assert seen == ["manifest.yaml"], (
+        "this test no longer reproduces the old behaviour; update it deliberately"
+    )
+    assert "hostile.yaml" not in seen, (
+        "the flat scan never saw the nested manifest — that was the gap"
+    )
+
+    # And it is genuinely reachable: kubectl applies the files inside a directory it is
+    # handed, so 'not scanned' meant 'applied unchecked' rather than 'ignored'.
+    recursive = sorted(
+        p.relative_to(directory).as_posix()
+        for p in directory.rglob("*")
+        if p.is_file() and p.suffix in {".yaml", ".yml"}
+    )
+    assert recursive == ["extra/hostile.yaml", "manifest.yaml"]
+
+
+def test_a_compliant_nested_manifest_is_accepted(tmp_path):
+    """Recursion must not turn subdirectories themselves into the violation."""
+    directory = _write(tmp_path / "rendered", _deployment())
+    nested = directory / "policies"
+    nested.mkdir()
+    (nested / "netpol.yaml").write_text(
+        yaml.safe_dump(_network_policy(), sort_keys=False), encoding="utf-8"
+    )
+    result = _run_guard(directory)
+    assert result.returncode == 0, (
+        "a compliant manifest in a subdirectory was rejected, so the recursion is too strict "
+        f"rather than more complete\n{result.stdout}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # The real manifests, rendered by the real renderer.
 # ---------------------------------------------------------------------------
 
 
-def _render(tmp_path: Path, **env_overrides) -> subprocess.CompletedProcess:
+def _render(
+    tmp_path: Path, *, lane="skypilot", **env_overrides
+) -> subprocess.CompletedProcess:
     output = tmp_path / "rendered"
     env = {**os.environ, **RENDER_ENV, **env_overrides}
     return subprocess.run(
         [
             sys.executable,
             str(RENDERER),
+            "--lane",
+            lane,
             "--source-dir",
             str(MANIFEST_DIR),
             "--output-dir",
@@ -875,9 +962,9 @@ def test_skypilot_role_grants_no_pod_creation(tmp_path):
 
 
 def test_rendering_refuses_a_value_that_would_restructure_the_document(tmp_path):
-    result = _render(tmp_path, SP_NAMESPACE="superplane\nevil: true")
+    result = _render(tmp_path, SP_SKYPILOT_NAMESPACE="skypilot\nevil: true")
     assert result.returncode != 0
-    assert "SP_NAMESPACE" in result.stdout
+    assert "SP_SKYPILOT_NAMESPACE" in result.stdout
 
 
 def test_rendering_refuses_an_empty_value(tmp_path):
@@ -1004,4 +1091,53 @@ def test_rejected_manifests_never_reach_kubectl(tmp_path):
     assert result.returncode != 0, "the hostile rendered set passed validation"
     assert not log.exists(), (
         f"kubectl was invoked despite a rejected manifest set:\n{log.read_text()}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SP_NAMESPACE",
+        "SP_CONTROL_PLANE_ROLE_ARN",
+        "SP_DATABASE_SECRET_NAME",
+        "SP_JWT_SECRET_NAME",
+    ],
+)
+def test_skypilot_lane_rejects_unused_control_plane_inputs(tmp_path, name):
+    result = _render(tmp_path, **{name: "control-plane-value"})
+    assert result.returncode == 1
+    assert "control-plane values supplied" in result.stdout
+
+
+def test_full_rollout_still_requires_published_control_plane_manifests(tmp_path):
+    result = _render(
+        tmp_path,
+        lane="rollout",
+        SP_NAMESPACE=NAMESPACE,
+        SP_CONTROL_PLANE_ROLE_ARN=f"arn:aws:iam::{ACCOUNT}:role/control-plane",
+        SP_DATABASE_SECRET_NAME="database",
+        SP_JWT_SECRET_NAME="jwt",
+    )
+    assert result.returncode == 1
+    assert "superplane-api' is no longer pending" in result.stdout
+
+
+def test_workflow_selects_skypilot_lane_and_only_its_inputs():
+    step = next(s for s in _workflow_steps() if s.get("name") == "Render manifests")
+    assert "--lane skypilot" in step["run"]
+    assert set(step["env"]) == set(RENDER_ENV) | {"SP_SOURCE_DIR", "SP_LOCK_FILE"}
+
+
+def test_skypilot_lane_rejects_control_plane_placeholder(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "namespace.yaml").write_text(
+        "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: REPLACE_WITH_NAMESPACE\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "MANIFEST_DIR", source)
+    result = _render(tmp_path)
+    assert result.returncode == 1
+    assert (
+        "placeholder(s) with no value supplied: REPLACE_WITH_NAMESPACE" in result.stdout
     )

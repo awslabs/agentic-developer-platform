@@ -62,16 +62,7 @@ def images(destination, source_sha, release_id):
         password = run(['aws', 'ecr', 'get-login-password', '--region', REGION], capture=True)
         run(['skopeo', 'login', '--authfile', auth, '--username', 'AWS', '--password-stdin', registry], input=password, capture=True)
         for name, (repository, project, suffix) in IMAGES.items():
-            tag = f'release-{release_id}-{name}'
-            env = dict(os.environ, AWS_REGION=REGION, STATE_BUCKET=f'adp-terraform-state-{ACCOUNTS["integration-test"]}', SOURCE_SHA=source_sha, ADP_RELEASE_BUILD='true')
-            run(['bash', 'platform/scripts/codebuild-run.sh', f'adp-dev-{project}',
-                 f'name=IMAGE_TAG,value={tag},type=PLAINTEXT', f'name=REGISTRY,value={registry}',
-                 f'name=ACCOUNT_ID,value={ACCOUNTS["integration-test"]}', 'name=ENVIRONMENT,value=dev', 'name=PUBLISH_LATEST,value=false',
-                 f'name=AWS_REGION,value={REGION}', f'name=STATE_BUCKET,value={env["STATE_BUCKET"]}'], env=env)
-            details = aws('ecr', 'describe-images', '--repository-name', repository, '--image-ids', f'imageTag={tag}')['imageDetails']
-            if len(details) != 1:
-                raise ValueError('Built image is missing')
-            digest = details[0]['imageDigest']
+            digest = ensure_image(registry, repository, project, source_sha)
             directory = Path(temp) / name
             run(['skopeo', 'copy', '--all', '--preserve-digests', '--src-authfile', auth,
                  f'docker://{registry}/{repository}@{digest}', f'dir:{directory}'])
@@ -81,6 +72,25 @@ def images(destination, source_sha, release_id):
             shutil.rmtree(directory)
             result[name] = {'repository': repository, 'digest': digest}
     return result
+
+
+def ensure_image(registry, repository, project, source_sha):
+    """Use an immutable source image if already published; otherwise build it once."""
+    image = f'{registry}/{repository}:{source_sha}'
+    reusable = run(['python3', ROOT / 'platform/scripts/upgrade-image-cache.py', image], capture=True).strip()
+    if reusable:
+        return reusable.rsplit('@', 1)[1]
+
+    # Shared publishers identify the archived source, not the release bundle.
+    env = dict(os.environ, AWS_REGION=REGION, STATE_BUCKET=f'adp-terraform-state-{ACCOUNTS["integration-test"]}', SOURCE_SHA=source_sha, ADP_RELEASE_BUILD='true')
+    run(['bash', 'platform/scripts/codebuild-run.sh', f'adp-dev-{project}',
+         f'name=IMAGE_TAG,value={source_sha},type=PLAINTEXT', f'name=REGISTRY,value={registry}',
+         f'name=ACCOUNT_ID,value={ACCOUNTS["integration-test"]}', 'name=ENVIRONMENT,value=dev', 'name=PUBLISH_LATEST,value=false',
+         f'name=AWS_REGION,value={REGION}', f'name=STATE_BUCKET,value={env["STATE_BUCKET"]}'], env=env)
+    details = aws('ecr', 'describe-images', '--repository-name', repository, '--image-ids', f'imageTag={source_sha}')['imageDetails']
+    if len(details) != 1:
+        raise ValueError('Built image is missing')
+    return details[0]['imageDigest']
 
 
 def build(destination, release_id, *, packages_only=False):

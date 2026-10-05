@@ -1800,7 +1800,14 @@ def _genuine_network_context(plan, creating, networking):
         address = change["address"]
         detail = change["change"]
         expressions = {}
-        if address == "aws_security_group.cluster":
+        if address == "aws_default_security_group.workspace[0]":
+            expressions["vpc_id"] = {
+                "references": ["aws_vpc.workspace[0].id", "aws_vpc.workspace"]
+            }
+        elif address in {
+            "aws_security_group.cluster",
+            "aws_security_group.private_sts[0]",
+        }:
             expressions["vpc_id"] = {"references": ["local.vpc_id"]}
             for side in ("before", "after"):
                 if isinstance(detail.get(side), dict):
@@ -1810,6 +1817,32 @@ def _genuine_network_context(plan, creating, networking):
                         detail[side]["vpc_id"] = "vpc-0workspace"
             if networking == "owned" and creating:
                 detail["after_unknown"] = {"vpc_id": True}
+        elif address == "aws_vpc_endpoint.private_sts[0]":
+            expressions = {
+                "vpc_id": {"references": ["local.vpc_id"]},
+                "subnet_ids": {"references": ["local.private_subnet_ids"]},
+                "security_group_ids": {
+                    "references": [
+                        "aws_security_group.private_sts[0].id",
+                        "aws_security_group.private_sts",
+                    ]
+                },
+            }
+        elif address == "aws_vpc_security_group_ingress_rule.private_sts_nodes[0]":
+            expressions = {
+                "security_group_id": {
+                    "references": [
+                        "aws_security_group.private_sts[0].id",
+                        "aws_security_group.private_sts",
+                    ]
+                },
+                "referenced_security_group_id": {
+                    "references": [
+                        "aws_eks_cluster.workspace.vpc_config[0].cluster_security_group_id",
+                        "aws_eks_cluster.workspace",
+                    ]
+                },
+            }
         elif address == "aws_vpc_security_group_egress_rule.cluster_all":
             expressions["security_group_id"] = {
                 "references": [
@@ -1878,6 +1911,9 @@ def _genuine_network_context(plan, creating, networking):
                     vals["vpc_config"] = [{}]
                     if not creating:
                         vals["vpc_config"][0]["security_group_ids"] = ["sg-0cluster"]
+                        vals["vpc_config"][0]["cluster_security_group_id"] = (
+                            "sg-0123456789abcdef0"
+                        )
                     if not creating or networking == "supplied":
                         vals["vpc_config"][0]["subnet_ids"] = subnets
                 else:
@@ -2119,7 +2155,57 @@ def _genuine_plan(*, creating: bool, networking: str = "owned") -> dict:
         return _genuine_network_context(_plan(*changes), creating, networking)
 
     changes += [
+        _change(
+            "aws_security_group.private_sts[0]",
+            actions,
+            {"name": f"{PREFIX}-private-sts", **tags, **ident("sg-0private-sts")},
+        ),
+        _change(
+            "aws_vpc_endpoint.private_sts[0]",
+            actions,
+            {
+                **tags,
+                **ident("vpce-0private-sts"),
+                "vpc_endpoint_type": "Interface",
+                **(
+                    {}
+                    if creating
+                    else {
+                        "vpc_id": "vpc-0workspace",
+                        "subnet_ids": ["subnet-0private0", "subnet-0private1"],
+                        "security_group_ids": ["sg-0private-sts"],
+                    }
+                ),
+            },
+        ),
+        _change(
+            "aws_vpc_security_group_ingress_rule.private_sts_nodes[0]",
+            actions,
+            {
+                **ident("sgr-0private-sts"),
+                "ip_protocol": "tcp",
+                "from_port": 443,
+                "to_port": 443,
+                **(
+                    {}
+                    if creating
+                    else {
+                        "security_group_id": "sg-0private-sts",
+                        "referenced_security_group_id": "sg-0123456789abcdef0",
+                    }
+                ),
+            },
+        ),
         _change("aws_vpc.workspace[0]", actions, {**tags, **ident("vpc-0workspace")}),
+        _change(
+            "aws_default_security_group.workspace[0]",
+            actions,
+            {
+                **tags,
+                **ident("sg-0default"),
+                **({} if creating else {"vpc_id": "vpc-0workspace"}),
+            },
+        ),
         _change(
             "aws_internet_gateway.workspace[0]", actions, {**tags, **ident("igw-0ws")}
         ),
@@ -3418,3 +3504,72 @@ def test_non_network_imports_cannot_adopt_existing_resources(tmp_path, prefix):
     )
     change["change"]["importing"] = {"id": "pre-existing-resource"}
     _assert_denied(_run(_write(tmp_path, plan)), because="is being IMPORTED")
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["foreign_vpc", "supplied_mode", "unknown_foreign_reference", "missing_identity"],
+)
+def test_default_security_group_requires_owned_vpc_evidence(tmp_path, attack):
+    plan = _genuine_plan(creating=True)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    if attack == "foreign_vpc":
+        group["change"]["after"]["vpc_id"] = "vpc-foreign"
+        group["change"]["after_unknown"] = {}
+    elif attack == "supplied_mode":
+        plan["variables"]["networking_mode"] = {"value": "supplied"}
+        plan["variables"]["supplied_vpc_id"] = {"value": "vpc-customer"}
+        group["change"]["after"]["vpc_id"] = "vpc-customer"
+        group["change"]["after_unknown"] = {}
+        entry = next(
+            c
+            for c in plan["configuration"]["root_module"]["resources"]
+            if c["address"] == "aws_default_security_group.workspace"
+        )
+        entry["expressions"]["vpc_id"] = {"references": ["local.vpc_id"]}
+    elif attack == "unknown_foreign_reference":
+        entry = next(
+            c
+            for c in plan["configuration"]["root_module"]["resources"]
+            if c["address"] == "aws_default_security_group.workspace"
+        )
+        entry["expressions"]["vpc_id"] = {"references": ["data.aws_vpc.supplied[0].id"]}
+    else:
+        group["change"]["after"].pop("tags_all")
+    result = _run(_write(tmp_path, plan))
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "aws_default_security_group.workspace[0]" in combined
+    assert ("OrgId" if attack == "missing_identity" else "vpc_id") in combined
+
+
+def test_default_security_group_foreign_before_side_cannot_be_destroyed(tmp_path):
+    plan = _genuine_plan(creating=False)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    group["change"]["before"]["vpc_id"] = "vpc-foreign"
+    result = _run(_write(tmp_path, plan), *_authorize(tmp_path, plan))
+    assert result.returncode != 0
+    assert "aws_default_security_group.workspace[0]" in result.stdout + result.stderr
+    assert "vpc_id" in result.stdout + result.stderr
+
+
+def test_default_security_group_import_requires_separate_migration(tmp_path):
+    plan = _genuine_plan(creating=True)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    group["change"]["importing"] = {"id": "sg-0default"}
+    result = _run(_write(tmp_path, plan))
+    assert result.returncode != 0
+    assert "aws_default_security_group.workspace[0]" in result.stdout + result.stderr
+    assert "IMPORTED" in result.stdout + result.stderr

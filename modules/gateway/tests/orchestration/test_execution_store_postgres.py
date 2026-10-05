@@ -129,7 +129,7 @@ async def graph(pg_session_factory):
     made: dict[str, str] = {}
     async with pg_session_factory() as session:
         for org, key in ((ORG_A, "a"), (ORG_B, "b")):
-            flow = OrchestrationFlow(org_id=org, slug=f"flow-{key}", title=f"Flow {key}", state="draft")
+            flow = OrchestrationFlow(execution_paused=False, org_id=org, slug=f"flow-{key}", title=f"Flow {key}", state="draft")
             session.add(flow)
             await session.flush()
             made[f"flow_{key}"] = flow.id

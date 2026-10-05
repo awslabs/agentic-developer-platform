@@ -612,18 +612,62 @@ class DerivedNamesAtRevision:
 
     def iam_role_names(self, environment: str) -> list[str]:
         __tracebackhide__ = True
-        suffixes = re.findall(
-            r'resource\s+"aws_iam_role"\s+"[^"]+"\s*\{[^}]*?name\s*=\s*'
-            r'"\$\{local\.name_prefix\}([^"]*)"',
-            self._read("irsa.tf"),
-            re.DOTALL,
-        )
-        require(
-            bool(suffixes),
-            "BLOCKED: no aws_iam_role names found in irsa.tf at the deployed revision",
-        )
+        files = self._sources.listing(f"{MODULE_PATH}/infra/control-plane")
+        source = "\n".join(self._read(name) for name in files if name.endswith(".tf"))
+        try:
+            suffixes = self._u3.iam_role_suffixes(source)
+        except AssertionError:
+            raise EvidenceError(
+                "BLOCKED: not every aws_iam_role name could be derived at the deployed revision"
+            ) from None
+        if "-api-producer" in suffixes and not self.api_producer_selected(
+            environment, source
+        ):
+            suffixes.remove("-api-producer")
         prefix = self.name_prefix(environment)
         return [f"{prefix}{suffix}" for suffix in suffixes]
+
+    def api_producer_selected(self, environment: str, source: str) -> bool:
+        """Resolve the optional role from deployed source and deployed lane inputs."""
+        require(
+            re.search(
+                r'variable\s+"api_producer_role"\s*\{.*?default\s*=\s*null',
+                source,
+                re.DOTALL,
+            )
+            and re.search(
+                r'resource\s+"aws_iam_role"\s+"api_producer"\s*\{\s*count\s*=\s*var\.api_producer_role\s*==\s*null\s*\?\s*0\s*:\s*1\s+name\s*=\s*"\$\{local\.name_prefix\}-api-producer"',
+                source,
+            ),
+            "BLOCKED: optional producer role creation condition cannot be derived",
+        )
+        inputs = self._sources.read(
+            f"environments/{environment}/modules/superplane.tfvars"
+        )
+        # This evidence path supports literal lane inputs only, never evaluates HCL.
+        assignments = re.findall(
+            r"^\s*api_producer_role\s*=\s*(null|\{[^}]*\})\s*(?:#[^\n]*)?$",
+            inputs,
+            re.MULTILINE,
+        )
+        mentions = re.findall(r"^\s*api_producer_role\s*=", inputs, re.MULTILINE)
+        require(
+            len(assignments) == len(mentions) <= 1,
+            "BLOCKED: optional producer role input is ambiguous or nonliteral",
+        )
+        if not assignments or assignments[0] == "null":
+            return False
+        fields = re.findall(r'(api_id|stage)\s*=\s*"([A-Za-z0-9_-]+)"', assignments[0])
+        residue = re.sub(r'(api_id|stage)\s*=\s*"[A-Za-z0-9_-]+"', "", assignments[0])
+        require(
+            len(fields) == 2
+            and {key for key, _ in fields} == {"api_id", "stage"}
+            and not residue.strip("{} \t\n\r,")
+            and re.fullmatch(r"[a-z0-9]{10}", dict(fields)["api_id"])
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", dict(fields)["stage"]),
+            "BLOCKED: optional producer role input cannot be derived",
+        )
+        return True
 
     def ssm_parameter_names(self, environment: str) -> list[str]:
         __tracebackhide__ = True

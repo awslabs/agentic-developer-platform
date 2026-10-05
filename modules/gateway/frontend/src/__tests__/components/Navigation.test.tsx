@@ -292,3 +292,16 @@ describe('Navigation', () => {
     });
   });
 });
+
+
+describe('optional menu entries', () => {
+  it.each([true, false])('honors menu flags for a platform admin: %s', (enabled) => {
+    mockUsePermissions.mockReturnValue(permissions({ isPlatformAdmin: () => true }));
+    mockUseFeatures.mockReturnValue({ tenant_org_links: enabled, knowledge: enabled, indexing: enabled });
+    renderNavigation();
+    for (const label of ['Tenant Org Links', 'Knowledge', 'Indexing Status']) {
+      if (enabled) expect(screen.getByText(label)).toBeInTheDocument();
+      else expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+});

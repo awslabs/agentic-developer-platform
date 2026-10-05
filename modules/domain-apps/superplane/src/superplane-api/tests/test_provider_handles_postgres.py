@@ -1,7 +1,8 @@
-"""Real PostgreSQL row-lock regressions; use a disposable local test database.
+"""Real PostgreSQL row-lock regressions on an isolated disposable test database.
 
-Set SUPERPLANE_TEST_POSTGRES_URL to a postgresql+asyncpg URL. Each test creates
-and removes its own random schema; no provider, cloud or B service is contacted.
+The shared fixture starts pgserver, or uses an explicit SUPERPLANE_TEST_POSTGRES_URL
+override. Each test creates and removes its own random schema; no provider, cloud
+or B service is contacted.
 """
 
 import asyncio
@@ -12,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from superplane_contracts import (
@@ -24,8 +27,6 @@ from superplane_contracts import (
     Submitter,
 )
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from app.database import Base
 from app.models.organization import Organization
 from app.models.provider_handle import (
@@ -35,16 +36,19 @@ from app.models.provider_handle import (
 )
 from app.models.workspace import Workspace
 from app.services import provider_authority, provider_handles, provider_inventory
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
+from tests.test_installation_postgres import (
+    installation_postgres_url as installation_postgres_url,
 )
+from tests.test_installation_postgres import pytestmark as postgres_available
+
+# CI installs pgserver and must execute these races. A missing/broken disposable
+# server must fail fixture setup there, rather than turn the lane green with skips.
+pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 @pytest.fixture
-async def postgres(monkeypatch):
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+async def postgres(monkeypatch, installation_postgres_url):  # noqa: F811 - pytest fixture injection
+    url = installation_postgres_url
     schema = "provider_test_" + uuid.uuid4().hex
     admin = create_async_engine(url)
     async with admin.begin() as connection:

@@ -53,6 +53,7 @@ from src.budget.routes import get_budget_service, get_current_user
 from src.budget.routes import router as budget_router
 from src.budget.service import BudgetService
 from src.budget.utils import CALENDAR_PERIOD_TYPES, get_period_start_end
+from src.shared.database import get_db
 from src.shared.models.base import Base
 from src.shared.models.budget import BudgetConfig, BudgetUsage
 from src.shared.schemas.budget import EntityType, PeriodType
@@ -87,7 +88,7 @@ def admin_service(async_session):
 
 
 @pytest.fixture
-def app(budget_service):
+def app(budget_service, async_session):
     """FastAPI app wired to a REAL BudgetService over the sqlite session.
 
     Deliberately not the mocked service from test_routes.py: a mock returns a dict
@@ -98,13 +99,15 @@ def app(budget_service):
     app = FastAPI()
     app.include_router(budget_router)
     app.dependency_overrides[get_budget_service] = lambda: budget_service
+    app.dependency_overrides[get_db] = lambda: async_session
     app.dependency_overrides[get_current_user] = lambda: MagicMock(
         user_id="user-1",
         org_id=ORG_ID,
         team_id="team-1",
         department_id="dept-1",
         account_type="human",
-        is_admin=False,
+        is_admin=True,  # Individual agent/run budgets require operator authority.
+        cognito_username="",
     )
     return app
 

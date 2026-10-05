@@ -69,6 +69,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.admin.exceptions import AccessDeniedError, InvalidScopeError
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.base import utcnow
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.auth import TokenContext
@@ -395,6 +396,7 @@ async def _resolve_platform_identity(
         await session.execute(
             select(UserIdentity).where(
                 UserIdentity.org_id == org_id,
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
                 UserIdentity.provider == _GITHUB_PROVIDER,
                 UserIdentity.provider_user_id == github_user_id,
             )
@@ -888,6 +890,7 @@ async def apply_gate_answer_for_context(
     input_path: InputPath,
     refusal_message: str | None = None,
     expected_plan_hash: str | None = None,
+    execution_preview: dict | None = None,
 ) -> GateAnswerOutcome:
     """Apply a gate answer for an **already-resolved** platform identity.
 
@@ -1230,6 +1233,23 @@ async def apply_gate_answer_for_context(
             node_id=node_id,
             message="this gate was already answered",
         )
+
+    if approve:
+        from ..compile import ApprovalContext, PolicyNotAcceptableError
+        from ..evaluation_acceptance import EvaluationAcceptanceError
+        from ..gate_execution import authorize_gate_execution
+        from ..review_cycle import CycleBlockedError
+        from ..shared_window import WindowRenewalError
+
+        try:
+            await authorize_gate_execution(
+                session,
+                gate=node,
+                actor=ApprovalContext(org_id=org_id, actor_id=context.user_id, actor_role=actor_role),
+                reviewed=execution_preview,
+            )
+        except (EvaluationAcceptanceError, WindowRenewalError, CycleBlockedError) as error:
+            raise PolicyNotAcceptableError("Cannot start the next step: " + str(error)) from error
 
     record = build_gate_decision(
         org_id=org_id,

@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -34,6 +34,7 @@ from src.admin.persona_models.catalogue import (
     PERSONA_ALLOWED_PATTERNS,
     PLATFORM_MODEL_CATALOGUE,
     persona_compatibility_class,
+    persona_harness_contract_revision,
 )
 from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
@@ -56,11 +57,11 @@ from src.agentauth.runtime_posture import (
 from src.agentauth.store import AuthorityStoreError
 from src.shared.config import get_settings
 from src.shared.identity.resolver import resolve_root_user_entity_id
-from src.shared.models.organization import User
 from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PersonaModelPolicySetting,
     PersonaModelPreference,
+    PersonaPlatformDefault,
     ServicePrincipal,
     ServicePrincipalAlias,
 )
@@ -69,6 +70,7 @@ from src.shared.schemas.auth import TokenContext
 logger = logging.getLogger("bedrockgateway.agentauth.model_policy")
 
 SNAPSHOT_SCHEMA_VERSION = 1
+PERSONA_DEFAULTS_SNAPSHOT_VERSION = 2
 #: The model-policy contract a client must declare to be admitted under an
 #: enforcing posture.  Distinct from ``SNAPSHOT_SCHEMA_VERSION``, which versions
 #: the frozen snapshot's wire format: this versions what a *consumer* promises to
@@ -178,6 +180,7 @@ class ModelPolicySnapshot:
     expires_at: datetime
     audience: str
     source: Literal["live", "last_known_good_cache"]
+    persona_defaults: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -187,6 +190,7 @@ class ModelPolicySnapshot:
             "principal_id": self.principal_id,
             "mappings": dict(sorted(self.mappings.items())),
             "class_defaults": {key: self.class_defaults[key] for key in sorted(self.class_defaults)},
+            **({"persona_defaults": {key: self.persona_defaults[key] for key in sorted(self.persona_defaults)}} if self.persona_defaults else {}),
             "persona_contracts": {key: self.persona_contracts[key] for key in sorted(self.persona_contracts)},
             "policy_revision": self.policy_revision,
             "allowlist_policy_revision": self.allowlist_policy_revision,
@@ -204,7 +208,7 @@ class ModelPolicySnapshot:
         try:
             if not isinstance(value, dict):
                 raise ModelPolicyError("snapshot_malformed")
-            if value.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+            if value.get("schema_version") not in {SNAPSHOT_SCHEMA_VERSION, PERSONA_DEFAULTS_SNAPSHOT_VERSION}:
                 raise ModelPolicyError("snapshot_unsupported_revision")
             tenant_id = value["tenant_id"]
             principal_kind = value["principal_kind"]
@@ -212,6 +216,11 @@ class ModelPolicySnapshot:
             mappings = value["mappings"]
             class_defaults = value["class_defaults"]
             persona_contracts = value["persona_contracts"]
+            persona_defaults = value.get("persona_defaults", {})
+            if not isinstance(persona_defaults, dict) or any(not isinstance(k, str) or not isinstance(v, dict) for k, v in persona_defaults.items()):
+                raise ModelPolicyError("snapshot_malformed")
+            if bool(persona_defaults) != (value["schema_version"] == PERSONA_DEFAULTS_SNAPSHOT_VERSION):
+                raise ModelPolicyError("snapshot_unsupported_revision")
             if value.get("audience") != SNAPSHOT_AUDIENCE:
                 raise ModelPolicyError("snapshot_audience_mismatch")
             scalar_fields = (
@@ -237,7 +246,8 @@ class ModelPolicySnapshot:
             if expires <= issued:
                 raise ModelPolicyError("snapshot_malformed")
             return cls(
-                schema_version=SNAPSHOT_SCHEMA_VERSION,
+                schema_version=value["schema_version"],
+                persona_defaults=dict(persona_defaults),
                 tenant_id=tenant_id,
                 principal_kind=principal_kind,
                 principal_id=principal_id,
@@ -376,6 +386,7 @@ def resolve_decision(
     persona: str,
     direct_override: str | None = None,
     direct_requested: str | None = None,
+    live: LivePosture | None = None,
     now: datetime | None = None,
 ) -> ModelPolicyDecision:
     """Resolve one hop from gateway-owned, frozen policy facts.
@@ -402,16 +413,29 @@ def resolve_decision(
     harness_revision = contract.get("harness_contract_revision", "")
     if not compatibility_class or not harness_revision:
         raise ModelPolicyError("persona_incompatible")
+    if live is not None and (live.compatibility_class != compatibility_class or persona_compatibility_class(persona) != compatibility_class):
+        raise ModelPolicyError("persona_incompatible")
+    # Older root snapshots incorrectly stamped Claude's SDK revision onto the
+    # native Codex class. Translate only that known producer defect, using the
+    # registered Codex contract and a verified live class. The selected model
+    # and the original snapshot/digest remain unchanged.
+    if live is not None and compatibility_class == "codex-sdk" and harness_revision == HARNESS_CONTRACT_REVISION:
+        harness_revision = persona_harness_contract_revision(persona)
     class_policy = snapshot.class_defaults.get(compatibility_class)
-    if not isinstance(class_policy, dict):
-        raise ModelPolicyError("class_default_unavailable")
-    try:
-        snapshot_posture = coerce_posture(class_policy.get("posture"))
-        snapshot_posture_revision = coerce_posture_revision(class_policy.get("posture_revision"))
-    except RuntimePostureError as exc:
-        # An unreadable snapshot posture is still a refusal: it means the frozen
-        # facts are malformed, which is not a posture and must not be guessed at.
-        raise ModelPolicyError(exc.reason) from None
+    if class_policy is None and live is not None and (direct_override or snapshot.mappings.get(persona) or snapshot.persona_defaults.get(persona)):
+        # The class may have been provisioned after the root snapshot. An
+        # explicit frozen model needs no default, and posture is already read
+        # live. Preserve absent historical evidence as absent, not invented.
+        class_policy = {}
+        snapshot_posture = snapshot_posture_revision = None
+    else:
+        if not isinstance(class_policy, dict):
+            raise ModelPolicyError("class_default_unavailable")
+        try:
+            snapshot_posture = coerce_posture(class_policy.get("posture"))
+            snapshot_posture_revision = coerce_posture_revision(class_policy.get("posture_revision"))
+        except RuntimePostureError as exc:
+            raise ModelPolicyError(exc.reason) from None
 
     # An explicit directive that edge validation could not resolve is a
     # proposed refusal, not permission to silently continue down the ladder.
@@ -427,6 +451,18 @@ def resolve_decision(
     resolved = direct_override or mapping
     requested = direct_requested if direct_override else mapping
     source: Literal["explicit-direct", "principal-mapping", "system-default"] = "explicit-direct" if direct_override else "principal-mapping"
+    if resolved is None:
+        persona_default = snapshot.persona_defaults.get(persona)
+        if persona_default and persona_default.get("model_id") is not None:
+            if (
+                persona_default.get("compatibility_class") != compatibility_class
+                or persona_default.get("harness_contract_revision") != harness_revision
+            ):
+                raise ModelPolicyError("harness_incompatible")
+            resolved = persona_default.get("model_id")
+            if not isinstance(resolved, str) or not resolved:
+                raise ModelPolicyError("persona_default_unavailable")
+            source = "system-default"
     if resolved is None:
         if not isinstance(class_policy.get("model_id"), str) or not class_policy["model_id"]:
             raise ModelPolicyError("class_default_unavailable")
@@ -454,8 +490,8 @@ def resolve_decision(
         # The snapshot's posture, pending the per-hop live read.  ``posture_source``
         # stays None so an unverified decision is distinguishable from a verified
         # one by inspection rather than by trust.
-        runtime_posture=snapshot_posture,
-        posture_revision=snapshot_posture_revision,
+        runtime_posture=snapshot_posture if snapshot_posture is not None else live.posture,
+        posture_revision=snapshot_posture_revision if snapshot_posture_revision is not None else live.posture_revision,
         policy_revision=snapshot.policy_revision,
         catalogue_revision=snapshot.catalogue_revision,
         snapshot_allowlist_policy_revision=snapshot.allowlist_policy_revision,
@@ -629,7 +665,9 @@ async def validate_live_decision(
     The snapshot freezes *which* model the root selected.  It must never freeze
     whether that model is still usable.  This check therefore runs for every
     hop at the trusted gateway bootstrap boundary and reads PMM-03's exact
-    destination/harness/request-shape evidence.  It performs no model call,
+    destination/harness/request-shape evidence for evidence-gated runtimes.
+    GitHub Codex report personas retain authorization and compatibility
+    checks without requiring cached probe evidence. It performs no model call,
     STS lookup, or additional HTTP round trip.
 
     A successful result enriches the signed decision with the exact
@@ -692,6 +730,11 @@ async def validate_live_decision(
     account_id = target.account_id or (settings.platform_bedrock_account_id if target.is_platform else None)
     region = target.region or settings.aws_region or None
 
+    # Probe freshness is diagnostic, not authority, for GitHub Codex report
+    # personas. Keep live identity, policy and harness compatibility checks.
+    from src.agentauth.codex_github_session import REPORT_PERSONAS
+
+    require_probe_evidence = decision.persona not in REPORT_PERSONAS
     validation = await validate_selection(
         session,
         org_id=snapshot.tenant_id,
@@ -699,6 +742,7 @@ async def validate_live_decision(
         canonical_principal_id=snapshot.principal_id,
         persona_key=decision.persona,
         model=decision.resolved_model_id,
+        require_evidence=require_probe_evidence,
         account_id=account_id,
         region=region,
         tenant_allowed_patterns=active_policy.tenant_patterns,
@@ -724,7 +768,7 @@ async def validate_live_decision(
         validation.canonical_model_id != decision.resolved_model_id
         or validation.compatibility_class != decision.compatibility_class
         or validation.harness_contract_revision != decision.harness_contract_revision
-        or validation.evidence_verified_at is None
+        or (require_probe_evidence and validation.evidence_verified_at is None)
     ):
         raise ModelPolicyError("model_validation_mismatch", evidence=revision_evidence)
     return replace(
@@ -777,33 +821,37 @@ async def _resolve_active_allowlist_policy(
     principal_id: str,
     expires_at: datetime,
     settings=None,
+    require_hierarchy: bool = False,
 ) -> ActiveAllowlistPolicy:
     """Resolve the exact live policy intersection used by every PMM-06 seam."""
     principal_status: str | None = None
     if principal_kind == "human":
-        user = await session.scalar(
-            select(User).where(
-                User.id == principal_id,
-                User.org_id == tenant_id,
-            )
-        )
-        if user is None:
-            raise ModelPolicyError("principal_unavailable")
+        from src.shared.identity.workspaces import primary_team_for_workspace, workspace_user
+
+        try:
+            user = await workspace_user(session, principal_id, tenant_id)
+            if user is None or user.id != principal_id:
+                raise ModelPolicyError("principal_unavailable")
+            team = await primary_team_for_workspace(session, user, tenant_id)
+        except ValueError:
+            raise ModelPolicyError("principal_unavailable") from None
         context = TokenContext(
             user_id=user.id,
             org_id=tenant_id,
-            team_id=user.team_id,
-            department_id="",
+            team_id=team.id if team else "",
+            department_id=team.department_id if team else "",
             account_type="human",
             expires_at=expires_at,
         )
         routing_user_id = user.id
     else:
         service_principal = await session.scalar(
-            select(ServicePrincipal).where(
+            select(ServicePrincipal)
+            .where(
                 ServicePrincipal.canonical_service_principal_id == principal_id,
                 ServicePrincipal.org_id == tenant_id,
             )
+            .execution_options(populate_existing=True)
         )
         if service_principal is None:
             raise ModelPolicyError("principal_unavailable")
@@ -818,6 +866,11 @@ async def _resolve_active_allowlist_policy(
             canonical_service_principal_id=principal_id,
         )
         routing_user_id = ""
+
+    if require_hierarchy:
+        from src.agentauth.task_identity import resolve_task_identity_context
+
+        context = await resolve_task_identity_context(session, context)
 
     from src.admin.persona_models.registry_policy import resolve_managed_service_restriction_policy
     from src.proxy.model_resolver import production_model_resolver
@@ -871,7 +924,7 @@ def _contract_maps() -> tuple[dict[str, dict[str, str]], str]:
         if compatibility_class:
             contracts[persona] = {
                 "compatibility_class": compatibility_class,
-                "harness_contract_revision": HARNESS_CONTRACT_REVISION,
+                "harness_contract_revision": persona_harness_contract_revision(persona),
             }
     catalogue_value = [
         {
@@ -1140,6 +1193,7 @@ async def build_root_snapshot(
                 )
             )
             settings = list(await session.scalars(select(PersonaModelPolicySetting)))
+            persona_settings = list(await session.scalars(select(PersonaPlatformDefault)))
     except SQLAlchemyError:
         # Reached only after the savepoint rollback above has completed, so the
         # last-known-good fallback below runs on a usable transaction and the
@@ -1167,7 +1221,17 @@ async def build_root_snapshot(
         }
         for row in settings
     }
+    persona_defaults = {
+        row.persona_key: {
+            "model_id": row.canonical_model_id,
+            "revision": row.revision,
+            "compatibility_class": row.compatibility_class,
+            "harness_contract_revision": row.harness_contract_revision,
+        }
+        for row in persona_settings
+    }
     revision_input = {
+        **({"persona_defaults": persona_defaults} if persona_defaults else {}),
         "preferences": [
             {"persona": row.persona_key, "model": row.canonical_model_id, "revision": row.revision}
             for row in sorted(preferences, key=lambda item: item.persona_key)
@@ -1176,7 +1240,8 @@ async def build_root_snapshot(
     }
     contracts, catalogue_revision = _contract_maps()
     snapshot = ModelPolicySnapshot(
-        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        schema_version=PERSONA_DEFAULTS_SNAPSHOT_VERSION if persona_defaults else SNAPSHOT_SCHEMA_VERSION,
+        persona_defaults=persona_defaults,
         tenant_id=tenant_id,
         principal_kind=principal_kind,
         principal_id=principal_id,
@@ -1225,7 +1290,7 @@ async def _persist_snapshot(*, store, invocation_id: str, tenant_id: str, snapsh
             ExpressionAttributeValues={
                 ":snapshot": {"S": raw},
                 ":digest": {"S": digest},
-                ":schema": {"N": str(SNAPSHOT_SCHEMA_VERSION)},
+                ":schema": {"N": str(snapshot.schema_version)},
                 ":root": {"S": snapshot.root_invocation_id},
                 ":revision": {"S": snapshot.policy_revision},
                 ":correlation": {"S": snapshot.correlation_id},
@@ -1302,6 +1367,20 @@ async def ensure_snapshot_for_admission(
         parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
         if not parent_execution:
             raise ModelPolicyError("parent_snapshot_missing")
+        # A recorded initial bootstrap failure never received model authority.
+        # Recovery inherits the same immutable ancestor settings, without
+        # manufacturing a snapshot on the failed run or selecting a new model.
+        from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+        ancestors = {invocation_id, parent}
+        while is_bootstrap_failure(parent_execution) and "model_policy_snapshot" not in parent_execution:
+            parent = parent_execution.get("parent_principal", {}).get("S", "").rsplit("#", 1)[0]
+            if not parent or parent in ancestors or len(ancestors) > 8:
+                raise ModelPolicyError("parent_snapshot_missing")
+            ancestors.add(parent)
+            parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
+            if not parent_execution:
+                raise ModelPolicyError("parent_snapshot_missing")
         snapshot = _parse_execution_snapshot(parent_execution, tenant_id=tenant_id)
         child_flow = execution.get("flow_id", {}).get("S")
         if child_flow and snapshot.correlation_id != child_flow:
@@ -1429,7 +1508,7 @@ def _unavailable(
     return response
 
 
-def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPolicySnapshot, ModelPolicyDecision]:
+def _resolve_execution_decision(*, raw_execution: dict, record, live: LivePosture | None = None) -> tuple[ModelPolicySnapshot, ModelPolicyDecision]:
     snapshot = _parse_execution_snapshot(raw_execution, tenant_id=record.tenant_id)
     decision = resolve_decision(
         snapshot,
@@ -1437,6 +1516,7 @@ def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPo
         persona=raw_execution.get("persona", {}).get("S", ""),
         direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
         direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
+        live=live,
     )
     return snapshot, decision
 
@@ -1530,6 +1610,7 @@ async def bootstrap_model_policy_live(
         snapshot, decision = _resolve_execution_decision(
             raw_execution=raw_execution,
             record=record,
+            live=live,
         )
         decision = await validate_live_decision(
             session,

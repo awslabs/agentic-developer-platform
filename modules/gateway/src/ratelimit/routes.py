@@ -10,9 +10,13 @@ request.state.token_context.
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.auth.dependencies import get_current_user  # Issue #133: Real Cognito JWT auth
+from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
 from .models import EntityType, RateLimitConfigRequest, RateLimitConfigResponse, RateLimitStatusResponse
@@ -20,18 +24,18 @@ from .service import RateLimitService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ratelimits", tags=["ratelimits"])
+router = APIRouter(route_class=AuditedAdminRoute, prefix="/ratelimits", tags=["ratelimits"])
 
 # Global service instance (will be injected via dependency)
 _rate_limit_service: RateLimitService | None = None
 
 
-def get_rate_limit_service() -> RateLimitService:
+def get_rate_limit_service(request: Request) -> RateLimitService:
     """Get the rate limit service instance."""
     global _rate_limit_service
-    if _rate_limit_service is None:
-        _rate_limit_service = RateLimitService()
-    return _rate_limit_service
+    if _rate_limit_service is not None:
+        return _rate_limit_service
+    return request.app.state.ratelimit_service
 
 
 def set_rate_limit_service(service: RateLimitService) -> None:
@@ -53,6 +57,38 @@ def require_admin(context: TokenContext) -> TokenContext:
     return context
 
 
+@router.get("/me")
+async def own_effective_limits(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    context: Annotated[TokenContext, Depends(get_current_user)],
+):
+    """Token-derived hierarchy metadata; does not debit or probe limiter buckets."""
+    from src.admin.ratelimit_cli import DIMENSIONS, runtime_metadata, saved, serialize
+
+    runtime = runtime_metadata(request)
+    service = getattr(request.app.state, "ratelimit_service", None)
+    if service is None:
+        return {"org_id": context.attributed_org_id, "lines": [], "runtime": runtime}
+    entities = service._get_hierarchy_entities(context)
+    if not service._config.enforce_hierarchy:
+        entities = entities[:1]
+    defaults = runtime["defaults"]["service" if context.account_type == "service" else "human"]
+    lines = []
+    for kind, key in entities:
+        config = serialize(await saved(db, context.attributed_org_id, kind.value, key))
+        lines.append(
+            {
+                "entity_type": kind.value,
+                "entity_id": key,
+                "saved": config,
+                "effective": {name: config[name] if config and config[name] is not None else defaults[name] for name in DIMENSIONS},
+                "sources": {name: kind.value if config and config[name] is not None else "account_type_default" for name in DIMENSIONS},
+            }
+        )
+    return {"org_id": context.attributed_org_id, "lines": lines, "runtime": runtime}
+
+
 @router.get("", response_model=list[RateLimitConfigResponse])
 async def list_rate_limits(
     entity_type: Annotated[str | None, Query(description="Filter by entity type")] = None,
@@ -71,7 +107,8 @@ async def list_rate_limits(
     # In production, you'd query from persistent storage
     results = []
 
-    # For now, return configured limits from memory
+    await service._load_from_db(force=True)
+    # Read the freshly loaded durable configuration
     for key, limits in service._rate_limits.items():
         parts = key.split(":")
         if len(parts) >= 3:
@@ -135,6 +172,7 @@ async def configure_rate_limits(
     entity_type: Annotated[str, Path(description="Entity type (org, department, team, user, service_account; organization is a legacy alias)")],
     entity_id: Annotated[str, Path(description="Entity ID")],
     config: RateLimitConfigRequest,
+    db: AsyncSession = Depends(get_db),
     service: RateLimitService = Depends(get_rate_limit_service),
     context: TokenContext = Depends(get_current_user),  # Issue #133: Real Cognito JWT auth
 ) -> RateLimitConfigResponse:
@@ -154,7 +192,14 @@ async def configure_rate_limits(
     if config.rpm is None and config.tpm is None and config.concurrent_requests is None:
         raise HTTPException(status_code=400, detail="At least one rate limit must be specified")
 
+    if config.burst_size is not None:
+        raise HTTPException(status_code=422, detail="Per-entity burst_size is unsupported")
+    mark_admin_effects()
     result = await service.configure_limits(e_type, entity_id, context.org_id, config)
+
+    await write_admin_audit(
+        db, actor=context, action="update_ratelimit", target_type="ratelimit", target_id=f"{e_type.value}/{entity_id}", org_id=context.org_id
+    )
 
     logger.info(f"Rate limits configured for {entity_type}/{entity_id} by {context.user_id}")
 
@@ -165,6 +210,7 @@ async def configure_rate_limits(
 async def delete_rate_limits(
     entity_type: Annotated[str, Path(description="Entity type")],
     entity_id: Annotated[str, Path(description="Entity ID")],
+    db: AsyncSession = Depends(get_db),
     service: RateLimitService = Depends(get_rate_limit_service),
     context: TokenContext = Depends(get_current_user),  # Issue #133: Real Cognito JWT auth
 ) -> None:
@@ -181,10 +227,15 @@ async def delete_rate_limits(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid entity type: {entity_type}")
 
+    mark_admin_effects()
     deleted = await service.delete_limits(e_type, entity_id, context.org_id)
 
     if not deleted:
         raise HTTPException(status_code=404, detail="Rate limit configuration not found")
+
+    await write_admin_audit(
+        db, actor=context, action="delete_ratelimit", target_type="ratelimit", target_id=f"{e_type.value}/{entity_id}", org_id=context.org_id
+    )
 
     logger.info(f"Rate limits deleted for {entity_type}/{entity_id} by {context.user_id}")
 

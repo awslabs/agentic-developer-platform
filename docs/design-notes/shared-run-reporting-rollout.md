@@ -84,7 +84,7 @@ without the account-specific overlay can undo the patch and must not proceed.
 
 ## Platform account maintenance and first-flow canary
 
-For the reviewed September 2026 rollout in account `879318057152`, environment
+For the reviewed September 2026 rollout in account `000000000101`, environment
 `dev`, use the manual-only `Shared Runtime Maintenance` workflow. Its helper is
 `platform/scripts/maintain-shared-runtime.py`. This is a narrow runtime rollout,
 not a new deployment engine, a whole-module apply, or removal of the existing
@@ -108,7 +108,7 @@ Neither the release lane nor the separate diagnostic lane cancels another run.
 | `verify` | Read-only verification of actual gateway/tick flags, roles, worker image/endpoints, and signing-key equality. No Terraform inputs are generated. |
 | `diagnose` | Selected gateway migration Job, pod, node and ARC event status fields. No runtime changes or image-readiness prerequisite. |
 
-When rollout is incomplete, select `diagnose`, confirm account `879318057152`, and
+When rollout is incomplete, select `diagnose`, confirm account `000000000101`, and
 leave `execute` and `unlock_known_orphan` false. Revision/digest inputs are unused.
 This stage uses the independent `gateway-diagnostics-dev` concurrency lane and
 `platform/scripts/diagnose-shared-runtime.py`; it can observe a deployment while
@@ -147,7 +147,7 @@ gateway/tick flag difference is never presented as a converged configuration.
 If the known webhook backend orphan lock remains, only `prerequisites` with
 explicit execution and `unlock_known_orphan=true` may remove lock
 `387a6df1-7b5c-f833-9334-305429bfdac4`. The script first verifies the live lock's
-ID, owner, operation, timestamp and backend, GitHub job `106168875014` is still
+ID, owner, operation, timestamp and backend, GitHub job `000000000208` is still
 the matching cancelled job, its log records orphan Terraform termination, and
 its exact runner pod is absent. Any changed evidence stops the unlock. No other
 lock can be removed by this workflow.

@@ -42,6 +42,24 @@ import pytest
 CLI_DIR = Path(__file__).parents[2] / "cli"
 SCRIPT = CLI_DIR / "adp-flow.py"
 
+
+def test_flow_helper_loads_and_renders_expiry_without_python_311_utc_alias():
+    """Installed helpers use system Python, including Python 3.9 on macOS."""
+    probe = """
+import datetime
+import runpy
+import sys
+
+if hasattr(datetime, "UTC"):
+    del datetime.UTC
+helper = runpy.run_path(sys.argv[1])
+assert "ALREADY EXPIRED" in helper["expiry_text"]("2020-01-01T00:00:00Z")
+assert helper["expiry_text"]("2999-01-01T00:00:00Z") == "2999-01-01T00:00:00Z"
+"""
+    result = subprocess.run([sys.executable, "-c", probe, str(SCRIPT)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 spec = importlib.util.spec_from_file_location("adp_flow_cli", SCRIPT)
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
@@ -343,6 +361,30 @@ def test_approval_bound_to_the_current_revision_succeeds(server):
     assert "same transaction" in result["next_action"]
 
 
+def test_an_expired_policy_refusal_tells_the_operator_to_derive_and_review_a_new_plan(server):
+    engine_on(server)
+    _gate_lookup(server)
+    route(
+        server,
+        "POST",
+        f"/api/orchestration/gates/{GATE_ID}/approve",
+        {
+            "detail": {
+                "error": "execution_policy_expired",
+                "message": "the execution policy this plan proposes expired",
+            }
+        },
+        status=409,
+    )
+
+    code, result = run_cli(["gate", "approve", GATE_ID, "--yes"])
+
+    assert code == 5
+    assert result["error"]["code"] == "execution_policy_expired"
+    assert "newly derived plan" in result["error"]["message"]
+    assert "exact revision" in result["error"]["message"]
+
+
 def test_a_stale_revision_is_refused_without_sending_the_approval(server):
     """A guard that refuses after the write is not a guard."""
     engine_on(server)
@@ -504,7 +546,7 @@ def test_start_prints_the_session_id_before_waiting_for_a_reply(monkeypatch, ser
 
     assert code == 4, "pending: the conversation is healthy, the agent just has not answered"
     printed_id = next((i for i, (kind, text) in enumerate(events) if kind == "print" and SESSION_ID in text), None)
-    first_poll = next((i for i, (kind, _) in enumerate(events) if kind == "poll"), None)
+    first_poll = next((i for i, (kind, path) in enumerate(events) if kind == "poll" and "/intake/sessions/" in path), None)
     assert printed_id is not None, "the session id was never printed"
     assert first_poll is not None, "the CLI never waited, so the ordering was not exercised"
     assert printed_id < first_poll, "the session id must be printed BEFORE the first wait, not after it"
@@ -669,7 +711,8 @@ def test_an_answered_question_becomes_a_new_turn_in_the_same_conversation(monkey
     original_do_get = server.do_GET
 
     def do_GET(handler):  # noqa: N802 - matches BaseHTTPRequestHandler
-        route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
+        if "/orchestration/intake/sessions/" in handler.path:
+            route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
         original_do_get(handler)
 
     monkeypatch.setattr(server, "do_GET", do_GET)
@@ -718,7 +761,7 @@ def test_resume_without_an_id_finds_the_callers_newest_conversation(server):
 
     assert code == 0
     assert result["detail"]["session_id"] == SESSION_ID
-    assert "/latest" in [path for _, path, _ in server.received][0]
+    assert any("/latest" in path for _, path, _ in server.received)
 
 
 def test_resuming_when_there_is_nothing_to_resume_is_an_actionable_error(server):
@@ -1422,6 +1465,64 @@ def test_the_preview_states_the_policy_bounds_being_authorized(server, tmp_path)
     assert result["detail"]["preview"]["proposed_execution_policy"]["repository_ids"] == ["acme/app"]
     text = cli.preview_text(result["detail"]["preview"])
     assert "acme/app" in text and "conn-1" in text and "25.00" in text
+
+
+class TestAnExpiryAlreadyBehindUsIsNamedAsSuch:
+    """The consent text has to answer "is this authority still live?" (#5331).
+
+    An expiry is the one policy field whose meaning depends on when it is read, and a
+    bare ISO timestamp makes the reader do that comparison at the exact moment they
+    are concentrating on something else. A plan whose bounds have already lapsed
+    cannot be accepted at all — the server refuses the grant — so printing the date
+    alone sends the operator to approve something guaranteed to fail and then decode
+    the refusal.
+
+    Asserted on `policy_lines` rather than through a `create` run because this is a
+    rendering claim, and `create`'s exit path depends on the server fixture. The
+    rendering is shared by the dry run and the registered-draft preview, so it is the
+    text in both places.
+    """
+
+    @staticmethod
+    def _rendered(expires_at):
+        return "\n".join(cli.policy_lines({"repository_ids": ["acme/app"], "expires_at": expires_at}))
+
+    def test_a_past_expiry_is_called_expired_and_names_the_remedy(self):
+        from datetime import UTC, datetime, timedelta
+
+        text = self._rendered((datetime.now(tz=UTC) - timedelta(hours=1)).isoformat())
+
+        assert "ALREADY EXPIRED" in text
+        # The remedy, not just the diagnosis: re-answering the same plan produces the
+        # same dead bounds, so the operator needs to know a new plan is required.
+        assert "new plan" in text
+
+    def test_a_live_expiry_is_printed_as_the_server_sent_it(self):
+        """The scope of the warning. A renderer that shouted on every plan would be
+        noise, and noise on a consent screen is worse than silence — it trains the
+        reader to skip the line that will one day matter."""
+        from datetime import UTC, datetime, timedelta
+
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=20)).isoformat()
+
+        text = self._rendered(expires_at)
+
+        assert expires_at in text
+        assert "EXPIRED" not in text
+
+    def test_a_z_suffixed_expiry_is_understood_rather_than_passed_through(self):
+        """`Z` is what the server actually sends (`model_dump(mode="json")`), and
+        `fromisoformat` rejected it before 3.11 — so this is the format the check has
+        to handle, not an edge case."""
+        assert "ALREADY EXPIRED" in self._rendered("2020-01-01T00:00:00Z")
+
+    def test_an_unreadable_expiry_is_shown_verbatim_and_not_guessed_at(self):
+        """Silence over invention. Telling a reader "already expired" about a value
+        this code merely failed to parse would attribute to the server a claim it
+        never made, and the reader has no way to tell the two apart."""
+        for value in ("sometime next week", "", None):
+            text = self._rendered(value)
+            assert "EXPIRED" not in text, f"a malformed expiry {value!r} was reported as expired"
 
 
 def test_the_bounds_are_read_from_the_proposal_not_from_what_is_in_force(server, tmp_path):
@@ -2382,3 +2483,257 @@ def test_interactive_start_prompts_for_an_outcome(monkeypatch, server):
     assert code == 0
     opening = next(body for method, path, body in server.received if method == "POST" and path.endswith("/sessions"))
     assert opening["message"] == "Make checkout faster"
+
+
+@pytest.fixture
+def draft_args(tmp_path):
+    path = tmp_path / "proposal.json"
+    path.write_text(json.dumps({"flow_slug": "test", "nodes": []}))
+    return [FLOW_ID, "--file", str(path), "--expect-plan-version", "1", "--expect-plan-hash", CURRENT_HASH, "--json"]
+
+
+@pytest.mark.parametrize("action", ["preview", "save"])
+def test_draft_revision_uses_only_bound_inert_endpoint(server, draft_args, action):
+    engine_on(server)
+    endpoint = "preview" if action == "preview" else "revise"
+    response = {
+        "flow_id": FLOW_ID,
+        "execution_authorized": False,
+        "proposal_hash": STALE_HASH,
+        "plan_version": 2,
+        "already_revised": True,
+        "execution_paused": True,
+    }
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/draft/{endpoint}", response)
+    args = ["draft", action, *draft_args]
+    if action == "save":
+        args += ["--expect-proposal-hash", STALE_HASH]
+    code, result = run_cli(args)
+    assert code == 0 and result["detail"] == response
+    posts = [entry for entry in server.received if entry[0] == "POST"]
+    assert len(posts) == 1 and posts[0][1].endswith(f"/draft/{endpoint}")
+    assert posts[0][2]["expected_plan_version"] == 1
+    assert posts[0][2]["expected_plan_hash"] == CURRENT_HASH
+    if action == "save":
+        assert posts[0][2]["expected_proposal_hash"] == STALE_HASH
+        assert "No execution was approved" in result["next_action"]
+    else:
+        assert "Saving does not approve execution" in result["next_action"]
+
+
+@pytest.mark.parametrize(
+    "status,payload,code",
+    [
+        (404, {"detail": "Not Found"}, "draft_revision_unavailable"),
+        (404, {"detail": {"error": "flow_not_found", "message": "No flow"}}, "flow_not_found"),
+        (409, {"detail": {"error": "stale_draft_revision", "message": "Changed"}}, "stale_draft_revision"),
+        (422, {"detail": {"error": "invalid_draft_revision", "message": "Invalid graph"}}, "invalid_draft_revision"),
+    ],
+)
+def test_draft_revision_refusals_never_fall_back(server, draft_args, status, payload, code):
+    engine_on(server)
+    endpoint = f"/api/orchestration/flows/{FLOW_ID}/draft/revise"
+    route(server, "POST", endpoint, payload, status=status)
+    exit_code, result = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH])
+    assert exit_code != 0 and result["error"]["code"] == code
+    assert [p for method, p, _ in server.received if method == "POST"] == [endpoint]
+
+
+@pytest.mark.parametrize("field", ["--expect-plan-version", "--expect-plan-hash", "--expect-proposal-hash"])
+def test_draft_save_missing_binding_sends_nothing(server, draft_args, field):
+    args = ["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH]
+    index = args.index(field)
+    del args[index : index + 2]
+    assert run_cli(args)[0] != 0
+    assert server.received == []
+
+
+def test_draft_save_invalid_hash_sends_nothing(server, draft_args):
+    code, _ = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", "bad"])
+    assert code == 1 and server.received == []
+
+
+def test_draft_revision_refuses_unexpected_authority_response(server, draft_args):
+    engine_on(server)
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/draft/revise", {"flow_id": FLOW_ID, "execution_authorized": True})
+    code, result = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH])
+    assert code == 5 and result["error"]["code"] == "invalid_draft_response"
+    assert len([e for e in server.received if e[0] == "POST"]) == 1
+
+
+@pytest.mark.parametrize("approver", [None, "service", "human"])
+def test_plan_drafted_attribution_is_not_itself_approval(server, approver):
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}/plans",
+        [
+            {"version": 2, "plan_hash": CURRENT_HASH, "accepted_by_decision_id": "draft", "superseded_at": None},
+        ],
+    )
+    decisions = [{"id": "draft", "kind": "plan_drafted", "actor_kind": "human"}]
+    if approver:
+        decisions.append({"id": "gate-answer", "kind": "gate_approved", "actor_kind": approver})
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/decisions", decisions)
+    code, result = run_cli(["plans", FLOW_ID])
+    assert code == 0
+    if approver == "human":
+        assert result["detail"]["accepted_version"] == 2 and result["detail"]["proposed_version"] is None
+    else:
+        assert result["detail"]["accepted_version"] is None and result["detail"]["proposed_version"] == 2
+        assert "not accepted" in result["next_action"]
+
+
+def test_plan_with_missing_attribution_does_not_claim_acceptance(server):
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}/plans",
+        [
+            {"version": 1, "plan_hash": CURRENT_HASH, "accepted_by_decision_id": "missing", "superseded_at": None},
+        ],
+    )
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/decisions", [])
+    code, result = run_cli(["plans", FLOW_ID])
+    assert code == 0 and result["detail"]["accepted_version"] is None
+    assert result["detail"]["acceptance_status"] == "unknown"
+
+
+def test_wave_preview_displays_metadata_and_preserves_legacy_fallback():
+    waves = [
+        {"epic_ref": "epic-1", "wave_ref": "wave-1", "stage": 0, "title": "Contracts", "description": "Freeze contracts."},
+        {"epic_ref": "epic-2", "wave_ref": "wave-1", "stage": 0},
+    ]
+    text = "\n".join(cli.wave_lines(waves))
+    assert "stage 0 (concurrent): Contracts (epic-1/wave-1), epic-2/wave-1" in text
+    assert "Freeze contracts." in text
+
+
+def test_unavailable_discovery_is_retained_in_successful_flow_output(server):
+    _conversation_done(server)
+    code, result = run_cli(["start", "Improve checkout", "--refine-only", "--json"])
+    assert code == 0
+    assert result["capability_preflight"]["flows.draft.write"]["source"] == "unavailable"
+    assert any(method == "POST" for method, _path, _body in server.received)
+
+
+def _recovery_snapshot():
+    return {
+        "contract": "node-recovery-v1",
+        "flow_id": FLOW_ID,
+        "node_id": GATE_ID,
+        "revision": CURRENT_HASH,
+        "state": "failed",
+        "kind": "eval",
+        "attempts": 1,
+        "bound_pull_request": None,
+    }
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, {"revision": "bad"}])
+def test_recovery_refuses_malformed_readback_without_post(server, bad):
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", bad)
+    code, _ = run_cli(
+        [
+            "node",
+            "resume",
+            GATE_ID,
+            "--flow",
+            FLOW_ID,
+            "--reason",
+            "repair",
+            "--yes",
+            "--expect-revision",
+            CURRENT_HASH,
+            "--operation-id",
+            "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+        ]
+    )
+    assert code != 0
+    assert all(method != "POST" for method, _, _ in server.received)
+
+
+def test_recovery_preview_dry_run_wins_over_yes(server):
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    code, result = run_cli(["node", "resume", GATE_ID, "--flow", FLOW_ID, "--reason", "repair", "--dry-run", "--yes"])
+    assert code == 0 and result["status"] == "dry_run"
+    assert result["detail"]["request"]["reconciled"] is False
+    assert all(method != "POST" for method, _, _ in server.received)
+
+
+def test_recovery_real_transport_schema_and_replay(server, monkeypatch, tmp_path):
+    from src.orchestration.controls import ResumeRequest, ResumeResponse
+
+    monkeypatch.setattr(common, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(common, "authenticated_scope", lambda: {"tenant": "test", "user": "test"})
+    monkeypatch.setattr(common, "ensure_can_mutate", lambda *a, **k: None)
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    answer = ResumeResponse(node_id=GATE_ID, from_state="failed", state="ready", decision_id="d1", actor_kind="human").model_dump()
+    route(server, "POST", f"/api/orchestration/nodes/{GATE_ID}/resume", answer)
+    args = [
+        "node",
+        "resume",
+        GATE_ID,
+        "--flow",
+        FLOW_ID,
+        "--reason",
+        "repair",
+        "--yes",
+        "--expect-revision",
+        CURRENT_HASH,
+        "--operation-id",
+        "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+    ]
+    _, result = run_cli(args)
+    assert result["detail"]["acknowledgement"] == answer
+    posts = [body for method, _, body in server.received if method == "POST"]
+    assert len(posts) == 1
+    parsed = ResumeRequest.model_validate(posts[0])
+    assert parsed.expected_revision == CURRENT_HASH and parsed.expected_flow_id == FLOW_ID
+    _, replay = run_cli(args)
+    assert replay["detail"]["replayed_without_write"] is True
+    assert len([m for m, _, _ in server.received if m == "POST"]) == 1
+
+
+@pytest.mark.parametrize("status", [403, 409])
+def test_recovery_preserves_definite_server_refusal(server, monkeypatch, tmp_path, status):
+    monkeypatch.setattr(common, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(common, "authenticated_scope", lambda: {"tenant": "test"})
+    monkeypatch.setattr(common, "ensure_can_mutate", lambda *a, **k: None)
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    route(server, "POST", f"/api/orchestration/nodes/{GATE_ID}/resume", {"detail": "refused"}, status)
+    code, result = run_cli(
+        [
+            "node",
+            "resume",
+            GATE_ID,
+            "--flow",
+            FLOW_ID,
+            "--reason",
+            "repair",
+            "--yes",
+            "--expect-revision",
+            CURRENT_HASH,
+            "--operation-id",
+            "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+        ]
+    )
+    assert code != 0 and result["status"] == "failed"
+    assert len(list((tmp_path / "flow-recovery").glob("*.json"))) == 1
+
+
+def test_preview_names_the_accepted_executor_separately_from_completion():
+    lines = cli.conclusion_lines(
+        [
+            {
+                "address": "flow/epic/wave/story",
+                "executor": {"kind": "agent", "role": "develop", "persona": "agent-codex-developer"},
+                "concluded_by": "merged_pr",
+            }
+        ]
+    )
+    rendered = "\n".join(lines)
+    assert "agent-codex-developer (develop)" in rendered
+    assert "merged_pr: 1 node(s)" in rendered

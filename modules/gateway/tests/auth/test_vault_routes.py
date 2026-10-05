@@ -16,11 +16,14 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -33,6 +36,7 @@ from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import CredentialType, UserCredential, UserIdentity, VerificationMethod
 from src.shared.schemas.auth import TokenContext
+from src.shared.services.secrets_manager import SecretsManagerHelper
 
 # ---------------------------------------------------------------------------
 # Test database
@@ -175,6 +179,7 @@ def sm() -> MagicMock:
 async def _insert_cred(
     db: AsyncSession,
     *,
+    credential_id: str | None = None,
     org_id: str = "org-acme",
     user_id: str | None = None,
     team_id: str | None = None,
@@ -184,6 +189,7 @@ async def _insert_cred(
     secret_arn: str = "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
 ) -> UserCredential:
     cred = UserCredential(
+        id=credential_id,
         org_id=org_id,
         user_id=user_id,
         team_id=team_id,
@@ -345,6 +351,127 @@ class TestCreateCredential:
         sm.create_secret.assert_called_once()
         call_kwargs = sm.create_secret.call_args
         assert call_kwargs.kwargs.get("user_sub") == "user-alice"
+
+    def test_idempotent_put_reuses_the_exact_operation_without_a_second_secret(self, db, sm):
+        client = _make_app(ALICE, db, sm)
+        credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+        body = {
+            "service": "nebius",
+            "label": "prod",
+            "credential_type": "api_key",
+            "value": "synthetic-secret",
+            "scope_hint": "user",
+        }
+
+        first = client.put(f"/auth/credentials/{credential_id}", json=body)
+        sm.get_secret.return_value = body["value"]
+        second = client.put(f"/auth/credentials/{credential_id}", json=body)
+
+        assert first.status_code == second.status_code == 201
+        assert first.json()["id"] == second.json()["id"] == credential_id
+        sm.create_secret.assert_called_once()
+        sm.get_secret.assert_called_once()
+        fingerprint = sm.create_secret.call_args.kwargs["operation_fingerprint"]
+        expected = hashlib.sha256(
+            json.dumps(
+                {
+                    "org_id": "org-acme",
+                    "user_id": "user-alice",
+                    "team_id": None,
+                    "domain_app_id": None,
+                    "service": "nebius",
+                    "credential_type": "api_key",
+                    "label": "prod",
+                    "scopes": None,
+                    "expires_at": None,
+                    "strict": False,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        assert fingerprint == expected
+
+    def test_idempotent_put_rejects_reusing_an_operation_for_different_metadata(self, db, sm):
+        client = _make_app(ALICE, db, sm)
+        credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+        body = {
+            "service": "nebius",
+            "label": "prod",
+            "credential_type": "api_key",
+            "value": "synthetic-secret",
+            "scope_hint": "user",
+        }
+        assert client.put(f"/auth/credentials/{credential_id}", json=body).status_code == 201
+
+        conflict = client.put(f"/auth/credentials/{credential_id}", json={**body, "label": "other"})
+
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["error"] == "operation_conflict"
+        sm.create_secret.assert_called_once()
+
+    def test_idempotent_put_never_force_deletes_a_shared_operation_secret_on_conflict(self, db, sm):
+        asyncio.get_event_loop().run_until_complete(
+            _insert_cred(
+                db,
+                user_id="user-alice",
+                service="nebius",
+                label="duplicate-label",
+            )
+        )
+        sm.delete_secret.side_effect = RuntimeError("synthetic cleanup failure")
+        client = _make_app(ALICE, db, sm)
+
+        response = client.put(
+            "/auth/credentials/66666666-7777-4888-8999-aaaaaaaaaaaa",
+            json={
+                "service": "nebius",
+                "label": "duplicate-label",
+                "credential_type": "api_key",
+                "value": "synthetic-secret",
+                "scope_hint": "user",
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "operation_conflict"
+        sm.delete_secret.assert_not_called()
+
+    def test_idempotent_put_does_not_reveal_or_replace_another_tenants_operation(self, db, sm):
+        credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+        asyncio.get_event_loop().run_until_complete(
+            _insert_cred(db, credential_id=credential_id, user_id="user-alice", org_id="org-acme", label="private")
+        )
+        client = _make_app(OTHER_ORG, db, sm)
+
+        response = client.put(
+            f"/auth/credentials/{credential_id}",
+            json={
+                "service": "github",
+                "label": "private",
+                "credential_type": "api_key",
+                "value": "replacement",
+                "scope_hint": "user",
+            },
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "operation_conflict"
+        sm.create_secret.assert_not_called()
+
+    def test_idempotent_put_rejects_a_non_uuid_before_writing(self, db, sm):
+        response = _make_app(ALICE, db, sm).put(
+            "/auth/credentials/not-an-operation-id",
+            json={
+                "service": "nebius",
+                "label": "prod",
+                "credential_type": "api_key",
+                "value": "synthetic-secret",
+            },
+        )
+
+        assert response.status_code == 422
+        sm.create_secret.assert_not_called()
 
     def test_create_default_scope_is_user(self, db, sm):
         client = _make_app(ALICE, db, sm)
@@ -552,6 +679,76 @@ class TestDeleteCredential:
         # Issue #3989: user-driven deletes pass force=False so AWS's recovery
         # window applies (the helper default is force=True → no recovery).
         sm.delete_secret.assert_called_once_with("arn:aws:secretsmanager:us-east-1:123:secret:del-test", force=False)
+
+    def test_secret_delete_failure_keeps_the_metadata_receipt_for_retry(self, db, sm):
+        credential = asyncio.get_event_loop().run_until_complete(
+            _insert_cred(
+                db,
+                user_id="user-alice",
+                label="retry-delete",
+                secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:retry-delete",
+            )
+        )
+        sm.delete_secret.side_effect = RuntimeError("synthetic Secrets Manager failure")
+
+        response = _make_app(ALICE, db, sm).delete(f"/auth/credentials/{credential.id}")
+
+        assert response.status_code == 500
+
+        async def reload():
+            from sqlalchemy import select
+
+            result = await db.execute(select(UserCredential).where(UserCredential.id == credential.id))
+            return result.scalar_one_or_none()
+
+        assert asyncio.get_event_loop().run_until_complete(reload()) is not None
+
+    def test_retry_completes_after_secret_delete_then_database_failure(self, db):
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:pending-delete"
+        credential = asyncio.get_event_loop().run_until_complete(
+            _insert_cred(
+                db,
+                user_id="user-alice",
+                label="pending-delete",
+                secret_arn=secret_arn,
+            )
+        )
+        credential_id = credential.id
+        backend = MagicMock()
+        pending = ClientError(
+            {"Error": {"Code": "InvalidRequestException", "Message": "scheduled for deletion"}},
+            "DeleteSecret",
+        )
+        backend.delete_secret.side_effect = [{}, pending]
+        backend.describe_secret.return_value = {"DeletedDate": datetime.now(UTC)}
+        secrets = SecretsManagerHelper(client=backend)
+
+        original_commit = db.commit
+        commit_calls = 0
+
+        async def fail_metadata_commit_once():
+            nonlocal commit_calls
+            commit_calls += 1
+            if commit_calls == 1:
+                raise RuntimeError("synthetic post-Secrets-Manager commit failure")
+            await original_commit()
+
+        db.commit = fail_metadata_commit_once
+        first = _make_app(ALICE, db, secrets).delete(f"/auth/credentials/{credential_id}")
+        assert first.status_code == 500
+        asyncio.get_event_loop().run_until_complete(db.rollback())
+
+        second = _make_app(ALICE, db, secrets).delete(f"/auth/credentials/{credential_id}")
+        assert second.status_code == 204
+        backend.describe_secret.assert_called_once_with(SecretId=secret_arn)
+
+        async def reload():
+            from sqlalchemy import select
+
+            result = await db.execute(select(UserCredential).where(UserCredential.id == credential_id))
+            return result.scalar_one_or_none()
+
+        assert asyncio.get_event_loop().run_until_complete(reload()) is None
 
     def test_delete_non_owned_returns_404(self, db, sm):
         cred = asyncio.get_event_loop().run_until_complete(_insert_cred(db, user_id="user-bob", label="bobs-private"))
@@ -947,3 +1144,123 @@ async def test_a_token_that_carries_an_org_claim_is_unaffected(db, sm):
     cred = await _insert_cred(db, user_id="user-alice", service="aws", label="mine")
     client = _make_app(ALICE, db, sm)
     assert [row["id"] for row in client.get("/auth/credentials?scope=user").json()] == [cred.id]
+
+
+@pytest.mark.asyncio
+async def test_idempotent_put_recovers_after_secret_write_and_precommit_failure(db, monkeypatch):
+    from src.auth.vault_schemas import CredentialCreate
+    from src.auth.vault_service import create_credential
+
+    class ArtifactVault:
+        def __init__(self):
+            self.artifacts = {}
+
+        def create_secret(self, service, label, value, *, operation_id, operation_fingerprint, **owner):
+            identity = (tuple(sorted(owner.items())), operation_id)
+            existing = self.artifacts.setdefault(identity, (operation_fingerprint, value))
+            assert existing == (operation_fingerprint, value)
+            return f"arn:aws:secretsmanager:us-east-1:123:secret:{operation_id}"
+
+    vault = ArtifactVault()
+    credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+    data = CredentialCreate(
+        service="nebius",
+        label="crash-recovery",
+        credential_type="api_key",
+        value="synthetic-secret",
+        scope_hint="user",
+    )
+    original_commit = db.commit
+    failed = False
+
+    async def fail_before_first_commit():
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("simulated process failure after Secrets Manager success")
+        await original_commit()
+
+    monkeypatch.setattr(db, "commit", fail_before_first_commit)
+
+    with pytest.raises(RuntimeError, match="simulated process failure"):
+        await create_credential(data, db, ALICE, vault, credential_id=credential_id)
+
+    assert len(vault.artifacts) == 1
+    assert await db.get(UserCredential, credential_id) is None
+
+    recovered = await create_credential(data, db, ALICE, vault, credential_id=credential_id)
+
+    assert recovered.id == credential_id
+    assert len(vault.artifacts) == 1
+    assert await db.get(UserCredential, credential_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_idempotent_put_rejects_a_different_secret_for_the_same_id(db):
+    from src.auth.vault_schemas import CredentialCreate
+    from src.auth.vault_service import DuplicateCredentialError, create_credential
+
+    class RecordingVault:
+        def __init__(self):
+            self.calls = []
+            self.value = None
+
+        def create_secret(self, service, label, value, **kwargs):
+            self.calls.append((service, label, value, kwargs))
+            self.value = value
+            return "arn:aws:secretsmanager:us-east-1:123:secret:operation"
+
+        def get_secret(self, secret_arn):
+            return self.value
+
+    vault = RecordingVault()
+    credential_id = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+    original = CredentialCreate(
+        service="nebius",
+        label="exact-replay",
+        credential_type="api_key",
+        value="first-synthetic-secret",
+        scope_hint="user",
+    )
+    await create_credential(original, db, ALICE, vault, credential_id=credential_id)
+
+    with pytest.raises(DuplicateCredentialError) as raised:
+        await create_credential(
+            original.model_copy(update={"value": "second-synthetic-secret"}),
+            db,
+            ALICE,
+            vault,
+            credential_id=credential_id,
+        )
+
+    assert len(vault.calls) == 1
+    assert "value_sha256" not in str(vault.calls[0][3])
+    assert "first-synthetic-secret" not in str(vault.calls[0][3])
+    assert "first-synthetic-secret" not in str(raised.value)
+    assert "second-synthetic-secret" not in str(raised.value)
+
+
+async def test_revision_adapter_rejects_stale_write_preserving_metadata(db, sm):
+    cred = await _insert_cred(db, user_id="user-alice", label="original")
+    client = _make_app(ALICE, db, sm)
+    before = client.get("/auth/credentials").json()[0]
+    revision = before["updated_at"] or before["created_at"]
+    if not revision.endswith("Z") and "+" not in revision:
+        revision += "+00:00"
+    response = client.patch(f"/auth/credentials/{cred.id}/metadata", json={"label": "new", "expected_revision": revision})
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == cred.id
+    stale = client.patch(f"/auth/credentials/{cred.id}/metadata", json={"label": "clobber", "expected_revision": revision})
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error"] == "stale_revision"
+    assert client.get("/auth/credentials").json()[0]["label"] == "new"
+    sm.create_secret.assert_not_called()
+    sm.delete_secret.assert_not_called()
+
+
+async def test_revision_adapter_requires_precondition_and_hides_foreign_target(db, sm):
+    cred = await _insert_cred(db, user_id="user-bob", label="foreign")
+    client = _make_app(ALICE, db, sm)
+    path = f"/auth/credentials/{cred.id}/metadata"
+    assert client.patch(path, json={"label": "new"}).status_code == 422
+    assert client.patch(path, json={"label": "new", "expected_revision": "2026-09-25T00:00:00Z"}).status_code == 404

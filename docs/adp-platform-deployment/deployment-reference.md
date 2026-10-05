@@ -1,0 +1,1098 @@
+# Deployment phase and troubleshooting reference
+
+Use the [deployment quickstart](deploy-quickstart.md) for a normal install or
+upgrade. This reference preserves detailed phase commands, verification probes
+and findings from earlier deployments for diagnosis and manual recovery. Do not
+run every manual phase after the automated launcher has completed. Historical
+verification dates and fixed-issue notes below are not evidence for a new release.
+
+For the exhaustive resource-by-resource reference, see
+[`deployment-manifest.md`](./deployment-manifest.md). For a real run's log of what
+broke and how it was fixed, see the `deployment_learning_<accountID>.md` at the
+repo root.
+
+> **Status of this guide:** Phases 1–6c (Bootstrap → Preflight → Platform infra →
+> Gateway infra → Gateway backend → Frontend → ALB second-pass → Broker) plus the
+> webhook agent path are **verified end-to-end against a real run** (account
+> `000000000229`, macOS, 2026-06-06/07). Each step is backed by a re-runnable
+> script. Bugs
+> found during that run are **fixed on `main`** across PRs #1210 (sed/preflight/CI),
+> #1218 (gateway count arg + Lambda-layer auto-build + gateway CI), and #1221
+> (VPC-endpoint SG for IRSA) — if you're on latest `main`, the gotchas called out
+> below no longer bite; they're kept to explain behavior and for older checkouts.
+> Phases 6–9 are transcribed from the full guide and not yet re-verified here
+> (marked ⚠️ *unverified*). Agent Factory phases (CLAUDE.md 4–5) were not exercised
+> in the gateway-only run.
+
+---
+
+Persona model mapping is enabled by default in full deployments. See
+[model mapping deployment and verification](./persona-model-mapping.md) for
+model availability, environment overrides and acceptance checks.
+
+Orchestration is enabled by default. To disable it for an environment, set
+`orchestration_engine_enabled = false` in its gateway Terraform inputs and set
+SSM `/adp/<env>/gateway/feature-orchestration-engine` to `false`, then run the
+upgrade deployment. Set both to `true` to re-enable it. The browser waits for
+confirmed server capabilities before displaying orchestration controls.
+
+## The shape of a deploy
+
+A deploy is a sequence of **stage-by-stage scripts** (each idempotent, each one
+phase below). GitHub is NOT set up upfront — for the webhook agent path, all
+GitHub wiring happens at the **end** (Phase 8), after the infrastructure it
+points at exists. The infra phases:
+
+```bash
+export AWS_PROFILE=<profile> AWS_REGION=us-east-1   # the account everything keys off
+./platform/scripts/bootstrap.sh                     # Phase 1
+./platform/scripts/preflight-check.sh               # Phase 2
+# Phase 3–5: terraform applies + backend image build (see each phase below)
+./modules/gateway/scripts/deploy-frontend.sh --env dev   # Phase 6 (build/sync SPA + CFN template)
+./platform/scripts/wire-gateway-alb.sh --apply           # Phase 6b (gateway second pass)
+./modules/gateway/scripts/deploy-broker.sh --env dev     # Phase 6c (login)
+./modules/gateway/scripts/bootstrap-admin.sh --env dev   # Phase 6d (seed first admin)
+# Agent execution (required for a full deployment):
+./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # Phase 7
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 9 (or use the UI — see Phase 9 below)
+```
+
+`deploy-all.sh` chains the infrastructure, gateway, broker, webhook/runtime,
+agent-factory, and frontend stages. GitHub App setup follows deployment. The
+rest of this doc is **what to know before each phase** and **what to do when it
+breaks**.
+
+---
+
+## Before you start: 4 things that will save you an hour
+
+1. **Pick the right AWS profile FIRST — everything keys off it.**
+   There is no `account_id` hardcoded anywhere. Every script resolves the target
+   account in this order: **env var → `config/deployment.yml` → whatever
+   `aws sts get-caller-identity` returns**. If `config/deployment.yml` doesn't
+   exist yet, the *active AWS profile decides the account*. So:
+   ```bash
+   export AWS_PROFILE=<your-profile>
+   export AWS_REGION=us-east-1
+   aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
+   ```
+   Confirm that account is the one you intend to deploy into. Get this wrong and
+   you bootstrap state into the wrong account.
+
+2. **Ignore any committed `.adp-deploy-state.json`.**
+   This file is git-tracked in the repo, so a fresh clone may show phases marked
+   `"complete"` and an `account_id` like `ACCOUNT_ID` (a literal placeholder) or
+   some *other* account. **It is not a record of your deployment.** Don't trust
+   its statuses — verify against real AWS state instead. Treat a fresh clone as a
+   fresh deployment regardless of what this file says.
+
+3. **macOS sed — fixed on `main`, but check your checkout.** `bootstrap.sh` used
+   to call GNU-style `sed -i -e "..."`, which BSD/macOS sed rejects with
+   `sed: -e: No such file or directory` and *silently skipped* the tfvars rewrite.
+   **PR #1210 fixed this** (the script now detects GNU vs BSD sed). If you're on
+   latest `main` you're fine. If you're on an older checkout and see that error,
+   the substitution didn't run — redo it by hand (snippet in Phase 1). Running
+   from Linux/WSL2 avoids it entirely either way.
+
+4. **Temporary STS creds expire.** If your profile uses `ASIA…` keys + a session
+   token (e.g. assumed-role / Isengard / SSO), they time out mid-deploy. A 45-min
+   deploy can outlive them. Refresh before long phases, and re-`export` the
+   profile.
+
+**Tooling needed:** aws-cli v2, terraform ≥ 1.14, kubectl, node ≥ 22, `gh`
+(for GitHub steps). **Docker is optional** — `deploy-all.sh` builds images with
+CodeBuild by default; you only need Docker if you pass `--local`.
+
+---
+
+## Choose your scope
+
+| You want | Command | GitHub Apps? | Rough idle cost |
+|----------|---------|--------------|-----------------|
+| Everything | `deploy-all.sh` | Yes | ~$170/mo |
+| Bedrock gateway only | `deploy-all.sh --gateway-only` | **No** ← simplest | ~$170/mo |
+| Agents only | `deploy-all.sh --agent-factory-only` | Yes | lower (no RDS) |
+| Code intelligence | `deploy-all.sh --agent-context-only` | No | ~$800/mo ⚠️ pricey |
+
+The default full command installs the shared platform, gateway and agent stack.
+It does not install domain apps. Install Superplane through
+`modules/domain-apps/superplane/deploy.sh` or its module workflows, and Cyber's
+sandbox through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted Cyber worker
+integration is installed separately through
+`modules/domain-apps/cyber/scripts/deploy-hosted-integration.sh`, then wired to
+the shared worker by selecting `enabled_domain_integrations = ["cyber"]` in the
+webhook update settings. Their
+image build jobs are created by each domain app's own Terraform root. A basic
+platform deployment does not create them. Upgrading an older installation whose
+domain image jobs still live in platform state will show those jobs as removals;
+review that saved plan and migrate installed apps to their own state before
+applying. `ADP_ENABLED_DOMAIN_APPS` is retired.
+
+Older webhook states that own `module.cyber` also need a reviewed state migration
+before enabling the new Cyber hosted-integration root. A base platform update
+does not create Cyber resources or read its module state.
+
+If you just want to see the platform work with the least setup,
+**`--gateway-only`** is simplest — no GitHub involvement at all.
+
+> **No upfront GitHub setup.** Older docs had a "Phase 0" that ran `setup-org.sh`
+> + `create-github-apps.sh` first. That was the legacy **ARC** track (3 org-owned
+> apps, repo push). It's removed here: the webhook agent path wires GitHub at the
+> **end** (Phase 9 — UI flow or `register-github-app.sh` CLI fallback), after the
+> infra it points at exists. The only thing you need before Phase 1 is the right
+> **AWS profile** (above) — `config/deployment.yml` is optional (account resolves
+> from the profile if absent).
+
+> **Updating an existing deployment?** Use `deploy-all.sh --update` instead of
+> re-running the default fresh-deploy path. Update mode discovers installed
+> modules, includes the required agent factory if missing, preserves existing
+> GitHub integration, plan-gates Terraform, and
+> runs migrations on Ready replicas of the intended SHA-tagged release. See
+> [`platform_upgrades.md`](./platform_upgrades.md) for the current procedure
+> and the narrowly allowed deployment replacements, or `deploy-all.sh --help`
+> for usage.
+
+Repeated `--update` runs reuse an existing full-SHA image tag for the gateway,
+agent runtime, agent gateway, or chat agent only when its ECR repository has
+immutable tags. The script still resolves the tag to its digest and runs all
+remaining Terraform, migration, rollout, and verification gates. A missing
+tag or a new source commit triggers CodeBuild as usual.
+
+---
+
+## Phase 1 — Bootstrap ✅ verified
+
+Creates the Terraform state backend. **This is the first thing `deploy-all.sh`
+does**, but you can run it standalone:
+
+```bash
+export AWS_PROFILE=<your-profile>
+export AWS_REGION=us-east-1
+export ENVIRONMENT=dev
+./platform/scripts/bootstrap.sh
+```
+
+Creates (idempotent — re-runnable):
+- S3 bucket `adp-terraform-state-<account-id>` (versioned, AES256, public access blocked)
+- DynamoDB table `adp-terraform-locks` (PAY_PER_REQUEST)
+
+### macOS sed (fixed on `main`, PR #1210)
+
+The script's **last step** rewrites `environments/**/*.tfvars` to bake in your
+account id. It used GNU `sed -i -e`, which failed on macOS
+(`sed: -e: No such file or directory`) and silently left the `ACCOUNT_ID`
+placeholder in the tfvars — breaking the next `terraform init`. **PR #1210 made
+the script sed-portable**, so on latest `main` this just works.
+
+**Only if you're on an older checkout and hit it:** redo the substitution by hand
+(this is exactly what the fixed script now does internally):
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+find environments/ -name "*.tfvars" -exec sed -i '' \
+  -e "s/ACCOUNT_ID/${ACCOUNT_ID}/g" \
+  -e "s/adp-terraform-state-[0-9]\{12\}/adp-terraform-state-${ACCOUNT_ID}/g" {} \;
+```
+
+> **Do NOT commit the tfvars rewrite.** It's a per-operator local substitution;
+> committing it would lock the repo to one account. (This is also why CI keeps the
+> `ACCOUNT_ID` placeholder and resolves the real bucket at runtime — see Phase 3.)
+
+**Verify:**
+```bash
+aws s3api head-bucket --bucket "adp-terraform-state-$(aws sts get-caller-identity --query Account --output text)"
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text   # ACTIVE
+grep "$(aws sts get-caller-identity --query Account --output text)" environments/dev/backend.tfvars        # matches
+```
+
+---
+
+## Phase 2 — Preflight ✅ verified
+
+```bash
+export AWS_PROFILE=<your-profile>   # required — preflight resolves account from it
+export AWS_REGION=us-east-1
+./platform/scripts/preflight-check.sh
+```
+
+Read-only. ~26 checks across CLI tools, AWS creds, IAM perms, and whether the
+state bucket + lock table from Phase 1 are reachable. **FAILs block; WARNs don't.**
+A WARN about a missing service permission (iam/codebuild/bedrock/secrets/cognito)
+is *predictive* — the phase that uses that service later will fail, so fix it
+before you get there.
+
+### CodeBuild/Bedrock false-alarm warnings (fixed on `main`, PR #1210)
+
+The CodeBuild and Bedrock permission checks used **invalid CLI syntax**
+(`--max-results 1`, which neither subcommand accepts), so they errored on *usage*
+and got misreported as permission warnings even when the permissions were present.
+**PR #1210 removed the bad flag**, so on latest `main` these checks report
+accurately. On an older checkout, confirm manually before chasing a phantom
+permissions problem:
+```bash
+aws codebuild list-projects                                   # {"projects": []} = fine
+aws bedrock list-foundation-models --query 'modelSummaries[0].modelId'   # a model id = fine
+```
+
+After the fix, a clean run looks like **24 passed / 2 warnings / 0 failed** — the
+2 remaining warnings are "EKS cluster not found" and "ECR adp-gateway not found",
+both expected and both created in Phase 3.
+
+---
+
+## Phase 3 — Platform infra ✅ verified (with caveats)
+
+Standalone (what `deploy-all.sh` automates):
+```bash
+cd platform/infra
+export AWS_PROFILE=<your-profile> AWS_REGION=us-east-1
+terraform init -backend-config=../../environments/dev/backend.tfvars -input=false -reconfigure
+MY_IP=$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')
+export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"   # locks EKS API to you
+terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve
+```
+Creates VPC, EKS (Auto Mode, v1.35), ECR repos, IAM, CodeBuild projects,
+security-scans bucket, and Bedrock invocation logging. ~10–15 min.
+
+Bedrock Runtime invocation logging defaults to CloudWatch and an encrypted S3
+destination, including large request/response bodies, with 30-day retention.
+The setting applies to the entire account/region and must have one Terraform
+owner. For shared accounts, existing configurations, disable/retention options
+and delivery verification, follow [Bedrock invocation logging](bedrock-invocation-logging.md).
+
+### ⚠️ Gotchas hit on a real run
+
+- **Never pipe `terraform apply` to `tail` and trust the exit code** — you'll get
+  `tail`'s exit code (0) even when terraform failed. Use
+  `terraform apply ... > log 2>&1; echo $?` or check `${PIPESTATUS[0]}`.
+- **EKS namespace can fail on first apply** with
+  `namespaces is forbidden: ... cannot create resource "namespaces"` — the
+  cluster-admin access entry hasn't propagated yet. **Just re-run apply** (idempotent).
+- **Non-ASCII in a security group description fails AWS validation** —
+  `CreateSecurityGroup` rejects descriptions with characters beyond ASCII
+  (`Character sets beyond ASCII are not supported`). One SG description had an
+  em-dash; **fixed on `main` (PR #1210)**. Flagged here because it's an easy trap
+  to reintroduce — keep IaC strings ASCII-only.
+- **0 nodes after apply is normal** — Auto Mode provisions nodes on demand.
+
+Verify:
+```bash
+aws eks describe-cluster --name adp-dev-eks-cluster --query 'cluster.status'   # ACTIVE
+aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+kubectl get ns       # bedrockgw should be Active
+```
+
+> **CI note:** the `*-infra-plan` PR checks used to fail at `terraform init`
+> (`S3 bucket "adp-terraform-state-ACCOUNT_ID" does not exist`) because they
+> passed the committed placeholder `backend.tfvars` without substituting the
+> account. **Fixed for platform (#1210), gateway (#1218), and webhook-ingress
+> (#1224)** — those workflows now resolve the bucket from the runner's own
+> identity at runtime. The remaining siblings (`agent-context` / `agent-factory`
+> / `cyber` -infra-plan) still have this bug; fix pending.
+
+## Phase 4 — Gateway infra (RDS/Redis/Cognito/CloudFront) ✅ verified
+
+```bash
+cd modules/gateway/infra
+export AWS_PROFILE=<your-profile> AWS_REGION=us-east-1
+terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars -reconfigure
+terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars -auto-approve
+```
+Creates ~155 resources: RDS PostgreSQL, ElastiCache Redis, Cognito, CloudFront,
+API Gateway, KMS, and the budget/authorizer/auth-broker Lambdas + chat-logging
+pipeline. RDS provisioning dominates (~10 min).
+
+### ⚠️ Two plan-time prerequisites (both now auto-handled on latest `main`)
+
+- **Lambda layers must exist in S3 first.** `budget-lambda` (psycopg2) and
+  `lambda-authorizer` (pyjwt) read `s3://<state-bucket>/lambda-layers/*.zip` via
+  `aws_s3_object` data sources that resolve at **plan** time → apply fails with
+  `couldn't find resource` if absent. **PR #1218 fixed this**: the gateway module
+  now builds the layers itself (null_resource → CodeBuild) on every deploy path.
+  Older checkout / manual: `./platform/scripts/build-lambda-layers.sh psycopg2 pyjwt`.
+
+- **GitHub auth broker needs a Secrets Manager secret.** With
+  `enable_github_auth_broker = true`, a `data "aws_secretsmanager_secret"` reads
+  `adp/<env>/cognito/github-oauth-credentials` at plan time → plan fails if it
+  doesn't exist. Provision it (real GitHub OAuth App creds, or a placeholder to
+  stand up infra):
+  ```bash
+  aws secretsmanager create-secret --name adp/dev/cognito/github-oauth-credentials \
+    --secret-string '{"client_id":"...","client_secret":"..."}' --region us-east-1
+  ```
+  Or set `enable_github_auth_broker = false` to skip GitHub login. `deploy-all.sh`
+  now fails fast with this exact guidance instead of a cryptic data-source error.
+
+- **`Invalid count argument`** when `enable_api_gateway` + `enable_github_auth_broker`
+  are both true — **fixed on `main` (PR #1218)**. (Was: a `count` keyed off the
+  broker Lambda's apply-time-computed ARN.)
+
+### ⚠️ Fresh-account Lambda concurrency quota (Issue #2910)
+
+Gateway lambdas reserve 97 total concurrent executions (authorizer 50, pre-token
+20, pre-signup 10, broker 10, usage-tracker 5, pricing-refresh 2). AWS requires
+the account's **unreserved** pool to stay ≥ 100 after all reservations, so
+`UnreservedConcurrentExecutions` must be ≥ 197 at apply time. Fresh accounts
+default to a 1000 total quota (`L-B99A9384`) with the full pool unreserved
+(fine), but two situations pin the unreserved pool low even at a 1000 total quota:
+- new/restricted accounts with a lower `L-B99A9384` quota; and
+- **SCP-locked or shared-pool accounts** where another reserved lambda consumes
+  most of the total quota (e.g. Workshop-Studio sandbox accounts run a
+  `WSConcurrencyCurtailer` function that reserves ~890, pinning unreserved at the
+  100 floor). Here a Service Quotas increase is often SCP-denied, so Option B is
+  the only path.
+
+`preflight-check.sh` now reads `UnreservedConcurrentExecutions` (not the total
+quota) and warns if that pool is too low. If it warns:
+- **Option A**: request a Service Quotas increase for `L-B99A9384` (only helps if
+  the *total* quota is the constraint; SCP-locked accounts will get AccessDenied).
+- **Option B** (always works): set `enable_lambda_reserved_concurrency = false` in
+  `environments/dev/modules/gateway.tfvars`. Lambdas will run unreserved
+  (no throttle protection) until the pool frees up; then flip back to `true`.
+
+Verify:
+```bash
+aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].DBInstanceStatus' --output text   # available
+aws cognito-idp list-user-pools --max-results 10 --query 'UserPools[?starts_with(Name,`bedrockgw`)].Name' --output text
+aws cloudfront list-distributions --query 'DistributionList.Items[?starts_with(Comment,`bedrockgw`)].Status' --output text          # Deployed
+```
+
+## Phase 5 — Gateway backend on EKS ✅ verified (the hard one)
+
+Build the image (CodeBuild, no local Docker), deploy to EKS, render configmap/SA
+from terraform outputs, rollout. `deploy-all.sh` Step 4 automates this.
+
+### ⚠️ The big gotcha: IRSA pods can't reach STS → everything hangs
+
+On a fresh cluster the gateway pods **CrashLoopBackOff**, stuck in startup
+(`/health` connection-refused). Root cause is **not** the app — it's that
+**EKS Auto Mode pods use the managed cluster security group, but the VPC
+interface-endpoint SG (`adp-dev-sg-vpce`) only allowed the custom EKS SG.** So
+pods can't reach the **STS** interface endpoint → IRSA `AssumeRoleWithWebIdentity`
+hangs → RDS IAM-auth token generation hangs → the FastAPI lifespan `create_all`
+hangs → liveness kills the pod. Same SG-mismatch the repo already works around
+for RDS/Redis; the VPC-endpoints SG was missed.
+
+**Symptoms / how to confirm:**
+```bash
+# From an IRSA pod (use a stable sidecar with serviceAccountName: gateway-service,
+# NOT the crashlooping pod — exec gets SIGKILLed mid-restart):
+aws sts get-caller-identity        # HANGS (~15s timeout) = STS unreachable
+# DNS resolves to the interface-endpoint private IPs, but TCP 443 to it times out:
+timeout 8 bash -c 'echo > /dev/tcp/sts.us-east-1.amazonaws.com/443' || echo BLOCKED
+```
+
+**Fix (merged to `main`, PR #1221):** add an ingress rule allowing 443 on the
+VPC-endpoints SG from the EKS managed cluster SG. Immediate unblock:
+```bash
+VPCE_SG=$(aws ec2 describe-vpc-endpoints --filters Name=service-name,Values=com.amazonaws.us-east-1.sts \
+  --query 'VpcEndpoints[0].Groups[0].GroupId' --output text)
+CLUSTER_SG=$(aws eks describe-cluster --name adp-dev-eks-cluster \
+  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text)
+aws ec2 authorize-security-group-ingress --group-id "$VPCE_SG" --protocol tcp --port 443 --source-group "$CLUSTER_SG"
+kubectl rollout restart deployment/bedrockgateway -n adp-gateway
+```
+
+### Second gotcha: RDS IAM auth needs the `rds_iam` GRANT
+
+The gateway authenticates to RDS with an IAM token as user `bgadmin` (the RDS
+master user). That requires `GRANT rds_iam TO bgadmin` inside Postgres — done by
+the **`rds-bootstrap` k8s job**. If that job hasn't succeeded (it also needs STS
+reachable — see above), IAM auth fails. Verify / fix manually:
+```bash
+# As master (creds in the rds!… secret), check + grant:
+psql "host=<rds> user=bgadmin dbname=bedrockgateway sslmode=require" \
+  -tAc "SELECT pg_has_role('bgadmin','rds_iam','MEMBER');"   # 'f' = not granted
+psql "...as master..." -c "GRANT rds_iam TO bgadmin;"
+# After the grant, bgadmin's master *password* stops working (PAM auth) — expected.
+```
+
+### Other Phase 5 notes
+- Image builds via CodeBuild `adp-dev-gateway-build` (~90s). No local Docker.
+- Old replicaset pods may show `InvalidImageName` (the manifest ships a
+  `REPLACE_WITH_GATEWAY_IMAGE` placeholder); `kubectl set image` fixes the live
+  one — cosmetic once the new RS is healthy.
+- Verify: `kubectl exec deploy/bedrockgateway -n adp-gateway -- curl -s localhost:8080/health` → `{"status":"healthy"}`.
+
+## Phase 6 — Frontend (React → S3 → CloudFront) ✅ verified
+
+```bash
+./modules/gateway/scripts/deploy-frontend.sh --env dev
+```
+
+One idempotent script (the manual equivalent of `gateway-deploy.yml`'s frontend
+job). It:
+1. **Builds with the FULL `VITE_*` env resolved from SSM** — not just
+   `VITE_API_URL`. Vite vars are baked into the bundle at build time; building
+   with only `VITE_API_URL` ships a broken app (*"GitHub sign-in is not
+   configured"* + Cognito unconfigured). All values come from SSM params Phase 4
+   created.
+2. **Syncs `dist/` → the frontend bucket**, excluding `cfn-templates/*` so the
+   `--delete` doesn't wipe the template.
+3. **Uploads the CloudFormation role template** (`cfn-templates/aws_role_v1.yaml`)
+   — REQUIRED for **Settings → Add AWS account**. The gateway pre-signs a GET for
+   it; without it the flow fails *"S3 error: The specified key does not exist."*
+   (Pairs with the gateway-infra grant — `s3:ListBucket`/`GetObject` on
+   `cfn-templates/*`, applied in Phase 4.)
+4. **Invalidates CloudFront.**
+
+Flags: `--dry-run`, `--skip-build` (deploy an existing `dist/`), `--skip-template`.
+Notes: `VITE_AGENT_WS_URL` may be empty (the agent-gateway WebSocket isn't part of
+the webhook path) — the app tolerates it. Node 24 builds fine (repo says ≥ 22).
+If you change broker/Cognito values, re-run the script (they're compiled in, not
+read at runtime).
+
+Verify:
+```bash
+CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
+curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"        # 200
+curl -s "https://${CF}/" | grep -o "<title>[^<]*</title>"       # <title>Agentic Developer Platform</title>
+# API probe: assert the JSON BODY, never the status code alone — without the
+# VPC origin, /api/* falls to the S3 SPA fallback which also returns 200
+# (HTML). Masked both 608-deploy incidents (#3085).
+curl -s "https://${CF}/api/health"                               # {"status":"healthy"}
+```
+
+## Phase 6b — Gateway second pass (wire ALB) ✅ verified — REQUIRED
+
+The gateway API Gateway ships a **MOCK** OpenAPI body until the EKS Ingress ALB
+is wired — so on first apply there's **no backend `/{proxy+}` route and no
+`/auth/github` broker route** (only `/` and `/status`). This second pass switches
+it to the real body. **Skipping this leaves the API/login broken.**
+
+```bash
+ENVIRONMENT=dev bash platform/scripts/wire-gateway-alb.sh --apply
+```
+This discovers the ALB, re-applies gateway-infra with the ALB vars
+(`internal_alb_arn/dns`, `alb_security_group_ids`, `enable_vpc_origin=true`), and
+forces an API GW stage redeploy so the routes go live. Idempotent. (Note: the
+CloudFront VPC origin it creates can take ~10 min.)
+
+> **KMS grant for webhook secrets (Issue #3789):** The webhook-secrets CMK
+> (`alias/adp-<env>-webhook-secrets`) is now owned by **platform infra** (Phase 2),
+> so it always exists before gateway applies. The gateway KMS grant is
+> unconditional — no `enable_webhook_secrets_kms_grant` flag needed. For existing
+> environments being migrated, run `platform/scripts/migrate-webhook-kms.sh` to
+> move the CMK state from webhook-ingress to platform (see #3789).
+
+Verify:
+```bash
+aws apigateway get-rest-apis --query "items[?name=='bedrockgw-dev-api'].id" --output text  # API id
+aws apigateway get-resources --rest-api-id <id> --query 'items[].path' --output text        # expect /{proxy+} + /auth/github/{proxy+}
+```
+
+## Phase 6c — Broker Lambda code ✅ verified — REQUIRED for login
+
+Terraform creates the `github-auth-broker` Lambda with a **503 placeholder zip**;
+the real code is published by a push-triggered CI workflow that a fresh deploy
+never fires. Publish it manually:
+
+```bash
+modules/gateway/scripts/deploy-broker.sh --env dev
+```
+Packages (linux/py3.12), uploads to S3, and `update-function-code`. Idempotent.
+
+Verify:
+```bash
+aws lambda get-function-configuration --function-name bedrockgw-dev-github-auth-broker --query CodeSize  # ~16MB, not 223
+# after the ALB second pass + broker deploy + GitHub wiring:
+curl -s -o /dev/null -w "%{http_code}\n" "https://<apigw>/dev/auth/github/start"   # 302
+```
+
+## Phase 6d — Bootstrap the first admin ✅ verified — REQUIRED for login
+
+A fresh deploy has **no rows in the `users` table**, so the onboarding gate
+returns "request access" for **everyone** — including the seeded Cognito admin —
+and nobody can approve anyone (`create_test_users=true` only creates the Cognito
+user + "admins" group, not the DB rows). Seed the first admin's DB rows so they
+become "registered" and can approve real users:
+
+```bash
+modules/gateway/scripts/bootstrap-admin.sh --env dev
+```
+Resolves the seeded admin's Cognito sub (from `adp/dev/gateway/test-admin-credentials`)
+and runs the in-pod entrypoint `python -m src.admin.onboarding.bootstrap_admin`,
+which reuses `approve_request` to atomically create org/tenant/dept/team/user +
+the cognito identity (role `platform_admin`). It then sets the Cognito user's
+`custom:role` + `custom:org_id` attributes (see below). Idempotent. For an
+operator using their own SSO admin instead of the test admin, pass
+`--email`/`--pool-id`/`--org`.
+
+> **Two writes, not one — DB row *and* Cognito attributes.** The onboarding gate
+> (`/access/status`) and backend admin powers come from the **DB row** + the
+> Cognito `admins` group. But the frontend's org/role come from the access token's
+> `custom:org_id` / `custom:role` claims, which the pre-token-generation Lambda
+> copies from the **Cognito user attributes** — it never reads the DB. So seeding
+> only the DB row leaves the admin "registered" but with an empty org/role in the
+> UI. The script sets both; **log out and back in afterward** so a fresh token
+> carries the claims.
+
+> **The image must contain `bootstrap_admin.py`.** It runs *inside* the gateway
+> pod, so the deployed `adp-gateway` image must include this module — i.e. build
+> the gateway image (Phase 5) from a tree that has it. (If the pod predates it,
+> rebuild + redeploy the image first.)
+
+Verify:
+```bash
+# Log in as the admin (email/password), then:
+curl -s -H "Authorization: Bearer <admin-jwt>" https://<apigw>/dev/admin/access/status   # {"status":"registered"}
+
+# CRITICAL: verify Cognito attributes are set (the script does this automatically,
+# but confirm manually if you ran an older version or suspect a partial run):
+POOL_ID=$(aws ssm get-parameter --name /adp/dev/cognito/user-pool-id --query Parameter.Value --output text)
+ADMIN_EMAIL="<admin-email>"  # from adp/dev/gateway/test-admin-credentials or your SSO admin
+aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$ADMIN_EMAIL" \
+  --query 'UserAttributes[?Name==`custom:role` || Name==`custom:org_id`]'
+# Expected: custom:role=platform_admin, custom:org_id=platform-admin (or your --org value)
+# If MISSING: the admin will log in but the UI will NOT show platform-admin views
+# (e.g. GitHub App "Set up" CTA hidden). Re-run bootstrap-admin.sh to fix.
+```
+
+> **⚠️ Pipeline gap:** The ADP-managed pipeline (`gateway-deploy.yml`) does **NOT**
+> run `bootstrap-admin.sh`. On a pipeline-driven deploy, an operator must run this
+> script manually after Phase 6c (gateway backend is healthy). If this step is
+> skipped or partially completes, the first admin will have DB access but the
+> frontend will not recognize them as `platform_admin` — the pre-token Lambda reads
+> Cognito attributes, not the DB. The script now verifies attributes on completion
+> and fails loudly if they're missing; older versions do not — use the manual check
+> above.
+
+## Agent Factory — Webhook-Ingress stack (ARC-free agent path) ✅ verified
+
+This is the **GitHub-decoupled, ARC-free** way to run agents:
+`GitHub webhook (@agent-developer mention / issue label) → API Gateway → Lambda
+(HMAC + intent parse) → SQS FIFO → KEDA ScaledJob → agent-worker pod`. No
+self-hosted runners, no in-repo workflow. GitHub is wired **after** deploy via a
+single GitHub App that users install per-repo (see register step below).
+
+One script does all three prerequisites (they belong together — skipping any
+leaves a broken stack):
+
+```bash
+modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev
+```
+
+It runs, in order:
+1. **Build the agent-worker image** → ECR `adp-agent-runtime` (CodeBuild). The
+   KEDA ScaledJob runs `adp-agent-runtime:latest`; nothing else builds it and
+   terraform never validates it, so skipping → `ImagePullBackOff` on the first
+   real agent run.
+2. **Package + upload the webhook Lambda zip** → `s3://<bucket>/lambda-artifacts/webhook-ingress/github.zip`
+   (terraform reads it at PLAN time; apply fails without it).
+3. **`terraform apply`** the stack (~60 resources; secrets auto-create as
+   placeholders — no GitHub needed yet).
+
+Flags: `--dry-run`, `--skip-image`, `--skip-lambda`, `--skip-terraform`. Idempotent.
+
+### Verify
+```bash
+aws apigateway get-rest-apis --query 'items[?name==`adp-dev-webhook-ingress`].id' --output text
+aws sqs list-queues --queue-name-prefix adp-dev-agent-submit --query 'QueueUrls'
+for t in tenant-registry webhook-events rate-limits; do aws dynamodb describe-table --table-name adp-dev-$t --query 'Table.TableStatus' --output text; done
+kubectl get scaledjobs -n adp-agents        # agent-scaledjob, READY=True
+# Smoke test — an UNSIGNED POST returns 401 (HMAC rejection = path is live & correct):
+ID=$(aws apigateway get-rest-apis --query 'items[?name==`adp-dev-webhook-ingress`].id' --output text)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://${ID}.gateway-14.example.com/dev/github" -d '{}'   # 401 = good
+```
+
+### Gotchas
+- **`POST /github` → 401 on an unsigned/empty body is CORRECT** — the Lambda is
+  rejecting a request with no valid HMAC signature. Confirms API GW→Lambda works.
+- **All three prerequisites above are a single unit.** Two of them are plan-time
+  hard deps (the Lambda zip) or silent runtime deps (the agent-runtime image —
+  terraform never validates it, so a missing image only surfaces as
+  `ImagePullBackOff` on the first real agent run). Don't treat the image build as
+  optional.
+- **KEDA ScaledJob namespace is `adp-agents`** (the README says
+  `adp-gateway-agents` — doc drift).
+
+### ⚠️ Two account-level blockers that make the agent hang silently after "Session initialized"
+
+Both were hit on a real run (account `000000000229`). The agent clones the repo,
+posts a live status comment, reaches `Session initialized`, then **hangs with no
+further updates** — its first Bedrock call never completes. Neither surfaces a
+clear error in the live GitHub comment, so check for these directly. (Both are
+fixed in IaC by PR #1304; the notes below are for accounts deployed before it or
+diagnosing the symptom.)
+
+1. **`execute-api` VPC interface endpoint hijacks DNS → blanket `403
+   ForbiddenException`.** If `platform/infra` created an `execute-api` interface
+   VPC endpoint with `private_dns_enabled=true` (it did between #1177 and #1304),
+   it hijacks **all** `*.execute-api.<region>.amazonaws.com` DNS inside the VPC to
+   the endpoint's private ENIs. That endpoint only serves **PRIVATE** API Gateway
+   APIs, but `bedrockgw-dev-api` (the `/agent` path) and the webhook API are both
+   **REGIONAL/public** — so the worker's signed `/agent` call resolves to the
+   VPCE, matches no private API, and gets `403 ForbiddenException` for *every*
+   route. Both APIs are public by design (the worker **and** developers' laptops
+   hit the bedrock API; GitHub hits the webhook API), so there is no private API
+   to serve — the endpoint must not exist.
+   - **Diagnose:** from a pod in `adp-agents`, resolve the API host. Private
+     `10.x` IPs = hijacked (broken); public IPs = good.
+     ```bash
+     # broken: resolves to the VPCE private ENIs
+     getent hosts <bedrock-api-id>.gateway-14.example.com
+     # confirm the culprit endpoint exists:
+     aws ec2 describe-vpc-endpoints \
+       --filters Name=service-name,Values=com.amazonaws.us-east-1.execute-api \
+       --query 'VpcEndpoints[].{id:VpcEndpointId,privateDns:PrivateDnsEnabled}'
+     ```
+   - **Fix:** on latest `main` (#1304) the endpoint is gone — re-apply
+     `platform/infra`. To unblock an already-deployed account immediately:
+     `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids <vpce-id>` (DNS reverts to
+     the public edge within a couple of minutes). A signed `/dev/agent/health`
+     then returns **200** instead of `Forbidden`.
+
+2. **Bedrock model access / wrong inference-profile prefix.** The agent invokes
+   `us.anthropic.claude-opus-4-6-v1` (#1304; older images used
+   `global.anthropic.claude-opus-4-6-v1`). On a fresh account:
+   - **Model access must be enabled** for Claude Opus 4.6 — run
+     `platform/scripts/enable-bedrock-models.sh` (CLI-only; accepts the
+     marketplace agreement the API error names — the old "console-only" note
+     is outdated, and both deploy tracks now run this automatically). Until
+     then, `InvokeModel` returns `AccessDeniedException: ...
+     aws-marketplace:Subscribe ...`. Takes ~2 min to propagate after enabling.
+   - **Use the `us.` profile, not `global.`** — the `global.` cross-region profile
+     is not enabled on every account (919 returns `ValidationException: invalid
+     model identifier`); `us.anthropic.claude-opus-4-6-v1` works on every account
+     tested. The streaming path makes this especially nasty: the gateway returns
+     HTTP **200** with an empty `text/event-stream`, so the SDK waits forever with
+     no error — exactly the silent hang.
+   - **Diagnose (source of truth is `invoke`, not `list-inference-profiles`):**
+     ```bash
+     aws bedrock-runtime invoke-model --model-id us.anthropic.claude-opus-4-6-v1 \
+       --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+       --cli-binary-format raw-in-base64-out /dev/stdout   # expect a real JSON message
+     ```
+
+### ⚠️ Slow first agent (1-2 min to first comment) on small/fresh clusters
+
+On a cluster running scale-from-zero with few nodes, a summoned agent waits for
+**both** a cold node to be provisioned (~60-90s on EKS Auto Mode / Karpenter)
+**and** the ~650 MB agent image to be pulled (~30s) before it can run — so the
+first live comment lands in 1-2 min, vs 10-15s on a warm multi-node cluster.
+Confirmed via pod events: `Pulled image ... in 31s` on a cold node vs `174ms`
+when cached.
+
+**Fix — two complementary mechanisms in `warm-pool.tf`** (mirrors how example-profile stays
+fast: warm nodes + a `chat-agent-image-prepull` DaemonSet):
+
+1. **Warm pool** (`agent_warm_pool_replicas`, default `1`) — N "balloon" pods run
+   the agent image at **negative priority**, holding warm nodes. A summoned agent
+   (priority 0) preempts a balloon and starts on that node instantly; the balloon
+   reschedules and re-warms a node for the next summon. Removes the **cold-node
+   boot** delay for up to N parallel agents. Each replica holds one node 24/7
+   (cost trade-off); `0` disables.
+2. **Image pre-pull DaemonSet** (`agent_image_prepull_enabled`, default `true`) —
+   one tiny pod per node keeps the ~650 MB agent image cached on **every** node,
+   so the ~30s pull is gone regardless of which node an agent lands on — covering
+   parallel agents beyond the warm-pool count and agents scheduled onto other
+   nodes. Tiny footprint (10m cpu / 32Mi per node).
+
+Verify:
+```bash
+kubectl get deploy agent-warm-pool -n adp-agents               # READY = replicas
+kubectl get daemonset agent-image-prepull -n adp-agents        # READY = node count
+# After a summon, the agent pod's events should show NO new node + image "Pulled ... in <1s"
+# (confirmed live on 919: 168ms cached vs 31s cold).
+```
+
+### Then wire GitHub — UI flow (primary) or `register-github-app.sh` (fallback)
+
+After the webhook-ingress stack is up, wire GitHub so agent mentions trigger
+webhook events. This creates the GitHub App (`adp-agent-platform`) people install
+on their repos, points its webhook at this deployment's API Gateway, and stores
+the App's credentials in **this deployment's** Secrets Manager. **One App per
+deployment.**
+
+#### Primary path: UI flow (recommended)
+
+The **Phase-6d bootstrap `platform_admin`** performs this step:
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted.
+
+> **Org-owner vs user-owned App.** If the `platform_admin` is an org owner on
+> GitHub, the manifest flow creates an **org-owned** App (visible at
+> `github.com/organizations/<org>/settings/apps`). Non-owners get a user-owned
+> App. Both work; org-owned is preferred for production / shared deployments.
+
+#### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available, use the
+script directly:
+
+```bash
+# 1. Credentials for the account you deployed INTO (cross-account: assume the
+#    customer role first). Confirm — the App secrets are written to THIS account.
+export AWS_PROFILE=<your-profile>          # or assume into the customer account
+export AWS_REGION=us-east-1
+aws sts get-caller-identity --query Account --output text    # MUST be your deploy account
+
+# 2. gh must be logged in as someone who can create Apps in <your-org> (admin:org).
+gh auth status
+
+# 3. Register (pass YOUR GitHub org as the first arg):
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <your-org> --env dev
+#    No org-OWNER rights on <your-org>? Create a personal App instead:
+#    ./...register-github-app.sh <your-org> --env dev --owner-type user --repo <your-org>/<repo>
+```
+
+> **Org-owner vs user-owned App (CLI path).** Creating an **org-owned** App (the
+> default) requires **org-owner** rights on `<your-org>` — many people don't have
+> that. If you don't, pass **`--owner-type user`** to create the App under your
+> own account instead (any user can; install it on repos you admin). For a shared
+> team deployment, have an org owner run it with the default `--owner-type org`.
+> Use `--repo <owner/name>` to set the install-target repo in the printed URL
+> (defaults to `<your-org>/adp`).
+
+The script will:
+- prompt **private vs public** (choose **private** unless you need cross-org
+  multi-tenant install);
+- **open a browser** to `https://github.com/organizations/<your-org>/settings/apps/new`
+  with the name, webhook URL, and permissions pre-filled → click **Create GitHub
+  App** → **Generate a private key** (downloads a `.pem`) → note the **App ID**
+  (+ client secret, shown once);
+- prompt for the **App ID** and **.pem path** (or pass `--app-id` / `--pem-path`
+  / `--client-secret` as flags to skip the prompts), then store them in Secrets
+  Manager + wire the gateway.
+
+#### After wiring (either path)
+
+Install the App on the repo(s) you'll trigger agents from (the UI flow prompts
+for this; for CLI use `https://github.com/apps/<app-slug>/installations/new` —
+repo-admin only).
+
+**Verify:** run `./platform/scripts/verify-github-wiring.sh --installation-id <id>
+--repo <owner/name> --issue <n>` — it checks the secrets and identity rows, then
+comments `@agent-developer say hello` and asserts a **reply** arrives. A pod
+spawning is not sufficient (it spawns and crash-loops when the per-tenant secret
+is missing); see [Phase 9 → Verify](#verify-1) for what each check proves.
+
+### End-to-end checklist — full ordered script sequence (working agent)
+The complete stage-by-stage path, each step backed by a re-runnable script:
+1. Phases 1–6 — bootstrap → preflight → platform → gateway infra → gateway backend → frontend (above)
+2. `platform/scripts/wire-gateway-alb.sh --apply` — gateway second pass (Phase 6b)
+3. `modules/gateway/scripts/deploy-broker.sh --env dev` — broker Lambda code (Phase 6c)
+4. `modules/gateway/scripts/bootstrap-admin.sh --env dev` — first-admin DB rows (Phase 6d; REQUIRED for login)
+5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
+6. **GitHub App** — UI (primary): log in as `platform_admin` → Settings → Connections → "Set up GitHub App" → manifest flow. CLI fallback: `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]`
+7. Install the App on the target repo(s) when prompted (or `github.com/apps/<slug>/installations/new`)
+8. `platform/scripts/enable-bedrock-models.sh` — Bedrock marketplace agreements
+   (one-time per account, CLI-only, idempotent; also runs automatically inside
+   deploy-all.sh and platform-infra-apply.yml). Without it the agent hangs
+   silently after "Session initialized" or ends "no changes needed" with
+   $0.0000 / 1 turn — see the gotcha above.
+9. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
+
+## Phase 7 — Webhook ingress + warm pool
+
+`webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` builds the
+agent-runtime image, packages the webhook Lambda zip, and terraform-applies the
+stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
+~10-15s agent starts). **Verify**: webhook API GW deployed; SQS FIFO
+`adp-dev-agent-submit.fifo`; KEDA pods Running; ScaledJob `agent-scaledjob` in
+`adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
+`POST /dev/github` → 401 (HMAC reject = path live).
+
+## Phase 8 — Bedrock model access and first-run verification
+
+`./deploy.sh` and `deploy-all.sh` prepare Marketplace agreements and Anthropic
+first-use registration when needed, verify all access states for the actual
+runtime defaults, and perform bounded default-model invocations before reporting
+success. Existing account or organization authorization is reused.
+
+For an unregistered account, supply your organization's actual first-use JSON:
+
+```bash
+./deploy.sh --anthropic-use-case /secure/path/anthropic-use-case.json
+```
+
+Direct `deploy-all.sh` and automated helper invocations accept the same file
+through `ADP_BEDROCK_USE_CASE_FILE`. See
+[Bedrock readiness during deployment](./bedrock-first-run.md) for permissions,
+form fields, standalone checks, invocation costs and organization restrictions.
+No per-user persona mapping is required for these default-model checks.
+
+
+## Phase 9 — GitHub App ⚠️ HUMAN browser step
+
+The GitHub App connects the platform to your GitHub org so agent mentions
+trigger webhook events. The **Phase-6d bootstrap `platform_admin`** is the actor
+for this step (they have the `platform_admin` role required by Settings →
+Connections).
+
+### Primary path: UI flow (recommended)
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted (or later via
+   `https://github.com/apps/<app-slug>/installations/new`).
+
+> **Org-owner vs. user-owned:** If the `platform_admin` is not an org owner on
+> GitHub, the manifest flow creates a *user-owned* app. Org owners get an
+> org-owned app (visible at `github.com/organizations/<org>/settings/apps`).
+> Both work; org-owned is preferred for production.
+
+### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available:
+
+```bash
+modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]
+```
+
+The script creates the App, stores creds in Secrets Manager, and calls
+`wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login in the
+same run. See the script's `--help` for all non-interactive flags (`--app-id`,
+`--pem-path`, `--visibility`).
+
+### Verify
+
+**Run this after installing the App on at least one repo** — several of the
+artifacts it checks are created by the `installation` webhook, so it will
+legitimately fail if run before the install completes.
+
+```bash
+# Wiring only (read-only, no side effects):
+./platform/scripts/verify-github-wiring.sh --installation-id <id>
+
+# Wiring + a real end-to-end round trip (posts a comment, spends Bedrock tokens):
+./platform/scripts/verify-github-wiring.sh --installation-id <id> \
+  --repo <owner/name> --issue <n>
+```
+
+Get `<id>` from <https://github.com/settings/installations> (or the URL you
+landed on after installing). Exit 0 = pass, 1 = a hard check failed.
+
+What it asserts, and why each one matters:
+
+| # | Check | Severity |
+|---|---|---|
+| 1 | Platform App secrets `adp/<env>/github-app/adp-agent-platform-{id,key}` exist, App ID numeric, key PEM-armoured | **HARD** |
+| 2 | Forward identity row `github_installation_id` → `org_id` in `adp-<env>-identity-index` (also *derives* the tenant ID for step 4) | **HARD** |
+| 3 | Reverse row `org_installation` → `installation_id` | WARN |
+| 4 | Per-tenant secret `adp/<env>/tenants/<tenant>/github-app` exists **and parses** (`app_id` + PEM `private_key`) | **HARD** |
+| 5 | `@agent-developer say hello` receives an actual **reply comment** | HARD when run |
+
+> **Why the script instead of a couple of inline commands.** A deployment can
+> pass "the App ID secret is non-empty" and "a worker pod spawned" while dispatch
+> is 100% broken — that is exactly what happened in the Acme PoV. The worker
+> hard-requires the **per-tenant** secret (step 4) with no fallback; when it is
+> missing, pods spawn, die in bootstrap, and crash-loop. Step 5 asserts a reply
+> *landed*, because a pod spawning proves only that the webhook path works, not
+> that the agent can run. Step 5 also ignores the `<!-- adp-run: -->` "started"
+> comment the worker posts before it does any real work — otherwise a Phase 8
+> Bedrock failure (the gotcha immediately above) would still look like a pass.
+
+> **Non-dev environments:** the block is pinned to `dev` on purpose. The worker's
+> vault client keys the secret path off `ADP_ENV`, which is currently injected
+> nowhere and therefore resolves `dev` regardless of the deployment's real
+> environment. On a non-dev deploy, verify against the path the worker *actually*
+> reads. Tracked separately as a code fix (#4042).
+
+On failure the script prints the discriminator log searches that tell the failure
+modes apart — the durable webhook-Lambda queries in
+`/aws/lambda/adp-<env>-github-webhook` (`Auto-registered installation_id=`,
+`Auto-provision:`) plus the `kubectl logs -n adp-agents` search for
+`vault_fetch`, which must be run **while the pod still exists**.
+
+## Phase 10 — End-to-end smoke test
+
+Run the frontend/backend/Cognito probes below, then confirm an
+`@agent-developer <task>` comment on the linked repo spawns an agent-worker pod
+and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedrock).
+
+> **Agent Context (Code Intelligence Layer) is a separate, optional follow-on** —
+> not part of the phases above. Deploy it after the platform is up with
+> `deploy-all.sh --agent-context-only` (or the `agent-context-*` workflows on the
+> ADP-managed track). It provisions context-mcp, ingestion, Neptune/GraphRAG,
+> and the MCP verbs (search/understand/impact/browse/secure/…). It has its own
+> post-deploy activation steps (image build, migrations, vuln-scan cron, Neptune
+> wiring) — see the agent-context module docs.
+
+> **Hosted cross-account execution is unavailable.** Do not pass
+> `customer_account_id`, `customer_aws_label`, or `customer_user_id` to the
+> workflows. The shared config action rejects those inputs before plan, apply,
+> or destroy. Use this self-managed sequence with customer-controlled temporary
+> credentials. See [ADP-Managed Deploy](./adp-managed-deploy.md) for status.
+
+**`deploy-all.sh` shortcut:** chains bootstrap → preflight → platform infra →
+gateway infra → backend build → k8s deploy → ALB wire → frontend → broker (6c) →
+admin bootstrap (6d) → agent-factory → webhook-ingress (7), i.e. Phases 1–7
+(steps 1–10/11 in the script). The only remaining manual step is GitHub App
+wiring (Phase 8/9) — the script prints next-steps guidance at the end.
+
+**Verify when done:**
+```bash
+aws eks describe-cluster --name adp-dev-eks-cluster --query 'cluster.status'   # ACTIVE
+kubectl get nodes
+kubectl get pods -n adp-gateway                                                # 2/2 Running (gateway scope)
+CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
+curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"                      # 200
+curl -s "https://${CF}/api/health"   # {"status":"healthy"} — assert the BODY;
+                                     # without the VPC origin, /api/* hits the
+                                     # S3 SPA fallback and still returns 200 (#3085)
+```
+
+---
+
+## When it breaks
+
+Items marked *(fixed on `main`)* only bite on older checkouts.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `sed: -e: No such file or directory` *(fixed on `main`)* | macOS BSD sed vs GNU `sed -i -e` | Update to latest `main`; or re-run the substitution with `sed -i ''` (see Phase 1) |
+| `terraform init`: bucket doesn't exist | Bootstrap didn't run / wrong account | Run `bootstrap.sh` with the right profile |
+| `terraform init`: `ACCOUNT_ID` in tfvars *(fixed on `main`)* | macOS sed skipped the rewrite | Update to latest `main`; or run the Phase 1 fix snippet |
+| `terraform init`: AccessDenied on a *different* account's bucket | Old account id baked in tfvars from a prior run | Re-run `bootstrap.sh` (or the fix snippet) for the current account |
+| Preflight: CodeBuild/Bedrock "cannot list" warnings *(fixed on `main`)* | invalid `--max-results 1` in the check | Update to latest `main`; or verify manually (see Phase 2) |
+| CI `Platform Infra Plan` fails on `adp-terraform-state-ACCOUNT_ID` *(fixed on `main`)* | workflow didn't substitute the account at init | Update to latest `main` (PR #1210) |
+| `CreateSecurityGroup ... Character sets beyond ASCII` *(fixed on `main`)* | non-ASCII char in an IaC string | Update to latest `main`; keep IaC descriptions ASCII-only |
+| `terraform apply` "succeeded" but didn't | piped to `tail`, got tail's exit code | Capture real code: `apply > log 2>&1; echo $?` or `${PIPESTATUS[0]}` |
+| `namespaces is forbidden` on first apply | EKS cluster-admin entry not propagated yet | Re-run `terraform apply` (idempotent) |
+| Creds expired mid-deploy | Temporary STS token timed out | Refresh creds, re-`export AWS_PROFILE`, re-run (phases are idempotent) |
+| EKS nodes don't appear | Auto Mode takes 3–5 min | Wait, `kubectl get nodes` again |
+| CloudFront 502/504 | ALB not provisioned by Ingress yet | Wait 2–3 min; `kubectl get ingress -n adp-gateway` |
+
+---
+
+## Teardown
+
+### Primary: `undeploy.sh` (self-managed)
+
+```bash
+# Self-managed — interactive, typed-account-ID gate
+./platform/scripts/undeploy.sh
+
+# Dry-run first (recommended) — shows what exists, what would be destroyed
+./platform/scripts/undeploy.sh --dry-run
+
+# Include state backend destruction
+./platform/scripts/undeploy.sh --bootstrap
+```
+
+The `undeploy.yml` workflow is not a supported customer cross-account path.
+Supplying any legacy customer-account input fails in the shared config action
+before a destroy step. `undeploy.sh` destroys in reverse dependency order:
+superplane → agent-context → agent-factory → webhook-ingress → gateway → platform.
+
+The factory must be removed while webhook-owned KEDA is still available.
+After all plans pass, schedules and the gateway application are stopped before
+removing downstream consumers; gateway infrastructure remains available for
+Terraform lookups. KEDA jobs and authentication resources drain before its operator
+is uninstalled, without forced finalizer removal. Within
+modules, teardown removes Lambda functions and waits for their network interfaces
+before deleting execution roles; it removes Kubernetes resources before Helm,
+cluster access, or EKS. Running CodeBuild jobs and log delivery stop before their
+stores are emptied. Any error stops the run and preserves later dependencies.
+
+`--dry-run` initializes Terraform and validates saved delete-only plans for every
+selected module. It makes local private files but changes no AWS or Kubernetes
+resources. It uses recorded release inputs where available; older modules may
+require their original target-specific tfvars. Missing local Lambda code is
+recovered from the deployed artifact, with its checksum verified.
+
+Plans, state backups, retained identifiers, and the journal are stored under
+`.adp-teardown/<account>-<region>-<environment>/` (gitignored, private permissions).
+Set `ADP_TEARDOWN_DIR` to use another private directory. Keep this evidence for
+recovery; do not upload it to public issues. Re-run the same command after resolving
+a failure: live state is re-read and plans are rebuilt, rather than trusting a
+previous "complete" flag. A stale `running.lock` may be removed only after checking
+that the recorded process has exited.
+
+Use `--retain-vpc` when independent resources occupy the ADP VPC. The VPC and default
+security group remain in Terraform state; the script does not delete unfamiliar
+security groups. `--skip` and `--from` are refused if an omitted deployed consumer
+still requires a selected dependency. `--bootstrap` refuses to delete a backend
+that still tracks resources, including intentionally retained credentials.
+
+Teardown empties only buckets and repositories in its reviewed deletion plans.
+It also removes service-created log groups tied to recorded Lambda, CodeBuild,
+EKS and API Gateway resources, plus the three application signing secrets created
+by the gateway installer. Runtime cleanup records log creation times and secret
+ARNs so a replaced resource is refused on retry. User vault and GitHub/OAuth
+credentials are not swept.
+It does not sweep an account by name prefix. Successful module deletion is distinct
+from an account-wide cleanup audit; independent resources and AWS pending deletion
+periods must be reported separately.
+
+`undeploy.sh --aws-profile customer` selects credentials using the same option
+and precedence as `deploy.sh`. The `AWS_PROFILE` environment variable remains
+supported when the flag is omitted.
+
+For an immediate teardown/reinstall, add `--purge-deleted-secrets` to both the
+dry run and the approved teardown command. This permanently purges secrets
+selected by the Terraform deletion plans after Terraform schedules deletion,
+then waits for AWS to report them absent. It excludes retained GitHub credentials
+and does not sweep untracked secrets. Without this option, recovery windows stay
+in effect and secret names can block reinstall for up to 30 days. Either wait,
+restore and import the exact secret after checking its encryption key, or rerun
+teardown with this option using the retained private deletion receipts. A purge
+timeout stops teardown; retry before reinstalling. KMS deletion waiting periods
+are unchanged.
+
+### Legacy path (retained)
+
+```bash
+./platform/scripts/deploy-all.sh --destroy      # LEGACY — lacks account-ID gate, dry-run, resume
+./platform/scripts/bootstrap-destroy.sh         # state backend, separate, typed confirmation
+```
+
+> `deploy-all.sh --destroy` is retained for backward compatibility but is no
+> longer recommended. Use `undeploy.sh` instead.
+
+### Resources that survive by design
+
+- Terraform state backend (until `--bootstrap` / `include_bootstrap`)
+- GitHub App secrets (legacy and environment-scoped), webhook HMAC secret, and their encryption key
+- Account-wide ECR registry scanning configuration
+- GitHub Apps themselves (delete manually in org settings)
+- AWS-managed RDS secrets (`rds!*`)
+
+### Verify gateway and scheduled-engine image parity after updates
+
+A gateway image has two runtime consumers: the EKS gateway and the scheduled
+orchestration Lambda. Both the CI workflow and `deploy-all.sh` verify that they
+use the same release digest. Manual or interrupted rollouts must also run the
+[shared alignment and verification helper](../runbooks/shared-worker-flow-continuation.md#gateway--scheduled-engine-release-parity)
+before reporting completion. Pushing an image to ECR or checking EKS readiness
+alone does not verify the Lambda release.
+
+### Optional menu entries
+
+The gateway deployment reads SSM `/adp/<env>/gateway/feature-knowledge`,
+`feature-indexing`, and `feature-tenant-org-links`. Set the corresponding value
+to `false` and run the upgrade to hide Knowledge, Indexing Status, or the legacy
+Tenant Org Links menu. Knowledge and indexing default to enabled; legacy links
+default to hidden. These display flags do not delete stored data, remove teams,
+or stop indexing workers.
+
+### Gateway rollout budget
+
+The platform deploy script preserves the gateway's current desired replica count
+when applying an upgrade, including a count managed by the horizontal pod
+autoscaler. If that count cannot be read, the upgrade stops before applying the
+gateway Deployment. Fresh deployments start with two replicas.
+
+Gateway rollout checks default to 2,400 seconds (40 minutes), allowing for node
+provisioning, application startup, and the existing 960-second graceful shutdown
+window for active model streams. Set `ADP_GATEWAY_ROLLOUT_TIMEOUT_SECONDS` to a
+positive integer in seconds to override this total wait limit, for example:
+
+```bash
+ADP_GATEWAY_ROLLOUT_TIMEOUT_SECONDS=3000 ./deploy.sh --update
+```
+
+The timeout does not restart the rollout or extend itself indefinitely. On
+failure, the script prints replica/pod status, Deployment conditions, and namespace
+events before stopping. Treat these diagnostics as private operational evidence.
+The script does not change node consolidation policy.

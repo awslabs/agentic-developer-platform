@@ -35,7 +35,7 @@ RESEARCH_ROUTES = sorted(
     for method, path in mounted_operations(app)
     if path.startswith("/api/v1/research/")
 )
-assert len(RESEARCH_ROUTES) == 12
+assert len(RESEARCH_ROUTES) == 13
 
 
 @pytest.mark.parametrize("method,template", RESEARCH_ROUTES)

@@ -71,9 +71,9 @@ variable "runner_image_repo" {
 }
 
 variable "runner_image_tag" {
-  description = "Tag for the ARC runner image. Used when runner_image is empty."
+  description = "Tag or tag@sha256 digest for the ARC runner image. Used when runner_image is empty."
   type        = string
-  default     = "latest"
+  default     = "security27-high-a7611fce1@sha256:6b7b01d0a8e852467ca6a48771550beb14ac09edf213cd3a11ad2bdca4c920eb"
 }
 
 variable "enable_public_cfn_bucket" {
@@ -130,4 +130,51 @@ variable "disable_execute_api_endpoint" {
   type        = bool
   description = "Disable the AWS-assigned execute-api hostname on the chat WebSocket API so it answers only on its published custom domain. A WEBSOCKET API supports neither a resource policy nor a WAF web ACL, so that hostname carries no network-layer restriction at all. Default false (the AWS default); set true wherever a custom domain such as ws.<zone> is in use."
   default     = false
+}
+
+variable "runner_transport_secret_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact existing GitHub engine transport secret ARNs retained during the separately authorized cutover; validated by runner IAM."
+}
+
+variable "runner_transport_secret_kms_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact KMS key ARNs encrypting transport secrets; required for decryption under the bounded ceiling. Validated by runner IAM."
+}
+
+variable "runner_gateway_execution_arns" {
+  type        = list(string)
+  default     = null
+  description = "Reviewed exact gateway routes. Null derives the existing environment's API/stage from its operator-owned SSM endpoint when gateway_deployed; [] disables transport."
+}
+
+variable "gateway_intake_managed_policy" {
+  description = "Use an identically scoped managed intake policy when gateway inline-policy quota is exhausted."
+  type        = bool
+  default     = false
+}
+
+variable "gateway_intake_cutover_keep_inline" {
+  description = "Upgrade-only first pass: retain the existing inline grant until its managed replacement is attached."
+  type        = bool
+  default     = false
+}
+
+variable "gateway_intake_cutover_inline_policy_json" {
+  description = "Upgrade-only first pass: exact live inline policy document to preserve while attaching its replacement."
+  type        = string
+  default     = ""
+}
+
+variable "arc_controller_image" {
+  description = "Digest-pinned maintained ARC controller image override. Empty selects the verified security candidate in this account's adp-arc-controller repository; publish it before applying Helm."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.arc_controller_image == "" || can(regex("^[^@]+@sha256:[a-f0-9]{64}$", var.arc_controller_image))
+    error_message = "ARC controller images must use an immutable SHA256 digest."
+  }
 }

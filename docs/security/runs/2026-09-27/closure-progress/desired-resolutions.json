@@ -1,0 +1,72 @@
+{
+  "time": "2026-09-27T15:05:29.059598+00:00",
+  "inventory": "/workspaces/projects/security27-closure-evidence/live-refresh-20260927T150511Z",
+  "targets": [
+    {
+      "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+      "workloads": [
+        {
+          "kind": "ScaledJob",
+          "namespace": "adp-gateway-agents",
+          "name": "agent-gateway-worker",
+          "uid": "429aa0b6-2fb0-48f9-9030-b2507d1e2c1a"
+        }
+      ],
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af"
+    },
+    {
+      "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
+      "workloads": [
+        {
+          "kind": "ScaledJob",
+          "namespace": "adp-agents",
+          "name": "agent-scaledjob",
+          "uid": "0c987d4d-257a-4736-8838-c3436cbc376e"
+        }
+      ],
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c"
+    },
+    {
+      "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2ee40d54e1b1d878fc2017ffe712bed379e52d0e52522e80736d83ce6a673153",
+      "workloads": [
+        {
+          "kind": "DaemonSet",
+          "namespace": "adp-gateway-agents",
+          "name": "chat-agent-image-prepull",
+          "uid": "8f1b8197-350f-4cbd-a1e0-edc9f9f3eb43"
+        },
+        {
+          "kind": "ScaledJob",
+          "namespace": "adp-gateway-agents",
+          "name": "chat-agent-worker",
+          "uid": "a7450496-1380-40bf-a184-ea34bca20b9b"
+        }
+      ],
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2ee40d54e1b1d878fc2017ffe712bed379e52d0e52522e80736d83ce6a673153"
+    },
+    {
+      "requested_image": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+      "workloads": [
+        {
+          "kind": "CronJob",
+          "namespace": "agent-context",
+          "name": "ingestion-refresh",
+          "uid": "b7d46c14-7b07-4a3b-9476-fae7b3457da6"
+        },
+        {
+          "kind": "CronJob",
+          "namespace": "agent-context",
+          "name": "vuln-scan",
+          "uid": "660b55a8-f6be-4499-ab3e-d99dd1a41b2a"
+        },
+        {
+          "kind": "ScaledJob",
+          "namespace": "agent-context",
+          "name": "ingestion-worker",
+          "uid": "d470c825-5f4f-4c28-983d-959891dce293"
+        }
+      ],
+      "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d"
+    }
+  ]
+}

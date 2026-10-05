@@ -30,6 +30,7 @@ from src.orchestration.provider_quotes import quote_request, request_digest
 from src.orchestration.responses_quotes import RESPONSES_PATH
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.middleware.logging_middleware import LoggingMiddleware
+from src.shared.middleware.request_identity import RequestIdentityMiddleware
 from src.shared.schemas.auth import TokenContext
 from tests.orchestration.test_runtime_policy import (
     assignment as assignment_fixture,
@@ -105,7 +106,8 @@ async def invoke(
     """
     body = responses_body() if body is None else body
     context = TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",
@@ -133,6 +135,8 @@ async def invoke(
         sent.append(frame)
 
     async def provider(scope, receive, send):
+        # This fake models a submitted paid call, including unknown usage/errors.
+        scope["state"]["token_context"]._budget_provider_started = True
         model_path.calls += 1
         actual_request_id = scope["state"]["request_id"]
         model_path.request_ids.append(actual_request_id)
@@ -153,7 +157,8 @@ async def invoke(
             await settle(model_path, context, actual_request_id, reported, usage_known=usage_known)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
-    await AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(LoggingMiddleware(provider), model_path.service))(scope, receive, send)
+    app = RequestIdentityMiddleware(AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(LoggingMiddleware(provider), model_path.service)))
+    await app(scope, receive, send)
     return sent, body
 
 
@@ -613,3 +618,47 @@ async def test_unsettled_usage_blocks_the_next_call_until_receipt(model_path, as
     assert (await invoke(model_path, assignment, usage_known=False))[0][0]["status"] == 200
     assert (await invoke(model_path, assignment, request_id="next"))[0][0]["status"] == 503
     assert model_path.calls == 1
+
+
+async def test_protected_budget_approval_unblocks_same_run_without_resetting_spend(model_path, assignment, session, monkeypatch):
+    from sqlalchemy import select
+
+    from src.budget.config import budget_config
+    from src.orchestration.compile import ApprovalContext, plan_hash
+    from src.orchestration.models import OrchestrationAcceptedPlan
+    from src.orchestration.proposal import LoopProposal
+    from src.orchestration.shared_budget import BudgetIncreaseRequest, accept_budget_increase, preview_budget_increase
+
+    monkeypatch.setattr(budget_config, "budget_run_cap_usd", Decimal("0.01"))
+    sent, _ = await invoke(model_path, assignment)
+    assert sent[0]["status"] == 402 and model_path.calls == 0
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    proposal = LoopProposal.model_validate(
+        {**plan.plan_document, "title": "Protected worker delivery", "org_id": assignment.flow.org_id, "spec_revision": "1"}
+    )
+    plan.plan_document, plan.plan_hash = proposal.model_dump(mode="json"), plan_hash(proposal)
+    plan.accepted_by_decision_id = assignment.grant.authority.reference_id
+    await session.flush()
+    actor = ApprovalContext(org_id=assignment.flow.org_id, actor_id=assignment.grant.authority.human_id, actor_role="platform_admin")
+    request = BudgetIncreaseRequest(
+        expected_plan_version=plan.version,
+        expected_plan_hash=plan.plan_hash,
+        limits={"max_spend_usd": 50, "max_run_spend_usd": 50, "max_chain_spend_usd": 50},
+        reason="Owner authorizes run headroom within the existing flow total.",
+    )
+    result = await preview_budget_increase(session, flow_id=assignment.flow.id, actor=actor, request=request)
+    await accept_budget_increase(
+        session,
+        flow_id=assignment.flow.id,
+        actor=actor,
+        request=request.model_copy(update={"expected_snapshot": result["snapshot"]}),
+    )
+    for _ in range(2):
+        assert (await invoke(model_path, assignment))[0][0]["status"] == 200
+    assert model_path.calls == 2
+    assert (await meter(model_path, assignment)).total_usd == Decimal("0.02")
+    target = meter_target(org_id=assignment.flow.org_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    await get_flow_reservations().reserve("prior-spend", Decimal("49.98"), [target])
+    await get_flow_reservations().reconcile("prior-spend", Decimal("49.98"), [target])
+    assert (await invoke(model_path, assignment))[0][0]["status"] == 402
+    assert model_path.calls == 2

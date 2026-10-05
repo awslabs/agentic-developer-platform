@@ -15,7 +15,8 @@ locals {
 # --- IAM Role for the Lambda ---
 
 resource "aws_iam_role" "broker" {
-  name = "${local.function_name}-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.function_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

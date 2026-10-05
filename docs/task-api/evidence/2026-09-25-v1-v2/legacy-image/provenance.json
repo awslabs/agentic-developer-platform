@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "criteria": [
+    "T4-AC04",
+    "V2-01",
+    "V2-05"
+  ],
+  "lane": "actual built image, installed production modules; controlled external APIs and subprocess results",
+  "evaluator": "t5_runtime",
+  "image_digest": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "actual_image_id": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "image_source_sha": "029fdfe9dc7e2593db028093a64fc93e05c0c657",
+  "fixture_source_sha": "0cf34e510",
+  "started_at": "2026-09-25T05:18:23Z",
+  "tests": 26,
+  "passed": 26,
+  "failed": 0,
+  "skipped": 0,
+  "exit_code": 0,
+  "selection": [
+    "test_installed_legacy.py",
+    "tests/test_entrypoint.py::TestEntrypointMain",
+    "tests/test_codex_review_delivery.py"
+  ],
+  "command": "PYTHONPATH=/fixture/python:/app:/fixture PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q -p no:cacheprovider --junitxml=/fixture/results.xml /fixture/test_installed_legacy.py /fixture/tests/test_entrypoint.py::TestEntrypointMain /fixture/tests/test_codex_review_delivery.py",
+  "independence": [
+    "Tests import /app/entrypoint.py and /app/lib/codex_review_delivery.py; source hash parity asserted.",
+    "No worker source code mounted over image.",
+    "No service account token; isolated network policy denies all ingress/egress.",
+    "No real GitHub, model, queue, or gateway calls; no task submissions."
+  ],
+  "coverage": [
+    "Existing full legacy main success and failure fixtures.",
+    "Claude process command preserves existing input/capture behavior.",
+    "Codex exact raw-envelope stdin, text and captured stdout, completion summary, and bypass of Claude finalizer.",
+    "Existing dedicated Codex review finalizer publication/replay/failure fixtures."
+  ],
+  "limitations": [
+    "Controlled process receipts are not a live Claude/Codex model invocation.",
+    "First fixture launch lacked pytest py.py shim and collected no tests; retained in pytest-missing-shim.log, corrected without production changes."
+  ],
+  "artifacts": {
+    "digest.txt": "c5c238b1da2aa14fef606a04988725c0bd5753665828a7e4c57d10572239c7d2",
+    "pytest.log": "56820786df644329ece4c013246a0ad7615daed4297ecb9ae4fece0732406483",
+    "pytest-missing-shim.log": "f01e007eec14414d2e35a3a37ff4ffd9c0a9685b1ff57233db4f5ce767513571",
+    "results.xml": "af4871888f1442b7ff2e0e1c8b20b724f85485b0f7cb5e1865bed135a9fc383d",
+    "package-preservation.json": "13ac37d9bc63aec0af6f9d8312947b4d0f3a6485337f08df12ec728787960e23",
+    "test_installed_legacy.py": "75666519dd19c6b16c1bbd9f4655f0b2e4765ca2a348b7847d0143406070c2e8",
+    "installed-source.json": "7841c380037f94ee93d57a3df42e6a40be5d74a0677fd18082daf589e6898c8e",
+    "expected-hashes.json": "979197edde8077cdababc588173fe3941a3d4d108f25513bd502dc275c382e72"
+  }
+}

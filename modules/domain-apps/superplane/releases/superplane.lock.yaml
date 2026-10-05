@@ -1,41 +1,6 @@
-# Superplane + SkyPilot release lock — Issue #5041 (U2), EPIC #4910.
-#
-# WHAT THIS FILE IS FOR
-#
-# Every later deploy resolves what to run against this file, so that "which revision is
-# actually running" has an answer that does not depend on when somebody last pulled. The
-# practice is new to ADP: there is no digest-pinning precedent to reuse here. The existing
-# cyber lanes deploy floating tags (cyber-k8s-deploy.yml, cyber/scripts/deploy.sh), and
-# upstream's own SkyPilot manifests deploy `berkeleyskypilot/skypilot:latest` in all three
-# of infra/skypilot-api/02-*, 03-* and templates/skypilot-api.yaml.
-#
-# That floating tag is not a theoretical hazard. At the time this lock was authored the two
-# refs resolved to different images:
-#
-#     berkeleyskypilot/skypilot:latest -> sha256:3bc8bf8f4d83023bae2260b15d01f7581fa2c3e225b75983d92c7f781252662d
-#     berkeleyskypilot/skypilot:0.12.0 -> sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
-#
-# A deploy reading the first one cannot say what it ran. This file pins the second.
-#
-# WHY THERE ARE TWO MAPS AND NOT ONE
-#
-# `images` and `pending_images` exist because the things this lock covers are not equally
-# knowable, and collapsing them would require inventing a value.
-#
-#   `images`         — digest resolved and verifiable. A deploy may use these.
-#   `pending_images` — the image does not exist yet, because building it needs access ADP
-#                      does not have. These entries carry NO digest field at all.
-#
-# The three Superplane images are built from aws-innovate/AISuperPlane, which the hosted
-# agent token cannot read (it is scoped to this repository). Their digests therefore cannot
-# exist until the access grant below is resolved. A placeholder digest would be worse than
-# a floating tag: a tag is visibly unpinned, whereas a fabricated `sha256:` looks
-# authoritative and would be believed. So they are recorded as pending, with the gate that
-# blocks them named, and `tests/test_lock.py` asserts they carry no digest — which keeps
-# this a declaration of what is unresolved rather than a place a tag can hide.
-#
-# Consequently the smoke check (`all(...startswith('sha256:') for i in d['images']...)`)
-# passes over resolved entries only, and passes honestly.
+# Superplane release lock. Resolved images carry verified registry digests;
+# unresolved builds remain in pending_images with no fabricated digest.
+# S21 promotion records scoped build evidence, not live deployment or whole-image cleanliness.
 
 schema_version: 1
 
@@ -80,6 +45,8 @@ maintained_source:
     superplane-api: src/superplane-api
     superplane-controller: src/superplane-controller
     superplane-platform-monitor: src/superplane-platform-monitor
+    superplane-executor: executor
+    superplane-paid-worker: executor
 
 # ── How the pinned source is obtained ────────────────────────────────────────────────
 #
@@ -115,55 +82,74 @@ source_access:
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
 images:
-  skypilot-api: sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
+  skypilot-api: sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4
+  superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
+  superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
+  superplane-platform-monitor: sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9
+  superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
-# Provenance for each entry in `images`: which registry/repository/tag the digest was
-# resolved from, so a reader can re-resolve it and get the same answer.
 image_sources:
-  skypilot-api:
-    registry: registry-1.docker.io
-    repository: berkeleyskypilot/skypilot
-    # The tag is recorded for auditability ONLY — deploys use the digest above. This tag
-    # is mutable and may point elsewhere later; that is exactly why the digest is the pin.
-    tag: 0.12.0
-    resolved_by: >-
-      GET /v2/berkeleyskypilot/skypilot/manifests/0.12.0, docker-content-digest header
-    # Chosen to match the version the upstream controller's SkyPilot client reports
-    # (src/superplane-controller, HealthResponse Version "0.12.0"), so the pinned runtime
-    # is the one the controller was written against rather than a newer arbitrary release.
-    selected_because: matches the SkyPilot version the upstream controller reports
-
-# ── Not yet built ────────────────────────────────────────────────────────────────────
-#
-# No `digest` key by construction — see the header. These stay in `pending_images` after
-# U22, and that is the honest state: the source-access blocker is gone (the source is now
-# in this repository, at the `source_path` below), but NO IMAGE HAS BEEN BUILT, so there is
-# no digest to record. Writing one would be fabricating the exact value the header explains
-# must never be invented. tests/test_lock.py asserts these carry no digest.
-#
-# `source_path` replaces the former `upstream_path`: it is the maintained in-repository
-# directory the build context comes from, relative to `maintained_source.root`. The
-# component's Dockerfile lives there and the lane builds it from a clean ADP checkout.
-#
-# What still stands between these entries and a digest is a BUILD RUN, plus the repairs
-# their own stories own (U13 migrations, U14 auth). Promotion to `images` remains a
-# reviewed commit, never an automated push.
-pending_images:
-  superplane-api:
-    source_path: src/superplane-api
-    ecr_repository: adp-superplane-api
-    build_workflow: .github/workflows/superplane-api-build.yml
-    blocked_by: no build has run yet
-  superplane-controller:
-    source_path: src/superplane-controller
-    ecr_repository: adp-superplane-controller
-    build_workflow: .github/workflows/superplane-controller-build.yml
-    blocked_by: no build has run yet
   superplane-platform-monitor:
-    source_path: src/superplane-platform-monitor
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-platform-monitor
     ecr_repository: adp-superplane-platform-monitor
+    source_path: src/superplane-platform-monitor
     build_workflow: .github/workflows/superplane-monitor-build.yml
-    blocked_by: no build has run yet
+    tag: security27-de59fd318
+    publication_receipt: docs/security/runs/2026-09-27/monitor-promotion/publication.json
+    resolved_by: ECR manifest/config verification and native monitor acceptance
+    selected_because: Fixed Go runtime; zero Critical and High candidate findings
+  skypilot-api:
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-skypilot
+    ecr_repository: adp-superplane-skypilot
+    tag: security27-high-openssh-20260927
+    resolved_by: ECR index/platform/config byte identities verified, 2026-09-27
+    publication_receipt: docs/security/runs/2026-09-27/high-skypilot/publication.json
+    selected_because: Preserved SkyPilot contract with tested tool, XML, crypto, HTTP parser and OpenSSH maintenance; zero reviewed Critical, residual OS High findings retained
+  superplane-controller:
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-controller
+    ecr_repository: adp-superplane-controller
+    source_path: src/superplane-controller
+    build_workflow: .github/workflows/superplane-controller-build.yml
+    tag: security27-de59fd318
+    resolved_by: ECR digest read-back, 2026-09-27; wave1-publication.json
+    selected_because: x/net CVE-2026-46600 fix and unused curl/zlib removal; zero Critical/High candidate matches
+  superplane-api:
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-api
+    ecr_repository: adp-superplane-api
+    source_path: src/superplane-api
+    build_workflow: .github/workflows/superplane-api-build.yml
+    tag: security27-7f91b7107
+    resolved_by: ECR digest read-back, 2026-09-27; curl-removal-publication.json
+    selected_because: S02 retained plus unused curl removal and Debian updates; zero Critical candidate matches
+  superplane-executor:
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-executor
+    ecr_repository: adp-superplane-executor
+    source_path: executor
+    origin:
+      repository: https://github.com/aws-e/adp
+      revision: 22f3e3fb540a4e4d37f3a4c9adfc6ad663a3ca50
+    build_workflow: .github/workflows/superplane-executor-build.yml
+    tag: fe53618ff4041f7470eef18140ff3ca0b380d67c
+    resolved_by: ECR digest read-back, 2026-09-25; build run 36102456290
+    selected_because: Reviewed Python 3.12.14 base and repository-root packaging recipe
+
+# A real digest is required before promotion; scanner coverage still includes this target.
+pending_images:
+  superplane-paid-worker:
+    source_path: executor
+    ecr_repository: adp-superplane-paid-worker
+    build_entrypoint: modules/domain-apps/superplane/releases/build_paid_worker.py
+    buildspec: modules/domain-apps/superplane/releases/buildspecs/paid-worker.yml
+    project_manifest: modules/domain-apps/superplane/infra/paid-worker-project.json
+    origin:
+      repository: https://github.com/aws-e/adp
+      revision: 4db8393379573b9f4f977d444ade4adbfde86bcb
+    blocked_by: source-owned project enrollment, separately approved infrastructure and remote build/image acceptance not yet recorded
 
 # ── SkyPilot configuration inputs ────────────────────────────────────────────────────
 #
@@ -275,12 +261,26 @@ schema:
     # the revision has been applied only to databases the tests create and drop, never to
     # a live system, so it changes what the chain IS without changing what has been
     # verified about it.
-    version_files: 23
+    # CLI-24 adds three credential/operation revisions on the 016 branch. The
+    # explicit 020 merge joins both histories without rewriting either parent.
+    # 021 then adds durable deployment target and provider UID provenance.
+    #
+    # #5925 (AWS milestone, story 1/6) adds 034 for `controller_provider_requests.region`:
+    # which approved region a multi-region launch actually used, filled in once known so a
+    # later recovery run does not have to re-derive it by re-checking every approved
+    # region. Extends 033 on the same linear head; adds one nullable column, no new table.
+    # #5926 adds durable network resources, effects, memberships and completion evidence.
+    # #6127 scopes domain user subject uniqueness to each organization.
+    # #6048 adds explicit cluster sharing eligibility and per-workspace memberships.
+    # Explicit cluster scope children preserve maintained organization grant authority.
+    # #5927 adds the original-instance native command journal.
+    # #5928 records cleanup ownership and exact pre-POST workload specifications.
+    version_files: 56
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 017_add_workspace_bootstrap_reservations
+    head: 042_controller_cleanup_snapshots
     base: 001_initial
   compatible_with: null
   blocked_by:

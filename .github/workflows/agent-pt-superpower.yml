@@ -33,7 +33,7 @@ concurrency:
 jobs:
   work:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-pt-superpower'
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: write
@@ -159,50 +159,6 @@ jobs:
           echo "=== Available skills ==="
           ls -la .claude/skills/
 
-          # 3. Auto-install CLIs for skills that require them
-          if [ -d ".claude/skills/skypilot" ]; then
-            echo "SkyPilot skill detected, installing CLI..."
-            sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
-            pip3 install "skypilot[aws,kubernetes,lambda]" --quiet --break-system-packages
-            sky --version || echo "SkyPilot CLI installed"
-
-            # Get API server URL from AWS Parameter Store
-            SKYPILOT_API=$(aws ssm get-parameter --name /adp/skypilot/api-server-url --query Parameter.Value --output text 2>/dev/null || echo "")
-            if [ -z "$SKYPILOT_API" ]; then
-              SKYPILOT_API="http://skypilot-api.skypilot.svc.cluster.local:46580"
-              echo "Using default SkyPilot API URL"
-            fi
-
-            # Get service account token from AWS Secrets Manager
-            SKYPILOT_TOKEN=$(aws secretsmanager get-secret-value --secret-id adp/skypilot/service-account-token --query SecretString --output text --region us-east-1 2>/dev/null || echo "")
-
-            echo "Connecting to SkyPilot API: $SKYPILOT_API"
-            if [ -n "$SKYPILOT_TOKEN" ]; then
-              # Authenticate with service account token
-              sky api login -e "$SKYPILOT_API" --token "$SKYPILOT_TOKEN" && echo "Connected with service account token" || echo "Token auth failed, using local mode"
-            else
-              # Try without token (may work for in-cluster access)
-              sky api login -e "$SKYPILOT_API" 2>/dev/null && echo "Connected to SkyPilot API server" || echo "Using local SkyPilot mode"
-            fi
-          fi
-
-      - name: Setup Beads
-        # Skip when a downstream repo has opted out of beads via repo variable
-        # (e.g. lightweight installs that don't provision the beads DynamoDB
-        # + S3 state store). Agent code already guards itself via
-        # BEADS_ENABLED=false at runtime; without this `if:`, the setup-beads
-        # action would still try to install the `bd` CLI and sync from AWS,
-        # failing the job before the agent even starts.
-        if: vars.BEADS_ENABLED != 'false'
-        id: beads
-        uses: ./adp-agent-src/modules/agent-factory/actions/setup-beads
-        with:
-          dynamodb-table: ${{ vars.BEADS_DYNAMODB_TABLE || 'adp-beads-manifest' }}
-          s3-bucket: ${{ vars.BEADS_S3_BUCKET || 'adp-beads-state-193832579677' }}
-          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-          database-name: ${{ vars.BEADS_DATABASE || 'adp' }}
-          issue-number: ${{ env.MAIN_ISSUE_NUMBER || github.event.issue.number }}
-          sync-on-start: 'true'
 
       - name: Update board status to In Progress
         uses: ./adp-agent-src/modules/agent-factory/actions/update-board-status
@@ -264,11 +220,8 @@ jobs:
           WORK_DIR: ${{ github.workspace }}/target-repo
           CLAUDE_CODE_USE_BEDROCK: "1"
           ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
-          # Beads configuration (shared state)
-          BEADS_ENABLED: ${{ vars.BEADS_ENABLED || 'true' }}
-          BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
-          BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
-          BEADS_S3_PATH: beads/${{ github.event.repository.name }}
+          # GitHub issue workflows use repository-scoped GitHub tracking.
+          BEADS_ENABLED: 'false'
           # Superpowers-specific
           SUPERPOWERS_ENABLED: "true"
           SUPERPOWERS_SKILLS_PATH: ${{ github.workspace }}/.claude/skills

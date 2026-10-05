@@ -28,6 +28,10 @@ class WorkloadRefusedError(Exception):
     """The request has no verified, approved workload identity."""
 
 
+class WorkloadUnavailableError(WorkloadRefusedError):
+    """Live workload authority could not be queried."""
+
+
 @dataclass(frozen=True)
 class VerifiedPod:
     uid: str
@@ -38,6 +42,7 @@ class VerifiedPod:
     # Optional lifecycle evidence controls pause, not workload identity. A Jobs
     # API blip must not invalidate a task already assigned to the same verified pod.
     deadline_at: str | None = field(default=None, compare=False)
+    image_digest: str | None = field(default=None, compare=False)
 
 
 class KubernetesWorkloadVerifier:
@@ -60,16 +65,34 @@ class KubernetesWorkloadVerifier:
         self._digests = image_digests
         self._namespace = namespace
         self._service_account = service_account
-        if not _NAME.fullmatch(container_name) or authority_flag not in {"ADP_AGENT_AUTHORITY_ENABLED", "ADP_CHAT_MODEL_POLICY_ENABLED"}:
+        if not _NAME.fullmatch(container_name) or authority_flag not in {
+            "ADP_AGENT_AUTHORITY_ENABLED",
+            "ADP_CHAT_MODEL_POLICY_ENABLED",
+            "ADP_TASK_API_WORKER_ENABLED",
+        }:
             raise WorkloadRefusedError("invalid workload configuration")
         self._container_name = container_name
         self._authority_flag = authority_flag
         self._gateway_token_path = gateway_token_path
 
+    @property
+    def exit_retention(self):
+        from src.agentauth.exit_retention import PodExitRetention
+
+        return PodExitRetention(
+            client=self._client,
+            namespace=self._namespace,
+            service_account=self._service_account,
+            token_path=self._gateway_token_path,
+        )
+
     @classmethod
-    def in_cluster(cls, *, chat: bool = False) -> KubernetesWorkloadVerifier:
+    def in_cluster(cls, *, chat: bool = False, task_api: bool = False) -> KubernetesWorkloadVerifier:
         # Fixed service DNS and the mounted cluster CA; neither comes from a
         # request. Do not inherit HTTP proxy settings for this credential path.
+        if chat and task_api:
+            raise WorkloadRefusedError("ambiguous workload configuration")
+        digest_env = "ADP_TASK_WORKER_IMAGE_DIGESTS" if task_api else ("ADP_CHAT_WORKER_IMAGE_DIGESTS" if chat else "AGENT_WORKER_IMAGE_DIGESTS")
         context = ssl.create_default_context(cafile=str(_SA_DIRECTORY / "ca.crt"))
         return cls(
             client=httpx.Client(
@@ -79,17 +102,25 @@ class KubernetesWorkloadVerifier:
                 follow_redirects=False,
                 trust_env=False,
             ),
-            image_digests=frozenset(
-                filter(None, os.environ.get("ADP_CHAT_WORKER_IMAGE_DIGESTS" if chat else "AGENT_WORKER_IMAGE_DIGESTS", "").split(","))
+            image_digests=frozenset(filter(None, os.environ.get(digest_env, "").split(","))),
+            namespace=(
+                os.environ.get("ADP_TASK_WORKER_NAMESPACE", "adp-agents")
+                if task_api
+                else os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents")
+                if chat
+                else os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents")
             ),
-            namespace=os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents")
-            if chat
-            else os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents"),
-            service_account=os.environ.get("ADP_CHAT_WORKER_SERVICE_ACCOUNT", "adp-agent")
-            if chat
-            else os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa"),
+            service_account=(
+                os.environ.get("ADP_TASK_WORKER_SERVICE_ACCOUNT", "agent-scaledjob-sa")
+                if task_api
+                else os.environ.get("ADP_CHAT_WORKER_SERVICE_ACCOUNT", "adp-agent")
+                if chat
+                else os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa")
+            ),
             container_name="chat-agent" if chat else "agent-worker",
-            authority_flag="ADP_CHAT_MODEL_POLICY_ENABLED" if chat else "ADP_AGENT_AUTHORITY_ENABLED",
+            authority_flag=(
+                "ADP_TASK_API_WORKER_ENABLED" if task_api else "ADP_CHAT_MODEL_POLICY_ENABLED" if chat else "ADP_AGENT_AUTHORITY_ENABLED"
+            ),
         )
 
     def verify(self, token: str) -> VerifiedPod:
@@ -100,7 +131,7 @@ class KubernetesWorkloadVerifier:
             # while this service is running.
             gateway_token = self._gateway_token_path.read_text().strip()
             if not gateway_token:
-                raise WorkloadRefusedError("workload verifier unavailable")
+                raise WorkloadUnavailableError("workload verifier unavailable")
             headers = {"Authorization": f"Bearer {gateway_token}"}
             review = self._client.post(
                 "/apis/authentication.k8s.io/v1/tokenreviews",
@@ -129,6 +160,20 @@ class KubernetesWorkloadVerifier:
             name, uid = names[0], uids[0]
             if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(uid, str) or not uid:
                 raise WorkloadRefusedError("workload refused")
+            return self.verify_bound(name=name, uid=uid)
+        except WorkloadRefusedError:
+            raise
+        except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            # Do not expose an HTTP exception or request body: TokenReview
+            # contains the worker credential, and Authorization contains ours.
+            raise WorkloadUnavailableError("workload verifier unavailable") from None
+
+    def verify_bound(self, *, name: str, uid: str) -> VerifiedPod:
+        """Recheck a previously TokenReview-bound pod from protected metadata."""
+        if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(uid, str) or not uid:
+            raise WorkloadRefusedError("workload refused")
+        try:
+            headers = {"Authorization": f"Bearer {self._gateway_token_path.read_text().strip()}"}
             response = self._client.get(f"/api/v1/namespaces/{self._namespace}/pods/{name}", headers=headers)
             response.raise_for_status()
             pod = response.json()
@@ -153,13 +198,19 @@ class KubernetesWorkloadVerifier:
                 or not pod_status.get("podIP")
             ):
                 raise WorkloadRefusedError("workload refused")
-            return VerifiedPod(uid, name, self._namespace, self._service_account, pod_status["podIP"], self._deadline(pod, headers))
+            return VerifiedPod(
+                uid,
+                name,
+                self._namespace,
+                self._service_account,
+                pod_status["podIP"],
+                self._deadline(pod, headers),
+                containers[0]["imageID"].rsplit("@", 1)[-1],
+            )
         except WorkloadRefusedError:
             raise
         except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
-            # Do not expose an HTTP exception or request body: TokenReview
-            # contains the worker credential, and Authorization contains ours.
-            raise WorkloadRefusedError("workload verifier unavailable") from None
+            raise WorkloadUnavailableError("workload verifier unavailable") from None
 
     def _deadline(self, pod: dict, headers: dict) -> str | None:
         """Conservative absolute lifetime from Kubernetes, including Job retries.

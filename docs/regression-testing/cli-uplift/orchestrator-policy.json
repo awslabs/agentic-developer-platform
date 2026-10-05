@@ -1,0 +1,148 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "iam:GetInstanceProfile",
+        "iam:GetRole",
+        "sts:GetCallerIdentity",
+        "ecr:DescribeImages",
+        "ecr:ListImages",
+        "lambda:GetFunction",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:ListUserPoolClients",
+        "cognito-idp:AdminGetUser",
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeParameters",
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LaunchOnlyTaggedEvalInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:us-east-1:000000000101:instance/*",
+      "Condition": {
+        "StringLike": {
+          "aws:RequestTag/adp:cli-uplift-eval": "adp-e2e-*"
+        }
+      }
+    },
+    {
+      "Sid": "TagOnLaunch",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances"
+        }
+      }
+    },
+    {
+      "Sid": "TerminateOnlyEvalOwnedInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": "arn:aws:ec2:us-east-1:000000000101:instance/*",
+      "Condition": {
+        "StringLike": {
+          "ec2:ResourceTag/adp:cli-uplift-eval": "adp-e2e-*"
+        }
+      }
+    },
+    {
+      "Sid": "PassOnlyTheEvalInstanceRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::000000000101:role/adp-cli-uplift-eval-instance",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "SsmToEvalInstancesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-1:000000000101:instance/*"
+      ],
+      "Condition": {
+        "StringLike": {
+          "ssm:ResourceTag/adp:cli-uplift-eval": "adp-e2e-*"
+        }
+      }
+    },
+    {
+      "Sid": "SsmRunShellDocument",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand"
+      ],
+      "Resource": "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"
+    },
+    {
+      "Sid": "SsmCancel",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:CancelCommand"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunOwnedStateAndBundle",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::adp-cli-uplift-eval-state-000000000101",
+        "arn:aws:s3:::adp-cli-uplift-eval-state-000000000101/*"
+      ]
+    },
+    {
+      "Sid": "ReadTheCognitoFixtureReference",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:000000000101:secret:adp/dev/gateway/test-admin-credentials-1yZDSy"
+    },
+    {
+      "Sid": "LaunchDependenciesInApprovedSubnet",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-1::image/*",
+        "arn:aws:ec2:us-east-1:000000000101:subnet/subnet-0000000000000003d",
+        "arn:aws:ec2:us-east-1:000000000101:security-group/sg-0000000000000003a",
+        "arn:aws:ec2:us-east-1:000000000101:network-interface/*",
+        "arn:aws:ec2:us-east-1:000000000101:volume/*"
+      ]
+    }
+  ]
+}

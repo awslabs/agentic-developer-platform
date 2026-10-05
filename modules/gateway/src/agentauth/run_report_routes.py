@@ -153,9 +153,29 @@ async def retry_pull_request(request: Request):
         return report_snapshot(row)
 
 
+class FailureDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category: Literal[
+        "unknown",
+        "cancelled",
+        "deadline",
+        "signal",
+        "policy",
+        "provider_refusal",
+        "authentication",
+        "transport",
+        "stale_head",
+        "git_validation",
+        "inspection",
+        "contract",
+    ]
+    exit_code: int = Field(strict=True, ge=-255, le=255)
+
+
 class TerminalReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     outcome: Literal["complete", "failed"]
+    failure: FailureDetails | None = None
 
 
 @router.post("/terminal")
@@ -163,9 +183,13 @@ async def terminal_report(body: TerminalReport, request: Request):
     async with _sessions()() as session:
         row = await _authenticate(session, request)
         try:
-            record_terminal(row, body.outcome)
+            if body.outcome == "complete" and not row.terminal_receipt:
+                from src.orchestration.review_assignment import require_reviewer_merge
+
+                await require_reviewer_merge(session, org_id=row.org_id, node_id=row.node_id, run_id=row.run_id)
+            record_terminal(row, body.outcome, failure=body.failure.model_dump() if body.failure else None)
         except RunReportError as exc:
-            raise HTTPException(409, exc.code) from None
+            raise HTTPException(503 if exc.code == "reviewer_merge_unverifiable" else 409, exc.code) from None
         await session.commit()
         return report_snapshot(row)
 

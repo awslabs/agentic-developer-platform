@@ -1,0 +1,28 @@
+{
+  "pod": {
+    "namespace": "security-keda-126b5705",
+    "name": "canary-qgf5f-5c9m6",
+    "uid": "862f105d-4ac6-46a5-8769-87855b5d5673",
+    "node": "i-00000000000000031",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "canary",
+        "image": "sha256:82bbdb6f989acaf6cdbda66eb214574f7a549365900a575dc0f3351b32584b81",
+        "imageID": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:d5d6a594868843147aa48bc894e28ac6178c1708a02fb1a4b9e534d9cc849d4f",
+        "ready": false,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "containerID": "containerd://9d133b9273699dd3d160472dd403260da1b0984d71510d3fef52efb3568b12f2",
+            "exitCode": 0,
+            "finishedAt": "2026-09-27T16:34:19Z",
+            "reason": "Completed",
+            "startedAt": "2026-09-27T16:34:18Z"
+          }
+        }
+      }
+    ]
+  },
+  "logs": "{\"queue_roundtrip\": \"pass\", \"marker\": \"critical-closure-126b5705-receipt\"}\n"
+}

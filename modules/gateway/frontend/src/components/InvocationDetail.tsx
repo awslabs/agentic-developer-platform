@@ -8,7 +8,8 @@
  * source link, run-log link, lineage (triggered by / correlation).
  */
 
-import { useState } from 'react';
+import './run-workspace.css';
+import { useEffect, useState } from 'react';
 import { Modal } from '@/components/ui';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
@@ -22,6 +23,12 @@ import { describeLiveness } from '@/utils/liveness';
 // surface's longer `webhook_received` label, which the narrow table cannot fit.
 import { describeStatus } from '@/utils/status';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
+// Issue #3966: live run controls. Renders nothing unless the feature flag is on
+// AND the polled control state says this run is genuinely controllable, so this
+// import does not change the modal for any existing deployment.
+import { ControlPanel } from '@/components/ControlPanel';
+import { TaskEventStream } from '@/components/TaskEventStream';
+import { LiveExplanations } from '@/components/LiveExplanations';
 import type { InvocationItem } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -59,7 +66,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   return (
     <div className="py-3 grid grid-cols-3 gap-4">
       <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt>
-      <dd className="text-sm text-gray-900 dark:text-white col-span-2 break-all">{children}</dd>
+      <dd className="text-sm text-gray-900 dark:text-white col-span-2 break-words [overflow-wrap:anywhere]">{children}</dd>
     </div>
   );
 }
@@ -99,10 +106,26 @@ export interface InvocationDetailProps {
   onClose: () => void;
   /** Use admin transcript endpoint. */
   isAdmin?: boolean;
+  /**
+   * Issue #3966: re-fetch this invocation after a live control command.
+   *
+   * `item` is a snapshot owned by the page, so the panel cannot refresh it
+   * itself; without this the status row would keep showing the pre-command
+   * snapshot while the control panel showed the new phase.
+   */
+  onRefreshItem?: () => void;
 }
 
-export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: InvocationDetailProps) {
+export function InvocationDetail({
+  item,
+  isOpen,
+  onClose,
+  isAdmin = false,
+  onRefreshItem,
+}: InvocationDetailProps) {
   const [showTranscript, setShowTranscript] = useState(false);
+
+  useEffect(() => { setShowTranscript(false); }, [item?.invocation_id]);
 
   if (!item) return null;
 
@@ -258,7 +281,8 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
       {!item.completed_at && !isTerminal && item.invoked_at && (
         <DetailRow label="Duration">
           <span className="text-gray-400 dark:text-gray-500 italic">
-            Running since {formatRelativeTime(item.invoked_at)}
+            {item.liveness === 'unverifiable' ? 'Invoked' : 'Running since'} {formatRelativeTime(item.invoked_at)}
+            {item.liveness === 'unverifiable' && '; completion not recorded'}
           </span>
         </DetailRow>
       )}
@@ -316,14 +340,14 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
     </DetailRow>
   ) : null;
 
-  const transcriptRow = item.transcript_key ? (
-    <DetailRow label="Transcript">
+  const transcriptRow = item.transcript_key || item.transcript_status === 'available' ? (
+    <DetailRow label={item.source_type === 'task' ? "Retained Task report" : "Transcript"}>
       <button
         type="button"
         onClick={() => setShowTranscript(true)}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline text-sm"
       >
-        View full transcript
+        {item.source_type === 'task' ? 'View retained Task report' : 'View full transcript'}
       </button>
     </DetailRow>
   ) : null;
@@ -406,8 +430,49 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   // Layout: error-first for failed runs (Issue #3765), default order otherwise
   // ---------------------------------------------------------------------------
 
+  if (item.source_type !== 'task') return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Run workspace" size="workspace">
+      <header className="run-identity">
+        <div><strong>{item.repo ?? 'Agent run'}{item.issue_number ? ` #${item.issue_number}` : ''}</strong>
+          <span className="ml-3 text-sm">{item.persona ?? item.channel}</span>
+          <p className="text-xs mt-2">Invocation ID: <code>{item.invocation_id}</code></p>
+        </div>
+        <CopyRunContext item={item} />
+      </header>
+      <div className="run-workspace">
+        <main className="run-main">
+          <nav aria-label="Run views" className="run-tabs">
+            <button type="button" aria-pressed={!showTranscript} onClick={() => setShowTranscript(false)}>Live activity</button>
+            <button type="button" aria-pressed={showTranscript} onClick={() => setShowTranscript(true)}>Transcript & run record</button>
+          </nav>
+          <div hidden={showTranscript}>
+            <LiveExplanations key={item.invocation_id} invocationId={item.invocation_id} isOpen={isOpen} terminal={isTerminal} onTerminal={onRefreshItem} workspace />
+            {isTerminal && <p className="text-sm mt-4">This run has ended. Open Transcript & run record for retained work and evidence.</p>}
+          </div>
+          {showTranscript && <div>
+            <button type="button" className="text-blue-600 text-sm mb-4" onClick={() => setShowTranscript(false)}>← Back to detail</button>
+            <TranscriptContent key={item.invocation_id} invocationId={item.invocation_id} isAdmin={isAdmin} />
+          </div>}
+        </main>
+        <aside aria-label="Run summary and controls" className="run-summary">
+          <h3 className="font-semibold">Run summary</h3>
+          <dl className="divide-y divide-gray-200 dark:divide-gray-700">
+            {statusRow}{errorRow}{skipReasonRow}{stopReasonRow}{summaryRow}
+            {durationRow}{costRow}{sourceRow}{runLogRow}{transcriptRow}
+          </dl>
+          <ControlPanel invocationId={item.invocation_id} isOpen={isOpen} isTerminalRun={isTerminal} onCommandApplied={onRefreshItem} />
+          <details open>
+            <summary className="font-semibold mt-4 cursor-pointer">Debugging context</summary>
+            <dl className="divide-y divide-gray-200 dark:divide-gray-700">{identifierRows}{lineageRow}{timingRows}{channelRow}{topicRow}</dl>
+          </details>
+          <p className="mt-4 text-xs text-gray-500">Status shows current state and last transition time. Full transition history is not retained. Checklist progress is agent-reported and does not establish acceptance.</p>
+        </aside>
+      </div>
+    </Modal>
+  );
+
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? 'Run Transcript' : 'Invocation Detail'} size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? (item.source_type === 'task' ? 'Retained Task report' : 'Run Transcript') : 'Invocation Detail'} size="lg">
       {showTranscript ? (
         /* Issue #3767: Inline transcript content swap (replaces nested modal) */
         <div>
@@ -470,12 +535,48 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
             )}
           </dl>
 
+          {/*
+            Issue #3966: live controls.
+
+            Placed after the detail list rather than inside it: these are actions,
+            not facts, and interleaving buttons into a definition list would put
+            interactive controls inside `<dd>` elements.
+
+            `isTerminalRun` is passed only to avoid polling a run that has
+            demonstrably ended. It is not the gate — the panel decides what to
+            offer from the polled control state, because a non-terminal status
+            does not imply the run is reachable or controllable.
+          */}
+          {item.source_type === 'task' ? (item.task_id ? <TaskEventStream key={item.task_id} taskId={item.task_id} isOpen={isOpen} onTerminal={onRefreshItem} /> : <p>Task stream unavailable.</p>) : <>
+          <LiveExplanations key={item.invocation_id} invocationId={item.invocation_id} isOpen={isOpen} terminal={isTerminal} onTerminal={onRefreshItem} />
+          <ControlPanel
+            invocationId={item.invocation_id}
+            isOpen={isOpen}
+            isTerminalRun={isTerminal}
+            onCommandApplied={onRefreshItem}
+          />
+          </>}
+
           {/* Status timeline note */}
           <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
-            Status shows current state and last transition time. Full transition history is not retained.
+            {item.source_type === 'task' ? 'Task status is canonical; process liveness remains unverified. Retained events may be incomplete.' : 'Status shows current state and last transition time. Full transition history is not retained.'}
           </p>
         </>
       )}
     </Modal>
   );
+}
+
+function CopyRunContext({ item }: { item: InvocationItem }) {
+  const [feedback, setFeedback] = useState('Copy debug context');
+  return <button type="button" className="text-sm text-blue-600" onClick={async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify({ invocation_id: item.invocation_id,
+        run_id: item.run_id, correlation_id: item.correlation_id, triggered_by_invocation_id: item.triggered_by_invocation_id,
+        repository: item.repo, issue: item.issue_number, persona: item.persona, status: item.status,
+        liveness: item.liveness, invoked_at: item.invoked_at, completed_at: item.completed_at,
+        stop_reason: item.stop_reason, error: item.error_message, run_log_url: item.run_log_url }, null, 2));
+      setFeedback('Copied');
+    } catch { setFeedback('Copy unavailable — select the IDs below'); }
+  }}><span role="status">{feedback}</span></button>;
 }

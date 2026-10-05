@@ -23,21 +23,12 @@ Apply is `workflow_dispatch`-only by design, matching `cyber-infra-apply.yml`. T
 posts its output to the PR; an operator reads it and then triggers the apply. Merging a PR
 never deploys.
 
-## Known limitation: `deploy-all.sh --superplane-only` is platform PLUS superplane
+## Domain-only deployment
 
-The flag excludes the gateway, webhook-ingress, agent-factory and agent-context, but it still
-runs **Step 1 (bootstrap)** and **Step 2 (shared platform infra)**. It is not a domain-only
-command despite how the name reads.
-
-This is recorded as a known limitation in the platform-isolation requirement (2026-09-16),
-and it is pinned by tests rather than only described:
-`control-plane/tests/test_domain_only_scope.py` calls the real `resolve_deploy_scope()` and
-asserts that all four other module flags resolve to false, that each module-deploying step in
-`deploy-all.sh` is gated by its flag, and that the platform phases are *not* scope-guarded —
-so if someone changes that, a test fails and names the docs to update.
-
-**For routine domain work, use `superplane-infra-apply.yml`.** It applies
-`control-plane/` and nothing else, which is the genuinely domain-scoped path.
+The basic `deploy-all.sh` never applies this module. Use `../deploy.sh` for the
+installation flow or `superplane-infra-apply.yml` for this Terraform root. The
+former `--superplane-only` platform flag is rejected. The ownership test in
+`control-plane/tests/test_domain_only_scope.py` checks this boundary.
 
 ## What is deliberately not here
 

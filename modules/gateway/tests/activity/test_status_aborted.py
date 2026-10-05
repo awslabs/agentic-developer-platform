@@ -317,14 +317,43 @@ class TestHarnessNeutrality:
             assert forbidden not in source, f"{forbidden!r} appears in liveness.py: the shared terminal vocabulary must stay provider- and I/O-free"
 
 
-class TestVocabularyDoesNotEnableAbort:
-    """S5 adds vocabulary; S4 (#3963) owns the mechanism. Pinned so this story
-    cannot be mistaken for the enablement it explicitly is not."""
+class TestVocabularyAndMechanismStayDistinct:
+    """S5 added the status vocabulary; S4 (#3963) added the mechanism.
 
-    def test_no_control_verb_becomes_supported(self):
+    This class used to assert ``"abort" not in SUPPORTED_ACTIONS``, which was the
+    right pin while S5 shipped alone: reading a status named ``aborted`` is not the
+    same as being able to stop a run, and conflating them would have advertised a
+    verb with no transport behind it.
+
+    S4 supplies the missing half, so that assertion is now inverted rather than
+    deleted — the distinction it protected still matters and is still checked, just
+    from the other side. What must never regress is the *direction* of the
+    dependency: the vocabulary is what a reader needs to classify a stopped run,
+    and it has to exist independently of whether the verb is currently offered.
+    A deployment that turned the verb off must still read an ``aborted`` row
+    correctly, because rows outlive the flag that produced them.
+    """
+
+    def test_the_verb_is_supported_now_that_its_mechanism_exists(self):
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert "abort" not in SUPPORTED_ACTIONS
+        assert "abort" in SUPPORTED_ACTIONS
+
+    def test_the_vocabulary_does_not_depend_on_the_verb_being_offered(self):
+        """The terminal status is a reader's concern, not a capability claim.
+
+        Asserted against the liveness module directly: if classifying ``aborted``
+        ever required consulting `SUPPORTED_ACTIONS`, then withdrawing the verb
+        would strand every historical aborted row as unclassifiable — neither
+        active nor terminal, which is the `unverifiable` limbo the status
+        vocabulary exists to rule out.
+        """
+        import inspect
+
+        from src.activity import liveness
+
+        assert "aborted" in liveness.OBSERVED_TERMINAL_STATUSES
+        assert "SUPPORTED_ACTIONS" not in inspect.getsource(liveness)
 
 
 # ---------------------------------------------------------------------------

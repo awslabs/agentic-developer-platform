@@ -14,6 +14,8 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -60,6 +62,16 @@ def make_engine():
         poolclass=StaticPool,
         connect_args={"check_same_thread": False},
     )
+
+
+def load_credential(app: FastAPI, credential_id: str) -> UserCredential:
+    async def load() -> UserCredential:
+        dependency = app.dependency_overrides[get_db]
+        async for session in dependency():
+            return await session.get(UserCredential, credential_id)
+        raise AssertionError("database dependency did not yield a session")
+
+    return asyncio.run(load())
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +128,13 @@ class MockSecretsManager:
     def get_secret(self, secret_arn: str) -> str:
         return self._secrets[secret_arn]
 
+    def current_version_id(self, secret_arn: str) -> str:
+        return hashlib.sha256(self._secrets[secret_arn].encode()).hexdigest()
+
+    def get_secret_at_version(self, secret_arn: str, version_id: str) -> tuple[str, str]:
+        assert self.current_version_id(secret_arn) == version_id
+        return self._secrets[secret_arn], version_id
+
     def delete_secret(self, secret_arn: str, **kwargs) -> None:
         self._secrets.pop(secret_arn, None)
 
@@ -123,6 +142,12 @@ class MockSecretsManager:
         if isinstance(payload, dict):
             payload = json.dumps(payload)
         self._secrets[secret_arn] = payload
+
+
+def _assumed_role_result(**kwargs):
+    parts = kwargs["role_arn"].split(":", 5)
+    role_name = parts[5].rsplit("/", 1)[-1]
+    return MagicMock(assumed_role_arn=f"arn:{parts[1]}:sts::{parts[4]}:assumed-role/{role_name}/verification")
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +179,6 @@ def app_and_client(mock_sm):
     """Create a test app with the AWS connect router + in-memory DB."""
     engine = make_engine()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    import asyncio
 
     async def _setup():
         async with engine.begin() as conn:
@@ -331,8 +354,10 @@ class TestConnectVerify:
         return resp.json()["credential_id"]
 
     @patch("src.auth.aws_connect_routes.assume_role")
-    def test_verify_success_flips_status(self, mock_assume, alice_client):
+    def test_verify_success_records_server_owned_provenance(self, mock_assume, app_and_client):
         """When STS AssumeRole succeeds, status becomes verified."""
+        app, client = app_and_client
+        app.dependency_overrides[get_current_user_context] = lambda: ALICE
         mock_assume.return_value = MagicMock(
             access_key_id="AKIA...",
             secret_access_key="secret",
@@ -340,15 +365,17 @@ class TestConnectVerify:
             expiration="2026-01-01T00:00:00Z",
             region="us-east-1",
             profile_name="adp-aws-verify-test",
+            assumed_role_arn="arn:aws:sts::123456789012:assumed-role/ADP-Agent-verify-test/verification",
         )
 
-        cred_id = self._create_pending_credential(alice_client)
-        resp = alice_client.post(
+        cred_id = self._create_pending_credential(client)
+        resp = client.post(
             "/auth/credentials/aws/verify",
             json={"credential_id": cred_id},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "verified"
+        assert load_credential(app, cred_id).aws_verified_at is not None
 
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_verify_failure_returns_reason(self, mock_assume, alice_client):
@@ -365,7 +392,7 @@ class TestConnectVerify:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "failed"
-        assert "not been created yet" in body["reason"]
+        assert body["reason"] == "trust_verification_failed"
 
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_verify_access_denied_reason(self, mock_assume, alice_client):
@@ -382,12 +409,12 @@ class TestConnectVerify:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "failed"
-        assert "trust policy" in body["reason"]
+        assert body["reason"] == "trust_verification_failed"
 
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_verify_is_idempotent(self, mock_assume, alice_client):
         """Second verify on an already-verified row is a no-op."""
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
 
         cred_id = self._create_pending_credential(alice_client)
 
@@ -460,7 +487,7 @@ class TestOrgIdFallback:
         # Verify endpoint should find the credential even with empty org_id
         # token (because both write and read fall back to DB org_id)
         with patch("src.auth.aws_connect_routes.assume_role") as mock_assume:
-            mock_assume.return_value = MagicMock()
+            mock_assume.side_effect = _assumed_role_result
             resp2 = client.post(
                 "/auth/credentials/aws/verify",
                 json={"credential_id": cred_id},
@@ -472,7 +499,7 @@ class TestOrgIdFallback:
     def test_verify_uses_db_org_id_when_token_empty(self, mock_assume, app_and_client, mock_sm):
         """Verify endpoint resolves org_id from DB when token is empty."""
         app, client = app_and_client
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
 
         # Create credential with normal token (has org_id)
         app.dependency_overrides[get_current_user_context] = lambda: ALICE
@@ -534,7 +561,7 @@ class TestRoutingCapabilityProbe:
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_v2_role_classified_routing_capable(self, mock_assume, mock_probe_assume, alice_client):
         """Untagged assume succeeds → no single-user pin → routing-capable."""
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe_assume.return_value = MagicMock()
 
         cred_id = self._create_pending_credential(alice_client)
@@ -555,7 +582,7 @@ class TestRoutingCapabilityProbe:
         from src.auth.aws_connect_routes import ROUTING_REASON_USER_PINNED
         from src.internal.sts_assume_service import STSAssumeError
 
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe_assume.side_effect = STSAssumeError("denied", code="AccessDenied")
 
         cred_id = self._create_pending_credential(alice_client)
@@ -574,7 +601,7 @@ class TestRoutingCapabilityProbe:
     def test_probe_sends_no_session_tags(self, mock_assume, mock_probe_assume, alice_client):
         """Guards the probe's whole mechanism: if it sent tags, a v1 role would
         pass and every connection would be misreported as routing-capable."""
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe_assume.return_value = MagicMock()
 
         cred_id = self._create_pending_credential(alice_client)
@@ -595,7 +622,7 @@ class TestRoutingCapabilityProbe:
         from src.auth.aws_connect_routes import ROUTING_REASON_PROBE_INCONCLUSIVE
         from src.internal.sts_assume_service import STSAssumeError
 
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe_assume.side_effect = STSAssumeError("slow down", code="Throttling")
 
         cred_id = self._create_pending_credential(alice_client)
@@ -614,7 +641,7 @@ class TestRoutingCapabilityProbe:
         from src.auth.aws_connect_routes import ROUTING_REASON_USER_PINNED
         from src.internal.sts_assume_service import STSAssumeError
 
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe_assume.side_effect = STSAssumeError("denied", code="AccessDeniedException")
 
         cred_id = self._create_pending_credential(alice_client)
@@ -803,7 +830,7 @@ class TestConnectImport:
         return client.post("/auth/credentials/aws/import", json=body)
 
     def test_creates_pending_canonical_credential(self, alice_client, mock_sm):
-        resp = self._import(alice_client, external_id="ext-abc")
+        resp = self._import(alice_client)
         assert resp.status_code == 201
         body = resp.json()
         assert body["reused"] is False
@@ -811,7 +838,9 @@ class TestConnectImport:
 
         stored = json.loads(list(mock_sm._secrets.values())[0])
         assert stored["role_arn"] == self.ARN
-        assert stored["external_id"] == "ext-abc"
+        assert stored["external_id"] == body["external_id"]
+        assert str(uuid.UUID(body["external_id"])) == body["external_id"]
+        assert body["trust_policy"]["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"] == body["external_id"]
         assert stored["account_id"] == "123456789012"
 
         # Owned by Alice and resolvable as a canonical connection: the setup read
@@ -831,7 +860,7 @@ class TestConnectImport:
             patch("src.auth.aws_connect_routes.assume_role") as mock_assume,
             patch("src.shared.services.routing_probe.assume_role") as mock_probe,
         ):
-            mock_assume.return_value = MagicMock()
+            mock_assume.side_effect = _assumed_role_result
             mock_probe.return_value = MagicMock()
             resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
         assert resp.status_code == 200
@@ -904,7 +933,7 @@ class TestFreshVerification:
 
     def _verified_credential(self, client) -> str:
         with patch("src.auth.aws_connect_routes.assume_role") as mock_assume:
-            mock_assume.return_value = MagicMock()
+            mock_assume.side_effect = _assumed_role_result
             cred_id = client.post(
                 "/auth/credentials/aws/connect",
                 json={"nickname": "fresh-test", "account_id": "123456789012"},
@@ -920,7 +949,7 @@ class TestFreshVerification:
         cred_id = self._verified_credential(alice_client)
 
         mock_assume.reset_mock()
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
         mock_assume.assert_not_called()  # the UI default: replayed verdict
 
@@ -931,28 +960,31 @@ class TestFreshVerification:
 
     @patch("src.shared.services.routing_probe.assume_role")
     @patch("src.auth.aws_connect_routes.assume_role")
-    def test_fresh_failure_downgrades_a_verified_row(self, mock_assume, mock_probe, alice_client):
+    def test_fresh_failure_downgrades_a_verified_row(self, mock_assume, mock_probe, app_and_client):
         """A role deleted in AWS must not leave the connection reading verified —
         every consumer downstream trusts that label."""
         from src.internal.sts_assume_service import STSAssumeError
 
+        app, client = app_and_client
+        app.dependency_overrides[get_current_user_context] = lambda: ALICE
         mock_probe.return_value = MagicMock()
-        cred_id = self._verified_credential(alice_client)
+        cred_id = self._verified_credential(client)
 
         mock_assume.side_effect = STSAssumeError("role not found", code="NoSuchEntity")
-        resp = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id, "fresh": True})
+        resp = client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id, "fresh": True})
         assert resp.status_code == 200
         assert resp.json()["status"] == "failed"
+        assert load_credential(app, cred_id).aws_verified_at is None
 
         # The downgrade is persisted: a later cached read must not resurrect the
         # stale pass.
         mock_assume.reset_mock()
         mock_assume.side_effect = STSAssumeError("role not found", code="NoSuchEntity")
-        cached = alice_client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
+        cached = client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id})
         assert cached.json()["status"] == "failed"
         assert mock_assume.called, "a downgraded row must not answer from cache"
         # And the connection reports itself as needing setup again, not verified.
-        assert alice_client.get(f"/auth/credentials/aws/{cred_id}/setup").json()["status"] == "pending"
+        assert client.get(f"/auth/credentials/aws/{cred_id}/setup").json()["status"] == "pending"
         # Routing selectability fails closed with it: the stored classification
         # came from a probe whose premise (the assume works) no longer holds.
         assert cached.json()["routing_capable"] is None
@@ -979,7 +1011,7 @@ class TestFreshVerification:
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_fresh_verify_is_owner_scoped(self, mock_assume, mock_probe, app_and_client):
         app, client = app_and_client
-        mock_assume.return_value = MagicMock()
+        mock_assume.side_effect = _assumed_role_result
         mock_probe.return_value = MagicMock()
         app.dependency_overrides[get_current_user_context] = lambda: ALICE
         cred_id = self._verified_credential(client)
@@ -987,3 +1019,87 @@ class TestFreshVerification:
         app.dependency_overrides[get_current_user_context] = lambda: BOB
         resp = client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id, "fresh": True})
         assert resp.status_code == 404
+
+
+@pytest.fixture(autouse=True)
+def ownership_probe(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "999999999999")
+    monkeypatch.setenv("ADP_GATEWAY_ROLE_ARN", "arn:aws:iam::999999999999:role/adp-gateway")
+    with patch("src.auth.aws_connect_routes.require_external_id_enforcement") as probe:
+        yield probe
+
+
+@pytest.mark.parametrize("external_id", ["attacker-chosen", ""])
+def test_import_refuses_caller_selected_trust_id(alice_client, mock_sm, external_id):
+    response = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={
+            "nickname": "existing",
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/Existing",
+            "external_id": external_id,
+        },
+    )
+    assert response.status_code == 422
+    assert not mock_sm._secrets
+
+
+def test_different_owners_of_same_arn_receive_different_ids(app_and_client):
+    app, client = app_and_client
+    body = {"nickname": "existing", "account_id": "123456789012", "role_arn": "arn:aws:iam::123456789012:role/Existing"}
+    app.dependency_overrides[get_current_user_context] = lambda: ALICE
+    alice = client.post("/auth/credentials/aws/import", json=body).json()
+    app.dependency_overrides[get_current_user_context] = lambda: BOB
+    bob = client.post("/auth/credentials/aws/import", json=body).json()
+    assert alice["credential_id"] != bob["credential_id"]
+    assert alice["external_id"] != bob["external_id"]
+    app.dependency_overrides[get_current_user_context] = lambda: ALICE
+    assert client.post("/auth/credentials/aws/import", json=body).json()["external_id"] == alice["external_id"]
+
+
+@pytest.mark.parametrize(
+    "account,role,reason,hint",
+    [
+        ("999999999999", "ordinary", "platform_account_not_allowed", "Connect a different AWS account"),
+        ("123456789012", "path/adp-gateway", "reserved_role_name", "dedicated customer role"),
+    ],
+)
+def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_sm, account, role, reason, hint):
+    response = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={
+            "nickname": "reserved",
+            "account_id": account,
+            "role_arn": f"arn:aws:iam::{account}:role/{role}",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == reason
+    assert hint in response.json()["detail"]["hint"]
+    assert not mock_sm._secrets
+
+
+@pytest.mark.parametrize("endpoint", ["connect", "import"])
+@pytest.mark.parametrize("platform_configured", [True, False])
+def test_connection_rejection_explains_who_can_resolve_it(alice_client, mock_sm, monkeypatch, endpoint, platform_configured):
+    if not platform_configured:
+        monkeypatch.delenv("ADP_GATEWAY_ACCOUNT_ID")
+        monkeypatch.delenv("ADP_GATEWAY_ROLE_ARN")
+    response = alice_client.post(
+        f"/auth/credentials/aws/{endpoint}",
+        json={
+            "nickname": "my-task",
+            "account_id": "999999999999",
+            "role_arn": "arn:aws:iam::999999999999:role/ADP-Agent-my-task",
+        },
+    )
+    detail = response.json()["detail"]
+    assert response.status_code == (422 if platform_configured else 503)
+    assert detail["error"] == "invalid_role"  # Preserve the existing API error category.
+    assert detail["reason"] == ("platform_account_not_allowed" if platform_configured else "platform_identity_unavailable")
+    assert "platform administrator" in detail["hint"]
+    assert "configuration is incomplete" in detail["message"] if not platform_configured else "used by the ADP platform" in detail["message"]
+    # No internal platform identifiers or credentials are disclosed in the response.
+    assert "999999999999" not in response.text
+    assert "adp-gateway" not in response.text
+    assert not mock_sm._secrets

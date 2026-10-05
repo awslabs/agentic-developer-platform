@@ -12,7 +12,7 @@
  *         └── agents/<persona>/run_issue-<N>_<timestamp>.md
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import * as path from 'path';
 
 // ============================================================================
@@ -254,6 +254,16 @@ export async function writeAgentRecord(agentType: string, content: string): Prom
  * Read context files from a folder on the adp branch (via git show).
  * Never checks out the adp branch — reads objects directly.
  */
+function readGitObject(args: string[], cwd: string): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd, encoding: 'utf8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch {
+    return null;
+  }
+}
+
 async function readContextFolder(folderPath: string): Promise<string[]> {
   const { cwd, maxFilesPerFolder } = cfg();
   const maxFiles = maxFilesPerFolder ?? DEFAULT_MAX_FILES;
@@ -262,23 +272,26 @@ async function readContextFolder(folderPath: string): Promise<string[]> {
   run(ADP_FETCH, cwd);
 
   // List files in the folder on origin/adp
-  const listing = run(`git ls-tree --name-only origin/${ADP_BRANCH}:${folderPath}`, cwd);
+  const listing = readGitObject(['ls-tree', '--name-only', '-z', `origin/${ADP_BRANCH}:${folderPath}`], cwd);
   if (!listing) {
     log('INFO', `No context files found at ${folderPath}`);
     return [];
   }
 
-  // Sort descending (newest first by filename convention) and limit
+  // Issue numbers are not chronological. Timestamped records precede legacy
+  // names, which retain deterministic reverse-lexical ordering.
   const files = listing
-    .split('\n')
+    .split('\0')
     .filter((f) => f.endsWith('.md'))
-    .sort()
-    .reverse()
+    .sort((a, b) => {
+      const stamp = (name: string) => name.match(/_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2})\.md$/)?.[1] ?? '';
+      return stamp(b).localeCompare(stamp(a)) || b.localeCompare(a);
+    })
     .slice(0, maxFiles);
 
   const results: ContextFile[] = [];
   for (const file of files) {
-    const content = run(`git show "origin/${ADP_BRANCH}:${folderPath}/${file}"`, cwd);
+    const content = readGitObject(['show', `origin/${ADP_BRANCH}:${folderPath}/${file}`], cwd)?.trim();
     if (content) {
       results.push({ path: `${folderPath}/${file}`, content });
     }

@@ -6,7 +6,7 @@
 
 /** Configuration for GitLabClient constructor. */
 export interface GitLabClientConfig {
-  /** Base URL of the GitLab instance (e.g. https://gitlab.example.com) */
+  /** GitLab origin; must match the operator-configured GITLAB_URL environment variable */
   baseUrl: string;
   /** Group Access Token for authentication */
   accessToken: string;

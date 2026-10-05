@@ -9,3 +9,5 @@ db_allocated_storage = 20
 desired_count        = 1
 cpu                  = 1024
 memory               = 2048
+# Shared Secrets Manager endpoint SG, verified in the dev VPC on 2026-09-25.
+endpoint_security_group_ids = ["sg-0f6fc94f60758fa30"]

@@ -157,18 +157,12 @@ OPEN_CAP="1000.00"
 TRIP_RPM=1
 TRIP_CONCURRENT=1
 
-# Dev runs the IN-MEMORY limiter backend (RATELIMIT_BACKEND_TYPE unset → "memory";
-# BG_REDIS_URL is a different env prefix and never reaches RateLimitConfig), and
-# the gateway runs replicas:2 × --workers 4 = 8 independent token buckets behind
-# an ALB. So the eval asserts "at least one 429 within N requests", never "request
-# number K is the one that 429s". N must exceed 8 × capacity with margin.
-RL_BURST_REQUESTS="${EVAL_RL_BURST_REQUESTS:-40}"
+# A14 uses one shared bucket across replicas. With RPM=1, the second
+# immediate request must be refused; replica count must not increase capacity.
+RL_BURST_REQUESTS="${EVAL_RL_BURST_REQUESTS:-2}"
 
-# The limiter reloads configs from the DB at most every 60s
-# (_DB_RELOAD_INTERVAL, ratelimit/service.py:29). A rate-limit config written
-# through the admin API is invisible to enforcement until that elapses, so the
-# eval waits it out rather than racing it.
-RL_RELOAD_WAIT="${EVAL_RL_RELOAD_WAIT:-70}"
+# Every admission reads the committed configuration; no process-local reload lag.
+RL_RELOAD_WAIT="${EVAL_RL_RELOAD_WAIT:-0}"
 
 MODE="full"
 DRY_RUN=false
@@ -1218,14 +1212,7 @@ clear_ratelimits() {
   state_set CREATED_RATELIMITS ""
 }
 
-# The limiter caches DB configs for up to 60s (_DB_RELOAD_INTERVAL,
-# ratelimit/service.py:29), and each of the 8 workers has its own clock. Waiting
-# the full interval plus a margin is the only way to make a freshly-written
-# config observable; polling cannot help because there is no endpoint that
-# reports the ENFORCING instance's view (the /ratelimits status route reads a
-# different singleton — see the README).
 wait_for_ratelimit_reload() {
-  log "waiting ${RL_RELOAD_WAIT}s for the limiter's DB config reload (interval is 60s, per worker)"
   sleep "$RL_RELOAD_WAIT"
 }
 
@@ -1301,10 +1288,7 @@ case_10() {
   if [ -n "$found" ]; then
     assert_rate_limited_shape "case 10 concurrent" "$found" "concurrent"
   else
-    # Not a hard failure: 6 overlapping requests against 8 buckets can genuinely
-    # miss, and a flaky red is worse than an honest inconclusive.
-    skip "case 10: no concurrent denial observed — 6 overlapping requests can miss when spread across 8 per-worker buckets"
-    finding "case 10 (concurrent=1) could not be observed from outside the cluster: the in-memory limiter gives each of the 8 gateway workers its own concurrency counter, so overlapping requests must all land on the SAME worker to collide."
+    fail "case 10: concurrent=1 did not reject overlapping requests against the shared backend"
   fi
   clear_ratelimits
 }
@@ -1338,7 +1322,7 @@ case_12() {
   # be allowed: capacity at 60 rpm is int(60*1.5/60*10)=15 tokens per bucket.
   #
   # The assertion is that defaults do NOT deny normal traffic. Proving the
-  # default eventually 429s would need ~8×15=120+ requests of real inference,
+  # default eventually 429s would require exhausting the shared 15-token burst,
   # which is a load test — explicitly a non-goal of this issue.
   local wire status ok=true
   for wire in claude codex; do

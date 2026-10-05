@@ -1,0 +1,17 @@
+{
+  "image": "security27/deepwiki:dependencies-clean",
+  "docker_root_descriptor": "sha256:78a44243c46039dfdbda40c7e74259b7b067d1d5d20f8aac261cd97c447ba1ab",
+  "config_digest": "sha256:4196fbcf3d4c82401e37e7e22beb6fb5ea06587fb918e83b7d2ddd82e7eb4ec1",
+  "time": "2026-09-27T11:06:23.197228+00:00",
+  "packages": 603,
+  "native_counts": {
+    "Negligible": 136,
+    "High": 118,
+    "Critical": 25,
+    "Medium": 124,
+    "Low": 31
+  },
+  "sbom_sha256": "1b17c2ef937cfcd03a487cf73017db56f777c0d0975fe8b76f70d8c2ddbe9716",
+  "grype_sha256": "faf16654fe900e91e35883352927e87fe8cd11a7c7cfbcf3f08bfd1aba871419",
+  "archive_sha256": "75d6c2407b30d535d7ebda1a4d529a7c27e9fc6f18e8084eb64f3738433bdf01"
+}

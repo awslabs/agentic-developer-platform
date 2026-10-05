@@ -120,6 +120,13 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/internal/installation"),
         ("POST", "/internal/controller/reconcile"),
+        ("GET", "/api/v1/workspaces/{workspace_id}/bootstrap-observation"),
+        ("POST", "/internal/controller/recovery/inventory"),
+        ("POST", "/internal/controller/recovery/observe"),
+        ("POST", "/internal/controller/recovery/lifecycle"),
+        ("POST", "/internal/controller/recovery/account-creation"),
+        ("POST", "/internal/controller/recovery/bootstrap"),
+        ("POST", "/internal/controller/recovery/settlement"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),
@@ -172,7 +179,19 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #     authority to spend more, which is the effect that matters.
 #   * Deleting a provider credential is RENEW_CREDENTIAL, matching the policy's
 #     grouping of credential lifecycle operations.
+# These require domain credentials and live workspace grants, but are deliberately
+# absent from the public Gateway projection. INTERNAL_ROUTES means machine auth,
+# so putting a private user-authenticated route there would weaken its boundary.
+PRIVATE_DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+}
+
+
 DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    ("GET", "/capabilities"): (Scope.ORGANIZATION, Permission.READ),
     # -- Workspace lifecycle -------------------------------------------------
     # Create/list are ORGANIZATION-scoped: on create there is no workspace yet,
     # and list is a collection across the org. The policy's `authorize_request`
@@ -187,6 +206,9 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # per-caller filter that no handler performs.
     ("POST", "/workspaces"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("GET", "/workspaces"): (Scope.ORGANIZATION, Permission.READ),
+    # Issue #6048. Organization-scoped like `GET /workspaces` above: this lists
+    # shared-placement eligibility across the caller's whole organization, not
+    # one workspace, so it takes the same scope for the same reason.
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
@@ -199,6 +221,10 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ),
     ("GET", "/workspaces/{workspace_id}/nodes"): (Scope.WORKSPACE, Permission.READ),
     # -- Deployments spend money --------------------------------------------
+    ("GET", "/workspaces/{workspace_id}/deployment-profiles"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     ("GET", "/workspaces/{workspace_id}/deployments"): (
         Scope.WORKSPACE,
         Permission.READ,
@@ -211,7 +237,72 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.SPEND,
     ),
+    ("POST", "/workspaces/{workspace_id}/deployments/preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("POST", "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}/result"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/deployments/{dep_id}/accounting"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/deployments/{dep_id}/observation"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     # -- Quota ---------------------------------------------------------------
+    ("POST", "/workspaces/{workspace_id}/deployments/{dep_id}/cancellation"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-profiles"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("POST", "/workspaces/{workspace_id}/batch-jobs"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("POST", "/workspaces/{workspace_id}/batch-jobs/preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("POST", "/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("DELETE", "/workspaces/{workspace_id}/batch-jobs/{job_id}"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("GET", "/workspaces/{workspace_id}/lifecycle"): (Scope.WORKSPACE, Permission.READ),
     ("GET", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.READ),
     ("PATCH", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.SPEND),
     # -- Cost / budget (workspace-scoped reads) ------------------------------
@@ -219,6 +310,45 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/workspaces/{workspace_id}/budget"): (Scope.WORKSPACE, Permission.READ),
     # -- Events: org collection, filtered to the caller's workspaces ---------
     ("GET", "/events"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/events/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
+    ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
+    ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
+    ("POST", "/workspaces/{workspace_id}/retirement/preview"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/retirement"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("GET", "/operations/{operation_id}"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/operations/by-idempotency/{idempotency_key}"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
+    # The approval service additionally checks the requester's exact workspace
+    # grant and the selected distinct human approver on every read/decision.
+    ("POST", "/operation-approvals"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/operation-approvals/{approval_id}"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
+    ("POST", "/operation-approvals/{approval_id}/decision"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
     ("GET", "/events/{event_id}"): (Scope.ORGANIZATION, Permission.READ),
     # -- Organization records ------------------------------------------------
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
@@ -307,6 +437,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ),
     ("GET", "/api/v1/research/stats"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/sources"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/api/v1/research/cli-support"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals/stats"): (
         Scope.ORGANIZATION,
@@ -373,7 +504,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
     if key in INTERNAL_ROUTES:
         return RouteClass.INTERNAL, None
     try:
-        return RouteClass.DOMAIN, DOMAIN_ROUTES[key]
+        requirement = (
+            PRIVATE_DOMAIN_ROUTES[key]
+            if key in PRIVATE_DOMAIN_ROUTES
+            else DOMAIN_ROUTES[key]
+        )
+        return RouteClass.DOMAIN, requirement
     except KeyError:
         raise RouteNotInventoried(
             f"{method.upper()} {path_template} has no recorded authorization decision"
@@ -382,7 +518,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
 
 def all_inventoried() -> frozenset[tuple[str, str]]:
     """Every (method, template) with a recorded decision, in any class."""
-    return PUBLIC_ROUTES | INTERNAL_ROUTES | frozenset(DOMAIN_ROUTES)
+    return (
+        PUBLIC_ROUTES
+        | INTERNAL_ROUTES
+        | frozenset(DOMAIN_ROUTES)
+        | frozenset(PRIVATE_DOMAIN_ROUTES)
+    )
 
 
 # ---------------------------------------------------------------------------

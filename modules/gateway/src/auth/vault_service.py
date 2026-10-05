@@ -21,7 +21,11 @@ admin-only and a 403 there would newly confirm existence.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
+from datetime import UTC
 
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -29,8 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.vault import CredentialValidationEvidence, UserCredential, UserIdentity
 from src.shared.schemas.auth import TokenContext
-from src.shared.services.secrets_manager import SecretsManagerHelper
+from src.shared.services.secrets_manager import SecretOperationConflictError, SecretsManagerHelper
 
+from .aws_connection_authority import invalidate_connection
 from .org_id_resolver import resolve_effective_org_id
 from .vault_schemas import CredentialCreate, CredentialUpdate
 
@@ -39,6 +44,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Exceptions (mapped to HTTP codes by routes)
 # ---------------------------------------------------------------------------
+
+
+class CredentialRevisionConflictError(Exception):
+    """Metadata changed after the caller inspected it."""
 
 
 class CredentialNotFoundError(Exception):
@@ -167,6 +176,8 @@ async def _get_owned_credential(
     cred_id: str,
     db: AsyncSession,
     caller: TokenContext,
+    *,
+    lock: bool = False,
 ) -> UserCredential:
     """Fetch a credential by ID for the given caller, for MUTATION.
 
@@ -186,6 +197,8 @@ async def _get_owned_credential(
         UserCredential.id == cred_id,
         UserCredential.org_id == caller.org_id,
     )
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(stmt)
     cred = result.scalar_one_or_none()
     if cred is None:
@@ -229,6 +242,8 @@ async def create_credential(
     db: AsyncSession,
     caller: TokenContext,
     sm: SecretsManagerHelper,
+    *,
+    credential_id: str | None = None,
 ) -> UserCredential:
     """Register a new credential.
 
@@ -266,17 +281,76 @@ async def create_credential(
     else:
         raise InvalidScopeConfigError(f"Unknown scope_hint: {scope_hint!r}")
 
+    operation_fingerprint = None
+    if credential_id is not None:
+        operation_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "org_id": effective_org_id,
+                    "user_id": user_id,
+                    "team_id": team_id,
+                    "domain_app_id": domain_app_id,
+                    "service": data.service,
+                    "credential_type": data.credential_type.value,
+                    "label": data.label,
+                    "scopes": data.scopes,
+                    "expires_at": data.expires_at.isoformat() if data.expires_at else None,
+                    "strict": data.strict,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+    def same_operation_metadata(existing: UserCredential) -> bool:
+        return (
+            existing.org_id == effective_org_id
+            and existing.user_id == user_id
+            and existing.team_id == team_id
+            and existing.domain_app_id == domain_app_id
+            and existing.service == data.service
+            and existing.credential_type == data.credential_type
+            and existing.label == data.label
+            and existing.scopes == data.scopes
+            and existing.expires_at == data.expires_at
+            and existing.strict == data.strict
+            and existing.operation_fingerprint in (None, operation_fingerprint)
+        )
+
+    async def same_operation(existing: UserCredential) -> bool:
+        if not same_operation_metadata(existing):
+            return False
+        existing_value = await asyncio.to_thread(sm.get_secret, existing.secret_arn)
+        return hmac.compare_digest(
+            existing_value.encode("utf-8"),
+            data.value.encode("utf-8"),
+        )
+
+    if credential_id is not None:
+        result = await db.execute(select(UserCredential).where(UserCredential.id == credential_id))
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            if await same_operation(existing):
+                return existing
+            raise DuplicateCredentialError("Credential operation id is already in use")
+
     # Write to Secrets Manager (synchronous boto3 call, offloaded to thread pool)
-    secret_arn: str = await asyncio.to_thread(
-        sm.create_secret,
-        data.service,
-        data.label,
-        data.value,
-        **sm_kwargs,
-    )
+    if credential_id is not None:
+        sm_kwargs.update(operation_id=credential_id, operation_fingerprint=operation_fingerprint)
+    try:
+        secret_arn: str = await asyncio.to_thread(
+            sm.create_secret,
+            data.service,
+            data.label,
+            data.value,
+            **sm_kwargs,
+        )
+    except SecretOperationConflictError as exc:
+        raise DuplicateCredentialError(str(exc)) from exc
 
     # Persist metadata row
     cred = UserCredential(
+        id=credential_id,
         org_id=effective_org_id,
         user_id=user_id,
         team_id=team_id,
@@ -285,6 +359,7 @@ async def create_credential(
         credential_type=data.credential_type,
         label=data.label,
         secret_arn=secret_arn,
+        operation_fingerprint=operation_fingerprint,
         scopes=data.scopes,
         expires_at=data.expires_at,
         strict=data.strict,
@@ -292,8 +367,24 @@ async def create_credential(
     db.add(cred)
     try:
         await db.commit()
-    except IntegrityError:
+    except Exception as commit_error:
         await db.rollback()
+        if credential_id is not None:
+            result = await db.execute(select(UserCredential).where(UserCredential.id == credential_id))
+            existing = result.scalar_one_or_none()
+            if existing is not None:
+                if await same_operation(existing):
+                    return existing
+                raise DuplicateCredentialError("Credential operation id is already in use") from commit_error
+        if not isinstance(commit_error, IntegrityError):
+            raise
+        if credential_id is not None:
+            # Deterministic operation secrets can be shared with an in-flight retry.
+            # An absent metadata row after rollback is not proof of exclusive
+            # ownership: another request may commit immediately after this read.
+            # Preserve the tagged operation secret for a retry; only randomly
+            # named POST artifacts below can safely be compensated here.
+            raise DuplicateCredentialError("Credential operation conflicts with an existing credential") from commit_error
         # SM secret was already created — delete it to prevent orphaned secrets (F2)
         #
         # Issue #3989: this call intentionally keeps the force=True default. It is
@@ -309,7 +400,8 @@ async def create_credential(
                 "Failed to delete orphaned SM secret %s after duplicate credential attempt",
                 secret_arn,
             )
-        raise DuplicateCredentialError(f"A credential with service={data.service!r} label={data.label!r} already exists")
+            raise
+        raise DuplicateCredentialError(f"A credential with service={data.service!r} label={data.label!r} already exists") from commit_error
     await db.refresh(cred)
 
     logger.info(
@@ -332,7 +424,16 @@ async def update_credential(
 
     Value updates are not allowed — callers must delete + re-register.
     """
-    cred = await _get_owned_credential(cred_id, db, caller)
+    cred = await _get_owned_credential(cred_id, db, caller, lock=True)
+
+    if data.expected_revision is not None:
+        current = cred.updated_at or cred.created_at
+        expected = data.expected_revision
+        # Database timestamps may be naive UTC; wire timestamps must carry UTC.
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        if expected.tzinfo is None or current != expected:
+            raise CredentialRevisionConflictError()
 
     if data.label is not None:
         cred.label = data.label
@@ -340,6 +441,9 @@ async def update_credential(
         cred.expires_at = data.expires_at
     if data.strict is not None:
         cred.strict = data.strict
+
+    if cred.credential_type == "aws_role":
+        invalidate_connection(cred)
 
     # Metadata changes invalidate the observation's exact credential binding.
     await db.execute(
@@ -360,26 +464,21 @@ async def delete_credential(
     sm: SecretsManagerHelper,
 ) -> None:
     """Delete the DB row AND the Secrets Manager secret synchronously."""
-    cred = await _get_owned_credential(cred_id, db, caller)
+    cred = await _get_owned_credential(cred_id, db, caller, lock=True)
     secret_arn = cred.secret_arn
 
-    # Delete DB row first so the secret is never accessible via our API
-    # even if the SM delete call is slow.
-    await db.delete(cred)
-    await db.commit()
-
-    # Delete the SM secret (best-effort; log failures but don't re-raise
-    # because the DB row is already gone and the caller expects success).
-    #
+    # Ask Secrets Manager to delete first. If it refuses or is unavailable, the
+    # metadata row must remain so the operation is attributable and retryable;
+    # deleting the row first would orphan a live secret behind a successful 204.
     # Issue #3989: force=False so AWS's 7-30 day recovery window applies to
     # user-driven deletes — the default (force=True) sets
-    # ForceDeleteWithoutRecovery, making a delete unrecoverable. Secret names carry
-    # a random uuid suffix (SecretsManagerHelper._build_secret_name), so a
-    # pending-deletion secret can never collide with a re-register.
-    try:
-        await asyncio.to_thread(sm.delete_secret, secret_arn, force=False)
-    except Exception:
-        logger.exception("Failed to delete SM secret %s for credential %s; DB row already removed", secret_arn, cred_id)
+    # ForceDeleteWithoutRecovery, making a delete unrecoverable. Deterministic
+    # operation names remain reserved during recovery; new registrations use
+    # a new operation UUID.
+    await asyncio.to_thread(sm.delete_secret, secret_arn, force=False)
+
+    await db.delete(cred)
+    await db.commit()
 
     logger.info("Deleted credential id=%s secret_arn=%s org=%s", cred_id, secret_arn, caller.org_id)
 

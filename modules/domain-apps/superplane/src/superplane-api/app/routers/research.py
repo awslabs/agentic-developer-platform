@@ -30,12 +30,13 @@ argument value that turns the filter off.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.database import get_session
 from app.middleware.auth import get_current_org, get_current_user_context
@@ -64,6 +65,39 @@ from app.services.scanner import get_scanner_stats, run_scan
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
+
+
+@router.get("/cli-support")
+async def cli_support(org_id: UUID = Depends(get_current_org)) -> dict:
+    return {
+        "proposal_contract": "revision-idempotency-v1",
+        "bounded_scan": False,
+        "bounded_generation": False,
+    }
+
+
+def _check_revision(request: Request, proposal: ResearchProposal, expected: str | None):
+    if expected is None:
+        return  # Existing UI contract; new CLI always supplies the precondition.
+    caller = getattr(request.state, "caller", None)
+    if caller is None or caller.principal.account_type != "human":
+        raise HTTPException(
+            403, "A verified human session is required for revision-bound decisions"
+        )
+    if ResearchProposalResponse.model_validate(proposal).revision != expected:
+        raise HTTPException(
+            409, "Proposal revision changed; review the current proposal"
+        )
+
+
+def _time_filter(query, column, start, end):
+    if start is None and end is None:
+        return query
+    if start is None or end is None or start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(422, "Provide both timezone-aware start and end")
+    if not timedelta(0) < end - start <= timedelta(days=90):
+        raise HTTPException(422, "Use an increasing range of at most 90 days")
+    return query.where(column >= start, column < end)
 
 
 def _recorded_actor(http_request: Request, user_context: dict) -> str:
@@ -146,6 +180,8 @@ async def _require_owned_workspace(
 @router.get("/findings", response_model=ResearchFindingsList)
 async def list_findings(
     http_request: Request,
+    start: datetime | None = None,
+    end: datetime | None = None,
     source: str | None = Query(None, description="Filter by source"),
     min_relevance: int = Query(0, ge=0, le=100, description="Minimum relevance score"),
     max_relevance: int = Query(
@@ -168,6 +204,7 @@ async def list_findings(
     it, because the tenant join is applied first and is not caller-supplied.
     """
     query = _scope_to_tenant(select(ResearchFinding), ResearchFinding, org_id)
+    query = _time_filter(query, ResearchFinding.scanned_at, start, end)
 
     # Apply filters
     if source:
@@ -197,7 +234,7 @@ async def list_findings(
 
     # Apply pagination and ordering
     query = (
-        query.order_by(ResearchFinding.scanned_at.desc())
+        query.order_by(ResearchFinding.scanned_at.desc(), ResearchFinding.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -331,6 +368,8 @@ async def list_sources(
 
 @router.get("/proposals", response_model=ResearchProposalsList)
 async def list_proposals(
+    start: datetime | None = None,
+    end: datetime | None = None,
     status: str | None = Query(None, description="Filter by status"),
     workspace_id: UUID | None = Query(None, description="Filter by workspace"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -340,6 +379,7 @@ async def list_proposals(
 ) -> ResearchProposalsList:
     """List research proposals for the caller's organization."""
     query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id)
+    query = _time_filter(query, ResearchProposal.created_at, start, end)
 
     if status:
         if status not in VALID_STATUSES:
@@ -359,7 +399,7 @@ async def list_proposals(
 
     # Apply pagination and ordering
     query = (
-        query.order_by(ResearchProposal.created_at.desc())
+        query.order_by(ResearchProposal.created_at.desc(), ResearchProposal.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -474,8 +514,30 @@ async def create_proposal(
         else None
     )
 
+    proposal_id = (
+        uuid.uuid5(org_id, str(request.request_id))
+        if request.request_id
+        else uuid.uuid4()
+    )
+    if request.source_findings:
+        found = (
+            (
+                await session.execute(
+                    _scope_to_tenant(
+                        select(ResearchFinding.id), ResearchFinding, org_id
+                    ).where(
+                        ResearchFinding.id.in_(request.source_findings),
+                        ResearchFinding.workspace_id == request.workspace_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if set(found) != set(request.source_findings):
+            raise HTTPException(404, "No visible source finding")
     proposal = ResearchProposal(
-        id=uuid.uuid4(),
+        id=proposal_id,
         workspace_id=request.workspace_id,
         title=request.title,
         objective=request.objective,
@@ -487,8 +549,63 @@ async def create_proposal(
         experiment_plan=experiment_plan,
         status="proposed",
     )
+
+    async def replay():
+        existing = (
+            await session.execute(
+                _scope_to_tenant(
+                    select(ResearchProposal), ResearchProposal, org_id
+                ).where(ResearchProposal.id == proposal_id)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return None
+        fields = (
+            "workspace_id",
+            "title",
+            "objective",
+            "hypothesis",
+            "source_findings",
+            "estimated_cost_usd",
+            "estimated_duration_hours",
+            "required_resources",
+            "experiment_plan",
+        )
+        for name in fields:
+            old, new = getattr(existing, name), getattr(proposal, name)
+            # DB Numeric columns round to two decimal places. Normalize through
+            # the response schema before comparing the same submitted request.
+            if (
+                name in {"estimated_cost_usd", "estimated_duration_hours"}
+                and old is not None
+                and new is not None
+            ):
+                from decimal import Decimal
+
+                old, new = (
+                    Decimal(str(old)).quantize(Decimal("0.01")),
+                    Decimal(str(new)).quantize(Decimal("0.01")),
+                )
+            if old != new:
+                raise HTTPException(
+                    409, "Request ID is already bound to different proposal input"
+                )
+        return ResearchProposalResponse.model_validate(existing)
+
+    if request.request_id:
+        previous = await replay()
+        if previous:
+            return previous
     session.add(proposal)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        if request.request_id:
+            previous = await replay()
+            if previous:
+                return previous
+        raise
     await session.refresh(proposal)
 
     logger.info("Created proposal: %s (%s)", proposal.title, proposal.id)
@@ -563,8 +680,10 @@ async def approve_proposal(
     here worth attributing to a user when the credential names one.
     """
     org_id = user_context["org_id"]
-    query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id).where(
-        ResearchProposal.id == proposal_id
+    query = (
+        _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id)
+        .where(ResearchProposal.id == proposal_id)
+        .with_for_update()
     )
     result = await session.execute(query)
     proposal = result.scalar_one_or_none()
@@ -572,6 +691,7 @@ async def approve_proposal(
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
 
+    _check_revision(http_request, proposal, request.expected_revision)
     if not validate_status_transition(proposal.status, "approved"):
         raise HTTPException(
             status_code=400,
@@ -617,15 +737,20 @@ async def reject_proposal(
     The logged rejector is server-derived rather than the body's ``rejected_by``,
     for the same reason as approval — a body field is a claim, not an identity.
     """
-    query = _scope_to_tenant(
-        select(ResearchProposal), ResearchProposal, user_context["org_id"]
-    ).where(ResearchProposal.id == proposal_id)
+    query = (
+        _scope_to_tenant(
+            select(ResearchProposal), ResearchProposal, user_context["org_id"]
+        )
+        .where(ResearchProposal.id == proposal_id)
+        .with_for_update()
+    )
     result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
 
+    _check_revision(http_request, proposal, request.expected_revision)
     if not validate_status_transition(proposal.status, "rejected"):
         raise HTTPException(
             status_code=400,

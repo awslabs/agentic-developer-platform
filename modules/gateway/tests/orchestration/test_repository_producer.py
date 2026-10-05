@@ -3,6 +3,7 @@
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,11 +13,20 @@ from src.orchestration.deployment_workflow_provider import WorkflowContext, Work
 from src.orchestration.evaluation_acceptance import EvaluationAcceptanceError
 from src.orchestration.evaluation_controller import EvaluationController
 from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
-from src.orchestration.execution_state import ExecutionPhase
-from src.orchestration.models import OrchestrationAction, OrchestrationDecision, OrchestrationExecution, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.execution_state import ExecutionIdentity, ExecutionPhase
+from src.orchestration.models import (
+    OrchestrationAcceptedPlan,
+    OrchestrationAction,
+    OrchestrationDecision,
+    OrchestrationExecution,
+    OrchestrationFlow,
+    OrchestrationNode,
+    OrchestrationWorkClaim,
+)
 from src.orchestration.repository_evaluation import observe_repository_evaluation
 from src.orchestration.repository_producer import CONTEXT_KIND, PRODUCER_KIND, RepositoryScanProvider
 from src.orchestration.repository_producer_controller import RepositoryProducerController
+from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.run_reports import OrchestrationRunReport
 from tests.orchestration.test_evaluation_acceptance import accept, contract_request  # noqa: F401
 from tests.orchestration.test_repository_evaluation import repository_evaluation  # noqa: F401
@@ -158,9 +168,40 @@ async def test_uncertain_post_is_never_repeated_by_subsequent_runner_ticks(scan)
         assert node.state == "running" and node.attempts == 1
 
 
+@pytest.mark.parametrize("flow_state", ["pending", "running"])
+@pytest.mark.parametrize("human", [False, True])
 @pytest.mark.parametrize("success", [True, False])
-@pytest.mark.parametrize("after_dispatch", [None, "budget_exhausted", "deadline_expired"])
-async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(scan, success, after_dispatch):
+@pytest.mark.parametrize("after_dispatch", [None, "budget_exhausted", "deadline_expired", "collector_upgrade"])
+async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(
+    scan, success, after_dispatch, human, flow_state, monkeypatch
+):
+    async with scan.factory() as db:
+        flow = await db.get(OrchestrationFlow, scan.flow.id)
+        flow.state = flow_state
+        await db.commit()
+
+    if human:
+        document = deepcopy(scan.request.specification)
+        document.update(evidence_schema="workflow-evaluation/v1", acceptance_mode="human")
+        document["workflows"][0].update(
+            path=".github/workflows/eval-cli-uplift.yml",
+            source={"revision": "f" * 40},
+            required_jobs=["Live evaluation (dev)", "Recovery sweep (this run, plus anything expired)"],
+        )
+        producer = document["producer"]
+        producer.pop("images")
+        producer["target"].update(resource_kind="cli-evaluation", resource_id="dev")
+        producer["inputs"] = dict(
+            environment="dev", expected_revision="f" * 40, mode="start", fixtures_json="{}", suites="knowledge", evaluation_id="", inject_fault="none"
+        )
+        scan.request = scan.request.model_copy(update={"specification": document})
+        async with scan.factory() as db:
+            plan = await db.get(OrchestrationAcceptedPlan, scan.plan.id)
+            amended = deepcopy(plan.plan_document)
+            amended["execution_policy"]["evaluation_acceptance"] = {key: "human" for key in amended["execution_policy"]["evaluation_acceptance"]}
+            plan.plan_document = amended
+            await db.commit()
+
     async def dispatch(binding, **kwargs):
         await kwargs["reauthorize"]()
 
@@ -223,12 +264,28 @@ async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_pass
             execution = await db.get(OrchestrationExecution, scan.scan_execution.id)
             execution.deadline_at = datetime.now(UTC) - timedelta(seconds=1)
             await db.commit()
+    if after_dispatch == "collector_upgrade":
+        from src.orchestration import repository_producer, repository_producer_controller
+
+        original = repository_producer.harness_digest()
+        monkeypatch.setattr(repository_producer, "COLLECTION_COMPATIBLE_HARNESSES", {original})
+        monkeypatch.setattr(repository_producer, "harness_digest", lambda: "9" * 64)
+        monkeypatch.setattr(repository_producer_controller, "harness_digest", lambda: "9" * 64)
+        execution = scan.scan_execution
+        identity = ExecutionIdentity(
+            execution.org_id, execution.node_id, execution.cycle, execution.accepted_plan_version, execution.claim_id, execution.claim_generation
+        )
+        with pytest.raises(CycleBlockedError):
+            await scan.controller.repository_producer.snapshot(SimpleNamespace(identity=identity, execution=execution), authorize_effect=True)
     report = await tick(scan)
     async with scan.factory() as db:
         node = await db.get(OrchestrationNode, scan.eval_id)
         execution = await db.get(OrchestrationExecution, scan.scan_execution.id)
         claim = await db.get(OrchestrationWorkClaim, scan.scan_execution.claim_id)
-        assert node.state == ("passed" if success else "failed"), (report, execution.status)
+        if after_dispatch == "collector_upgrade" and not human:
+            assert node.state == "running" and execution.status == "blocked" and claim.state == "held"
+            return
+        assert node.state == (("awaiting_gate" if human else "passed") if success else "failed"), (report, execution.status)
         assert execution.status == "concluded" and claim.state == "released"
         assert claim.release_reason == ("completed" if success else "failed")
         if success:
@@ -239,6 +296,8 @@ async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_pass
                 .limit(1)
             )
             assert '"live_attestation":false' in row.reason
+            if after_dispatch == "collector_upgrade":
+                assert '"collector_harness_sha256":"' + "9" * 64 + '"' in row.reason
 
 
 async def test_budget_exhausted_after_admission_refuses_actual_provider_post(scan):
@@ -298,3 +357,39 @@ async def test_failed_workflow_without_cleanup_proof_retains_claim_and_never_red
         claim = await db.get(OrchestrationWorkClaim, scan.scan_execution.claim_id)
         assert node.state == "running" and execution.status == "blocked" and claim.state == "held"
         assert execution.pending_action_key
+
+
+async def test_collection_upgrade_cannot_start_an_undispatched_knowledge_run(scan, monkeypatch):
+    from src.orchestration import repository_producer
+
+    document = deepcopy(scan.request.specification)
+    document.update(evidence_schema="workflow-evaluation/v1", acceptance_mode="human")
+    document["workflows"][0].update(
+        path=".github/workflows/eval-cli-uplift.yml",
+        source={"revision": "f" * 40},
+        required_jobs=["Live evaluation (dev)", "Recovery sweep (this run, plus anything expired)"],
+    )
+    producer = document["producer"]
+    producer.pop("images")
+    producer["target"].update(resource_kind="cli-evaluation", resource_id="dev")
+    producer["inputs"] = dict(
+        environment="dev", expected_revision="f" * 40, mode="start", fixtures_json="{}", suites="knowledge", evaluation_id="", inject_fault="none"
+    )
+    scan.request = scan.request.model_copy(update={"specification": document})
+    async with scan.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, scan.plan.id)
+        amended = deepcopy(plan.plan_document)
+        amended["execution_policy"]["evaluation_acceptance"] = {key: "human" for key in amended["execution_policy"]["evaluation_acceptance"]}
+        plan.plan_document = amended
+        await db.commit()
+    await admit(scan)
+    original = repository_producer.harness_digest()
+    monkeypatch.setattr(repository_producer, "COLLECTION_COMPATIBLE_HARNESSES", {original})
+    monkeypatch.setattr(repository_producer, "harness_digest", lambda: "9" * 64)
+    scan.provider_scan.dispatch = AsyncMock()
+    await tick(scan)
+    scan.provider_scan.dispatch.assert_not_awaited()
+    async with scan.factory() as db:
+        execution = await db.get(OrchestrationExecution, scan.scan_execution.id)
+        assert execution.status == "blocked"
+        assert execution.block_detail == "repository_evaluation_producer_legacy_collection_requires_dispatch"

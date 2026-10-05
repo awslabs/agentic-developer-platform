@@ -60,6 +60,50 @@ def test_start_is_durable_and_redelivery_never_runs_development_again(spool, mon
     assert "credential" not in next(iter(spool[1].values())).decode()
 
 
+@pytest.mark.parametrize("merged", [False, True])
+def test_owned_review_recovery_replays_bytes_and_requires_observed_merge(spool, monkeypatch, merged):
+    from lib import pr_binding, status_gateway_client
+
+    run_report._assignment["reviewer_owned_delivery"] = True
+    run_report.begin_delivery()
+    document = {"verdict": "approve", "repository": {"repo": "org/repo"},
+                "subject": {"pr_number": 7, "reviewed_head_sha": "a" * 40}}
+    content = json.dumps(document).encode()
+    run_report.spool_review(content)
+    upload = MagicMock()
+    terminal = MagicMock()
+    monkeypatch.setattr(status_gateway_client, "upload_review_result", upload)
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    monkeypatch.setattr(pr_binding.subprocess, "run", MagicMock(return_value=MagicMock(stdout=json.dumps({
+        "mergedAt": "2026-09-23T00:00:00Z" if merged else None, "headRefOid": "a" * 40}))))
+    if merged:
+        assert resume_handoff() is True
+        terminal.assert_called_once_with("complete")
+    else:
+        with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+            resume_handoff()
+        terminal.assert_not_called()
+    upload.assert_called_once_with(content)
+    assert run_report.read_spool()["phase"] == "review"
+
+
+def test_review_spool_cannot_be_replayed_by_a_different_owner(spool, monkeypatch):
+    run_report._assignment["reviewer_owned_delivery"] = True
+    run_report.begin_delivery()
+    run_report.spool_review(b'{"verdict":"request-changes"}')
+    monkeypatch.setattr(run_report, "request", lambda *args: {"worker_receipt": {"ownership_nonce": "b" * 32}})
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        resume_handoff()
+
+
+def test_real_crash_keeps_already_produced_review_for_reconciliation(spool):
+    run_report._assignment["reviewer_owned_delivery"] = True
+    run_report.begin_delivery()
+    run_report.spool_review(b'{"verdict":"approve"}')
+    run_report.spool_undelivered_failure()
+    assert run_report.read_spool()["phase"] == "review"
+
+
 @pytest.mark.parametrize("has_spool", [False, True])
 def test_explicit_server_retirement_preserves_spool_and_never_reports_success(spool, monkeypatch, has_spool):
     if has_spool:
@@ -342,3 +386,13 @@ def test_failure_spool_rejects_malformed_or_success_claims(spool, change):
     spool[1][key] = json.dumps(json.loads(spool[1][key]) | change).encode()
     with pytest.raises(run_report.RunReportError, match="report_spool_scope_mismatch"):
         run_report.read_spool()
+
+
+def test_failure_diagnostics_survive_terminal_outage(spool, monkeypatch):
+    run_report.begin_delivery()
+    failure = {"category": "deadline", "exit_code": 124}
+    run_report.spool_undelivered_failure(failure=failure)
+    terminal = MagicMock(return_value={})
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    assert resume_handoff() is True
+    terminal.assert_called_once_with("failed", failure=failure)

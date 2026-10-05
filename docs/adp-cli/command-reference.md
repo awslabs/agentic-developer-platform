@@ -19,8 +19,10 @@ a Python command's options. Codex and Claude arguments belong to those tools.
 | `adp token` | None | Prints a valid access token for a tool's auth helper; keep stdout private |
 | `adp codex setup` | None | Writes ADP's Codex configuration |
 | `adp claude setup` | None | Writes ADP's Claude Code configuration |
+| `adp hermes setup` | None | Writes ADP's Hermes configuration |
 | `adp codex` | Any Codex arguments | Starts the auth proxy if needed, then launches Codex |
 | `adp claude` | Any Claude Code arguments | Checks the ADP session, then launches Claude Code |
+| `adp hermes` | Hermes arguments except provider/profile/config bypass options | Pins Hermes to the selected deployment's verified auth proxy |
 | `adp serve` | `--port PORT`, `--foreground` | Runs the local auth proxy in the foreground; legacy default port is 9191 |
 | `adp daemon install` | None; macOS only | Installs an always-running launchd proxy |
 | `adp daemon uninstall` | None; macOS only | Removes that daemon |
@@ -32,10 +34,16 @@ a Python command's options. Codex and Claude arguments belong to those tools.
 checks the version served by the gateway; it does not fetch arbitrary past
 releases. `--rollback --to VERSION` checks the saved local rollback version.
 
-`setup` is reserved immediately after a tool name. `adp codex -- setup` and
-`adp claude -- setup` forward that word to the underlying tool instead.
-There is no `adp serve --stop`; use Ctrl-C for a foreground proxy or uninstall
-the daemon that owns it.
+`setup` is reserved immediately after a tool name. `adp codex -- setup`,
+`adp claude -- setup` and `adp hermes -- setup` forward that word to the
+underlying tool instead. There is no `adp serve --stop`; use Ctrl-C for a
+foreground proxy or uninstall the daemon that owns it.
+
+Hermes setup uses its native `config set`/`config get --json --raw` commands.
+Launch through `adp hermes` so the endpoint and credential references are filled
+for that invocation. `--provider`, `--profile`/`-p`, `--ignore-user-config` and
+`--vanilla` are refused; use `HERMES_HOME` consistently for setup and launch to
+select a separate Hermes configuration and session store.
 
 ## Environment selection — PR #5449
 
@@ -63,7 +71,7 @@ See [AWS workflows](aws-and-bedrock.md#connect-your-aws-account).
 |---|---|---|
 | `adp aws connect` | `--account ACCOUNT` for a new/imported connection, or `--resume DIRECTORY` | `--name NAME`, `--region REGION`, `--profile PROFILE`, `--role-arn ARN`, one ExternalId input, `--download DIRECTORY`, `--yes`, `--dry-run`, `--json` |
 | `adp aws list` | None | `--json` |
-| `adp aws verify CONNECTION` | Connection name or ID | `--json` |
+| `adp aws verify CONNECTION` | Connection name or ID | `--yes`, `--dry-run`, `--json` |
 | `adp aws disconnect CONNECTION` | Connection name or ID | `--yes`, `--dry-run`, `--json` |
 
 For an existing role, the ExternalId inputs are mutually exclusive:
@@ -99,7 +107,7 @@ See [routing and administrator handoff](aws-and-bedrock.md#configure-bedrock-rou
 | `adp bedrock status` | `--json` | Shows your effective account and winning routing level |
 | `adp admin bedrock connect` | See options below | Creates/reuses a destination, verifies it, then assigns a routing rule |
 | `adp admin bedrock list` | `--org ORG`, `--json` | Lists registered destinations |
-| `adp admin bedrock verify DESTINATION` | Destination ID; `--json` | Re-verifies a destination without changing a rule |
+| `adp admin bedrock verify DESTINATION` | Destination ID; `--yes`, `--dry-run`, `--json` | Re-verifies a destination without assigning a rule; the probe updates stored readiness evidence and can make existing routing unavailable |
 | `adp admin bedrock status` | `--user USER`, `--json` | Shows your route, or another user's when authorized |
 
 Connect options:
@@ -163,37 +171,84 @@ Existing-App credentials come from `--credentials-file FILE` or
 
 These commands exist in the CLI; [server availability and examples](superplane.md)
 explain the domain API dependency. All operational leaf commands accept
-`--json`. For workspace-scoped commands, `--workspace NAME` overrides
-`adp superplane workspace use NAME`.
+`--json`. For workspace-scoped commands, `--workspace` overrides
+`adp superplane workspace use NAME` and accepts either the workspace name or its
+id; a name that matches more than one workspace is reported with the candidate
+ids rather than resolved to one of them.
+
+Workspace and deployment creates persist a non-secret operation receipt before
+delivery. An identical retry reuses that operation ID, including after successful
+completion, so lost output cannot cause a second resource. Failed, deleting and
+deleted operations keep their receipts and refuse identical creates; inspect the
+original resource before choosing a different name for an intentional new create.
+An older domain without the replay contract is refused before mutation.
 
 | Command | Required inputs | Optional inputs / defaults |
 |---|---|---|
-| `adp superplane workspace create` | `--name NAME` | `--isolation dedicated|namespace|research` (default `dedicated`), `--account ACCOUNT` (required for `research`), `--budget-daily USD`, `--budget-gpus COUNT` |
+| `adp superplane workspace create` | `--name NAME` | `--isolation dedicated|namespace|research` (default `dedicated`), `--account ACCOUNT` (required for `research`), `--budget-daily USD`, `--budget-gpus COUNT`, `--dry-run`, `--yes` |
 | `adp superplane workspace list` | None | None |
 | `adp superplane workspace use NAME` | Workspace name | Saves the selection locally |
-| `adp superplane workspace describe` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane workspace kubeconfig` | Selected workspace or `--workspace NAME` | Returns Kubernetes access information |
-| `adp superplane node` | Selected workspace or `--workspace NAME` | Lists nodes; the command is `node`, without a `list` subcommand |
-| `adp superplane quota show` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane quota set` | Selected workspace or `--workspace NAME`; at least one quota option | `--max-gpus COUNT`, `--max-cost-per-day USD`, `--max-nodes COUNT`, `--allowed-clouds aws,lambda` |
-| `adp superplane cost` | None | `--workspace NAME`; otherwise uses the selected workspace when present |
-| `adp superplane events` | None | `--workspace NAME`, `--limit COUNT` (default 50) |
-| `adp superplane deploy create` | `--model MODEL`; selected workspace or `--workspace NAME` | `--name NAME`, `--precision fp8|fp16|bf16` (default `fp16`) |
-| `adp superplane deploy list` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane deploy delete` | `--name NAME`; selected workspace or `--workspace NAME` | Requests deployment deletion |
-| `adp superplane account onboard` | `--name NAME`, `--provider PROVIDER` | `--account-id ACCOUNT`; use `aws-onboard register` for AWS |
+| `adp superplane workspace describe` | Selected workspace or `--workspace WORKSPACE` | None |
+| `adp superplane workspace kubeconfig` | Selected workspace or `--workspace WORKSPACE` | Returns Kubernetes access information and the credential's expiry |
+| `adp superplane node` | Selected workspace or `--workspace WORKSPACE` | Lists nodes; the command is `node`, without a `list` subcommand |
+| `adp superplane quota show` | Selected workspace or `--workspace WORKSPACE` | None |
+| `adp superplane quota set` | Selected workspace or `--workspace WORKSPACE`; at least one quota option | `--max-gpus COUNT`, `--max-cost-per-day USD`, `--max-nodes COUNT`, `--allowed-clouds aws,lambda`, `--dry-run`, `--yes` |
+| `adp superplane cost` | None | `--org` for organization-wide cost, or `--workspace WORKSPACE`; `--start-date`, `--end-date` (ISO 8601). `--org` and `--workspace` are mutually exclusive |
+| `adp superplane events` | None | `--resource-type TYPE`, `--user USER_ID`, `--action ACTION`, `--event-type TYPE`, `--start-time`, `--end-time` (ISO 8601), `--limit COUNT` (1-500, default 50), `--offset COUNT`. There is no workspace filter |
+| `adp superplane deploy create` | `--model MODEL`, `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--precision fp8|fp16|bf16|awq|int8` (default `fp16`), `--serving-framework vllm|sglang`, `--replicas COUNT`, `--gpu-per-replica COUNT`, `--tensor-parallel-size COUNT`, `--max-model-len TOKENS`, `--dry-run`, `--yes`. Omitted options take the server's default |
+| `adp superplane deploy list` | Selected workspace or `--workspace WORKSPACE` | Uses the workspace namespace |
+| `adp superplane deploy delete` | `--id DEPLOYMENT_UUID`; selected workspace or `--workspace WORKSPACE` | `--dry-run`, `--yes`; requests deployment deletion |
+| `adp superplane account onboard` | `--name NAME`, `--provider aws`, `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--dry-run`, `--yes`; registers a verified caller-owned AWS connection through the server-side adapter |
 | `adp superplane account list` | None | None |
-| `adp superplane account delete ACCOUNT_ID` | Account ID | Requests deregistration |
-| `adp superplane aws-onboard register` | `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--name NAME` |
-| `adp superplane provider add` | `--name NAME`, `--provider PROVIDER` | `--type api_key|oauth_token|bearer|basic_auth|config_file` (default `api_key`), `--stdin` |
+| `adp superplane account delete ACCOUNT` | The registration's record id, or the cloud account ID or name it was registered under | `--dry-run`, `--yes`; requests deregistration |
+| `adp superplane aws-onboard register` | `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--name NAME`, `--dry-run`, `--yes`; retries converge on the existing matching registration |
+| `adp superplane provider add` | `--name NAME`, `--provider PROVIDER` (unless recovering) | `--type api_key|oauth_token|bearer|basic_auth|config_file` (default `api_key`), `--stdin`, `--recover ADP_CREDENTIAL_ID`, `--dry-run`, `--yes`; recovery reuses the recorded id and requests `--stdin` only when the vault confirms the first write is absent |
 | `adp superplane provider list` | None | None |
-| `adp superplane provider delete CREDENTIAL_ID` | Credential ID | Removes the provider registration and vault credential |
+| `adp superplane provider delete CREDENTIAL` | The registration's record id, or the ADP credential id it references | `--dry-run`, `--yes`; removes the provider registration and the vault credential |
 | `adp superplane org` | None | Prints a redirect to ADP organization settings; performs no administration |
 | `adp superplane user` | None | Prints a redirect to ADP user settings; performs no administration |
 
-The Superplane commands do not implement `--yes` or `--dry-run`. Mutating
-commands submit requests directly. A provider secret is read from a hidden
-prompt or stdin, never from a secret-valued command argument.
+Superplane mutations support `--dry-run` and require interactive confirmation
+or `--yes`. A provider secret is read from a hidden prompt or stdin, never from a
+secret-valued command argument.
+
+## Capability discovery and diagnosis
+
+Both commands only read. Neither changes configuration, starts work, nor runs a
+paid model call. Full guide: [doctor.md](../../modules/gateway/cli/doctor.md).
+
+| Command | Options / arguments | What it does |
+|---|---|---|
+| `adp capabilities` | `--json`, `--refresh`, `--operation ID` | What this deployment offers you: available, switched off, not permitted, or a dependency not ready — reported as four separate facts |
+| `adp doctor` | `--json`, `--checks LIST`, `--request-id ID` | Diagnoses a failure from bounded reads. `--checks` selects from `auth,api,budget,models,agents` |
+
+`adp capabilities` reads `GET /me/cli-capabilities`, which is authenticated and
+scoped to your own tenant — there is no target argument at any position.
+Definitive evidence that a mutation cannot work makes the CLI refuse before
+sending; missing or stale evidence proceeds and lets the server decide, and never
+falls back to an older code path.
+
+`adp doctor --request-id` explains one request you are allowed to see. An ID
+belonging to another user produces output identical to one that does not exist.
+
+Error `code` values a script can branch on: `unsupported_operation`,
+`feature_disabled`, `permission_denied`, `stale_revision`, `budget_exhausted`,
+`dependency_pending`, `request_timeout`, `unknown_mutation_outcome`,
+`capability_unknown`, `schema_unsupported`. They use the existing exit categories;
+established authentication and tool-launch exit codes remain unchanged.
+
+### Shipped and proposed status
+
+| Group | Status | Leaf contract |
+|---|---|---|
+| `adp capabilities`, `adp doctor` | Shipped | Options and output are listed above and in [doctor.md](../../modules/gateway/cli/doctor.md). |
+| `adp flow start|create|list|show|watch|plans|decisions|cost` and `adp flow gate approve|reject` | Shipped | Exact flags and NDJSON watch behavior are documented in [flow.md](../../modules/gateway/cli/flow.md). |
+| `adp models catalog`, `adp models mappings list|set|reset`, `adp models explain`, `adp models service-principals list` | Shipped | Exact flags are published by `adp models --help` and the checked manifest. |
+| Additional capability or doctor verbs | Proposed only | None. A proposal must not be marked shipped until its parser, server operation, installer artifact and owning test all exist. |
+
+`modules/gateway/cli/command-manifest.json` is the checked machine-readable leaf
+inventory. It records exact flags, positional arguments, mutation class,
+capability, request/response contract and owning tests; it is not loaded at runtime.
 
 ## Installer options
 

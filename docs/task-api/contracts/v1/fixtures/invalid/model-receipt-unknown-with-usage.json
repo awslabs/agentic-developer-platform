@@ -1,0 +1,23 @@
+{
+  "$fixture": {
+    "description": "An unknown handoff reporting concrete token usage. If the platform does not know whether the request reached the provider, it cannot know what it cost; fabricating usage here would make the spend ledger appear complete while being silently wrong.",
+    "schema": "commands.schema.json#/$defs/model_receipt",
+    "expect": "invalid",
+    "reason": "operation_status unknown requires usage null and handoff unknown; LC-08 forbids recording unknown usage as a number",
+    "violates": ["identity-and-lifecycle.json#/lifecycle/invariants/LC-08", "commands.schema.json#/$defs/model_receipt"],
+    "owner": "T6",
+    "criteria": ["T0-AC03", "V0-04", "V3-10"]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "turn_id": "182930a4-1b5c-4d6e-af80-000000000230",
+  "operation_status": "unknown",
+  "handoff": "unknown",
+  "request_digest": "6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f88",
+  "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claimed_at": "2026-09-24T15:03:11Z",
+  "completed_at": null,
+  "usage": { "input_tokens": 4120, "output_tokens": 880 },
+  "reservation_status": "reserved",
+  "automatic_replay_permitted": false
+}

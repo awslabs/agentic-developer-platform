@@ -1359,24 +1359,24 @@ export function parseReassessmentResponse(comment: string): UserReassessmentChoi
   const body = comment.trim().toLowerCase();
 
   // Check for /approve
-  if (body.startsWith('/approve')) {
+  if (body === '/approve') {
     return { action: 'approve_all' };
   }
 
   // Check for /skip
-  if (body.startsWith('/skip')) {
+  if (body === '/skip') {
     return { action: 'skip' };
   }
 
   // Check for /action N or /action N,M,O
-  const actionMatch = body.match(/^\/action\s+([\d,\s]+)/);
+  const actionMatch = body.match(/^\/action[ \t]+([\d, \t]+)$/);
   if (actionMatch) {
     const numbers = actionMatch[1].split(/[,\s]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
     return { action: 'specific_actions', actionNumbers: numbers };
   }
 
   // Check for /retry #N or /retry #N,#M
-  const retryMatch = body.match(/^\/retry\s+([\d#,\s]+)/);
+  const retryMatch = body.match(/^\/retry[ \t]+([\d#, \t]+)$/);
   if (retryMatch) {
     const numbers = retryMatch[1].replace(/#/g, '').split(/[,\s]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
     return { action: 'retry_issues', issueNumbers: numbers };

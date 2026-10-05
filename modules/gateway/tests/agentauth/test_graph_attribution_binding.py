@@ -33,7 +33,8 @@ PROOF = [(b"x-adp-run-credential", b"credential"), (b"x-adp-workload-token", b"p
 @pytest.fixture
 def context():
     return TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",
@@ -184,7 +185,8 @@ async def test_ordinary_traffic_is_never_attributed(context, runtime):
     all, so their address is NULL by construction rather than by a policy a caller
     could ignore.
     """
-    context.user_id = "scaledjob-worker"
+    context.user_id = "iam-agent:scaledjob-worker"
+    context.agent_registry_id = "scaledjob-worker"
     assert (await call(context, []))[0]["status"] == 200
     assert context._graph_attribution is None
     runtime.validate_flow.assert_not_awaited()

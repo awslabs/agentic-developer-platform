@@ -386,7 +386,8 @@ class PolicyLimits(BaseModel):
     # descendant. NOT per run and NOT per child — see `flow_budget_binding` for why
     # the allowance has to be shared to mean anything.
     max_spend_usd: Decimal = Field(gt=0, le=Decimal("100000"))
-    # Attempts for any single node, which is what bounds a repair loop.
+    # Attempts per stage of a node (develop/review/repair/merge/deploy/evaluate).
+    # Keep the wire name for compatibility with existing accepted plans.
     max_attempts_per_node: int = Field(gt=0, le=100)
     # Simultaneous admitted actions under this policy, which is what bounds fan-out.
     max_concurrent_actions: int = Field(gt=0, le=100)
@@ -752,6 +753,18 @@ class CoordinationSummary(BaseModel):
     allowed_child_actions: list[Action]
 
 
+class UserCredentialSummary(BaseModel):
+    """Display credential scope without exposing credential identifiers or role ARNs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    permission_mode: Literal["user_configured"]
+    lifetime: Literal["provider_managed"]
+    vault_credential_count: int
+    aws_role_count: int
+    actions: list[Action]
+
+
 class PolicySummary(BaseModel):
     """What an owner authorized, in the shape a reader needs (#5128 design point 2).
 
@@ -783,7 +796,7 @@ class PolicySummary(BaseModel):
     # Where the authority applies. Repository and connection ids are the operator's
     # own names for things, not internal addresses, so they are shown as given.
     repository_ids: list[str]
-    user_credentials: UserCredentialAuthority | None = None
+    user_credentials: UserCredentialSummary | None = None
     environment_connection_ids: list[str]
     team_ids: list[str]
     # What may happen without asking again — `allowed_actions` minus `human_gates`.
@@ -816,7 +829,17 @@ def summarize_policy(policy: ExecutionPolicy) -> PolicySummary:
     """
     return PolicySummary(
         repository_ids=list(policy.repository_ids),
-        user_credentials=policy.user_credentials.model_copy(deep=True) if policy.user_credentials is not None else None,
+        user_credentials=(
+            UserCredentialSummary(
+                permission_mode=policy.user_credentials.permission_mode,
+                lifetime=policy.user_credentials.lifetime,
+                vault_credential_count=len(policy.user_credentials.vault_credential_ids),
+                aws_role_count=len(policy.user_credentials.aws_role_arns),
+                actions=list(policy.user_credentials.actions),
+            )
+            if policy.user_credentials is not None
+            else None
+        ),
         environment_connection_ids=list(policy.environment_connection_ids),
         team_ids=list(policy.team_ids),
         autonomous_actions=[action for action in Action if policy.permits(action)],
@@ -1030,6 +1053,9 @@ class AuthorizationContext:
     # remote work is reconciled by existing controls, not here (this function
     # admits, it does not terminate).
     grant_revoked: bool = False
+    # Only trusted deterministic workflow dispatch supplies collect. It cannot
+    # authorize a machine verdict for a human-accepted evaluation.
+    evaluation_operation: Literal["accept", "collect"] = "accept"
 
     # `now` is injected rather than read from the clock so expiry is testable
     # without freezing time, matching `reservations.ReservationStore`'s clock
@@ -1051,7 +1077,7 @@ class AuthorizationContext:
     # The reconciliation path restores headroom by supplying a real number, not by
     # defaulting this one.
     observed_spend_usd: Decimal | None = None
-    # Attempts already made on this node, and actions currently admitted under this
+    # Attempts already made in the current node stage, and actions admitted under this
     # policy. Ints rather than optionals: both are counted from engine-owned rows
     # (`OrchestrationNode.attempts`, the admitted-action count), so a caller that
     # cannot read them cannot construct a context at all.
@@ -1285,7 +1311,7 @@ def authorize_action(
     if action is Action.EVALUATE:
         address = resource.node_address
         mode = policy.evaluation_acceptance.get(address) if address else None
-        if mode is not AcceptanceMode.MACHINE:
+        if mode is not AcceptanceMode.MACHINE and not (mode is AcceptanceMode.HUMAN and context.evaluation_operation == "collect"):
             # Absent, unknown-address and explicit-`HUMAN` all land here, and all
             # three are correct: `HUMAN` is the default because a typo in an address
             # must not promote an evaluation to machine acceptance.
@@ -1353,7 +1379,7 @@ def authorize_action(
         # recovery — it is not self-clearing, and nothing here resets the count.
         return Decision.block(
             DenyReason.ATTEMPT_LIMIT_EXCEEDED,
-            f"this node has reached the {policy.limits.max_attempts_per_node} attempt(s) this policy authorizes; an authorized recovery is required",
+            f"this stage has reached the {policy.limits.max_attempts_per_node} attempt(s) this policy authorizes; an authorized recovery is required",
         )
 
     if context.observed_concurrency >= policy.limits.max_concurrent_actions:

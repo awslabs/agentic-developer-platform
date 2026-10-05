@@ -23,7 +23,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# RBAC for the kubectl-apply runner SA (github-runner-sa in arc-runners).
+# RBAC for the separately admitted adp:trusted-deployment group.
 # The existing runner-keda-manage Role only covers KEDA CRDs; the warm pool also
 # needs Deployments (namespaced) + the cluster-scoped PriorityClass.
 # -----------------------------------------------------------------------------
@@ -64,9 +64,9 @@ resource "kubernetes_role_binding" "runner_warm_pool_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -114,9 +114,9 @@ resource "kubernetes_cluster_role_binding" "runner_priorityclass_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -175,12 +175,12 @@ locals {
               # balloon reserves an agent-sized slot the real pod can take over.
               resources:
                 requests:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
                 limits:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
               securityContext:
                 allowPrivilegeEscalation: false

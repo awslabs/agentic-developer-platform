@@ -16,6 +16,12 @@ import sys
 import time
 import urllib.request
 
+# Shared capacity-subnet rules (#5830), also used by the CI apply path so a routine
+# apply and an --update run cannot disagree about which subnets the cluster keeps.
+# This module is loaded by path in tests, so sys.path may not contain its directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capacity_subnets  # noqa: E402
+
 
 def aws(*args):
     proc = subprocess.run(["aws", *args, "--output", "json"], text=True, capture_output=True)
@@ -42,6 +48,58 @@ def write_json(path, data):
     path.chmod(0o600)
 
 
+def release_settings(state, module):
+    """Retain account-local inputs; never import platform dev activation flags."""
+    if os.environ.get("ADP_PORTABLE_RELEASE_CONFIG") != "true":
+        return {}
+    contract = Path(__file__).resolve().parents[2] / "config/release-defaults/preserved-inputs.json"
+    keys = set(json.loads(contract.read_text())[module])
+    saved = output(state, "release_configuration")
+    if saved is not None:
+        if not isinstance(saved, dict) or set(saved) - keys:
+            raise ValueError(f"Invalid retained {module} release configuration")
+        return saved
+    # Older states did not retain inputs. Basic settings can be recovered from
+    # their resources. Activated Task/authority configurations need exact original
+    # inputs; guessing could disable active work or copy another account's proof.
+    for resource, attrs in resources(state):
+        variables = (attrs.get("environment") or [{}])[0].get("variables", {}) if resource["type"] == "aws_lambda_function" else {}
+        if any(str(variables.get(k, "false")).lower() == "true" for k in (
+                "AGENT_AUTHORITY_ENABLED", "ADP_TASK_API_ADMISSION_ENABLED", "ADP_TASK_API_RECOVERY_ENABLED")):
+            raise ValueError(f"Existing {module} has activated runtime settings without a retained configuration; "
+                             "run one reviewed direct upgrade with its original target-specific tfvars to record them")
+        if resource["name"] == "gateway_task_api" and resource["type"] == "aws_iam_policy":
+            raise ValueError("Existing Task API requires its original target-specific configuration before portable upgrades")
+    result = {}
+    for resource, attrs in resources(state):
+        kind = resource["type"]
+        if module == "platform" and kind == "aws_vpc":
+            result["vpc_cidr"] = attrs["cidr_block"]
+        if module == "platform" and kind == "aws_eks_cluster":
+            result["eks_cluster_version"] = attrs["version"]
+        if module == "gateway" and kind == "aws_db_instance":
+            result.update(rds_instance_class=attrs["instance_class"], rds_allocated_storage=attrs["allocated_storage"])
+        if module == "gateway" and kind == "aws_elasticache_replication_group":
+            result["redis_node_type"] = attrs["node_type"]
+        if (module == "gateway" and kind == "aws_iam_role_policy"
+                and resource["name"] == "gateway_ingestion_sqs_publish"):
+            policy = json.loads(attrs["policy"])
+            queues = [s["Resource"] for s in policy.get("Statement", [])
+                      if s.get("Sid") == "IngestionSQSPublish" and s.get("Effect") == "Allow"]
+            if len(queues) != 1 or not isinstance(queues[0], str) or not re.fullmatch(
+                    r"arn:[a-z0-9-]+:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+(?:\.fifo)?", queues[0]):
+                raise ValueError("Existing ingestion permission requires its original target-specific configuration")
+            result.update(enable_agent_context_sqs=True, agent_context_ingestion_queue_arn=queues[0])
+        if module == "gateway" and kind == "aws_lambda_function" and resource["name"] == "tick":
+            env = (attrs.get("environment") or [{}])[0].get("variables", {})
+            for key, name in (("BG_ORCH_DISPATCH_REPO", "orchestration_dispatch_repo"),):
+                if key in env:
+                    result[name] = env[key]
+            if "FEATURE_ORCHESTRATION_ENGINE_ENABLED" in env:
+                result["orchestration_engine_enabled"] = env["FEATURE_ORCHESTRATION_ENGINE_ENABLED"] == "true"
+    return result
+
+
 def preserve_access(state, cluster, extra=(), requested_cidrs=()):
     # Only retain entries already owned as cluster admins by platform Terraform.
     # Listing every EKS principal here would promote namespace-scoped users.
@@ -54,6 +112,39 @@ def preserve_access(state, cluster, extra=(), requested_cidrs=()):
             "eks_public_access_cidrs": sorted(set(cidrs) | set(requested_cidrs)),
             "eks_endpoint_public_access": cluster["resourcesVpcConfig"].get("endpointPublicAccess", True),
             "eks_endpoint_private_access": cluster["resourcesVpcConfig"].get("endpointPrivateAccess", True)}
+
+
+def retain_capacity_subnets(state, cluster, requested=None):
+    """Keep additional existing capacity subnets in the cluster's subnet set (#5830).
+
+    An operator relieves pod-IP exhaustion by adding already-existing private
+    subnets to the cluster's own subnet set, which is what Auto Mode's managed
+    `default` NodeClass reads. Those ids are account-specific, so they are not in
+    the repository. Without rediscovery here, the next routine update would plan
+    the repository's empty default, shrink the subnet set back, and re-break pod
+    scheduling on every node launched afterwards.
+
+    The rules (what counts as an addition, and never narrowing the live set as a
+    side effect of absent configuration) live in capacity_subnets, shared with the
+    CI apply path so both behave identically -- the failure being prevented is the
+    same one. In particular the baseline is the networking module's PRIVATE subnets,
+    not every Terraform-managed subnet: Terraform also manages public subnets, so
+    the broader rule would let a managed-but-not-baseline subnet be neither retained
+    nor recognised and disappear from the cluster's set unannounced.
+
+    `requested` is merged in for the same reason the access CIDRs are: the exported
+    tfvars file is applied as a -var-file AFTER the repository overlays, so it
+    overrides TF_VAR_ -- an operator adding a subnet during an update run would
+    otherwise have their export silently dropped. An operator export that OMITS a
+    live addition is refused rather than applied as a removal.
+    """
+    additions = capacity_subnets.live_additions(state, cluster["resourcesVpcConfig"].get("subnetIds", []))
+    zones = {}
+    if additions:
+        described = aws("ec2", "describe-subnets", "--subnet-ids", *sorted(additions))["Subnets"]
+        found = {s["SubnetId"]: s.get("AvailabilityZone") for s in described}
+        zones = {s: found.get(s) for s in sorted(additions)}
+    return capacity_subnets.effective_additions(requested, capacity_subnets.as_zone_map(zones))
 
 
 def repository_encryption(state):
@@ -82,6 +173,37 @@ def broker_settings(variables):
     # Older brokers did not have the explicit open-signup opt-in variable.
     result["github_auth_allow_open_signup"] = variables.get(
         "ALLOW_OPEN_SIGNUP", str(variables.get("ALLOWLIST_MODE") == "open").lower()) == "true"
+    return result
+
+
+def gateway_layer_settings(gateway_state, account, environment):
+    """Keep the installed layer package and retention policy on normal updates.
+
+    A release promotion uses immutable S3 keys with skip_destroy=True. The
+    repository's fresh-deploy defaults point at mutable CodeBuild upload keys;
+    reverting a promoted account to those defaults replaces and deletes its
+    pinned layer versions even when the build recipes have not changed.
+    """
+    result = {}
+    for label, module, name in (
+            ("pyjwt", "module.lambda_authorizer[0]", "pyjwt-py313"),
+            ("psycopg2", "module.budget_lambda[0]", "psycopg2-py312")):
+        matches = [attrs for resource, attrs in resources(gateway_state, "aws_lambda_layer_version")
+                   if resource.get("module") == module and resource["name"] == label]
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise ValueError(f"Ambiguous installed {label} layer")
+        layer = matches[0]
+        key = layer.get("s3_key", "")
+        filename = re.escape(name + ".zip")
+        if (layer.get("s3_bucket") != f"adp-terraform-state-{account}"
+                or layer.get("layer_name") != f"bedrockgw-{environment}-{name}"
+                or not re.fullmatch(rf"(?:lambda-layers/{filename}|adp-releases/sha256/[0-9a-f]{{64}}/{filename})", key)
+                or not isinstance(layer.get("skip_destroy"), bool)):
+            raise ValueError(f"Cannot preserve installed {label} layer")
+        result[f"{label}_layer_s3_key"] = key
+        result[f"{label}_layer_skip_destroy"] = layer["skip_destroy"]
     return result
 
 
@@ -295,16 +417,22 @@ def prepare(args):
             with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=10) as response:
                 address = ipaddress.ip_address(response.read().decode().strip())
             requested = [str(address) + ("/32" if address.version == 4 else "/128")]
-    platform = preserve_access(states["platform"], cluster,
-                               json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
+    platform = release_settings(states["platform"], "platform")
+    platform.update(preserve_access(states["platform"], cluster,
+                               json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested))
     platform.update(environment=args.environment, aws_region=args.region)
+    platform["additional_private_subnet_ids_by_az"] = retain_capacity_subnets(
+        states["platform"], cluster,
+        json.loads(os.environ.get("TF_VAR_additional_private_subnet_ids_by_az", "{}")))
     platform["ecr_repository_encryption"] = repository_encryption(states["platform"])
     platform["retained_upgrade_kms_key_ids"] = [a["id"] for r, a in resources(states["platform"], "aws_kms_key")
                                                if not r.get("module") and r["name"] == "retained_upgrade"]
     write_json(directory / "platform.tfvars.json", platform)
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
-    gateway = {"environment": args.environment, "aws_region": args.region}
     gateway_state = states.get("gateway", {})
+    gateway = release_settings(gateway_state, "gateway")
+    gateway.update(environment=args.environment, aws_region=args.region)
+    gateway.update(gateway_layer_settings(gateway_state, args.account, args.environment))
     gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
                                            args.account, args.region, args.environment))
     brokers = [a for r, a in resources(gateway_state, "aws_lambda_function") if "github_auth_broker" in r.get("module", "")]
@@ -336,8 +464,9 @@ def prepare(args):
                    enable_agent_context_rbac="agent-context" in states)
     write_json(directory / "agent-factory.tfvars.json", factory)
     write_json(directory / "agent-context.tfvars.json", {"environment": args.environment, "aws_region": args.region})
-    webhook = {"environment": args.environment, "aws_region": args.region, "eks_cluster_name": cluster_name}
     ws = states.get("webhook-ingress", {})
+    webhook = release_settings(ws, "webhook-ingress")
+    webhook.update(environment=args.environment, aws_region=args.region, eks_cluster_name=cluster_name)
     webhook["gitlab_webhook_enabled"] = any("gitlab" in r["name"] for r, _ in resources(ws, "aws_lambda_function"))
     webhook["enable_adversarial_e2e"] = any(r["name"] == "adversarial_evidence" for r, _ in resources(ws, "aws_s3_bucket"))
     for r, attrs in resources(ws, "aws_lambda_function"):
@@ -378,6 +507,11 @@ def open_access(args):
     if aws("sts", "get-caller-identity")["Account"] != before["account"]:
         raise ValueError("EKS access update account differs from the snapshot")
     cluster = f"adp-{before['environment']}-eks-cluster"
+    desired = json.loads((directory / "eks-access.json").read_text())["publicAccessCidrs"]
+    current = aws("eks", "describe-cluster", "--name", cluster)["cluster"]
+    if current["status"] == "ACTIVE" and set(current["resourcesVpcConfig"].get("publicAccessCidrs", [])) == set(desired):
+        print("EKS access already matches the saved upgrade configuration")
+        return
     result = aws("eks", "update-cluster-config", "--name", cluster,
                  "--resources-vpc-config", "file://" + str(directory / "eks-access.json"))
     update_id = result["update"]["id"]

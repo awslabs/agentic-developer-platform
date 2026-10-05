@@ -35,6 +35,19 @@ inputs:
     required: false
     default: ''
 
+  service_role_arn:
+    description: Optional restricted service role override for nonpublishing checks
+    required: false
+    default: ''
+  source_namespace:
+    description: Optional isolated source namespace; defaults to the project name
+    required: false
+    default: ''
+  buildspec:
+    description: Optional buildspec override within the verified source archive
+    required: false
+    default: ''
+
 outputs:
   build_id:
     description: CodeBuild build ID
@@ -53,6 +66,7 @@ runs:
         STATE_BUCKET: ${{ inputs.state_bucket }}
         AWS_REGION: ${{ inputs.region }}
         REQUESTED_SOURCE: ${{ inputs.source_revision }}
+        SOURCE_NAMESPACE: ${{ inputs.source_namespace }}
         PROJECT_NAME: ${{ inputs.project_name }}
         CHILD_STATE_URI: ${{ inputs.child_state_uri }}
       run: |
@@ -71,12 +85,18 @@ runs:
           echo "::error::GitHub job name is unsafe for a source object key"
           exit 1
         fi
-        SOURCE_KEY="codebuild/src/${SOURCE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+        [[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+        SOURCE_NAMESPACE="${SOURCE_NAMESPACE:-$PROJECT_NAME}"
+        [[ "$SOURCE_NAMESPACE" =~ ^[A-Za-z0-9_-]+$ ]]
+        SOURCE_KEY="codebuild/src/${SOURCE_NAMESPACE}/${SOURCE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
         export SOURCE_KEY SOURCE_REVISION
         ARCHIVE="${RUNNER_TEMP}/adp-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
 
-        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" \
-          "${GITHUB_WORKSPACE}" "$ARCHIVE"
+        ARCHIVE_ARGS=("${GITHUB_WORKSPACE}" "$ARCHIVE")
+        case "$PROJECT_NAME" in
+          adp-*-grype-scan|adp-*-syft-scan) ARCHIVE_ARGS+=(--security-scan) ;;
+        esac
+        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" "${ARCHIVE_ARGS[@]}"
 
         aws s3 cp "$ARCHIVE" \
           "s3://${STATE_BUCKET}/${SOURCE_KEY}" \
@@ -112,6 +132,8 @@ runs:
         SOURCE_KEY: ${{ steps.upload.outputs.source_key }}
         SOURCE_REVISION: ${{ steps.upload.outputs.source_revision }}
         ENV_VARS: ${{ inputs.environment_variables }}
+        SERVICE_ROLE_ARN: ${{ inputs.service_role_arn }}
+        BUILDSPEC: ${{ inputs.buildspec }}
         CHILD_STATE_URI: ${{ inputs.child_state_uri }}
       run: |
         set -euo pipefail
@@ -127,6 +149,13 @@ runs:
         if [ -n "${ENV_VARS}" ]; then
           eval "VARS_ARRAY=(${ENV_VARS})"
           CMD+=("${VARS_ARRAY[@]}")
+        fi
+
+        if [ -n "${SERVICE_ROLE_ARN:-}" ]; then
+          CMD+=(--service-role-override "$SERVICE_ROLE_ARN")
+        fi
+        if [ -n "${BUILDSPEC:-}" ]; then
+          CMD+=(--buildspec-override "$BUILDSPEC")
         fi
 
         IDEMPOTENCY_TOKEN=$(printf '%s\0' "${CMD[@]}" | sha256sum | cut -d' ' -f1)

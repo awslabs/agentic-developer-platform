@@ -113,6 +113,8 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
         - name: claude-agent
@@ -150,7 +152,9 @@ spec:
 
           # Security context for the container
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
             readOnlyRootFilesystem: false
             capabilities:
               drop:

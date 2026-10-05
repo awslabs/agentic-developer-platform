@@ -17,8 +17,8 @@ Ownership is TWO NAMED LAYERS — do not conflate them:
 1. **Map lookup** (fast, no network) — installation -> owning tenant, read from
    Postgres. This is what ``attest=False`` does.
 2. **GitHub attestation** (network) — the installation's GitHub ``account.id``
-   must equal the claimed owner's ``organizations.github_org_id``. This is what
-   ``attest=True`` adds.
+   must equal the connection's recorded account ID, falling back to the legacy
+   ``organizations.github_org_id`` for older records. This is what ``attest=True`` adds.
 
 Layer 2 is not optional decoration. The pre-existing ownership check
 (``verify_installation_ownership``) consulted *only* ``channel_tenant_map`` —
@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from src.shared.models.organization import Organization
-from src.shared.models.vault import ChannelTenantMap, InstallationOwnershipConflict
+from src.shared.models.vault import ChannelTenantMap, InstallationOwnershipConflict, InstallationRevocation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,6 +100,7 @@ class OwnerState(StrEnum):
 
     RESOLVED = "resolved"
     NOT_FOUND = "not_found"
+    REVOKED = "revoked"
     #: More than one tenant claims this installation. Fail CLOSED — this is the
     #: pre-migration duplicate state and the quarantined state, and guessing a
     #: winner would silently re-home a customer.
@@ -187,6 +188,10 @@ async def resolve_installation_owner(
     """
     scope_id = str(installation_id)
 
+    revocation = await db.get(InstallationRevocation, scope_id, populate_existing=True)
+    if revocation is not None and revocation.restored_at is None:
+        return None, OwnerState.REVOKED
+
     # A quarantined installation is ambiguous by definition: migration 026 found
     # more than one tenant claiming it and deliberately did not pick a winner.
     # Checked FIRST so an operator-visible conflict can never be resolved past.
@@ -248,6 +253,23 @@ async def resolve_installation_owner(
     tenant_id = next(iter(claims))
     owning_org = next((o for o in orgs if o.id == tenant_id), None)
     github_account_id = owning_org.github_org_id if owning_org is not None else None
+    # New connections record provider identity on the connection itself. An ADP
+    # organization may connect accounts whose names/IDs differ from its own.
+    # Retain the organization field only as a fallback for legacy connections.
+    mappings = (
+        await db.scalars(
+            select(ChannelTenantMap).where(
+                ChannelTenantMap.provider == "github",
+                ChannelTenantMap.installation_id == scope_id,
+                ChannelTenantMap.org_id == tenant_id,
+            )
+        )
+    ).all()
+    account_ids = [(m.install_metadata or {}).get("account_id") for m in mappings if "account_id" in (m.install_metadata or {})]
+    if account_ids:
+        if any(not isinstance(value, str) or not value.isdecimal() or int(value) <= 0 for value in account_ids) or len(set(account_ids)) != 1:
+            return None, OwnerState.UNATTESTABLE
+        github_account_id = next(iter(account_ids))
 
     if not attest:
         if tenant_id not in corroborated:

@@ -171,12 +171,33 @@ def validate(
         "image_execution",
         "gateway_namespace",
         "cluster_dns_ip",
+        "execution",
+        "controller_profiles",
+        "credential_controller",
+        "api_adapters",
+        "paid_worker",
+        "api_producer_role",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
     cluster_dns_address(env)
+    from .api_adapters import validate as validate_api_adapters
+
+    validate_api_adapters(env)
+    from .paid_worker import validate as validate_paid_worker
+
+    validate_paid_worker(env, lock)
+    from .producer_role import validate as validate_producer_role
+
+    validate_producer_role(env)
+    from .execution import validate_execution
+
+    validate_execution(env, lock)
+    from .credential_controller import validate as validate_credential_controller
+
+    validate_credential_controller(env, lock)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",
@@ -359,10 +380,10 @@ def validate(
         # (`runner.py`), so an unrecognized head is as much a refusal as a stale one.
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
+        # #6048 advances it to 038 for explicit cluster grant scopes.
         require(
-            head == "017_add_workspace_bootstrap_reservations",
-            "release schema must include U11c013, U7b014, the U23 identity binding and"
-            " the w6-10 bootstrap reservations table",
+            head == "042_controller_cleanup_snapshots",
+            "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
         base = load(MODULE / "releases/superplane.lock.yaml")
@@ -406,9 +427,16 @@ def validate(
     )
     if not control_plane_only:
         require(
+            env.get("execution") is not None,
+            "Full activation requires the trusted executor release and existing run projections",
+        )
+        require(
             env.get("controller_ownership") == "single-workspace-controller",
             "Explicit single-controller ownership is required",
         )
+    from .controller_profiles import validate_profiles
+
+    validate_profiles(env, control_plane_only=control_plane_only)
 
 
 def image(lock: dict, component: str) -> str:

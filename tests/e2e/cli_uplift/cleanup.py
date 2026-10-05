@@ -45,6 +45,25 @@ from pathlib import Path
 # a tag match alone is never sufficient — the VALUE must be ours.
 OWNER_TAG = "adp:cli-uplift-eval"
 
+# Kept recognizable for manifests from interrupted E18 attempts. Recovery of
+# these resources is currently refused: the producer cannot durably publish the
+# CLI's operation identity before its first POST, and cleanup has no verified
+# ordinary-principal recovery session. Registering a kind does not authorize a
+# best-guess delete with the run's administrator session.
+SUPERPLANE_KINDS = (
+    "superplane_deployment",
+    "superplane_workspace",
+    "superplane_provider",
+    "adp_vault_credential",
+    "superplane_account",
+)
+SUPERPLANE_RECOVERY_BLOCKER = (
+    "E18 durable recovery is not implemented: CLI operation receipts must be "
+    "published before mutation and recovered by exact resource identity under "
+    "the original ordinary or administrator principal. Superplane mutations "
+    "remain disabled until the producer and scoped recovery deleters exist."
+)
+
 # Resource kinds the sweep knows how to delete, in dependency order: instances
 # first (they hold the ENI), then the things they referenced.
 ORDER = (
@@ -60,6 +79,7 @@ ORDER = (
     # the E06 journey; without it here, `record()` raises on an unknown kind and
     # `sweep()` treats it as a leak — a successful E06 would have failed cleanup.
     "bedrock_destination",
+    *SUPERPLANE_KINDS,
     # The ADP account the run registers for its own E02 login, so the user-scoped
     # routes later cases exercise have a `users` row to resolve to.
     #
@@ -217,6 +237,31 @@ class Manifest:
 
         # Critical: the caller creates the resource on its next line. If the
         # durable push fails, the intent must not be treated as recorded.
+        return self._mutate(change, critical=True)
+
+    def record_diagnostic(self, purpose, plan):
+        """Push immutable recovery inputs before any remote diagnostic dispatch.
+
+        Diagnostic intents are evidence, not deletable resources. They remain in
+        the manifest for explicit same-request recovery after a lost worker.
+        """
+        if self.on_change is None:
+            raise ValueError(
+                "Diagnostic dispatch requires an external durable manifest sink"
+            )
+        if not isinstance(plan, dict) or not plan.get("evaluation_id"):
+            raise ValueError("Diagnostic recovery plan needs its evaluation identity")
+        key = purpose + ":" + plan["evaluation_id"]
+
+        def change(document):
+            intents = document.setdefault("diagnostic_intents", {})
+            if key in intents and intents[key] != plan:
+                raise ValueError(
+                    "Diagnostic recovery identity already has different inputs"
+                )
+            intents[key] = plan
+            return plan
+
         return self._mutate(change, critical=True)
 
     def mark(self, kind, identifier, status, *, error=None):

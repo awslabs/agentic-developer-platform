@@ -1,0 +1,197 @@
+{
+  "diagnostic_run": 36394633883,
+  "coverage_complete": false,
+  "mirror_manifests": [
+    {
+      "source": "node@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c",
+      "mirror": "public.ecr.aws/docker/library/node@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c",
+      "verified": true,
+      "actual_digest": "sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c"
+    },
+    {
+      "source": "ruby@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207",
+      "mirror": "public.ecr.aws/docker/library/ruby@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207",
+      "verified": true,
+      "actual_digest": "sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207"
+    },
+    {
+      "source": "node@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9",
+      "mirror": "public.ecr.aws/docker/library/node@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9",
+      "verified": true,
+      "actual_digest": "sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9"
+    },
+    {
+      "source": "golang@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9",
+      "mirror": "public.ecr.aws/docker/library/golang@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9",
+      "verified": true,
+      "actual_digest": "sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9"
+    },
+    {
+      "source": "node@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6",
+      "mirror": "public.ecr.aws/docker/library/node@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6",
+      "verified": true,
+      "actual_digest": "sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6"
+    }
+  ],
+  "python_mirror": [
+    {
+      "ref": "docker.io/library/python:3.13-slim",
+      "digest": "sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b"
+    },
+    {
+      "ref": "public.ecr.aws/docker/library/python:3.13-slim",
+      "digest": "sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b"
+    }
+  ],
+  "curl_standalone_base": {
+    "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+    "user": "appuser"
+  },
+  "restored_curl_base_digest": "sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+  "validation": {
+    "scanner_tests_passed": 76,
+    "scanner_tests_skipped": 1,
+    "curl_runtime_user": "10001",
+    "curl_version": "8.22.0",
+    "skypilot_openssh_runtime_user": "1000"
+  },
+  "parser_scan": {
+    "counts": {
+      "Negligible": 93,
+      "Critical": 24,
+      "High": 90,
+      "Medium": 67,
+      "Low": 9
+    },
+    "non_os_remaining": [
+      {
+        "name": "python",
+        "version": "3.13.15",
+        "type": "binary",
+        "id": "CVE-2026-82049"
+      }
+    ],
+    "grype_sha256": "3fe53ad3f8b4690bd71c3c7d7f718f50298206b82514c36ebb4b494d4a6e4f8d",
+    "database": {
+      "status": {
+        "schemaVersion": "v6.1.9",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-09-28T00:37:02Z_1790577750.tar.zst?checksum=sha256%3Adf23160af6e2d67cf3a5b6ccbc7e1de0c2c4ecd15cbd7dc6127ef4f9010ea714",
+        "built": "2026-09-28T06:42:30Z",
+        "path": "/workspaces/projects/security25/live-audit-20260927/db/6/vulnerability.db",
+        "valid": true
+      },
+      "providers": {
+        "alma": {
+          "captured": "2026-09-28T00:37:06Z",
+          "input": "xxh64:db73183617e221d9"
+        },
+        "alpine": {
+          "captured": "2026-09-28T00:37:07Z",
+          "input": "xxh64:069b49b669c9908f"
+        },
+        "amazon": {
+          "captured": "2026-09-28T00:37:07Z",
+          "input": "xxh64:adb0702b41093d14"
+        },
+        "arch": {
+          "captured": "2026-09-28T00:37:30Z",
+          "input": "xxh64:5ac1a4147f274238"
+        },
+        "bitnami": {
+          "captured": "2026-09-28T00:37:32Z",
+          "input": "xxh64:93ab043a716d1763"
+        },
+        "chainguard": {
+          "captured": "2026-09-28T00:37:20Z",
+          "input": "xxh64:931843e8524d00f0"
+        },
+        "chainguard-libraries": {
+          "captured": "2026-09-28T00:37:02Z",
+          "input": "xxh64:2a0c8cd3a91296c5"
+        },
+        "debian": {
+          "captured": "2026-09-28T00:37:42Z",
+          "input": "xxh64:627442ffda93c812"
+        },
+        "echo": {
+          "captured": "2026-09-28T00:37:02Z",
+          "input": "xxh64:2933f699ab438d25"
+        },
+        "eol": {
+          "captured": "2026-09-28T00:37:07Z",
+          "input": "xxh64:6485bf18696fd03d"
+        },
+        "epss": {
+          "captured": "2026-09-28T00:37:14Z",
+          "input": "xxh64:6aeaaf97873055be"
+        },
+        "fedora": {
+          "captured": "2026-09-28T00:37:35Z",
+          "input": "xxh64:71e37a980df16b9a"
+        },
+        "github": {
+          "captured": "2026-09-28T00:37:18Z",
+          "input": "xxh64:70547b5cfb53a8fb"
+        },
+        "govulndb": {
+          "captured": "2026-09-28T00:37:17Z",
+          "input": "xxh64:c63cbb5f6c2fdc1b"
+        },
+        "hummingbird": {
+          "captured": "2026-09-28T00:40:25Z",
+          "input": "xxh64:338fc824a6e3ab57"
+        },
+        "kev": {
+          "captured": "2026-09-28T00:37:05Z",
+          "input": "xxh64:a7f7e45ad81b0d4e"
+        },
+        "mariner": {
+          "captured": "2026-09-28T00:37:25Z",
+          "input": "xxh64:667cc9b8edc8951d"
+        },
+        "minimos": {
+          "captured": "2026-09-28T00:37:24Z",
+          "input": "xxh64:baa49901fea83295"
+        },
+        "nvd": {
+          "captured": "2026-09-28T00:38:34Z",
+          "input": "xxh64:898648240acc2587"
+        },
+        "oracle": {
+          "captured": "2026-09-28T00:37:05Z",
+          "input": "xxh64:f8e4412f587f1966"
+        },
+        "photon": {
+          "captured": "2026-09-28T00:38:29Z",
+          "input": "xxh64:4b975332c1c7d768"
+        },
+        "rhel": {
+          "captured": "2026-09-28T00:38:56Z",
+          "input": "xxh64:e3e40885abbc7dcc"
+        },
+        "secureos": {
+          "captured": "2026-09-28T00:37:29Z",
+          "input": "xxh64:0b67de36b03eb752"
+        },
+        "sles": {
+          "captured": "2026-09-28T00:39:37Z",
+          "input": "xxh64:475bf8ba59bf8705"
+        },
+        "ubuntu": {
+          "captured": "2026-09-28T00:38:39Z",
+          "input": "xxh64:37128efd82f93f45"
+        },
+        "wolfi": {
+          "captured": "2026-09-28T00:37:19Z",
+          "input": "xxh64:15c158728de18f43"
+        }
+      }
+    }
+  },
+  "parser_indexers": {
+    "scip-python": 844,
+    "scip-typescript": 722,
+    "scip-go": 445,
+    "node": "v22.23.3"
+  }
+}

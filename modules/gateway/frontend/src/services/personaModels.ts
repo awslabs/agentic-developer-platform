@@ -27,6 +27,8 @@ export type PreferenceSource = 'principal-mapping' | 'system-default';
 export type ClassDefaultStatus = 'candidate' | 'proven' | null;
 
 export interface PersonaPreference {
+  default_model_id?: string | null;
+  default_scope?: 'persona' | 'class';
   persona_key: string;
   persona_display_name: string;
   configurable: boolean;
@@ -55,6 +57,7 @@ export interface PreferenceList {
 }
 
 export interface PreferenceDetail {
+  default_scope?: 'persona' | 'class';
   persona_key: string;
   compatibility_class: string;
   harness_contract_revision: string;
@@ -164,6 +167,10 @@ export function personaModelErrorMessage(error: unknown, fallback: string): stri
     ? detail as { reason?: unknown; error?: unknown } : value;
   const reason = structured?.reason ?? structured?.error;
   const messages: Record<string, string> = {
+    default_revision_conflict: 'This default changed elsewhere. Reload defaults before saving again.',
+    model_unproven: 'This model needs an availability check before it can become a platform default.',
+    platform_destination_unavailable: 'The platform model connection is not ready. Configure it before saving defaults.',
+    platform_account_unconfigured: 'Configure the platform model account before saving defaults.',
     unknown_model: 'This model is no longer listed. Reload the model choices.',
     not_invocable: 'This model is currently unavailable. Choose another model.',
     evidence_stale: 'Model availability needs to be checked. Try another available model or contact your ADP administrator.',

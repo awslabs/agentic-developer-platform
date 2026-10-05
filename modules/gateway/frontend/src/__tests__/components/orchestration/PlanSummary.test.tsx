@@ -53,20 +53,20 @@ function makePolicy(overrides: Partial<PolicySummary> = {}): PolicySummary {
   };
 }
 
-const COUNTS = { stories: 4, waves: 2, gates: 1, evaluations: 3 };
+const COUNTS = { stories: 4, waves: 2, gates: 1, evaluations: 3, evaluationStories: 2 };
 
 // ---------------------------------------------------------------------------
 
-describe('the plan counts (pre-existing behaviour)', () => {
+describe('the plan counts', () => {
   it('reports stories, waves, gates and evaluations', () => {
     render(<PlanSummary {...COUNTS} />);
 
-    expect(screen.getByTestId('plan-summary')).toHaveTextContent('4 stories across 2 waves');
-    expect(screen.getByTestId('plan-summary')).toHaveTextContent('1 approval gate · 3 evaluations');
+    expect(screen.getByTestId('plan-summary')).toHaveTextContent('6 stories across 2 waves');
+    expect(screen.getByTestId('plan-summary')).toHaveTextContent('4 implementation · 2 evaluation · 1 approval gate · 1 evaluation checkpoint');
   });
 
   it('singularizes a one-story, one-wave plan', () => {
-    render(<PlanSummary stories={1} waves={1} gates={1} evaluations={1} />);
+    render(<PlanSummary stories={1} waves={1} gates={1} evaluations={1} evaluationStories={0} />);
 
     expect(screen.getByTestId('plan-summary')).toHaveTextContent('1 story across 1 wave');
   });
@@ -201,7 +201,7 @@ describe('the limits', () => {
     );
 
     expect(screen.getByTestId('policy-limits')).toHaveTextContent('4 at a time');
-    expect(screen.getByTestId('policy-limits')).toHaveTextContent('3 attempts per step');
+    expect(screen.getByTestId('policy-limits')).toHaveTextContent('3 attempts per stage');
   });
 
   it('never renders an "unlimited" reading, because the schema cannot express one', () => {
@@ -327,14 +327,14 @@ it('explains user credential permissions and provider lifetime without claiming 
     human_decisions: ['deploy'],
     user_credentials: {
       permission_mode: 'user_configured', lifetime: 'provider_managed',
-      vault_credential_ids: ['deployment-key'],
-      aws_role_arns: ['arn:aws:iam::222222222222:role/CustomerDeploy'], actions: ['develop'],
+      vault_credential_count: 1,
+      aws_role_count: 1, actions: ['develop'],
     },
   })} />);
   const description = screen.getByTestId('policy-user-credentials');
   expect(description).toHaveTextContent('retain their configured permissions');
-  expect(description).toHaveTextContent('deployment-key');
-  expect(description).toHaveTextContent('CustomerDeploy');
+  expect(description).toHaveTextContent('Vault credentials: 1');
+  expect(description).toHaveTextContent('AWS roles: 1');
   expect(description).toHaveTextContent('Credentials already issued follow');
   expect(description).toHaveTextContent('may permit additional actions');
   expect(screen.getByTestId('policy-human-decisions')).toHaveTextContent('deploy');

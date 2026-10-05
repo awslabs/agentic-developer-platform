@@ -108,6 +108,8 @@ async def broker(session, assignment, monkeypatch):
             pass
 
     settings = SimpleNamespace(
+        platform_bedrock_account_id="",
+        reserved_role_name_prefixes="adp-,bedrockgw-",
         enforce_credential_binding=False,
         webhook_events_table="events",
         vault_raw_read_enabled=True,
@@ -128,7 +130,18 @@ async def broker(session, assignment, monkeypatch):
         trust_apigw_headers=True,
         apigw_provenance_secret="authority-edge-provenance",
     )
-    identity = SimpleNamespace(scope="internal", user_id="worker-identity", credential_scopes=["credential:raw-read", "credential:materialize"])
+    identity = SimpleNamespace(
+        scope="internal",
+        user_id="worker-identity",
+        credential_scopes=[
+            "credential:list",
+            "credential:proxy",
+            "credential:assume-role",
+            "credential:task-session",
+            "credential:raw-read",
+            "credential:materialize",
+        ],
+    )
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)
@@ -290,6 +303,10 @@ async def test_saved_role_preserves_permissions_external_id_duration_tags_and_re
     broker.sm.get_secret.return_value = json.dumps(
         {"role_arn": ROLE, "external_id": "customer-external-id", "session_duration_seconds": 1800, "default_region": "eu-west-1"}
     )
+    from tests.internal.aws_ownership_fixture import verified_role_material
+
+    await verified_role_material(broker.db, broker.sm, broker.sm.get_secret.return_value)
+
     expiry = datetime.now(UTC) + timedelta(minutes=30)
     with patch("src.internal.sts_assume_service.boto3.client") as aws:
         aws.return_value.assume_role.return_value = {
@@ -401,6 +418,10 @@ async def test_saved_role_cancellation_during_sts_prevents_session_delivery(brok
     await broker.db.commit()
     broker.sm.get_secret.return_value = json.dumps({"role_arn": ROLE})
 
+    from tests.internal.aws_ownership_fixture import verified_role_material
+
+    await verified_role_material(broker.db, broker.sm, broker.sm.get_secret.return_value)
+
     def revoke(**_):
         broker.assignment.grant = replace(broker.assignment.grant, revoked=True)
         return {
@@ -474,8 +495,15 @@ def test_summary_cannot_mutate_accepted_credential_authority():
 
     accepted = policy()
     summary = summarize_policy(accepted)
-    summary.user_credentials.vault_credential_ids.append("injected")
+    summary.user_credentials.actions.clear()
+    assert accepted.user_credentials.actions
     assert accepted.user_credentials.vault_credential_ids == ["approved-key"]
+    rendered = summary.model_dump_json()
+    assert "approved-key" not in rendered
+    assert "arn:aws:" not in rendered
+    assert "vault_credential_ids" not in rendered
+    assert "aws_role_arns" not in rendered
+    assert summary.user_credentials.vault_credential_count == 1
 
 
 async def test_metadata_hides_expired_selected_credentials(broker):
@@ -494,3 +522,8 @@ def test_v1_cannot_use_user_granted_scope_even_with_a_selected_target():
         _context(credential_scope=CredentialScope.USER_GRANTED), Action.DEVELOP, replace(_develop(), user_credential_id="approved-key"), 1
     )
     assert result.reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "111111111111")

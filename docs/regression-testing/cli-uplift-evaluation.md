@@ -1,0 +1,670 @@
+# CLI uplift evaluation: first live checkpoint
+
+Story #5199 · PR #5221 · workflow `.github/workflows/eval-cli-uplift.yml`.
+
+The [combined nightly regression](nightly-cli-regression.md) invokes this suite
+with `nightly` after onboarding and budget enforcement; its manual `ec2_scope=full`
+option selects the full acceptance matrix. The instructions below are
+for standalone diagnosis; the `login` default is not used by the nightly.
+
+Start with **login**, the default: Actions launches disposable EC2, transfers the
+checked-in scripts through S3/SSM, installs the served ADP CLI, performs native
+Cognito admin login and refresh, collects evidence, and cleans up. Every product
+command runs on EC2. Actions manages its lifecycle and reads evidence.
+
+A successful checkpoint exits zero with `status: passed`, `partial: true`, and
+`full_acceptance: false`. It does **not** satisfy the complete E01–E15 evaluation.
+C01 records basic login separately from E02's full challenge/negative matrix.
+The login checkpoint does not run admin setup, Bedrock, GitHub, or model calls.
+
+## Private target configuration
+
+Public examples contain fictional identifiers. They do not identify an approved
+or deployed environment. Keep real account IDs, gateway URLs, network resources,
+Cognito pool IDs, and fixture references in private configuration.
+
+Configure two secrets in each protected GitHub environment:
+
+- `CLI_UPLIFT_EVAL_BINDINGS_JSON`: a JSON object with the reviewed target settings.
+  Use the structure in `tests/e2e/cli_uplift/config.example.json` and the binding
+  examples; include the real platform/destination accounts, gateway URL,
+  `gateway_deployment` name, network, Cognito pool, and recovery resources.
+- `CLI_UPLIFT_EVAL_GATEWAY_CATALOG`: a JSON object keyed by that
+  `gateway_deployment` name. Follow the structure of the sanitized
+  `cli-uplift/gateway-deployment-receipts.json` example, with the reviewed cluster,
+  repository, selectors, and immutable build evidence for your target.
+
+Both live evaluation and recovery require these secrets. Private bindings layer
+above the checked-in examples and below individual environment overrides.
+Catalog identity checks remain mandatory: a wrong account, URL, region, cluster,
+repository, or source revision fails validation. Secret values are read from the
+job environment and are never interpolated into shell commands.
+
+Protect the GitHub environment with a main-branch deployment policy and scoped
+OIDC role. Use a dedicated CLI regression identity; store its password and TOTP
+seed in Secrets Manager. A login checkpoint validates the deployed CLI without
+upgrading the platform, and broader suites still require their own fixtures.
+
+Set `EVAL_ENVIRONMENT` and `EVAL_REVISION` from your private deployment record:
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
+  -f mode=start -f suites=login
+```
+
+## Configure the first run
+
+Configure the following in the repository's **selected protected environment**. Reuse approved
+test resources. Do not invent ARNs or point at a real user's credentials.
+
+| Setting | Type | Purpose |
+| --- | --- | --- |
+| `AWS_CLI_UPLIFT_EVAL_ROLE_ARN` (fallback `AWS_E2E_ROLE_ARN`) | GitHub secret | Actions OIDC role in the selected platform account |
+| `CLI_UPLIFT_EVAL_INSTANCE_PROFILE` | GitHub variable | Existing EC2 instance-profile name; otherwise the example defaults to `adp-cli-uplift-eval-instance` |
+| `CLI_UPLIFT_EVAL_STATE_BUCKET` | GitHub variable | Private platform-account S3 bucket for scripts and durable recovery state |
+| `CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID` | GitHub variable, when needed | KMS key used by that bucket/state |
+| `CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME` | GitHub variable | Secrets Manager **name**, not credential contents |
+
+The credential secret contains JSON with `admin_username` and `admin_password`
+for a dedicated native Cognito platform-admin test identity in the configured pool.
+For this repeatable login checkpoint, use an identity whose initial password
+challenge has already been completed; it must still authenticate through the real
+CLI password endpoint on every run. No imported tokens. The full admin suite
+separately requires a fresh challenge identity (`admin_new_password`) and
+`non_admin_username` / `non_admin_password`. Configured MFA also needs its actual
+challenge response; it is not established by the basic checkpoint.
+
+The EC2 profile needs SSM, read access to the evaluation bundle and fixture secret,
+and the necessary KMS decrypt permissions. It does not need Bedrock access for
+login. The Actions role needs EC2 launch/describe/terminate/tag, PassRole for that
+profile, SSM command/describe and AMI-parameter reads, profile/Cognito metadata
+reads, state/bundle storage permissions, and Lambda/ECR deployment evidence reads.
+The subnet must reach SSM, S3, Secrets Manager, and the gateway. Preserve the
+existing regional STS/Secrets Manager FIPS endpoint configuration.
+
+For later destination scenarios, additionally configure:
+
+- `CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN`: destination-account access/evidence role.
+- `CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN`: destination-account provisioning role,
+  assumable from the test EC2 profile and authorized for the CLI's CloudFormation
+  role setup. Both ARNs must name your reviewed destination account.
+
+Neither destination role nor any GitHub fixture is required for login.
+
+## Dispatch
+
+Review and merge the workflow change to `main` before manual dispatch. It is
+currently PR code; its appearance in the Actions API from PR checks does not
+mean the manual live path is ready on the default branch. Live/recovery jobs
+continue to require main or a reviewed release tag and the configured environment.
+Do not run unreviewed PR code with the live role.
+
+Reverify the deployed revision using authorized platform-account credentials.
+The gateway's `/health` does not expose a SHA. Deployment evidence is available
+from the pinned orchestration image (the deploy workflow verifies its match):
+
+```bash
+EVAL_IMAGE_DIGEST=$(aws lambda get-function \
+  --function-name adp-dev-orchestration-tick --region us-east-1 \
+  --query Code.ResolvedImageUri --output text | cut -d@ -f2)
+aws ecr describe-images --repository-name adp-gateway --region us-east-1 \
+  --image-ids imageDigest="$EVAL_IMAGE_DIGEST" \
+  --query 'imageDetails[0].imageTags' --output json
+```
+
+Use the single 40-character commit tag, not `latest`. Do not revert a deployment
+to match an old example. Actions fetches this exact commit before comparing all
+served artifact hashes with the expected release.
+
+### First checkpoint
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment=dev -f expected_revision='<verified-40-character-sha>' \
+  -f mode=start -f suites=login
+```
+
+Commands exercised on EC2: the published installer, `adp version`,
+`adp admin login --credentials-stdin` with a negative and a valid login, and
+`adp refresh`. The password enters through stdin from Secrets Manager; no
+credential goes in command arguments or published logs.
+
+The workflow validates required configuration before assuming the execution role.
+Preflight verifies platform identity, subnet/profile/Cognito metadata, deployment,
+and release files before EC2 launch. Login does not assume a destination role.
+
+### Full run
+
+The nightly requests this complete matrix. Missing fixtures are recorded as
+blocked and prevent full acceptance; they do not silently narrow the selection.
+To run the same suite independently:
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment=dev -f expected_revision='<verified-40-character-sha>' \
+  -f mode=start -f suites=full
+```
+
+Suites: `assistant`, `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `knowledge`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+`github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
+
+The `knowledge` checkpoint runs E01 installation, login and E32 knowledge command
+qualification only. It does not start indexing or inference. Engine dispatches
+bind the exact reviewed source, workflow, environment and sanitized report; both
+the live job and independent recovery job must succeed. A completed checkpoint
+still requires human final acceptance.
+
+**E16/E17 model execution is currently disabled**, even with reachable gateways.
+The `multi_deployment_model_limits` requirement blocks both cases until hard
+Codex output limits (at most 256 tokens per request) and the aggregate 48-request
+ceiling are implemented before inference. The remote entry point also refuses
+execution; there is no configuration override. A short prompt or a check of
+receipts after inference cannot enforce these limits. AC-10/AC-11 remain open.
+The zero-model-request session checkpoint below remains available.
+
+`multi-deployment` (E16/E17, #5413) is the one suite whose fixture cannot be
+created from this workflow: it needs **three separately reachable ADP
+deployments**, each with its own sign-in fixture, supplied as a JSON array in the
+`CLI_UPLIFT_EVAL_DEPLOYMENTS` repository variable:
+
+```json
+[{"name": "development",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/dev-fixture"},
+ {"name": "integration",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/int-fixture"},
+ {"name": "preprod",      "gateway_url": "https://…/api", "credential_secret_name": "adp/…/preprod-fixture"}]
+```
+
+Each entry names a Secrets Manager secret; never a password. Two rules are
+enforced before a run starts, because breaking either produces a green result
+that proves nothing:
+
+- **Distinct gateway URLs.** `adp deployment add` treats a second name for an
+  already-registered URL as an *alias* — one canonical URL, one stable id, one
+  session — so three names over fewer URLs would satisfy a count while sharing
+  the very session whose independence is under test.
+- **A distinct `credential_secret_name` per deployment**, as required by the
+  fixture format. Each secret supplies credentials valid for its gateway;
+  matching user IDs across different deployments are allowed.
+
+E16 sends a unique `X-Request-ID` from each tool and matches the usage API's
+`request_id` field. Each test identity needs access to its own usage logs. A tool
+version that does not forward the correlation header fails receipt validation.
+E17 requires shell-tool access in the temporary fixture directory: each model
+runs a local barrier command, then continues in the same process after the harness
+switches the default, refreshes one deployment, and logs out another. The logged-out
+Codex session must report an authentication error, and the other two must finish.
+Cleanup failure makes the case fail.
+
+With the variable unset, E16/E17 report `blocked` naming `three_deployments`, and
+`full_acceptance` stays false. Supplying gateways clears that fixture requirement;
+the separate model-limit requirement above still blocks execution.
+
+Before inference, the same EC2 payload can run a session-only checkpoint:
+
+```bash
+python3 /home/ec2-user/adp-eval/remote/dispatcher.py \
+  multi_deployment_sessions /path/to/multi-deployment-payload.json
+```
+
+Run as `ec2-user`, with the installed Claude and Codex binaries on `PATH`.
+The payload needs the same instance/account, region, endpoint, CLI path and
+three deployment/credential references as E16/E17. It signs in to the real
+gateways in one temporary home, launches both tools with `--version`, verifies
+three separate proxy identities, switches the default, refreshes one session,
+and logs out another. The remaining tokens must still authenticate at their
+own gateways. It stops the proxies and deletes its temporary home.
+
+Its report contains `checkpoint_only: true` and `model_requests: 0`. It is not
+an E16/E17 acceptance case and cannot establish model routing or spend. Native
+platform-admin sessions may legitimately have an empty organization ID; usage
+queries must preserve that value and the gateway-reported user ID. Provision
+approved routing fixtures separately before attempting the model scenarios.
+
+### The `superplane` suite (E18, #5637)
+
+**E18 is blocked in code until durable mutation recovery is implemented.** An
+E18-only run stops during preflight before allocating an EC2 instance. A full run
+keeps E18 blocked while other eligible cases proceed. A direct dispatch also
+refuses before loading a session or running the CLI; configuration cannot enable
+the missing recovery capability.
+
+E18 is intended to drive the served CLI's `adp superplane` commands from the
+disposable EC2 instance through the gateway to the Superplane domain service.
+It is the live half of #5637: the offline contract suite
+(`modules/gateway/tests/cli/test_superplane_contract.py`) proves every emitted
+method, path and body matches the gateway's forwarding allowlist and the domain's
+own request models. Live acceptance remains incomplete until the guarded journey
+can safely run and establish that the deployed service accepts those requests.
+
+The blocker is concrete: `remote/superplane_domain.py` currently receives resource
+IDs after CLI output arrives, stores recovery receipts in temporary homes, and
+publishes cleanup resources only after the journey returns. The instance can read
+its S3 bundle but cannot synchronously publish mutation intent to durable recovery
+storage. A lost response or terminated instance can therefore leave a resource
+without a recoverable ID. The orchestrator also lacks cleanup sessions bound to
+E18's separate ordinary principal. Registering the five Superplane resource kinds
+now preserves historical manifest entries, but their live deleters explicitly
+refuse and leave them outstanding; they do not guess ownership or delete by name.
+
+Before removing the guards in `preflight.py` and `remote/superplane_domain.py`,
+implement and verify all of the following on disposable EC2 and remote CI:
+
+- Persist the CLI's original operation ID, immutable create request, deployment,
+  tenant and principal before each mutation; require durable acknowledgement
+  before POST. Include the failed-provider compensation path and account handoff.
+- Recover lost replies through the same operation identity and preserve receipts
+  until resource absence is verified, including after runner and instance loss.
+- Supply cleanup with the correct ordinary or administrator identity, and delete
+  only proven run-owned resource IDs. Deployment recovery needs its workspace ID
+  as well. Confirm provider and vault absence separately and wait for workspace
+  teardown to finish.
+- Publish resources, removal evidence and unresolved operations incrementally and
+  on every failure. Prove interruption, failed cleanup and expired-session cases
+  cannot report acceptance or silently clear a recovery obligation.
+
+Its fixture cannot be created from this workflow either. It needs a Superplane
+domain service actually deployed behind the gateway, plus a separate onboarded
+ordinary-user session, supplied in the config's `superplane` object:
+
+```json
+{"base_path": "/superplane/v1", "ordinary_session_secret_name": "adp/…/superplane-ordinary-session", "model_name": "approved/bounded-test-model", "aws_connection_id": "verified-adp-connection-id"}
+```
+
+The inherited E02 session is the verified administrator. The additional secret
+contains a current token trio plus `client_id`, `user_pool_id`, `region`, and
+`expires_at` for a separately onboarded non-admin identity. The intended journey
+refreshes through the gateway and requires distinct ordinary/admin principals in
+the same tenant.
+`model_name` must identify the fixture's approved one-GPU test model.
+`aws_connection_id` must name a verified AWS connection owned by the inherited
+administrator in the same tenant and matching `destination_account`; it is an
+opaque ADP ID, not a secret ARN. The planned account flow registers, reads, retries
+and deletes its own binding while preserving the source connection. The planned
+workload uses a one-node, one-GPU, $5/day workspace quota and verifies deployment
+and workspace removal.
+
+An unauthenticated 401 or 403 proves only that authentication answered; it does
+not prove that the domain is deployed. Preflight now reports
+`superplane_durable_recovery_unimplemented` without probing the gateway. A
+configured domain cannot override this code blocker. E18 has not established live
+acceptance and `full_acceptance` remains false.
+
+### Watch it
+
+```bash
+gh run list --repo aws-e/adp --workflow eval-cli-uplift.yml --limit 5
+gh run watch <run-id> --repo aws-e/adp
+gh run download <run-id> --repo aws-e/adp -n cli-uplift-eval-<run-id>-1
+```
+
+`report.json` status is the authoritative verdict. Read `full_acceptance` and
+`partial` separately. A blocked/not-run case, failed stage, or incomplete cleanup
+fails even a partial checkpoint. Result fields are defined in
+[report.schema.json](../../tests/e2e/cli_uplift/report.schema.json).
+
+## Resume, status, and cleanup
+
+Use the same evaluation ID, selected suites, and deployment revision. State is
+restored from S3 on the new Actions runner:
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f expected_revision=<same-sha> -f suites=login \
+  -f mode=resume -f evaluation_id=<evaluation-id>
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f expected_revision=<same-sha> -f suites=login \
+  -f mode=status -f evaluation_id=<evaluation-id>
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f expected_revision=<same-sha> -f suites=login \
+  -f mode=cleanup -f evaluation_id=<evaluation-id>
+```
+
+Never publish `state.json`, the resource manifest, fixture secrets, or session
+files. Only sanitized `report.json` and `results.xml` are Actions artifacts.
+
+Cleanup runs in-process and in an independent recovery job; the instance also
+has a self-termination timer. Deletion is scoped to recorded run-owned resources.
+Existing test identities, profiles, buckets, and reused roles are preserved.
+After cancellation, verify no live instance remains for the exact evaluation ID:
+
+```bash
+aws ec2 describe-instances --region us-east-1 \
+  --filters "Name=tag:adp:cli-uplift-eval,Values=<evaluation-id>" \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
+```
+
+## Fault injection
+
+Supported injections: `wrong_account`, `missing_usage`, `cleanup_failure`,
+`expired_token`, `instance_loss`; `none` disables injection. These apply to the
+corresponding scenarios; a login checkpoint does not test inference usage.
+
+## Troubleshooting
+
+- Missing configuration: set the exact reference named by the readiness error.
+  Do not substitute placeholder ARNs or put passwords in GitHub variables.
+- Installer/release mismatch: confirm the selected deployment and served helper
+  bytes; do not replace expected hashes with observed hashes.
+- Login failure: check the dedicated identity and native Cognito endpoint. A
+  challenge-pending identity needs its challenge completed before the basic
+  repeatable checkpoint; E02 covers fresh-password and MFA behavior separately.
+- SSM delivery failure: check instance-profile permissions, subnet endpoints,
+  boot completion, and access to the evaluation bundle.
+- Cleanup failure: use the same evaluation ID to recover; report any exact
+  resources still outstanding. Do not declare a passing run until cleanup passes.
+
+The broader implementation remains incomplete: E07 and E09–E12 have no shipped
+scenario scripts. E06 destination-row deletion also needs product support;
+removing routing rules alone is not complete cleanup. The next developer should
+run **login first** and attach its result, then address the exact failures in the
+Bedrock path. Do not expand the framework or claim the full epic has passed.
+
+## Acceptance for closing #5199
+
+The first checkpoint is progress only. Closing the full evaluation still requires
+two fresh full runs against the same deployed revision, plus interruption/resume,
+repeat cleanup, and failure-injection evidence. The shared nightly workflow now
+schedules the key install/login checkpoint; full runs remain manually selectable,
+and blocked cases still prevent full acceptance.
+
+E28 (#5634): GitHub maintenance read/preview regression through the installed CLI, requiring `github_app`. Missing fixture blocks the case. The scenario does not claim real rotation, uninstall, consumer continuation or cleanup acceptance.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
+E30 (#5635) runs GitLab discovery/refusal through the installed CLI. It needs only the ordinary platform/login fixture and does not mutate a GitLab host. Dedicated project connect/retry/rename/delivery/disconnect remains a live acceptance hold.
+
+Tenant story #5622 adds E23 to the default nightly story reads: visible memberships, explicit current selection and unknown selector refusal. E27 (`tenant-isolation`) requires `tenant_isolation.tenant_ids` with two distinct existing memberships for the installed human fixture; it checks concurrent reads through local default changes and Cognito refresh. No membership is granted and no global workspace selection or model inference occurs. E27 is blocked when that fixture is absent; inference, revoked-membership and uncertain-mutation live acceptance remains open.
+Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
+
+Select a private evaluation security group with no inbound rules and outbound
+HTTP/HTTPS using private target configuration. The VPC's
+hardened default group has no egress: evaluation `36202597045` launched with
+that implicit default, could not register with SSM, and terminated its instance
+with verified cleanup. The harness now validates the selected group's VPC,
+absence of ingress and HTTPS egress before launch. It does not modify group
+rules or runner/instance roles. `CLI_UPLIFT_EVAL_SECURITY_GROUP_ID` can override
+the reviewed binding for another explicitly configured fixture.
+
+
+### Bounded fixture input for hosted work and owned vault scenarios
+
+The existing workflow accepts optional `fixtures_json` on dispatch and reusable
+calls. Both evaluate and recover use the same overlay. It accepts only
+`human_task_coding`, `human_task_chat` and `vault_lifecycle` objects; deployment,
+role, secret, endpoint and budget-counter overrides are refused. Supply non-secret
+fixture identities and existing authorization attestations, never login tokens.
+Unknown keys, duplicate JSON keys, credentials and bounds violations fail before
+resource creation.
+
+Use `suites=login,hosted-coding` for E42 and the published snapshot contract in
+[hosted coding](../adp-cli/hosted-coding.md). Include native `login_user_id`,
+selected-tenant `canonical_user_id` and `tenant_id`, plus `enrollment_verified`,
+`shared_budget_authorized`, `max_dispatches: 1`, `max_task_usd` in `(0,1]`,
+`scenario`, `persona`, `snapshot` and `instructions`. The gateway still verifies
+standing enrollment, source ownership and policy limits. Fixture assertions do
+not grant permissions or reset shared qualification spend.
+
+Use `suites=login,hosted-chat` for explicit diagnostic D01 or
+`suites=login,vault-lifecycle` for D02. Their fixture shapes are documented in
+[chat](cli-uplift/hosted-chat-diagnostic.md) and
+[vault](cli-uplift/vault-lifecycle-diagnostic.md). D01/D02 are opt-in
+and do not change the nightly/full matrix, E40 read-only claims or story
+acceptance. Missing fixtures block their case. Reports retain results and
+recovery evidence; normal owned EC2 cleanup still runs.
+
+All three hosted/owned journeys retain immutable recovery plans in the external
+manifest before SSM. Reuse the same evaluation ID and identical fixture input
+for status/recovery. Do not restart unresolved diagnostics to manufacture new
+requests. Coding recovery keeps original snapshot/instructions and stable Task
+request/control IDs; an unknown upload or acceptance boundary still needs
+reconciliation using retained Task/journal evidence, never a replacement key.
+
+For multiline JSON use the GitHub API's structured input or `gh workflow run`
+with `--json` and a JSON object read from a private file. Never interpolate fixture
+content into a shell command. The workflow passes the input only through its
+environment and validates it before producing the run config. No schedule was
+added.
+
+
+E42's artifact upload receipt remains local to the fixture until returned in
+case evidence. If the entire instance disappears before that evidence returns,
+the caller retains the original Task request key but may not know the accepted
+artifact/Task ID. Re-uploading the snapshot can produce a different artifact ID
+and conflict with the original Task fingerprint. Treat that outcome as pending
+reconciliation; the durable plan prevents a replacement paid request key but
+does not prove automatic recovery of accepted work after complete instance loss.
+A same-instance rerun with an existing recovery directory also refuses dispatch.
+
+
+D03 uses `suites=login,hierarchy-lifecycle` with an independent ordinary fixture
+and a predeclared empty-team membership baseline. See
+[hierarchy lifecycle](cli-uplift/hierarchy-lifecycle-diagnostic.md)
+for exact scope, retained recovery intent and restoration. It is excluded from
+`full` and `nightly` and performs no inference.
+
+### Explicit knowledge lifecycle diagnostic
+
+`login,knowledge-lifecycle` selects D04 (#5632); it is excluded from full/nightly. It requires an owned uploaded document receipt and caller-verified deployed attempt/spend bounds. See [the knowledge diagnostic guide](../adp-cli/knowledge-lifecycle-diagnostic.md). Without actual runtime cost evidence, leave the fixture unset and do not dispatch indexing.
+By default, nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
+
+`login,capability-contrast` selects the existing E19 supported/disabled/permission and doctor scenario without the unrelated parity journeys. Its `fixtures_json.capability_contrast` accepts only the existing seven non-secret selectors from the evaluator config. The ordinary fixture reference can point to the existing admin fixture secret with `non_admin_username`/`non_admin_password`; E19 authenticates it freshly in memory when no `ordinary_session` is provided. It pins the verified native tenant and private `BG_CONFIG_DIR`, changes neither deployment feature flags nor operator settings, and compares the same HOME's two identity caches.
+
+E42 retains the served CLI's tenant-scoped Task journal before its temporary
+home is removed. A missing journal means acceptance is unknown, not that no Task
+was submitted. Recovery must first reconcile the original request ID and any
+existing artifact; never upload a replacement snapshot to resolve uncertainty.
+Reports retain only bounded trigger status, error code and HTTP status fields,
+not response bodies or credential-bearing error prose.
+
+### D05: owned machine metadata and access/session boundaries
+
+Select `login,machine-lifecycle` explicitly in the existing EC2 evaluation
+workflow. D05 is excluded from `full` and `nightly`. Supply this object through
+the workflow's diagnostic fixture input (identifiers must match the deployment):
+
+```json
+{"machine_lifecycle":{"login_user_id":"ACTUAL_COGNITO_ADMIN_SUBJECT","canonical_user_id":"ADMIN_SELECTED_TENANT_CANONICAL_ID","tenant_id":"aws-e","ordinary_canonical_user_id":"ORDINARY_SELECTED_TENANT_CANONICAL_ID","ordinary_native_tenant":"adp-platform","owned_mutations_authorized":true}}
+```
+
+The administrator and ordinary user must be distinct existing fixtures. The
+credential secret supplies `non_admin_username` and `non_admin_password`; the
+installed administrator login uses its Cognito subject, not its native canonical
+user ID. Each session uses independent temporary configuration/token stores,
+including an explicit `BG_CONFIG_DIR`.
+
+The caller retains deterministic registration intent and both exact alias names
+in its durable manifest before SSM dispatch. D05 previews and registers one
+owned canonical service principal, replays its original operation ID, reads its
+mapping identity, checks ordinary denial, duplicate alias refusal and foreign
+tenant refusal, adds its second alias, rejects a stale revision, and suspends it.
+Cleanup revokes only the recorded aliases and retires the exact principal;
+metadata and audit history remain. Identity/name/alias drift prevents cleanup.
+An uncertain registration retains the original operation ID for reconciliation;
+creating a replacement identity is not recovery.
+
+The aliases are unused synthetic metadata under `eventbridge` and
+`github_actions`; no provider account, credential, permission, or model request
+is created. D05 also reads ordinary access in both tenants and previews an
+administrator review of its gateway token family, checking ordinary denial and
+unchanged membership/session review after cleanup. It never revokes a session.
+This qualifies metadata lifecycle and read/denial coverage for #5624/#5625,
+not access-request approval, token revocation, or provider delivery. Access
+requests still need an independently verified GitHub actor fixture.
+
+E21 (`login,usage-exports`) optionally accepts `fixtures_json.usage_tenant` with
+required `login_user_id`, `canonical_user_id`, and `tenant_id`, identifying an
+existing login and workspace membership. This read-only fixture selects the
+existing membership through `ADP_TENANT` in the isolated CLI process, then verifies
+canonical owner and tenant through `models mappings list` before reading usage.
+Every usage/export scope must match that owner and tenant. The native login
+session and default nightly selection remain unchanged; no membership, role,
+credential, or shared configuration is changed. Without the fixture E21 keeps
+its verified native tenant. CSV/NDJSON still read at most two one-record pages per
+format; evidence reports counts and continuation, never the private records.
+Populated exports do not establish complete accounting or late settlement.
+
+The same `usage_tenant` object optionally accepts `usage_run_id`, an exact
+lowercase invocation UUID for an existing owned Activity/Task. E21 passes it as
+`--run` to every read/export, requires `selected_run` coverage, and checks every
+request/export record's public `invocation_id` (the serialized `agent_run_id`).
+A missing/foreign invocation fails through the existing gateway authorization;
+there is no fallback to broad usage. Omit the field to retain ordinary own-usage
+coverage. The fixture dispatches no Task or inference. Empty or incomplete
+pages still cannot establish complete run accounting.
+
+### Additional deployment targets
+
+Configure separate protected environment secrets for every target using the
+[private target configuration](#private-target-configuration) procedure. The
+GitHub environment name and the platform's Terraform environment can differ.
+Select the supported environment in workflow dispatch and supply the verified
+deployed revision. Missing optional fixtures remain visible as blocked cases;
+`login` provides a narrower diagnostic. Infrastructure setup and offline checks
+do not establish a live regression pass.
+
+### Native login fixtures with required MFA
+
+For an environment that requires software-token MFA, enroll the dedicated
+regression Cognito user and keep its Base32 TOTP seed in the existing Secrets
+Manager credential fixture as `admin_totp_secret`. The fixture must already have
+completed enrollment; the nightly run does not alter pool MFA policy or enroll
+users. The EC2 instance reads the optional seed through its existing fixture
+permission and supplies a fresh six-digit code to the served CLI through protected
+stdin. The seed and codes never belong in workflow inputs, bindings, or reports.
+Username/password-only fixtures remain supported when the target permits them.
+This qualifies native login and refresh under the configured MFA policy; it does
+not claim the separate E02 password-challenge/non-admin acceptance scenario.
+
+## Assistant headless suite (opt-in, not yet qualified)
+
+The `assistant` selection adds E43–E50 to the existing EC2 runner, state,
+report, recovery and cleanup. E50 is the executable baseline for the currently
+supported WebSocket protocol: ordinary-user identity, server-issued session,
+correlated final response and owned HTTP history readback. It uses the registered
+`assistant_baseline` remote driver. Offline compatibility tests consume frames
+from the production response router, including its one-based chunk sequence.
+`hosted-chat` (D01) remains a separate CLI Task diagnostic.
+
+E43–E49 retain the future feature contracts. They remain failed/unimplemented
+until their feature-story drivers exist; E48 also needs the installed ledger.
+They cannot pass merely because E50 passes. Missing ordinary-user fixtures block
+the cases. Nightly defaults and schedules remain unchanged. The approved design
+is [the merged epic design](../architecture/adp-assistant-6929.md#story-6939);
+#6937 owns final live qualification. Synthetic E43/E44 oracle events describe
+future requirements, not claims about the currently deployed wire protocol.
+
+Default HTTP/WebSocket adapter calls launch an ordinary-user subprocess with a
+fixed environment and only a preconnected target socket. Linux `libseccomp.so.2`
+is required: before receiving the user's token, the child installs a syscall
+allowlist that denies file opens, new connections (including IMDS), process
+inspection and program execution. No controller descriptors or refresh/provider
+credentials enter the child. Missing confinement fails closed; there is no
+unrestricted fallback. Privileged fixture resolution and ordinary-session refresh
+remain in the controller; only that user's current access or ID token crosses the
+pipe. The isolated interpreter uses only its configured Python library directory,
+not inherited loader paths, to keep native imports compatible on CI. The child verifies TLS and sends the ordinary bearer/query-token protocol,
+never identity headers. This isolates harness clients, not the deployed worker's
+sandbox; E46 still requires independent process-isolation probes.
+
+E43 retains bounded lifecycle/tool/cursor observations and request/session IDs,
+without answer text. E44 requires fixture-owned `expected_timestamps` plus a
+`window` containing timezone-aware `start`, `end`, and an IANA `timezone` (for
+example `UTC`). The window includes its start and excludes its end. Grading
+compares normalized instants, not generated prose. Persisted case details include
+source IDs, UTC timestamps, citation IDs and page counts; credentials and the
+synthetic secret canary are redacted before state or report persistence. Do not
+derive timestamp expectations from the returned answer.
+
+Remote evidence is also sanitized before it reaches retained SSM stdout, on both
+success and failure. The shared emitter checks raw events/pages for the synthetic
+canary, removes the raw canary field, and redacts its occurrences in every emitted
+field, including metadata, transcript and correlation keys. It carries a
+`canary_check` result (`passed`, `failed` or `missing`) instead of the raw value.
+Downstream grading requires a passed pre-redaction check for sanitized evidence
+and still validates event ordering, source coverage and citations. An observation
+leak fails the case even when the leaked text has been redacted.
+
+Pass only non-secret fixture *references* through the existing `fixtures_json`
+input, with real references held in the selected protected environment:
+
+```json
+{"assistant_users":{"a1":{"login_user_id":"a1-example","canonical_user_id":"a1-example","tenant_id":"tenant-a","fixture_name":"example/assistant/a1"},"a2":{"login_user_id":"a2-example","canonical_user_id":"a2-example","tenant_id":"tenant-a","fixture_name":"example/assistant/a2"},"b1":{"login_user_id":"b1-example","canonical_user_id":"b1-example","tenant_id":"tenant-b","fixture_name":"example/assistant/b1"}}}
+```
+
+E50 uses A1; A2/B1 are reserved for the future cross-user scenarios. Its secret
+must contain `ordinary_session` with `access_token`, `id_token`, and absolute
+Unix `expires_at` (at least 60 seconds remaining at start). Provision/renew this
+ordinary session privately before dispatch. The existing EC2 fixture role must
+have scoped read access to that secret. An expired/missing session fails; the
+baseline does not borrow the administrator login or widen fixture permissions.
+The gateway must expose `/auth/me`, `/chat/capabilities` and owned
+`/chat/sessions/{session_id}` readback with chat enabled for the fixture user.
+
+E50 sends one fixed, short chat request. Its private run-directory journal records
+session/request/task IDs, phases and a response hash; it stores no response text
+or tokens. The caller persists a dispatch intent in the durable manifest before
+SSM starts the worker. If a retry loses the local journal, it refuses another
+submission using that retained intent. Resume reuses completed evidence. After an interrupted create/send,
+it refuses automatic resubmission because the existing WebSocket protocol does
+not guarantee idempotency. Inspect the retained IDs and reconcile the original
+turn before starting a separately authorized new evaluation. Temporary client
+processes/sockets are closed on failure; existing EC2 cleanup removes the run
+journal. Server-owned conversation history follows normal retention; this case
+does not invent a session deletion API or certify deployed sandbox destruction.
+
+A1 and A2 share tenant A; B1 belongs to tenant B. Each fixture name must
+refer to a separately onboarded **ordinary** Cognito user, never the harness's
+admin login or inline tokens. No client may receive the EC2 controller's IAM,
+provider or metadata credentials. The configured `websocket_url` and
+`gateway_url` must identify the approved deployed ingress/gateway; source event
+IDs, citation expectations, synthetic canaries, bounded fault grants and costs
+must be reviewed before feature drivers can run. Configuration alone does not
+prove any of these capabilities. Preflight performs only existing read-only
+discovery; it never sends chat, provisions users or injects faults.
+
+With the approved target, revision and explicit spend/fault authority supplied
+privately by an operator, use the **existing** workflow (never a PR event):
+
+```bash
+gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
+  -f environment="$EVAL_ENVIRONMENT" -f expected_revision="$EVAL_REVISION" \
+  -f mode=start -f suites=assistant -f fixtures_json="$ASSISTANT_FIXTURES_JSON"
+```
+
+`EVAL_ENVIRONMENT`, `EVAL_REVISION` and `ASSISTANT_FIXTURES_JSON` are private
+operator inputs, not values to paste from this public document. A baseline run
+requires explicit live/model-spend authorization; expect the suite verdict to
+remain non-passing while E43–E49 are unimplemented. For an
+already-authorized run, use the existing `mode=status`, `mode=resume` and
+`mode=cleanup` commands below with its immutable evaluation ID; repeat cleanup
+until the run-owned inventory reports no remaining resources. Missing cleanup
+prevents a clean verdict. Offline client and fixture checks require no service or
+browser. Run on Linux with Python, `libseccomp.so.2`, and `openssl` (used only to
+generate temporary test certificates). TLS tests use Unix socketpairs, not TCP;
+the recovery test interrupts an assistant fixture run, restores the existing
+durable state store through an in-memory S3 transport, resumes the runner, and
+repeats cleanup. Required placeholders remain failures throughout:
+
+```bash
+uv run --no-project --with pytest --with jsonschema --with pyyaml --with boto3 python -m pytest -q \
+  tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_uplift.py \
+  tests/unit/test_cli_regression.py
+python3 scripts/check-public-docs.py
+```
+
+| Case | Headless criterion and future required evidence | Boundary |
+| --- | --- | --- |
+| E50 | HEAD01/HEAD03/HEAD04: supported authenticated chat and owned history | #6939; no durable ACK/replay or deployed isolation claim |
+| E43 | DATA/ACT: authenticated WebSocket, durable ack, ordered events, tool/answer, replay and history | #6931; no browser paint |
+| E44 | ACT/EXT: ADP and GitHub/GitLab activity IDs, timezones, citations, coverage and pagination | #6933/#6934; no model-only oracle |
+| E45 | SEC: A1/A2/B1 scoped memory, history, artifacts and installation access including denial | #6931/#6932; ordinary identity required |
+| E46 | SES: concurrent/persistent/ephemeral turns, stale leases and independent sandbox destruction | #147; HTTP denial alone is insufficient |
+| E47 | SES/QUAL: explicitly authorized bounded queue/worker faults and turn reconciliation | #147/#6937; fault controller separate from clients |
+| E48 | DEP/EXT: installation diagnostics, redaction and implemented upgrade ledger | #6935; ledger cases blocked pending #6896/#6927 |
+| E49 | WARM/QUAL: protocol-client latency and idle cost with phase instrumentation | #6937; browser rendering in #6936/#6937 |
+| — | UI: navigation, rendering, accessibility, controls and browser paint | Browser/operator-only #6936/#6937; not headless coverage |
+
+The UI navigation, accessibility, control behavior and browser-perceived latency
+are not covered here; #6936/#6937 collect those observations separately. A
+headless verdict cannot stand in for their browser/operator evidence.
