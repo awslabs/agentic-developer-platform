@@ -1,5 +1,15 @@
 import type { ExplanationEvents } from './explanation-events';
 
+/** Only explicit TodoWrite input is a checklist; never interpret arbitrary tool output. */
+export function claudeTaskChecklist(block: any): string | undefined {
+  if (block.type !== 'tool_use' || block.name !== 'TodoWrite' || !Array.isArray(block.input?.todos)) return;
+  const todos = block.input.todos;
+  if (!todos.length || todos.some((todo: any) => typeof todo.content !== 'string'
+      || !['pending', 'in_progress', 'completed'].includes(todo.status))) return;
+  return `**${todos.filter((todo: any) => todo.status === 'completed').length} of ${todos.length} tasks complete** (agent-reported)\n\n`
+    + todos.map((todo: any) => `- ${todo.status === 'completed' ? '☑' : '☐'} ${todo.content}${todo.status === 'in_progress' ? ' (in progress)' : ''}`).join('\n');
+}
+
 /** Project public SDK blocks into the shared feed; never forward tool results or thinking. */
 export class ClaudeProgress {
   private tools = new Map<string, string>();
@@ -33,6 +43,8 @@ export class ClaudeProgress {
         if (block.type === 'text' && typeof block.text === 'string') this.events.publish(block.text, {
           id: `${message.message.id}:${index}`, category: 'message', state: 'completed',
         });
+        const checklist = claudeTaskChecklist(block);
+        if (checklist) this.events.publish(checklist, { id: 'task-checklist', category: 'plan', state: 'completed' });
         if (block.type === 'tool_use') {
           this.tools.set(block.id, block.name);
           if (this.tools.size > 128) this.tools.delete(this.tools.keys().next().value!);

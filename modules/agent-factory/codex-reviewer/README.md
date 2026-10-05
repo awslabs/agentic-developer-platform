@@ -167,3 +167,14 @@ Agent Activity records come from the normal webhook invocation and worker
 lifecycle. A standalone run does not create those records and is not a hosted
 reporting qualification. The native adapter currently exposes the explanation
 stream without advertising Claude-specific pause/resume/steer support.
+
+### Delivery task checklists
+
+Developers and reviewers use the native plan tool to publish logical tasks for
+the whole assignment and update them as work progresses. The current checklist
+and completed-item count remain visible in the existing live issue comment and
+Agent Activity, separately from tool activity. Claude TodoWrite uses the same
+display. Lists remain in the final comment if execution ends or fails; reviewer
+retries read recent persisted lists as untrusted context and verify them against
+the saved branch. This is agent-reported progress, not acceptance evidence or a
+time estimate. Normal review, CI, merge and spending controls still apply.

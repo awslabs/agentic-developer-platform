@@ -330,3 +330,22 @@ test("explicitly unauthorized mutation can refresh once without changing its pay
   assert.deepEqual(forced, [false, true]);
   assert.equal(bodies[0], bodies[1]);
 });
+
+test('retry context reads recent persisted checklists beyond the first comment page', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const urls: string[] = [];
+  globalThis.fetch = async url => {
+    urls.push(String(url));
+    return new Response(JSON.stringify(String(url).endsWith('page=2') ? [
+      { body: 'Earlier run\n### Task checklist\n\n- ☑ Implement history\n- ☐ Verify integration\n### Agent explanation\nDo not include this.' },
+    ] : [{ body: 'Unrelated comment' }]));
+  };
+  const github = new GitHubClient('org/repo', async () => 'token');
+  assert.deepEqual(await github.taskChecklists(7, 201), [
+    '### Task checklist\n\n- ☑ Implement history\n- ☐ Verify integration',
+  ]);
+  assert.equal(urls.length, 2);
+  assert.ok(urls[0]!.endsWith('page=2'));
+  assert.ok(urls[1]!.endsWith('page=3'));
+});

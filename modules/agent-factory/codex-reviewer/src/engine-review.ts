@@ -87,7 +87,7 @@ export function parseRepairMilestone(raw: string): RepairMilestone {
 }
 
 export interface EngineReviewServices {
-  github: Pick<GitHubClient, "getPullRequest" | "getIssue" | "getBranch">;
+  github: Pick<GitHubClient, "getPullRequest" | "getIssue" | "getBranch"> & Partial<Pick<GitHubClient, "taskChecklists">>;
   review(prompt: string): Promise<EngineVerdict>;
   fix(prompt: string): Promise<RepairMilestone | void>;
   checks?(head: string): Promise<ReviewerChecks>;
@@ -220,10 +220,13 @@ async function runEngineReviewPass(
     .split("\0").filter(Boolean);
   const baseline = new Set(await untracked());
   const issue = await controller.github.getIssue(envelope.issue_number);
+  let priorTaskChecklists: string[] = [];
+  try { priorTaskChecklists = await controller.github.taskChecklists?.(envelope.issue_number, issue.comments) ?? []; }
+  catch { runtime.observer?.activity('Prior task checklist unavailable; reconstruct progress from the saved branch and acceptance criteria.'); }
   const persona = await readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8");
   const story = JSON.stringify({ issue: { number: envelope.issue_number, title: issue.title, body: issue.body },
     pullRequest: { title: initialPr.title, body: initialPr.body }, acceptedScope: cycle.accepted_scope,
-    priorFindings: cycle.findings });
+    priorFindings: cycle.findings, priorTaskChecklists });
   const recoveryContext = cycle.recovery
     ? "This is stalled-story recovery. The prior worker has exited. Preserve its committed work; do not restart from main or treat a checkpoint/PR as completed implementation. Read the current issue including owner clarifications. Identify every unfinished acceptance criterion, repair within the assigned scope when authorized, and revalidate the final changes. An unresolved product/contract clarification or unavailable required evidence is a blocker, not permission to guess or report success."
     : "";

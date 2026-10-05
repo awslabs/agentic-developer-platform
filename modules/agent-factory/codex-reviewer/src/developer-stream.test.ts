@@ -74,7 +74,7 @@ test('shared progress receives partial messages, searches and plan updates with 
     { text: 'Checking tests now.', id: 'm', category: 'message', state: 'completed' },
     { text: 'Searching the web: SDK docs', id: 's', category: 'tool', state: 'running' },
     { text: 'Searched the web: SDK docs', id: 's', category: 'tool', state: 'completed' },
-    { text: '✓ Run tests', id: 'p', category: 'plan', state: 'running' },
+    { text: '**1 of 1 tasks complete** (agent-reported)\n\n- ☑ Run tests', id: 'p', category: 'plan', state: 'running' },
   ]);
 });
 

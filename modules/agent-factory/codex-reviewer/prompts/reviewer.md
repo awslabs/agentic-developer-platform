@@ -111,3 +111,7 @@ a checkpoint does not approve the PR, complete the story or waive final checks.
 Do not make empty changes for a timer, run Git in the background or publish from
 a read-only inspection. Report external blockers distinctly from unfinished
 implementation work so CI waits are not mistaken for another repair milestone.
+
+Use update_plan to publish the full assignment checklist before starting work,
+and update it at each milestone. Keep unfinished items visible across turns;
+the runtime publishes the plan even when your final response is structured JSON.

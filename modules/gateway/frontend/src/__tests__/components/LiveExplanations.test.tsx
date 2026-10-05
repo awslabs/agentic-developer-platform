@@ -82,3 +82,23 @@ describe('live explanations', () => {
     act(() => send({ kind: 'terminal', event: { ...explanation(6, '').event!, kind: 'terminal' } }));
     expect(screen.queryByText(/elapsed/)).not.toBeInTheDocument();
   });
+
+it('pins the latest checklist across tool history eviction and clears it on a different run', () => {
+  const view = render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
+  const plan = (seq: number, text: string) => {
+    const update = explanation(seq, text);
+    update.event!.payload.progress = { id: 'plan', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
+    send(update);
+  };
+  act(() => {
+    plan(1, '**0 of 2 tasks complete**\n\n- ☐ Implement history\n- ☐ Verify integration');
+    plan(2, '**1 of 2 tasks complete**\n\n- ☑ Implement history\n- ☐ Verify integration');
+    for (let i = 3; i < 150; i++) send(explanation(i, `Tool update ${i}`));
+  });
+  expect(screen.getByRole('region', { name: 'Task checklist' })).toBeInTheDocument();
+  expect(screen.getByText('1 of 2 tasks complete')).toBeInTheDocument();
+  expect(screen.queryByText('0 of 2 tasks complete')).not.toBeInTheDocument();
+  expect(screen.getByText('☐ Verify integration')).toBeInTheDocument();
+  view.rerender(<LiveExplanations invocationId="other" isOpen terminal />);
+  expect(screen.queryByRole('region', { name: 'Task checklist' })).not.toBeInTheDocument();
+});

@@ -581,7 +581,11 @@ test("stalled checkpoint review uses the latest story and preserves the saved co
   f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "previous-worker", checkpoint_sha: f.sha };
   const prompts: string[] = [];
   const github = { ...f.github, getIssue: async () => ({ number: 42, title: "Updated story",
-    body: "Owner clarification: preserve accepted inputs", html_url: "url" }) };
+    body: "Owner clarification: preserve accepted inputs", html_url: "url", comments: 201 }),
+    taskChecklists: async (number: number, total?: number) => {
+      assert.equal(number, 42); assert.equal(total, 201);
+      return ["☑ Implement history; ☐ Verify integration"];
+    } };
   const result = await runEngineReview(f.envelope, f.runtime, { github,
     review: async prompt => { prompts.push(prompt); return approved; },
     fix: async () => { throw new Error("Already valid work does not need rewriting"); } });
@@ -589,6 +593,7 @@ test("stalled checkpoint review uses the latest story and preserves the saved co
   assert.ok(prompts[0]?.includes("stalled-story recovery"));
   assert.ok(prompts[0]?.includes("Owner clarification: preserve accepted inputs"));
   assert.ok(prompts[0]?.includes("do not restart from main"));
+  assert.ok(prompts[0]?.includes("☑ Implement history; ☐ Verify integration"));
   assert.equal(await f.git("rev-parse", "HEAD"), f.sha);
 });
 

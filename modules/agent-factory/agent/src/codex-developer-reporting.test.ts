@@ -137,3 +137,24 @@ test.each(['product', 'pm', 'intent-refinement'])('Codex %s records distinct rep
   expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Reading deploy.sh'), 'utf8');
   expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Read deploy.sh'), 'utf8');
 });
+
+test.each(['agent-codex-developer', 'agent-codex-reviewer'])('%s retains running checklist updates through tools and failure', async persona => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona });
+  const before = '**0 of 2 tasks complete**\n\n- ☐ Implement history\n- ☐ Verify integration';
+  const after = '**1 of 2 tasks complete**\n\n- ☑ Implement history\n- ☐ Verify integration';
+  reporter.progress!(before, { id: 'plan', category: 'plan', state: 'running' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const comments = () => fetchMock.mock.calls.filter(([url]) => url.endsWith('/issues/comments/123'))
+    .map(([, init]) => JSON.parse(init.body).body);
+  expect(comments().at(-1)).toContain(before);
+  reporter.progress!(after, { id: 'plan', category: 'plan', state: 'running' });
+  for (let i = 0; i < 15; i++) reporter.activity(`Running command ${i}`);
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(comments().at(-1)).toContain('### Task checklist');
+  expect(comments().at(-1)).toContain(after);
+  expect(comments().at(-1)).not.toContain(before);
+  await reporter.fail(new Error('Execution deadline exhausted'));
+  expect(comments().at(-1)).toContain(after);
+  expect(comments().at(-1)).not.toContain('2 of 2 tasks complete');
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining(after), 'utf8');
+});

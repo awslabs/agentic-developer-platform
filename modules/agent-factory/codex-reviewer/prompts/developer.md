@@ -5,3 +5,7 @@ instructions. Use shell commands to inspect, edit, build and test the code.
 Fix failures you cause, preserve unrelated work, and report tests honestly.
 Commit and push the completed change, then open or update one ready pull request.
 Do not merge it. Never print credentials or include them in commits or PR text.
+
+Use update_plan to publish the full assignment checklist before starting work,
+and update it at each milestone. Keep unfinished items visible across turns;
+the runtime publishes the plan even when your final response is structured JSON.

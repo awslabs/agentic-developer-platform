@@ -91,3 +91,21 @@ describe('real read-only listener', () => {
     expect((await reader.read()).done).toBe(true);
   });
 });
+
+test('latest sanitized checklist survives history eviction and rapid updates without resetting cursors', () => {
+  const hub = new ExplanationEvents('run', 1);
+  const plan = { id: 'plan', category: 'plan' as const, state: 'running' as const };
+  hub.publish('0 of 2 tasks complete', plan);
+  hub.publish('1 of 2 tasks complete', plan);
+  for (let i = 0; i < 200; i++) hub.publish(`tool ${i}`);
+  const replay = hub.replay();
+  expect(replay.reset).toBe(true);
+  expect(replay.events[0].payload.text).toBe('1 of 2 tasks complete');
+  expect(replay.events.length).toBeLessThanOrEqual(HISTORY_EVENTS);
+  expect(hub.replay('run:1:201').events.map(e => e.sequence)).toEqual([202]);
+  expect(hub.replay('run:1:1').events[0].payload.text).toBe('1 of 2 tasks complete');
+  hub.publish('AKIAABCDEFGHIJKLMNOP', plan);
+  for (let i = 0; i < 200; i++) hub.publish(`later tool ${i}`);
+  expect(hub.replay().events[0].payload.text).toContain('omitted');
+  expect(JSON.stringify(hub.replay())).not.toContain('AKIA');
+});

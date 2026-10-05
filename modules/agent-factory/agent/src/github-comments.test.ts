@@ -433,4 +433,20 @@ describe('live implementation explanations', () => {
     jest.advanceTimersByTime(30000);
     expect(mockFetch).toHaveBeenCalledTimes(count);
   });
+  it('preserves unchecked tasks on successful execution and withholds secrets', async () => {
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setTaskChecklist('☐ Pending validation AKIAABCDEFGHIJKLMNOP');
+    await comment.flush();
+    expect(lastBody()).toContain('Checklist omitted');
+    expect(lastBody()).not.toContain('AKIA');
+    comment.setTaskChecklist('☑ Implementation\n☐ Validation');
+    await comment.finalizeSuccess({ details: 'PR handed off; validation remains.' });
+    expect(lastBody()).toContain('☐ Validation');
+    const count = mockFetch.mock.calls.length;
+    comment.setTaskChecklist('☑ Validation');
+    jest.advanceTimersByTime(30000);
+    expect(mockFetch).toHaveBeenCalledTimes(count);
+  });
+
 });

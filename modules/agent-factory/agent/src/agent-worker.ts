@@ -23,7 +23,7 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
 import { loadHumanCommunication } from './human-communication';
 import { assistantText } from './reporting-text';
 import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
-import { ClaudeProgress } from './claude-progress';
+import { ClaudeProgress, claudeTaskChecklist } from './claude-progress';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
@@ -1633,7 +1633,7 @@ Now, complete the assigned task.`;
             model: MODEL,
             cwd: CWD,
             allowedTools: [
-              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
+              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill', 'TodoWrite',
               ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
               ...(AIDLC_ENABLED ? ['Task'] : []),
             ],
@@ -1737,6 +1737,8 @@ Now, complete the assigned task.`;
             if (activeLiveComment) {
               activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
+                const checklist = claudeTaskChecklist(block);
+                if (checklist) activeLiveComment.setTaskChecklist(checklist);
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
                   activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);

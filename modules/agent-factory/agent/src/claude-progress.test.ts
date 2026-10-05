@@ -37,3 +37,19 @@ test('shared progress bounds update frequency and preserves start time through c
   events.finish(); events.publish('Too late', detail);
   expect(events.replay().events.at(-1)?.kind).toBe('terminal');
 });
+
+test('Claude TodoWrite projects logical tasks but never treats arbitrary tool input as progress', () => {
+  const events = new ExplanationEvents('run', 1);
+  const adapter = new ClaudeProgress(events);
+  const input = { todos: [{ content: 'Implement history', status: 'completed' },
+    { content: 'Verify integration', status: 'in_progress' }] };
+  adapter.observe({ type: 'assistant', message: { id: 'm', content: [
+    { type: 'tool_use', name: 'TodoWrite', id: 'plan', input },
+    { type: 'tool_use', name: 'Bash', id: 'shell', input },
+  ] } });
+  const plans = events.replay().events.filter(e => e.payload.progress?.category === 'plan');
+  expect(plans).toHaveLength(1);
+  expect(plans[0].payload.text).toContain('1 of 2 tasks complete');
+  expect(plans[0].payload.text).toContain('☑ Implement history');
+  expect(plans[0].payload.text).toContain('☐ Verify integration (in progress)');
+});

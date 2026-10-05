@@ -65,6 +65,7 @@ export function formatIssueReviewComment(
 }
 
 interface IssueResponse {
+  comments?: number;
   number: number;
   title: string;
   body: string | null;
@@ -205,6 +206,19 @@ export class GitHubClient {
 
   getIssue(number: number): Promise<IssueResponse> {
     return this.request(`/repos/${this.repository}/issues/${number}`);
+  }
+
+  /** Recent persisted plans are task context, never verified acceptance evidence. */
+  async taskChecklists(number: number, total = 0): Promise<string[]> {
+    if (!Number.isSafeInteger(total) || total <= 0) return [];
+    const last = Math.ceil(total / 100);
+    const comments: IssueCommentResponse[] = [];
+    for (let page = Math.max(1, last - 1); page <= last; page++) {
+      comments.push(...await this.request<IssueCommentResponse[]>(
+        `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`));
+    }
+    return comments.filter(comment => comment.body?.includes('### Task checklist')).slice(-3)
+      .map(comment => comment.body!.slice(comment.body!.indexOf('### Task checklist')).split(/\n#{1,3} /)[0]!.slice(0, 8192));
   }
 
   async comment(number: number, body: string): Promise<void> {

@@ -109,8 +109,9 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     progress(text, detail) {
       text = publicDeveloperText(text);
       control.events?.publish(text, detail);
-      if (detail.state !== 'running' || detail.category === 'tool') {
-        if (detail.category === 'message') live.setExplanation(text);
+      if (detail.state !== 'running' || detail.category === 'tool' || detail.category === 'plan') {
+        if (detail.category === 'plan') live.setTaskChecklist(text);
+        else if (detail.category === 'message') live.setExplanation(text);
         else live.appendActivity(text);
         check.onTurn({ turn: ++sequence, content: [{ type: 'text', text }] });
         log('INFO', text);

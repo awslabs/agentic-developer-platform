@@ -40,7 +40,9 @@ export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperRep
     `Files changed: ${item.changes.map(change => `${change.kind} ${change.path}`).join(', ')}`, 'tool', item.status === 'failed');
   if (item.type === 'mcp_tool_call' && event.type !== 'item.updated') emit(`${item.server}/${item.tool}: ${item.status}`, 'tool', item.status === 'failed');
   if (item.type === 'web_search' && event.type !== 'item.updated') emit(`${completed ? 'Searched' : 'Searching'} the web: ${item.query}`, 'tool');
-  if (item.type === 'todo_list') emit(item.items.map(step => `${step.completed ? '✓' : '○'} ${step.text}`).join('\n'), 'plan');
+  if (item.type === 'todo_list' && item.items.length) emit(
+    `**${item.items.filter(step => step.completed).length} of ${item.items.length} tasks complete** (agent-reported)\n\n`
+    + item.items.map(step => `- ${step.completed ? '☑' : '☐'} ${step.text}`).join('\n'), 'plan');
   if (item.type === 'error' && completed) emit(`Agent reported: ${item.message}`, 'message', true);
 }
 

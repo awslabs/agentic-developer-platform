@@ -32,3 +32,20 @@ test('operator cancellation reaches both SDK signals and controller effects', as
   assert.equal(signal.aborted, true);
   await assert.rejects(reviewOperation(observer, async () => assert.fail('no publication after abort')), /Operator aborted/);
 });
+
+test('structured reviewer turns still publish checklist updates before returning a verdict', () => {
+  const plans: string[] = [];
+  const observer: ReviewObserver = {
+    explanation() {}, activity() {}, session() {}, async finish() {}, async fail() {},
+    progress(text, detail) { if (detail.category === 'plan') plans.push(text); },
+  };
+  const publish = reviewEvents(observer, true)!;
+  publish({ type: 'item.updated', item: { type: 'todo_list', id: 'p', items: [
+    { text: 'Verify history integration', completed: false },
+  ] } });
+  publish({ type: 'item.updated', item: { type: 'todo_list', id: 'p', items: [
+    { text: 'Verify history integration', completed: true },
+  ] } });
+  assert.match(plans[0]!, /0 of 1 tasks complete/);
+  assert.match(plans[1]!, /1 of 1 tasks complete/);
+});
