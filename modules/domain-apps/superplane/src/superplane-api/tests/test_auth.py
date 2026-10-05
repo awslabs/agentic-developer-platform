@@ -1123,6 +1123,39 @@ class TestWorkspaceAuthorizationEnforcement:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_service_grant_is_scoped_and_rechecked(self, client, enforcing):
+        from sqlalchemy import update
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="worker-svc", principal_type="service"
+        )
+        token = _mint(
+            enforcing,
+            sub="worker-svc",
+            **{"custom:org_id": str(org_id), "custom:account_type": "service"},
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        allowed = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        denied = await client.post(
+            f"/workspaces/{workspace_id}/kubeconfig", headers=headers
+        )
+        assert allowed.status_code == 200
+        assert denied.status_code == 403
+
+        async with async_session_test() as session:
+            await session.execute(
+                update(WorkspaceGrantRecord)
+                .where(WorkspaceGrantRecord.workspace_id == workspace_id)
+                .values(revoked_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        revoked = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        assert revoked.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_administer_implies_read_via_policy_closure(self, client, enforcing):
         """The implication closure comes from the policy, not from this service."""
         org_id, workspace_id = await _seed_workspace("workspace:administer")
