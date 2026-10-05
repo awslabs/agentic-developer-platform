@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T18:51:42.666Z",
+  "updated_at": "2026-10-05T18:59:29.078Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "platform/automation-infra/Dockerfile",
         "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "Partial commit c6b43a7 exists. Broker listing and one named-role assumption now work; access to the original platform-account reports remains unverified.",
+      "note": "Partial commit c6b43a7 exists. Named-role identity verified; original ARC report HeadObject returned 403 Forbidden.",
       "commits": [
         "c6b43a7"
       ]
@@ -32,7 +32,7 @@
       "files": [
         "platform/arc-runner/security/scan/test_reconcile.py"
       ],
-      "note": "Five synthetic tests passed previously; original report hashes and occurrences have not been checked."
+      "note": "Five synthetic tests pass; original hashes and occurrences remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -44,7 +44,7 @@
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Original finding paths and a reviewed image-build path remain unverified; the subsequent named-role assumption for CodeBuild discovery returned broker HTTP 403 insufficient_scope."
+      "note": "Original finding paths are inaccessible; no evidence-backed version selection or candidate build has occurred."
     },
     {
       "id": "AC-02-c-wire",
@@ -56,7 +56,7 @@
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "No newly reviewed ARC candidate digest exists."
+      "note": "No newly reviewed ARC digest exists."
     },
     {
       "id": "AC-02-t1",
@@ -69,20 +69,20 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Docker is unavailable locally; CodeBuild discovery did not reach AWS because the broker denied the second assumption."
+      "note": "CodeBuild is reachable, but no candidate was built; local Docker is unavailable."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Check runner identity and toolchain regression paths in disposable fixture",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c1",
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Next open task; awaits an executable candidate image and inventory."
+      "note": "Next task cannot be completed without a candidate image. The proposed fixture was not created because apply_patch is unavailable; no fixture test ran."
     },
     {
       "id": "AC-03-c1",
@@ -104,7 +104,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Await immutable candidates and an authorized scanner path."
+      "note": "Await immutable candidates and scanner execution."
     },
     {
       "id": "AC-03-t2",
