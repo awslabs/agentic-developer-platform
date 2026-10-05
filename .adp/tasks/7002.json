@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T16:36:21.300Z",
+  "updated_at": "2026-10-05T16:38:23.344Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "platform/automation-infra/Dockerfile",
         "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "New owner-selected connection `adp-agent--embark1` returns 403 insufficient_scope for credential:list and credential:assume-role; original reports remain inaccessible. Existing partial commit c6b43a7.",
+      "note": "Selected connection adp-agent--embark1 returns 403 insufficient_scope for credential:list and credential:assume-role; original reports remain inaccessible. Partial implementation: c6b43a7.",
       "commits": [
         "c6b43a7"
       ]
@@ -32,19 +32,19 @@
       "files": [
         "platform/arc-runner/security/scan/test_reconcile.py"
       ],
-      "note": "Previous five synthetic tests do not establish original report hashes or occurrence mapping."
+      "note": "Five synthetic tests passed this turn; private report hashes and occurrences remain unverified."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Refresh shipped ARC runner toolchain from reviewed upstream releases",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Pending exact finding inventory and review of suitable toolchain releases."
+      "note": "Original finding paths and executable provenance are inaccessible; no image build path can be authorized through the denied broker. Pinned Node 22.23.3 is still the latest upstream Node 22 release."
     },
     {
       "id": "AC-02-c-wire",
@@ -63,13 +63,13 @@
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run image build and runner registration/job fixture with CLI smoke checks",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c1",
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Docker unavailable locally; existing authorized build path not yet verified."
+      "note": "No local Docker and AWS CodeBuild access cannot be verified while credential assumption returns 403."
     },
     {
       "id": "AC-02-t2",
@@ -92,7 +92,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Original reports and candidate scans still needed; all assigned occurrences unresolved."
+      "note": "Original reports and candidate scans needed; all assigned occurrences unresolved."
     },
     {
       "id": "AC-03-t1",
@@ -104,7 +104,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Await immutable candidates and authorized existing scanner path."
+      "note": "Await immutable candidates and authorized scanner path."
     },
     {
       "id": "AC-03-t2",
@@ -126,7 +126,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Consumer identified earlier; candidate digest and rollback handoff pending."
+      "note": "Candidate digest and rollback handoff pending."
     },
     {
       "id": "AC-04-c-wire",
