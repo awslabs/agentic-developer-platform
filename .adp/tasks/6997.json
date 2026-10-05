@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T15:42:07.857Z",
+  "updated_at": "2026-10-05T16:39:25.254Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Records seven issue-reported failure identities and the guarded documentation classification; private log and ECR-manifest confirmation remain unverified.",
+      "note": "Original seven identities and documentation-fixture classification are retained; private logs remain inaccessible.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Tests retain seven identities and old/new denominators."
+      "note": "Included in the passing local suite."
     },
     {
       "id": "AC-01-t2",
@@ -45,7 +45,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Changed documentation inputs reject the exclusion."
+      "note": "Included in the passing local suite."
     },
     {
       "id": "AC-02-c1",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Recipes repaired at b7d60f5; covering real builds need an existing builder.",
+      "note": "Repair is committed; real builds require the selected AWS role, whose broker assumption returned insufficient_scope.",
       "commits": [
         "b7d60f5"
       ]
@@ -76,7 +76,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local hashes, five security regressions, and recipe tests pass; actual builds not run."
+      "note": "Local tests pass; the three container builds remain unrun because role assumption is denied."
     },
     {
       "id": "AC-02-c2",
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Python compatibility repaired at 467acf4; exact ECR donor manifest and authorization remain unverified under current credential scope. Digest unchanged.",
+      "note": "Prior Python repair remains; exact donor manifest and authorization cannot be checked without broker access. Digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -106,7 +106,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local donor-consistency test passes; manifest check and real builds need authorized access."
+      "note": "Local invalid-input checks pass; real ingestion-family builds remain unrun."
     },
     {
       "id": "AC-02-c-wire",
@@ -118,7 +118,7 @@
       "files": [
         "codebuild/security_image_targets.py"
       ],
-      "note": "Six executable recipes required at e590b19.",
+      "note": "Six executable recipes remain required.",
       "commits": [
         "e590b19"
       ]
@@ -135,7 +135,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Deleting a required recipe fails discovery."
+      "note": "Included in the passing local suite."
     },
     {
       "id": "AC-03-c1",
@@ -148,7 +148,7 @@
         "codebuild/scan_security_images.py",
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local paired-correction validation committed at d67a512; covering authenticated run pending.",
+      "note": "Local guards are committed and tested; authenticated paired-run evidence is pending.",
       "commits": [
         "d67a512"
       ]
@@ -165,7 +165,7 @@
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and coordinator after integration; requires authorized metered run and actual artifacts."
+      "note": "deployed-target: executor and coordinator after integration; broker role assumption denied, so no metered run occurred."
     },
     {
       "id": "AC-04-c1",
@@ -177,7 +177,7 @@
       "files": [
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local cleanup-receipt validation committed at 271d3bb; live result and findings pending.",
+      "note": "Local cleanup-receipt guard passes; actual receipt and recovered findings require the authenticated run.",
       "commits": [
         "271d3bb"
       ]
@@ -194,7 +194,7 @@
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and final verification owner; requires completed authenticated run and actual recovered records."
+      "note": "deployed-target: executor and final verification owner; actual children, cleanup, and findings are not yet available."
     }
   ]
 }
