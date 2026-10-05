@@ -1,20 +1,20 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T16:42:11.817Z",
+  "updated_at": "2026-10-05T18:57:39.696Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
-      "title": "Classify all seven failed builds against original inventory and evidence",
+      "title": "Classify seven failed builds",
       "status": "done",
       "covers": [],
       "files": [
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Seven original identities and guarded documentation-fixture classification retained; private logs not verified.",
+      "note": "Prior classification retained; private logs not independently verified.",
       "commits": [
         "3943c86"
       ]
@@ -23,7 +23,7 @@
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Exercise seven-target inventory reconciliation with coverage fixtures",
+      "title": "Test seven-target reconciliation",
       "status": "done",
       "covers": [
         "AC-01-c1"
@@ -31,13 +31,13 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed locally."
+      "note": "Passed in prior run."
     },
     {
       "id": "AC-01-t2",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Reject undocumented exclusion of the example-account recipe",
+      "title": "Reject undocumented fixture exclusion",
       "status": "done",
       "covers": [
         "AC-01-c1"
@@ -45,21 +45,21 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed locally."
+      "note": "Passed in prior run."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Repair common stdlib apply/check build path for three images",
-      "status": "blocked",
+      "title": "Repair common stdlib build path",
+      "status": "open",
       "covers": [],
       "files": [
         "modules/agent-context/images/codegraph-context/Dockerfile",
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Repair committed at b7d60f5; real builds require an authorized role.",
+      "note": "Repair committed at b7d60f5; authorized builder and actual builds remain to be verified.",
       "commits": [
         "b7d60f5"
       ]
@@ -68,28 +68,28 @@
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Run stdlib checks and affected recipe builds",
-      "status": "blocked",
+      "title": "Run stdlib checks and three recipe builds",
+      "status": "open",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local checks pass; three actual builds remain unrun."
+      "note": "Local checks passed previously; actual builds pending."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Resolve pinned ingestion input for ingestion overlays and parser",
-      "status": "blocked",
+      "title": "Resolve pinned ingestion input",
+      "status": "open",
       "covers": [],
       "files": [
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Repair committed at 467acf4; exact donor manifest and authorization unverified. Digest unchanged.",
+      "note": "Prior compatibility repair committed; exact donor manifest and permissions unverified.",
       "commits": [
         "467acf4"
       ]
@@ -98,27 +98,27 @@
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Build ingestion family and reject invalid registry inputs",
-      "status": "blocked",
+      "title": "Build ingestion family and reject invalid inputs",
+      "status": "open",
       "covers": [
         "AC-02-c2"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local rejection tests pass; actual builds remain unrun."
+      "note": "Local rejection tests passed previously; actual builds pending."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Wire repaired recipes into scanner prepare and required-target inventory",
+      "title": "Require six executable recipes in scanner inventory",
       "status": "done",
       "covers": [],
       "files": [
         "codebuild/security_image_targets.py"
       ],
-      "note": "Six executable recipes required at e590b19.",
+      "note": "Committed at e590b19.",
       "commits": [
         "e590b19"
       ]
@@ -127,7 +127,7 @@
       "id": "AC-02-t3",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Reject omitted required targets through scanner inventory tests",
+      "title": "Reject omitted required recipes",
       "status": "done",
       "covers": [
         "AC-02-c-wire"
@@ -135,20 +135,20 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed locally."
+      "note": "Passed in prior run."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
-      "title": "Preserve immutable revision, pinned inputs and paired provenance",
-      "status": "blocked",
+      "title": "Preserve revision, pins and paired provenance",
+      "status": "open",
       "covers": [],
       "files": [
         "codebuild/scan_security_images.py",
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local guard committed at d67a512; authenticated paired artifacts pending.",
+      "note": "Local guard committed; authenticated paired artifacts pending.",
       "commits": [
         "d67a512"
       ]
@@ -157,27 +157,27 @@
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
-      "title": "Verify paired Grype/Syft coverage on authorized scan target",
-      "status": "blocked",
+      "title": "Verify paired Grype/Syft scan coverage",
+      "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and coordinator after integration; broker denies selected-role assumption."
+      "note": "deployed-target: executor and coordinator after integration; scan authorization and artifact access unverified."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
-      "title": "Preserve cleanup receipt and recovered finding assignment contract",
-      "status": "blocked",
+      "title": "Preserve cleanup and finding-assignment contract",
+      "status": "open",
       "covers": [],
       "files": [
-        ".github/scripts/reconcile_security_scan.py"
+        "codebuild/scan_security_images.py"
       ],
-      "note": "Local guard committed at 271d3bb; actual receipt and findings pending.",
+      "note": "Local receipt guard committed; run evidence pending.",
       "commits": [
         "271d3bb"
       ]
@@ -186,8 +186,8 @@
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
-      "title": "Verify terminal children, cleanup and dated finding ownership",
-      "status": "blocked",
+      "title": "Verify terminal children, cleanup and dated owners",
+      "status": "open",
       "covers": [
         "AC-04-c1"
       ],
