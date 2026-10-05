@@ -249,3 +249,46 @@ async def test_transport_capability_requires_deployed_configuration(route_store,
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
     monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     assert (await proxy.installation_support())["configured"] is False
+
+
+def test_kubeconfig_post_forwards_only_bearer_and_preserves_domain_denial(client, monkeypatch):
+    forwarded = []
+
+    def upstream(request):
+        forwarded.append(request)
+        return httpx.Response(403, json={"detail": "workspace access denied"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        proxy.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    path = "/superplane/v1/workspaces/example/kubeconfig"
+    assert client.post(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer example-token"}).status_code == 404
+    assert (
+        client.post(
+            "/superplane/v1/internal/workspaces/example/kubeconfig",
+            headers={"Authorization": "Bearer example-token"},
+        ).status_code
+        == 404
+    )
+    assert forwarded == []
+
+    response = client.post(
+        path,
+        headers={
+            "Authorization": "Bearer example-token",
+            "X-Org-Id": "another-org",
+            "X-ADP-Principal": "workspace-owner",
+            "X-Workspace-Id": "other-workspace",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "workspace access denied"}
+    assert len(forwarded) == 1
+    assert forwarded[0].method == "POST"
+    assert forwarded[0].url.path == "/workspaces/example/kubeconfig"
+    assert forwarded[0].headers["authorization"] == "Bearer example-token"
+    assert all(header not in forwarded[0].headers for header in ("x-org-id", "x-adp-principal", "x-workspace-id"))

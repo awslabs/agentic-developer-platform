@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "issue": 5044,
+  "updated_at": "2026-10-05T22:31:34.518Z",
+  "tasks": [
+    {
+      "id": "U14-c1",
+      "kind": "code",
+      "criterion": "U14",
+      "title": "Pin historical mounted kubeconfig endpoint and isolate provider transport",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/historical_kubeconfig_probe.py"
+      ],
+      "note": "Previously verified historical source and provider doubles are unchanged by this base merge.",
+      "commits": [
+        "9614ddc"
+      ]
+    },
+    {
+      "id": "U14-t1",
+      "kind": "test",
+      "criterion": "U14",
+      "title": "Prove same-org nonmember historically receives HTTP kubeconfig with offline fixture",
+      "status": "done",
+      "covers": [
+        "U14-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_history.py"
+      ],
+      "note": "Retained prior passing mounted-HTTP evidence from the 213-test API run; unchanged tests were not repeated.",
+      "commits": [
+        "9614ddc"
+      ]
+    },
+    {
+      "id": "U14-c2",
+      "kind": "code",
+      "criterion": "U14",
+      "title": "Configure current mounted route fixtures for scoped and unscoped callers",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py"
+      ],
+      "note": "Previously verified fixtures are unchanged by this base merge.",
+      "commits": [
+        "6577b4d"
+      ]
+    },
+    {
+      "id": "U14-t2",
+      "kind": "test",
+      "criterion": "U14",
+      "title": "Prove current HTTP endpoint denies nonmember and read-only access but permits scoped grant",
+      "status": "done",
+      "covers": [
+        "U14-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py"
+      ],
+      "note": "Retained prior passing denial-before-provider and provision-granted success evidence."
+    },
+    {
+      "id": "U14-c-wire",
+      "kind": "code",
+      "criterion": "U14",
+      "title": "Trace kubeconfig through mounted API, Gateway proxy and permission inventory",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py",
+        "modules/gateway/tests/features/test_superplane_proxy.py"
+      ],
+      "note": "Previously verified route, guard and inventory integration is unchanged.",
+      "commits": [
+        "5d338bb"
+      ]
+    },
+    {
+      "id": "U14-t3",
+      "kind": "test",
+      "criterion": "U14",
+      "title": "Verify route/proxy/inventory parity and alternate credential-path denial offline",
+      "status": "done",
+      "covers": [
+        "U14-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py",
+        "modules/gateway/tests/features/test_superplane_proxy.py"
+      ],
+      "note": "Retained prior API inventory checks and 154 passing Gateway proxy/CLI tests. Supplied CI also reports Superplane / gateway success at 07253b65."
+    },
+    {
+      "id": "U14-t4",
+      "kind": "test",
+      "criterion": "U14",
+      "title": "Run full relevant API and Gateway auth suites and document baseline provenance",
+      "status": "open",
+      "covers": [
+        "U14-c1",
+        "U14-c2"
+      ],
+      "files": [
+        "docs/design-notes/5044-kubeconfig-endpoint-baseline.md"
+      ],
+      "note": "Maintainer classified CI failures: missing retirement UI surface mappings and Ruff import order. Narrow repairs applied; final-head API/Gateway CI pending. Earlier functional/security review found no kubeconfig defect. Live target-environment qualification remains separately owned.",
+      "commits": [
+        "76293f4"
+      ]
+    }
+  ]
+}
