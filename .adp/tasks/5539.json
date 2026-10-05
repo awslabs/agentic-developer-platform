@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-05T23:52:29.422Z",
+  "updated_at": "2026-10-05T23:54:47.845Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -240,7 +240,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
       ],
-      "note": "Source checkpoint 9c7a3ec covers creation, approval wait, lost-reply recovery and review-only retirement. Positive admission, complete lifecycle and the released UI contract are not yet available; full browser journey is not done.",
+      "note": "9c7a3ec provides a tested source checkpoint; positive retirement and complete released lifecycle interfaces remain outstanding.",
       "commits": [
         "9c7a3ec"
       ]
@@ -255,7 +255,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "deployed-target: #5540 operations evaluator; requires approved release, admission, authorization and provider observations. Not attempted."
+      "note": "deployed-target: #5540 operations evaluator; requires approved release and live authorization. Not attempted."
     },
     {
       "id": "AC-02-c2",
@@ -267,7 +267,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Merged offline guidance; live commands still need a tested update.",
+      "note": "Merged offline guidance; tested live invocation remains pending.",
       "commits": [
         "68d882c"
       ]
@@ -289,12 +289,15 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Read selected AWS resource ownership and surviving peers without mutation",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_aws.py"
       ],
-      "note": "Next independent source task."
+      "note": "7e918e6 adds broker-scoped, identity-checked read-only AWS lookups. No live read or provider-backed absence claim.",
+      "commits": [
+        "7e918e6"
+      ]
     },
     {
       "id": "AC-02-t8",
@@ -308,21 +311,21 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
       ],
-      "note": "142 offline acceptance tests passed at 9c7a3ec; these cover the source checkpoint, not positive removal or a live browser run."
+      "note": "Source fixtures passed; positive removal and live browser execution not covered."
     },
     {
       "id": "AC-02-t9",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run provider wrong-role, denied-inventory, partial-cleanup and survivor fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c-provider"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/acceptance/"
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_aws.py"
       ],
-      "note": "Pending provider adapter."
+      "note": "11 fake-CLI cases passed; complete Demo 1 offline suite: 153 passed at 7e918e6."
     },
     {
       "id": "AC-02-c-live-cli",
@@ -334,7 +337,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
       ],
-      "note": "Existing live CLI still refuses; no executable live command is published."
+      "note": "Next independent task; current live CLI refuses."
     },
     {
       "id": "AC-02-t10",
@@ -348,7 +351,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/"
       ],
-      "note": "Pending live CLI."
+      "note": "Pending guarded CLI."
     },
     {
       "id": "AC-03-c1",
@@ -433,7 +436,7 @@
         "AC-02-c-live-cli"
       ],
       "files": [],
-      "note": "Focused tests passed; new full final-head validation and CI remain pending."
+      "note": "New final-head domain and remote checks pending; focused offline suite passed."
     },
     {
       "id": "AC-04-c1",
@@ -470,7 +473,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Ready PR #7052 is open and matches pushed checkpoint; operator invocation awaits a working guarded CLI."
+      "note": "Ready PR #7052 reflects both source checkpoints; runnable guarded invocation and handoff remain pending."
     },
     {
       "id": "AC-04-t2",
@@ -482,7 +485,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Final-head checks and handoff pending; foreground owns review/merge."
+      "note": "Final-head checks and handoff pending; foreground owns review and merge."
     }
   ]
 }
