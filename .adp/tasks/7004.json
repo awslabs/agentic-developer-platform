@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:02:08.129Z",
+  "updated_at": "2026-10-05T15:05:15.792Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Committed as 716512b; the inventory retains result indexes, paths, rule details, and report hash.",
+      "note": "Commit 716512b; the covering synthetic test passed.",
       "commits": [
         "716512b"
       ]
@@ -40,7 +40,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Credential broker returned 403 insufficient_scope for credential:list; the scan-reader connection cannot yet be selected."
+      "note": "Credential broker returned 403 insufficient_scope for credential:list; the scan-reader connection cannot be selected."
     },
     {
       "id": "AC-01-t2",
@@ -52,33 +52,33 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Requires authorized scan-reader access to the assigned private S3 objects."
+      "note": "Requires authorized access to the assigned private S3 reports."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair or substantiate shared curl package and backport behavior",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "platform/security/curl-8.22.0/Dockerfile"
       ],
-      "note": "Check merged #6540 source and patch evidence against this scan before changing it."
+      "note": "Source signature, checksum, and 18 advisory receipts verified; candidate binary/package applicability cannot be established without scan access and a container builder."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test curl source provenance, TLS variants, and HTTPS/Git fixtures",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
         "platform/security/curl-8.22.0/verify-upstream.sh"
       ],
-      "note": "Existing tests may need a container builder unavailable in this environment."
+      "note": "Source checks passed; both candidate TLS variants and runtime fixtures require a container builder unavailable here."
     },
     {
       "id": "AC-02-c2",
