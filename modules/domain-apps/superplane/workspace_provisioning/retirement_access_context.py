@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 
+from harness_jobs.allocation import allocation_id_for, sealed_revision
 from harness_jobs.identity import decode_payload, encode_payload, payload_digest
 from harness_jobs.store import OperationStore
 
@@ -53,6 +54,22 @@ class AccessContext:
     config: dict
 
 
+async def require_original_seal(connection, source, parameters):
+    original_allocation_id = allocation_id_for(source)
+    if original_allocation_id != parameters["original_allocation_id"]:
+        raise LifecycleRefused("cleanup access changed the original allocation")
+    revision = await sealed_revision(
+        connection,
+        org_id=source.org_id,
+        workspace_id=source.workspace_id,
+        allocation_id=original_allocation_id,
+    )
+    if revision is None or revision == "quarantined":
+        raise LifecycleRefused(
+            "cleanup access requires the original allocation to be sealed"
+        )
+
+
 async def load_access_context(operation, context, registration_store, *, current=True):
     """With current=False, perform SQL/policy validation only for recovery selection.
 
@@ -82,6 +99,8 @@ async def load_access_context(operation, context, registration_store, *, current
         or source.plan_digest != parameters["retirement_source_payload_digest"]
     ):
         raise LifecycleRefused("cleanup access original bootstrap admission changed")
+    async with context.connect() as connection:
+        await require_original_seal(connection, source, parameters)
     original = decode_payload(source.request_payload)
     artifact = await read_artifact(
         context.domain_connect,
