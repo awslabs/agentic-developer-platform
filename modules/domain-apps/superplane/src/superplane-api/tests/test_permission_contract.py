@@ -1,6 +1,7 @@
 """Versioned route and grant contract for #6484; no external services required."""
 
 import ast
+import importlib.util
 import json
 import re
 import uuid
@@ -128,18 +129,48 @@ def test_maintained_ui_action_names_and_routes_are_real():
 
 
 def test_platform_roles_are_not_workspace_presets():
-    source = (REPO / "modules/gateway/src/admin/config.py").read_text()
+    gateway_config = REPO / "modules/gateway/src/admin/config.py"
+    source = gateway_config.read_text()
     tree = ast.parse(source)
     admin_role = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "AdminRole")
     names = {node.value.value for node in admin_role.body if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)}
-    assert {"platform_admin", "org_admin", "dept_admin", "member"} <= names
+    assert names == {"platform_admin", "org_admin", "dept_admin", "member"}
     assert not {"workspace_viewer", "workspace_operator", "workspace_provisioner", "workspace_owner"} & names
+    spec = importlib.util.spec_from_file_location("gateway_admin_config_contract", gateway_config)
+    gateway_roles = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gateway_roles)
+    assert gateway_roles.ASSIGNABLE_ROLES == ("member", "dept_admin", "org_admin", "platform_admin")
+    for stored_role in ("platform_admin", "admin", "org_admin"):
+        assert gateway_roles.membership_role_to_admin_role(stored_role) is gateway_roles.AdminRole.ORG_ADMIN
+    for stored_role in ("member", "unknown_role", "workspace_owner", None):
+        assert gateway_roles.membership_role_to_admin_role(stored_role) is gateway_roles.AdminRole.MEMBER
     for role in ("platform_admin", "org_admin", "dept_admin", "member", "service", "unknown_role"):
         assert permissions_for_adp_role(role) == frozenset()
     assert set(permissions_for_adp_role("workspace_viewer")) == {Permission.READ}
-    assert "membership_role_to_admin_role" in source
-    assert "account_type == \"service\"" in (REPO / "modules/gateway/src/auth/dependencies.py").read_text()
-    assert "memberships_for_login" in (REPO / "modules/gateway/src/auth/workspaces.py").read_text()
+    dependencies = ast.parse((REPO / "modules/gateway/src/auth/dependencies.py").read_text())
+    context_factory = next(node for node in dependencies.body if isinstance(node, ast.FunctionDef) and node.name == "_cognito_claims_to_context")
+    context_source = ast.unparse(context_factory)
+    assert "claims.role == 'platform_admin'" in context_source
+    assert "claims.role == 'org_admin'" not in context_source
+    assert "account_type == 'service'" in context_source
+    assert "if not claims.client_id:" in context_source
+    assert "user_id = claims.client_id" in context_source
+    workspaces = ast.parse((REPO / "modules/gateway/src/auth/workspaces.py").read_text())
+    selection = next(node for node in workspaces.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "select_workspace")
+    assert {node.func.id for node in ast.walk(selection) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)} >= {"_require_human", "_memberships"}
+    assert any(isinstance(node, ast.Name) and node.id == "membership_role_to_admin_role" for node in ast.walk(workspaces))
+
+
+def test_role_labels_do_not_supply_domain_grants():
+    without_grants = [case for case in CASES if case["grant_workspace"] is None and case["active"]]
+    assert {case["adp_role"] for case in without_grants} >= {
+        "platform_admin", "org_admin", "dept_admin", "member", "service", "unknown_role", "workspace_owner"
+    }
+    assert all(not case["allow"] for case in without_grants)
+    for role in ("platform_admin", "org_admin", "dept_admin"):
+        assert any(case["adp_role"] == role and case["grant_workspace"] and case["allow"] for case in CASES)
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "service" and case["allow"] for case in CASES)
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "human" and not case["allow"] for case in CASES)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])

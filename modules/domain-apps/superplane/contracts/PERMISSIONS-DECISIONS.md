@@ -37,7 +37,14 @@ cluster observation authority; there is no new principal-type restriction here.
 
 `access-cases-v1.json` pins the two-org/two-workspace/two-human/service examples;
 the SQLite-backed grant-layer contract test exercises stored principal type and revocation,
-as well as same-org disjoint grants. Inactive membership/disabled identity cases
+as well as same-org disjoint grants. The role-source check executes Gateway's
+membership normalization: even a membership row labeled `platform_admin` remains
+selected-org `org_admin`, while an unknown or candidate preset label becomes
+`member`. Gateway's verified platform-admin token predicate is distinct from
+that selection, and a typed service uses its validated client ID. The fixture
+tests deny raw role labels, including department administrator and a service
+presenting a platform-admin label, while explicit typed grants remain usable.
+Inactive membership/disabled identity cases
 are explicitly expected failures pending the live ADP membership contract (#6127),
 not assertions that a domain-local grant proves current identity. These cases call
 the grant reader, not the HTTP identity guard: their expected failures do not
