@@ -89,6 +89,28 @@ or replace a composed current-identity check. Neither CLI `--yes` nor a service
 run's delegated workspace permission constitutes a human approval; the executor
 still checks its own admission authority.
 
+## DESIGN.md and mounted-route reconciliation
+
+This is the maintained action matrix's gap register, not a second authorization
+policy. `DESIGN.md` calls `developer`, `workspace-admin` and `org-admin` **display
+roles**; these are not ADP roles or aliases for the unused four `workspace_*`
+helper names. D5 must select any eventual preset vocabulary. Neither list may
+be applied to token role strings or converted into new grants by this PR.
+
+| Boundary | What source and fixtures establish | Remaining obligation / owner |
+| --- | --- | --- |
+| Mounted API versus capability | The matrix and `endpoint_inventory.py` agree on every domain/private route, including the separate CLI `DELETE` and UI retirement preview/admit routes. UI action names, Gateway/onboarding/lifecycle/research CLI source and unavailable research commands are checked. MCP capacity tools call a separate contract, not these API routes. | A mounted route or `served: true` client declaration is **not** provider readiness, approval, or end-to-end authorization. #6485 consumes fixed grants and permissions in production; #5534/#5535 own protected lifecycle composition. #5386/#5462 can continue their independent job/serving work. |
+| Effective access and safe mutation | `workspace.access.effective`, `org.access.effective`, `workspace.access.manage`, `org.access.manage` and `workspace.share` have **no mounted public API or maintained UI/CLI action**. Existing org `/users` and `/orgs/current` endpoints are not a domain typed-grant management or recovery API. | #6486 supplies scoped self-read, typed administration and sharing after D1/D5 disposition, without a role-string fallback. Until then, do not present an effective-access view or self-service grant/approver assignment as implemented. |
+| Current identity and typed delegation | SQLite cases exercise domain grants, not a live ADP membership reader; disabled/stale cases remain expected failures. `DESIGN.md` says `CURRENT_IDENTITY_ENFORCED` defaults false until a protected reader is composed. | #6127/shared auth supplies original verified subject, active selected-org membership, disabled status, typed service/run delegation and revocation rechecks. #6485 consumes the shared result; neither a route label nor an expected failure proves current identity at ingress. |
+| Cluster placement | CLI `cluster list` is an organization-scoped eligibility view on `GET /workspaces`, not `cluster:use`. No public cluster use/admin/observe grant routes are mounted. Shared-cluster co-location does not share workspace grants. | #6048 owns explicit cluster use/admin/observe and same-org placement; separate executor admission stays required. Internal observation receiver machine credentials are not public cluster-grant administration. |
+| Human decisions | `approval.request`, `approval.decision`, lifecycle continuation and retirement admission have distinct, request-bound checks; the Harness decision fixture exercises supplied current-human status, self/revoked/stale denials and exact plan/tenant binding. | D1/Harness/domain approval owner and #6486 must authorize a separate human approver grant handoff. CLI `--yes`, service delegation and an approved request do not replace decision/executor checks. No first-workspace or retirement live acceptance is claimed. |
+
+Code-only fixtures require no Superplane service in ordinary ADP installs; no
+runtime service, infrastructure, grant assignment or migration is introduced by
+this PR. The #6414 review/live-test hold remains in force. Acceptance here is
+bounded source evidence, not rollout, owner approval, or a Demo 1 pass for every
+original criterion.
+
 ## Remaining acceptance / owners
 
 - **#6485 domain/auth:** consume this matrix in production decisions; the JSON

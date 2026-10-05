@@ -1,7 +1,7 @@
 {
   "version": 1,
   "evidence_owner": "superplane domain/auth (#6484; production consumption #6485)",
-  "format": "Each action has one scope, exact endpoint-inventory permission and restrictions; each route is METHOD + mounted FastAPI template. An empty routes list means no mounted public API.",
+  "format": "Each action has one scope, exact endpoint-inventory permission and restrictions; each route is METHOD + mounted FastAPI template. An empty routes list means no mounted public API. Self-effective-access and explicit domain-grant administration actions are intentionally absent, not aliases for generic org/user endpoints.",
   "verification": {
     "routes_scope_permission": "checked_against_mounted_endpoint_inventory",
     "principal_and_extra": "declared_requirements_not_full_enforcement_evidence",
@@ -54,6 +54,9 @@
     {"id":"research.propose","scope":"organization","permission":"workspace:administer","principal":"human_or_service","extra":["inert_draft_only"],"surface":"cli:research proposal create","unavailable_surfaces":["cli:research proposal generate"],"routes":["POST /api/v1/research/proposals","POST /api/v1/research/proposals/generate"],"organization_grant":"organization:administer"},
     {"id":"research.proposal_decide","scope":"organization","permission":"workspace:administer","principal":"human","extra":["selected_human_approver","proposal_revision_binding"],"surface":"cli:research proposal approve/reject","routes":["PATCH /api/v1/research/proposals/{proposal_id}/approve","PATCH /api/v1/research/proposals/{proposal_id}/reject"],"organization_grant":"organization:administer"},
     {"id":"credential_evidence.read","scope":"workspace","permission":"workspace:renew_credential","principal":"human_or_service","extra":["private_domain_route","installation_bound"],"surface":"absent","routes":["GET /internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}"]},
+    {"id":"workspace.access.effective","scope":"workspace","permission":"workspace:read","principal":"human_or_service","extra":["self_only","current_typed_identity","revocation_aware","no_grant_existence_leak"],"surface":"absent","routes":[]},
+    {"id":"org.access.effective","scope":"organization","permission":"workspace:read","principal":"human_or_service","extra":["self_only","current_typed_identity","revocation_aware"],"surface":"absent","routes":[],"organization_grant":"organization:read"},
+    {"id":"org.access.manage","scope":"organization","permission":"workspace:administer","principal":"human","extra":["typed_target","same_tenant","assignment_ceiling_owner_decision","last_admin_recovery_owner_decision"],"surface":"absent","routes":[],"organization_grant":"organization:administer"},
     {"id":"workspace.access.manage","scope":"workspace","permission":"workspace:administer","principal":"human","extra":["typed_target","same_tenant","assignment_ceiling_owner_decision"],"surface":"absent","routes":[]},
     {"id":"workspace.share","scope":"workspace","permission":"workspace:administer","principal":"human","extra":["typed_target","same_tenant","cluster_use_authority_separate"],"surface":"absent","routes":[]},
     {"id":"cluster.use","scope":"cluster","permission":"cluster:use","principal":"human_or_service","extra":["owning_organization","explicit_eligibility","executor_admission"],"surface":"absent","routes":[]},

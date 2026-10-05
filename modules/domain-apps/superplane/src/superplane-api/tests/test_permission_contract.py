@@ -84,7 +84,7 @@ def test_matrix_matches_real_mounted_domain_routes():
             assert "organization_grant" not in action
         if not action["routes"]:
             assert action["surface"] == "absent"
-            assert action["scope"] in {"workspace", "cluster"}
+            assert action["scope"] in {"workspace", "organization", "cluster"}
         for route in action["routes"]:
             method, path = route.split(" ", 1)
             key = (method, path)
@@ -106,6 +106,34 @@ def test_all_permission_implications_and_non_implications(granted, requested):
     assert (requested in expand_permissions({granted})) is expected
     assert not expand_permissions({"unknown-role-or-permission"}) & set(Permission)
 
+
+
+
+def test_absent_effective_access_and_grant_administration_surfaces():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    for name, scope, permission in (
+        ("workspace.access.effective", "workspace", Permission.READ.value),
+        ("org.access.effective", "organization", Permission.READ.value),
+        ("org.access.manage", "organization", Permission.ADMINISTER.value),
+        ("workspace.access.manage", "workspace", Permission.ADMINISTER.value),
+        ("workspace.share", "workspace", Permission.ADMINISTER.value),
+        ("cluster.use", "cluster", "cluster:use"),
+        ("cluster.administer", "cluster", "cluster:administer"),
+        ("cluster.observe", "cluster", "cluster:observe"),
+    ):
+        assert actions[name]["scope"] == scope
+        assert actions[name]["permission"] == permission
+        assert actions[name]["surface"] == "absent"
+        assert actions[name]["routes"] == []
+    assert actions["org.access.manage"]["organization_grant"] == ORGANIZATION_ADMINISTER
+    assert actions["org.access.effective"]["organization_grant"] == ORGANIZATION_READ
+    for name in ("org.access.effective", "workspace.access.effective"):
+        assert {"self_only", "current_typed_identity", "revocation_aware"} <= set(actions[name]["extra"])
+    assert {"assignment_ceiling_owner_decision", "last_admin_recovery_owner_decision"} <= set(actions["org.access.manage"]["extra"])
+    assert "cluster_use_authority_separate" in actions["workspace.share"]["extra"]
+    assert actions["org.users.manage"]["routes"]
+    assert actions["org.users.manage"]["surface"] == "absent"
+    assert "grant administration actions are intentionally absent" in MATRIX["format"]
 
 
 def test_fixed_permission_vocabulary_and_separate_cluster_scope():
