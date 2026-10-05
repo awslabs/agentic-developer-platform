@@ -1,33 +1,36 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:34:09.647Z",
+  "updated_at": "2026-10-05T23:37:54.361Z",
   "tasks": [
     {
       "id": "R5.1-c1",
       "kind": "code",
       "criterion": "R5.1",
       "title": "Preserve access-token-only admission on mounted domain routes",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Inspect merged behavior; change only if a failure is demonstrated."
+      "note": "Existing implementation verified by the mounted HTTP regression; no runtime edit needed."
     },
     {
       "id": "R5.1-t1",
       "kind": "test",
       "criterion": "R5.1",
       "title": "Run mounted access-token and ID-token refusal tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.1-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": ""
+      "note": "New paired regression; 146 auth tests passed in an external virtualenv with the CI-pinned FastAPI version.",
+      "commits": [
+        "d72fb72"
+      ]
     },
     {
       "id": "R5.2-c1",
@@ -95,7 +98,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": "Negative-path regression for the merged repair."
+      "note": ""
     },
     {
       "id": "R5.4-c1",
@@ -133,7 +136,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Local configuration behavior only; no deployment is authorized."
+      "note": ""
     },
     {
       "id": "R5.5-t1",
@@ -157,7 +160,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Current-identity integration belongs to #6127/#6485/#5535."
+      "note": ""
     },
     {
       "id": "R5.6-t1",
@@ -183,7 +186,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "#6127/#6485/#5535 own the current-identity interface, grant consumption, and runtime composition."
+      "note": "#6127/#6485/#5535 own current identity, grant consumption and runtime composition."
     },
     {
       "id": "R5.7-c1",
@@ -209,7 +212,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Negative-path isolation evidence."
+      "note": ""
     },
     {
       "id": "R6.1-c1",
@@ -221,7 +224,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Consume #6993 fixtures; do not rewrite its historical baseline."
+      "note": "Consume #6993 fixtures without rewriting its historical baseline."
     },
     {
       "id": "R6.1-t1",
@@ -235,7 +238,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Negative path: same-organization nonmember cannot receive credentials."
+      "note": ""
     },
     {
       "id": "R6.2-c1",
@@ -247,7 +250,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
       ],
-      "note": "Read-only unless a gap is demonstrated; coordinate any inventory edit with #6484."
+      "note": "Coordinate any demonstrated inventory change with #6484."
     },
     {
       "id": "R6.2-t1",
@@ -261,7 +264,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Include organization collections, workspaces, proposal approvals and internal endpoints."
+      "note": ""
     },
     {
       "id": "R6.2-t2",
@@ -275,7 +278,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Negative-path cross-workspace exposure check."
+      "note": ""
     },
     {
       "id": "R6.3-c1",
@@ -287,7 +290,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Role/grant contract decisions belong to #6484/#6485."
+      "note": ""
     },
     {
       "id": "R6.3-t1",
@@ -301,7 +304,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Fixtures do not prove production issuance."
+      "note": ""
     },
     {
       "id": "R6.3-t2",
@@ -313,7 +316,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "#6127/#6484/#6485 own the production identity and grant contracts."
+      "note": "#6127/#6484/#6485 own production identity and grant contracts."
     },
     {
       "id": "R6.4-c1",
@@ -323,7 +326,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "#6127/#6485/#5535 own this integration; outside the approved reconciliation slice."
+      "note": "#6127/#6485/#5535 own this integration, outside the approved reconciliation slice."
     },
     {
       "id": "R6.4-t1",
@@ -335,7 +338,7 @@
         "R6.4-c1"
       ],
       "files": [],
-      "note": "Requires those owners’ composed current-identity runtime."
+      "note": "Requires the other owners’ composed current-identity runtime."
     },
     {
       "id": "COV-85-c1",
@@ -347,7 +350,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app"
       ],
-      "note": "No speculative production edits."
+      "note": ""
     },
     {
       "id": "COV-85-t1",
@@ -361,7 +364,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests"
       ],
-      "note": "Report measured coverage and final-head local and remote checks separately."
+      "note": "Remote CI and measured coverage pending."
     },
     {
       "id": "U14-L1-c1",
@@ -373,7 +376,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app"
       ],
-      "note": "Local reconciliation does not activate a workload."
+      "note": ""
     },
     {
       "id": "U14-L1-t1",
@@ -385,7 +388,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator; named API, approved configuration, and test identities are unresolved."
+      "note": "deployed-target: #5540 evaluator; named API, approved configuration and test identities are unresolved."
     },
     {
       "id": "U14-L1-t2",
@@ -397,7 +400,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "Criterion-level evidence map in ready PR; no live claim from fixtures."
+      "note": "Criterion-level evidence map belongs in the ready PR."
     }
   ]
 }
