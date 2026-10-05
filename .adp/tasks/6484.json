@@ -1,34 +1,37 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-05T23:33:34.289Z",
+  "updated_at": "2026-10-05T23:36:28.519Z",
   "tasks": [
     {
       "id": "AC01-c1",
       "kind": "code",
       "criterion": "AC01",
       "title": "Reconcile authoritative role and principal fixtures with explicit grants",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/contracts/access-cases-v1.json",
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Next task; distinguish platform role, selected-org membership, typed service identity and domain grants."
+      "note": "Covered by AC01-t1; committed and pushed at adbdaf1.",
+      "commits": [
+        "adbdaf1"
+      ]
     },
     {
       "id": "AC01-t1",
       "kind": "test",
       "criterion": "AC01",
       "title": "Test Gateway role sources and positive/negative SQLite grant fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC01-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": ""
+      "note": "Focused suite: 58 passed, 2 existing expected failures."
     },
     {
       "id": "AC02-c1",
@@ -40,7 +43,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Retain the merged retirement mapping; mark missing administration surfaces absent."
+      "note": "Next task; preserve merged retirement mapping and mark missing administration surfaces absent."
     },
     {
       "id": "AC02-t1",
@@ -93,7 +96,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Do not enable privilege-widening behavior without domain/auth-owner disposition."
+      "note": "Do not enable privilege-widening behavior without owner disposition."
     },
     {
       "id": "AC04-t1",
@@ -119,7 +122,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "External decision: the provided issue explicitly says owner disposition is pending; code work proceeds independently."
+      "note": "External domain/auth-owner decision is pending; independent code work continues."
     },
     {
       "id": "AC04-t2",
@@ -133,7 +136,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Depends on AC04-c2; cannot manufacture owner approval."
+      "note": "Depends on AC04-c2; owner approval cannot be inferred from fixtures."
     },
     {
       "id": "AC05-c1",
@@ -146,7 +149,7 @@
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Respect read-only ownership of shared identity, endpoint inventory and lifecycle implementations."
+      "note": "Respect read-only ownership of shared identity and endpoint inventory."
     },
     {
       "id": "AC05-t1",
@@ -160,7 +163,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Include independently reproducible local results and remote final-head CI in ready PR."
+      "note": "Include local and exact-head remote CI evidence in the PR."
     },
     {
       "id": "AC05-t2",
@@ -172,7 +175,7 @@
         "AC05-c1"
       ],
       "files": [],
-      "note": "External review is explicitly retained by the issue; PR creation and CI do not constitute owner sign-off."
+      "note": "External review remains required; a ready PR is not owner sign-off."
     }
   ]
 }
