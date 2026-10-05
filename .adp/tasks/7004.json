@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:05:15.792Z",
+  "updated_at": "2026-10-05T15:12:57.235Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Commit 716512b; the covering synthetic test passed.",
+      "note": "Commit 716512b; covering synthetic test passed.",
       "commits": [
         "716512b"
       ]
@@ -64,7 +64,7 @@
       "files": [
         "platform/security/curl-8.22.0/Dockerfile"
       ],
-      "note": "Source signature, checksum, and 18 advisory receipts verified; candidate binary/package applicability cannot be established without scan access and a container builder."
+      "note": "Source and advisory provenance checked; candidate applicability needs report access and a builder."
     },
     {
       "id": "AC-02-t1",
@@ -78,31 +78,31 @@
       "files": [
         "platform/security/curl-8.22.0/verify-upstream.sh"
       ],
-      "note": "Source checks passed; both candidate TLS variants and runtime fixtures require a container builder unavailable here."
+      "note": "Source checks passed; candidate TLS and runtime fixtures require a container builder."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair applicable DeepWiki OS, Python, npm, and ABI findings",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile"
       ],
-      "note": "Include actual PyJWT copies; preserve existing application entrypoints."
+      "note": "The upstream Dockerfile copies a Poetry environment with PyJWT 2.13.0; identifying actual affected paths, advisories, and compatible fixes requires the assigned reports and candidate image."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test DeepWiki startup, indexing, retrieval, imports, and native ABI",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Run existing fixtures without provider workloads."
+      "note": "The runtime fixtures require a candidate container; this runner has no builder."
     },
     {
       "id": "AC-02-c3",
@@ -148,7 +148,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Needs report access and a compatible builder/scanner; no validation service will be provisioned just for tests."
+      "note": "Needs report access and a compatible builder/scanner; no validation service will be provisioned."
     },
     {
       "id": "AC-03-t2",
@@ -195,7 +195,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Report tested revisions and digests; production rollout remains a separate maintainer handoff."
+      "note": "Report tested revisions and digests; production rollout remains separate."
     },
     {
       "id": "AC-04-t2",
