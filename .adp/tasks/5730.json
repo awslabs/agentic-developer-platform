@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-05T23:53:45.342Z",
+  "updated_at": "2026-10-05T23:56:30.627Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -62,7 +62,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Existing review-only path retained.",
+      "note": "Review-only path retained.",
       "commits": [
         "061fc68"
       ]
@@ -89,7 +89,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Existing refusal tests pass."
+      "note": "Refusal tests pass."
     },
     {
       "id": "AC-02-t3",
@@ -102,7 +102,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; requires compatible release and authorization."
+      "note": "deployed-target: #5540/live-evaluation owner; compatible release and authorization required."
     },
     {
       "id": "AC-02-t4",
@@ -114,7 +114,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Prior source-contract tests pass."
+      "note": "Source-contract tests pass."
     },
     {
       "id": "AC-02-c3",
@@ -127,7 +127,7 @@
         "modules/domain-apps/superplane/ui/contract.ts",
         "modules/domain-apps/superplane/ui/client.ts"
       ],
-      "note": "b94733b adds guarded source-shaped preview; positive producer contract remains unavailable.",
+      "note": "Guarded preview exists at b94733b; positive producer contract remains unavailable.",
       "commits": [
         "b94733b"
       ]
@@ -144,7 +144,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts"
       ],
-      "note": "Current refusal and malformed-response checks pass; revalidate against the published positive contract."
+      "note": "Current refusal and malformed-response checks pass; positive contract requires revalidation."
     },
     {
       "id": "AC-02-c4",
@@ -156,7 +156,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "0116fc0 adds original-ID re-entry. Dedicated managed approval/admission needs #5534's positive producer and mounted routes; current producer only accepts BYOC access and retirement always 503.",
+      "note": "Original-ID read-only re-entry exists at 0116fc0; dedicated-managed approval/admission awaits backend producer.",
       "commits": [
         "0116fc0"
       ]
@@ -173,7 +173,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Refresh, running state, substituted-workspace and review-only negatives pass; positive admission cannot yet be tested against its real contract."
+      "note": "Recovery negatives pass; positive admission requires the producer contract."
     },
     {
       "id": "AC-03-c1",
@@ -232,7 +232,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Retirement component tests pass at 0116fc0."
+      "note": "Component tests pass."
     },
     {
       "id": "AC-03-c3",
@@ -268,7 +268,10 @@
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
         "modules/domain-apps/superplane/ui/OnboardingView.tsx"
       ],
-      "note": "Retirement-only receipts now include the authenticated ADP principal in addition to deployment/org. Distinct access and retirement operation IDs are persisted under the same cross-tab lock only when the original scoped request and workspace agree. No admission was enabled."
+      "note": "7343120 adds principal-scoped retirement receipts and immutable, cross-tab-locked operation lineage.",
+      "commits": [
+        "7343120"
+      ]
     },
     {
       "id": "AC-03-t5",
@@ -283,7 +286,7 @@
         "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "116 focused frontend tests passed including A→B→A retention, lost 503 response, late session/scope change, different workspace/principal, immutable access/retirement lineage and absent current identity. TypeScript and domain UI lint passed."
+      "note": "116 focused tests pass, including A→B→A, uncertain response, late reply and conflicting identities."
     },
     {
       "id": "AC-04-c1",
@@ -332,7 +335,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Operation state is now explicitly distinguished from verified cleanup; fuller producer evidence remains pending."
+      "note": "Operation state is separated from verified cleanup; producer evidence remains pending."
     },
     {
       "id": "AC-04-t3",
@@ -469,7 +472,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; requires separately authorized release and real IDs."
+      "note": "deployed-target: #5540/live-evaluation owner; authorized release and real IDs required."
     },
     {
       "id": "AC-06-t3",
