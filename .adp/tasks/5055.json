@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:41:23.320Z",
+  "updated_at": "2026-10-05T23:42:55.747Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Existing behavior verified."
+      "note": "Verified by mounted test."
     },
     {
       "id": "R5.1-t1",
@@ -42,7 +42,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Existing behavior verified."
+      "note": "Verified by mounted and startup tests."
     },
     {
       "id": "R5.2-t1",
@@ -72,7 +72,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
         "modules/domain-apps/superplane/src/superplane-api/app/routers/internal.py"
       ],
-      "note": "Merged validators unchanged; mounted boundary tests pass."
+      "note": "Merged validators unchanged; tests pass."
     },
     {
       "id": "R5.3-t1",
@@ -87,7 +87,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": "Both directions covered; commit b683a2e.",
+      "note": "Commit b683a2e.",
       "commits": [
         "b683a2e"
       ]
@@ -104,33 +104,36 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": "Raw and UTF-8 non-ASCII bearer cases return 401; commit b683a2e."
+      "note": "Raw and UTF-8 non-ASCII return 401; commit b683a2e."
     },
     {
       "id": "R5.4-c1",
       "kind": "code",
       "criterion": "R5.4",
       "title": "Preserve server-derived organization authority on domain requests",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": ""
+      "note": "Existing binding verified against spoofed headers."
     },
     {
       "id": "R5.4-t1",
       "kind": "test",
       "criterion": "R5.4",
       "title": "Run mounted spoofed-organization refusal tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.4-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": ""
+      "note": "Own workspace 200; foreign workspace 403; 150 auth tests passed. Commit 2537952.",
+      "commits": [
+        "2537952"
+      ]
     },
     {
       "id": "R5.5-c1",
