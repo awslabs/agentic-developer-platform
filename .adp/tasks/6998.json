@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T15:03:45.107Z",
+  "updated_at": "2026-10-05T15:11:57.898Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Issue selectors, source fetches and build consumers are cataloged at 19c9252; private report reconciliation awaits an authorized scan-reader connection. adp-cred list returned 403 insufficient_scope.",
+      "note": "Source catalog pushed at 19c9252; private SARIF read awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Published-selector test passes; original SARIF hash and severity cannot be independently checked without scan-reader access."
+      "note": "Published-selector test passes; original SARIF comparison remains blocked."
     },
     {
       "id": "AC-02-c1",
@@ -43,7 +43,7 @@
         "modules/agent-factory/agent/src/lib/url-guard.ts",
         "modules/agent-factory/agent/src/clients/gitlab_client.ts"
       ],
-      "note": "Verified merged PR #6733 protections at current source; no duplicate source edit."
+      "note": "Merged PR #6733 provides the protection; verified against current source."
     },
     {
       "id": "AC-02-t1",
@@ -58,35 +58,39 @@
         "modules/agent-factory/agent/src/clients/gitlab_client.test.ts",
         "modules/agent-factory/agent/src/lib/url-guard.test.ts"
       ],
-      "note": "npm ci --include=dev; 2 suites and 61 tests passed."
+      "note": "2 suites, 61 tests passed."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Constrain GitHub-bound calls and credentials to independently trusted origins",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src/github-comments.ts",
-        "modules/agent-factory/agent/src/utils/comment-authority.ts",
-        "modules/agent-factory/agent/src/utils/installation.ts"
+        "modules/agent-factory/agent/src/github-comments.ts"
       ],
-      "note": "Next independent code task; also trace check-run calls."
+      "note": "Pinned live-status requests to the GitHub API origin and validated repository/issue identifiers; existing fixed-origin callers inspected. Pushed at abb4039.",
+      "commits": [
+        "abb4039"
+      ]
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run GitHub caller unit fixtures for trusted requests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c2"
       ],
       "files": [
-        "modules/agent-factory/agent/src"
+        "modules/agent-factory/agent/src/github-comments.test.ts",
+        "modules/agent-factory/agent/src/components/checkRunStreamer.test.ts",
+        "modules/agent-factory/agent/src/utils/comment-authority.test.ts",
+        "modules/agent-factory/agent/src/utils/installation.test.ts"
       ],
-      "note": ""
+      "note": "6 suites, 139 tests passed with inherited GitHub token variables removed; npm run build passed."
     },
     {
       "id": "AC-02-c3",
@@ -100,7 +104,7 @@
         "modules/agent-factory/agent/src/invocability-probe",
         "modules/agent-factory/agent/src/lib"
       ],
-      "note": ""
+      "note": "Next independent task."
     },
     {
       "id": "AC-02-t3",
@@ -186,7 +190,7 @@
       "files": [
         "data/security"
       ],
-      "note": "Private baseline remains unavailable; catalog intentionally records all dispositions as unresolved."
+      "note": "All catalog dispositions remain unresolved pending evidence."
     },
     {
       "id": "AC-03-t1",
@@ -214,7 +218,7 @@
         "modules/agent-factory/codex-harness",
         "modules/agent-factory/codex-reviewer"
       ],
-      "note": "Ready PR pending completion of implementation and pre-submit checks."
+      "note": "Ready PR pending completed implementation and pre-submit checks."
     },
     {
       "id": "AC-04-t1",
