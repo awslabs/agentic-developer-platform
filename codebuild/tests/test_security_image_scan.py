@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "codebuild"))
 import scan_security_images as runner
-from security_image_targets import SUPERPLANE, discover
+from security_image_targets import DOC_API_COMPAT, ORIGINAL_GAPS, SUPERPLANE, discover, non_runtime_fixtures
 
 
 @pytest.fixture
@@ -166,6 +166,72 @@ def test_all_scope_inventory_uses_production_contexts_and_preparation():
     assert targets["modules/gateway/Dockerfile"]["prepare"] == [
         ["run", "bash", "modules/gateway/scripts/stage-contracts.sh"]
     ]
+
+
+def test_original_seven_gaps_keep_their_inventory_identity():
+    targets = {target["name"] for target in discover(ROOT)}
+    excluded = non_runtime_fixtures(ROOT)
+    assert len(ORIGINAL_GAPS) == 7
+    assert len(excluded) == 1
+    assert excluded[0]["name"] == "docs-security-runs-2026-09-27-admin-closure-api-compat"
+    assert excluded[0]["original_status"] == "failed"
+    assert excluded[0]["name"] not in targets
+    assert set(ORIGINAL_GAPS) == (targets & set(ORIGINAL_GAPS)) | {excluded[0]["name"]}
+    assert len(targets) + len(excluded) == 41
+
+
+def test_coverage_reconciles_old_and_new_denominators(source, monkeypatch):
+    fixture = source / DOC_API_COMPAT
+    fixture.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / DOC_API_COMPAT, fixture)
+    shutil.copyfile((ROOT / DOC_API_COMPAT).with_name("README.md"), fixture.with_name("README.md"))
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("SECURITY_IMAGE_SCOPE", "all")
+    monkeypatch.setenv("SECURITY_SCAN_DATE", "2026/10/05")
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "scan:fixture")
+    monkeypatch.setenv("ADP_SOURCE_SHA", "a" * 40)
+    monkeypatch.setenv("SECURITY_SCANS_BUCKET", "private-test-bucket")
+    monkeypatch.setattr(sys, "argv", ["scan_security_images.py", "syft"])
+    reports = []
+
+    def scanned(target, tool, output, root):
+        output.write_text('{"bomFormat":"CycloneDX"}')
+        return "sha256:" + "b" * 64
+
+    def upload(args, **kwargs):
+        if args[:3] == ["aws", "s3", "cp"] and args[3].endswith("coverage.json"):
+            reports.append(json.loads(Path(args[3]).read_text()))
+
+    monkeypatch.setattr(runner, "scan", scanned)
+    monkeypatch.setattr(runner, "command", upload)
+    assert runner.main() == 0
+    report = reports[0]
+    assert report["expected"] == report["succeeded"] == 5
+    assert report["discovered"] == 6
+    assert report["excluded_non_runtime"][0]["original_status"] == "failed"
+    assert report["original_gap"] == {
+        "run": "37278531434/1", "expected": 41, "succeeded": 34,
+        "failures": ORIGINAL_GAPS,
+    }
+    assert len(report["targets"]) == 5
+    assert all(item["status"] == "succeeded" for item in report["targets"])
+
+
+def test_docs_fixture_classification_requires_original_example_inputs(source):
+    fixture = source / DOC_API_COMPAT
+    fixture.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / DOC_API_COMPAT, fixture)
+    shutil.copyfile((ROOT / DOC_API_COMPAT).with_name("README.md"), fixture.with_name("README.md"))
+    assert len(non_runtime_fixtures(source)) == 1
+    assert DOC_API_COMPAT not in {target["dockerfile"] for target in discover(source)}
+    original = fixture.read_text()
+    fixture.write_text(original.replace("000000000101", "123456789012", 1))
+    with pytest.raises(ValueError, match="review its scan classification"):
+        discover(source)
+    fixture.write_text(original)
+    fixture.with_name("README.md").write_text("No reviewed classification")
+    with pytest.raises(ValueError, match="review its scan classification"):
+        discover(source)
 
 
 def test_copy_tree_preparation_replaces_stale_build_inputs(tmp_path):

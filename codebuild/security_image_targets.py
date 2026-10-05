@@ -9,6 +9,38 @@ from pathlib import Path
 import yaml
 
 SUPERPLANE = Path("modules/domain-apps/superplane")
+DOC_API_COMPAT = "docs/security/runs/2026-09-27/admin-closure/api-compat/Dockerfile"
+ORIGINAL_GAPS = {
+    "docs-security-runs-2026-09-27-admin-closure-api-compat": "sanitized documentation fixture",
+    "modules-agent-context-images-codegraph-context": "shared stdlib apply/check failure",
+    "modules-agent-context-images-context-mcp": "shared stdlib apply/check failure",
+    "modules-agent-context-images-ingestion": "pinned ingestion ECR input returned 403",
+    "modules-agent-context-images-ingestion-high-security": "pinned ingestion ECR input returned 403",
+    "modules-agent-context-images-litellm-proxy": "shared stdlib apply/check failure",
+    "modules-agent-context-images-parser": "pinned ingestion ECR input returned 403",
+}
+
+
+def non_runtime_fixtures(root: Path, scope: str = "all") -> list[dict]:
+    if scope != "all" or not (root / DOC_API_COMPAT).is_file():
+        return []
+    source = (root / DOC_API_COMPAT).read_text()
+    inputs = re.findall(r"^\s*FROM\s+(\S+)", source, flags=re.IGNORECASE | re.MULTILINE)
+    if (len(inputs) != 2 or any(
+        not image.startswith("000000000101.dkr.ecr.us-east-1.amazonaws.com/")
+        or not re.search(r"@sha256:[0-9a-f]{64}$", image)
+        for image in inputs
+    ) or "maintenance artifact" not in (root / DOC_API_COMPAT).with_name("README.md").read_text()):
+        raise ValueError("Documentation fixture changed: review its scan classification")
+    return [{
+        "name": str(Path(DOC_API_COMPAT).parent).replace("/", "-"),
+        "dockerfile": DOC_API_COMPAT,
+        "original_status": "failed",
+        "original_run": "37278531434/1",
+        "reason": "Historical maintenance artifact with sanitized example-account inputs; not a maintained runtime (docs/PUBLISHING.md)",
+    }]
+
+
 BUILD_CONFIG = {
     # This detached-check fixture requires only POSIX sh/coreutils. Reuse the
     # reviewed scan Python base rather than leaving its required ARG empty.
@@ -76,12 +108,15 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
     lock = yaml.safe_load((root / SUPERPLANE / "releases/superplane.lock.yaml").read_text())
     components = lock["maintained_source"]["components"]
     required = {str(SUPERPLANE / path / "Dockerfile") for path in components.values()}
+    excluded = {fixture["dockerfile"] for fixture in non_runtime_fixtures(root, scope)}
     targets = []
     for directory, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
         if "Dockerfile" not in files:
             continue
         dockerfile = str((Path(directory) / "Dockerfile").relative_to(root))
+        if dockerfile in excluded:
+            continue
         if scope == "superplane" and not dockerfile.startswith(str(SUPERPLANE) + "/"):
             continue
         build = BUILD_CONFIG.get(dockerfile, {})
