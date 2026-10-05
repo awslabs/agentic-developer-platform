@@ -1,0 +1,231 @@
+{
+  "version": 1,
+  "issue": 5535,
+  "updated_at": "2026-10-05T23:42:01.749Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Dispatch exact approved native lifecycle phases through the registered worker",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/executor/superplane_executor/task_worker.py"
+      ],
+      "note": "Preserve controller-only refusal without the lifecycle capability."
+    },
+    {
+      "id": "AC-01-c2",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Expose authenticated non-consuming installed-worker binding proof",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/gateway/src"
+      ],
+      "note": "Reuse protected producer and binding authorities; coordinate shared route ownership."
+    },
+    {
+      "id": "AC-01-c3",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Compose governed API lifecycle admission with actual authority and execution dependencies",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py"
+      ],
+      "note": "Do not claim readiness from configured objects alone."
+    },
+    {
+      "id": "AC-01-c-wire",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Wire admitted operation through durable outbox and registered lifecycle worker",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/executor",
+        "modules/domain-apps/superplane/src/superplane-api"
+      ],
+      "note": "Retain original operation, attempt, run, and lease identities."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run API and native-worker integration tests with transport-only doubles",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c2",
+        "AC-01-c3",
+        "AC-01-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/executor/tests",
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test expired and misbound authority, credential, and worker identities",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c2",
+        "AC-01-c3"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/executor/tests",
+        "modules/gateway/tests"
+      ],
+      "note": "Negative path: unauthorized cross-workspace execution or spending."
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test uncertain and partial lifecycle outcomes without false completion",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/executor/tests"
+      ],
+      "note": "Negative path: lost resources or duplicate effects after failure."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Probe compatible real lifecycle and authority dependencies at readiness time",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/capability_probes.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Fence paid-worker activation on verified installed binding and current dependencies",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/paid_worker.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run packaged capability and installer tests for valid native configuration",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_capability_probes.py",
+        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test activation refusal on missing, incompatible, or lost dependencies",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
+      ],
+      "note": "Negative path: capability cannot stay green after dependency loss."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Keep changed API, worker, installer, and Gateway packages buildable",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane",
+        "modules/gateway"
+      ],
+      "note": "Change only packaging or configuration needed for the supported path."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run affected full domain and Gateway suites on final PR head",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Report local and CI results separately."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Publish ready PR and exact operator verification and rollback prerequisites",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Foreground retains review, merge, release, and live acceptance."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify published PR head, required checks, and acceptance-to-evidence handoff",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": ""
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Complete reviewed and verified merge",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Foreground-owned: developer must not merge its own PR."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify installed lifecycle and rollback in the authorized environment",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "deployed-target: foreground/#5540 owns release and live evidence; this coding assignment authorizes no deployment."
+    }
+  ]
+}
