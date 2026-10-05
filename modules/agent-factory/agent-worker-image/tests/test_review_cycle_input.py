@@ -55,7 +55,7 @@ def test_checkout_uses_bound_pr_without_creating_or_resetting_branch():
         ["gh", "pr", "checkout", "77", "--repo", "org/repo"], ["git", "rev-parse", "HEAD"],
         ["git", "branch", "--show-current"],
         ["git", "rev-parse", "--is-shallow-repository"],
-        ["git", "fetch", "--no-tags", "origin", "b" * 40],
+        ["git", "fetch", "--no-tags", "origin", "b" * 40, "+refs/heads/*:refs/remotes/origin/*"],
         ["git", "cat-file", "-e", "b" * 40 + "^{commit}"]]
 
 
@@ -96,6 +96,12 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     git("checkout", "main", cwd=origin)
     git("commit", "--allow-empty", "-m", "new base", cwd=origin)
     base = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    git("checkout", "-b", "agent/issue-88", cwd=origin)
+    (origin / "ui-contract.txt").write_text("pinned sibling contract\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-m", "sibling contract", cwd=origin)
+    sibling = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    git("checkout", "main", cwd=origin)
 
     def gh_checkout():
         git("fetch", "origin", "+refs/heads/agent/issue-77:refs/remotes/origin/agent/issue-77", cwd=clone)
@@ -122,6 +128,8 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     assert git("rev-parse", "--is-shallow-repository", cwd=clone).stdout.strip() == "false"
     assert git("show", f"{inventory}:inventory.json", cwd=clone).stdout == '{"pinned_evidence": true}\n'
     assert git("cat-file", "-t", base, cwd=clone).stdout.strip() == "commit"
+    assert git("show", f"{sibling}:ui-contract.txt", cwd=clone).stdout == "pinned sibling contract\n"
+    assert git("rev-parse", "HEAD", cwd=clone).stdout.strip() == head
     assert git("status", "--porcelain", cwd=clone).stdout == ""
     assert git("config", "--get-all", "remote.origin.fetch", cwd=clone).stdout.splitlines() == [
         "+refs/heads/main:refs/remotes/origin/main",

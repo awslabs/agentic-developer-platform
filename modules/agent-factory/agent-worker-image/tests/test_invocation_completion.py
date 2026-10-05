@@ -483,10 +483,13 @@ def test_stale_pr_review_releases_queue_before_current_review(
     expected, current = "a" * sha_length, "b" * sha_length
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    from lib import review_cycle_input
+    history = MagicMock()
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
     attempts = 0
 
     def verify_obsolete_receipt(*_args):
@@ -521,6 +524,7 @@ def test_stale_pr_review_releases_queue_before_current_review(
     seed(client, envelope)
     assert entrypoint.main() == 0
     assert executions == ["current-review"]
+    history.assert_called_once_with({"baseRefOid": "c" * 40}, run=entrypoint.run_cmd, cwd=entrypoint.WORK_DIR)
     assert row(client, envelope)["status"] == {"S": "complete"}
 
 
@@ -531,7 +535,7 @@ def test_unverifiable_pr_head_does_not_acknowledge(worker, monkeypatch, expected
     client, envelope, executions, _, ack, _ = worker
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
@@ -716,3 +720,24 @@ def test_engine_reviewer_terminal_status_requires_delivery(worker, monkeypatch, 
         assert "Required design contract missing" in row(client, envelope)["error_message"]["S"]
     assert len(executions) == 1
     ack.assert_called_once()
+
+
+def test_pr_review_history_failure_stops_before_model_execution(worker, monkeypatch):
+    from lib import review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha="a" * 40)
+    envelope["payload"] = {"pull_request": {
+        "number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "b" * 40},
+    }}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="a" * 40)))
+    history = MagicMock(side_effect=RuntimeError("history fetch unavailable"))
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
+    with pytest.raises(RuntimeError, match="history fetch unavailable"):
+        entrypoint.main()
+    history.assert_called_once()
+    assert executions == []
+    ack.assert_not_called()
