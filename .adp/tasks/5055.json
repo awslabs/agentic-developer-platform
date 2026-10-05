@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:37:54.361Z",
+  "updated_at": "2026-10-05T23:39:36.168Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Existing implementation verified by the mounted HTTP regression; no runtime edit needed."
+      "note": "Existing behavior covered by mounted HTTP regression."
     },
     {
       "id": "R5.1-t1",
@@ -27,7 +27,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "New paired regression; 146 auth tests passed in an external virtualenv with the CI-pinned FastAPI version.",
+      "note": "Committed as d72fb72.",
       "commits": [
         "d72fb72"
       ]
@@ -37,26 +37,29 @@
       "kind": "code",
       "criterion": "R5.2",
       "title": "Preserve fail-closed client allowlist configuration",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": ""
+      "note": "Existing policy/startup behavior covered by signed mounted-token and configuration tests."
     },
     {
       "id": "R5.2-t1",
       "kind": "test",
       "criterion": "R5.2",
       "title": "Run unit and mounted wrong-client and empty-allowlist tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.2-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": ""
+      "note": "New mounted wrong/missing client tests; 10 focused and 148 full-file tests passed. Commit efe6765.",
+      "commits": [
+        "efe6765"
+      ]
     },
     {
       "id": "R5.3-c1",
