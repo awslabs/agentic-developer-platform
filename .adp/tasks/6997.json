@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "issue": 6997,
+  "updated_at": "2026-10-05T14:52:26.200Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Classify all seven failed builds against original inventory and evidence",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "codebuild/security_image_targets.py",
+        "codebuild/scan_security_images.py"
+      ],
+      "note": "First task: inspect recipes, original coverage and logs; retain each original gap in reconciliation."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Exercise seven-target inventory reconciliation with coverage fixtures",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Prove neither missing targets nor original denominator silently disappear."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Reject undocumented exclusion of the example-account recipe",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Classify the documentation recipe only after establishing whether it is executable."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair common stdlib apply/check build path for three images",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/gateway/security/stdlib/apply.py",
+        "modules/gateway/security/stdlib/check.py"
+      ],
+      "note": "Diagnose actual error first; retain security regression checks."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run stdlib checks and affected recipe builds",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Check CodeGraph, context-MCP and LiteLLM build/prepare paths."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Resolve pinned ingestion input for ingestion overlays and parser",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/ingestion/Dockerfile",
+        "modules/agent-context/images/parser/Dockerfile"
+      ],
+      "note": "Verify exact artifact identity and authorization before changing any digest; no broader IAM."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Build ingestion family and reject invalid registry inputs",
+      "status": "open",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Include overlay and parser; an inaccessible artifact must not count as covered."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire repaired recipes into scanner prepare and required-target inventory",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "codebuild/security_image_targets.py",
+        "codebuild/scan_security_images.py"
+      ],
+      "note": "Cross-component build-to-scan contract."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Reject omitted required targets through scanner inventory tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Exercise existing scanner reconciliation suite."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Preserve immutable revision, pinned inputs and paired provenance",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "codebuild/scan_security_images.py",
+        ".github/workflows/security-scan.yml"
+      ],
+      "note": "Inspect existing enforcement before deciding whether changes are necessary."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Verify paired Grype/Syft coverage on authorized scan target",
+      "status": "blocked",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: executor and coordinator after integration; needs authorized scan identity, explicit revision/account/region and metered rerun."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Preserve cleanup receipt and recovered finding assignment contract",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "codebuild/scan_security_images.py"
+      ],
+      "note": "Review existing lifecycle; implement only any identified gap."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify terminal children, cleanup and dated finding ownership",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: executor and final verification owner; requires completed authorized paired run and actual finding records."
+    }
+  ]
+}
