@@ -1,0 +1,32 @@
+{
+  "issue": 6998,
+  "sourceRevision": "fa75f1c407ffeb075d43271eb8a18accaa6458b3",
+  "sourceReportSha256": "4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd",
+  "sourceVerification": "pending authorized private SARIF read; selectors transcribed from issue",
+  "buildConsumers": {
+    "agent/src/": "agent-worker-image/Dockerfile builder: /app/dist/",
+    "codex-harness/src/": "agent-worker-image/Dockerfile codex-harness-builder: /app/codex-harness/dist/",
+    "codex-reviewer/src/": "agent-worker-image/Dockerfile codex-builder: /app/codex-reviewer/dist/"
+  },
+  "rule": "nodejs_scan.javascript-ssrf-rule-node_ssrf",
+  "records": [
+    {"file":"agent/src/clients/gitlab_client.ts","line":50,"input":"GITLAB_URL and caller baseUrl assertion; project and issue IDs","destination":"operator-configured GitLab origin","disposition":"unresolved"},
+    {"file":"agent/src/clients/gitlab_client.ts","line":72,"input":"GITLAB_URL and caller baseUrl assertion; project ID","destination":"operator-configured GitLab origin","disposition":"unresolved"},
+    {"file":"agent/src/clients/gitlab_client.ts","line":97,"input":"GITLAB_URL and caller baseUrl assertion; project ID","destination":"operator-configured GitLab origin","disposition":"unresolved"},
+    {"file":"agent/src/clients/gitlab_client.ts","line":127,"input":"GITLAB_URL and caller baseUrl assertion; encoded file path and ref","destination":"operator-configured GitLab origin","disposition":"unresolved"},
+    {"file":"agent/src/codex-persona-policy.ts","line":133,"input":"ADP_AGENT_CONTROL_ENDPOINT with static operation path","destination":"validated API Gateway hostname","disposition":"unresolved"},
+    {"file":"agent/src/complex-task-chat/recall-at-task-start.ts","line":177,"input":"CONTEXT_MCP_SERVER_URL or protected Door with static path","destination":"configured internal context service or Door","disposition":"unresolved"},
+    {"file":"agent/src/complex-task-chat/vault/gateway-client.ts","line":139,"input":"caller-provided vault baseUrl and encoded identifiers","destination":"caller-configured gateway origin","disposition":"unresolved"},
+    {"file":"agent/src/complex-task-chat/vault/gateway-client.ts","line":158,"input":"caller-provided vault baseUrl with internal API path","destination":"caller-configured gateway origin","disposition":"unresolved"},
+    {"file":"agent/src/components/checkRunStreamer.ts","line":606,"input":"repository and check-run ID from stream configuration","destination":"fixed GitHub API origin","disposition":"unresolved"},
+    {"file":"agent/src/github-comments.ts","line":449,"input":"options.apiBaseUrl with repository and issue identifiers","destination":"caller-configured GitHub API origin","disposition":"unresolved"},
+    {"file":"agent/src/invocability-probe/capture-proxy.ts","line":207,"input":"captured path against region-derived Bedrock endpoint","destination":"region-derived Bedrock origin","disposition":"unresolved"},
+    {"file":"agent/src/invocability-probe/gateway-client.ts","line":105,"input":"ADP_GATEWAY_ENDPOINT with static probe path","destination":"configured API Gateway endpoint","disposition":"unresolved"},
+    {"file":"agent/src/lib/artifactGateway.ts","line":32,"input":"ADP_GATEWAY_ENDPOINT with allowlisted artifact kind","destination":"configured API Gateway endpoint","disposition":"unresolved"},
+    {"file":"agent/src/lib/knowledgeBridge.ts","line":66,"input":"ADP_GATEWAY_ENDPOINT with fixed knowledge route","destination":"configured API Gateway endpoint","disposition":"unresolved"},
+    {"file":"agent/src/utils/comment-authority.ts","line":7,"input":"encoded repository owner, name and validated login","destination":"fixed GitHub API origin","disposition":"unresolved"},
+    {"file":"agent/src/utils/installation.ts","line":53,"input":"validated owner and fixed org/user route","destination":"fixed GitHub API origin","disposition":"unresolved"},
+    {"file":"codex-harness/src/github-entry.mjs","line":157,"input":"proxyPort loopback port with static response path","destination":"worker loopback proxy","disposition":"unresolved"},
+    {"file":"codex-reviewer/src/github.ts","line":160,"input":"rooted GitHub API path with installation token","destination":"fixed GitHub API origin","disposition":"unresolved"}
+  ]
+}
