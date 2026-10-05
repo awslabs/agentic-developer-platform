@@ -39,8 +39,10 @@
       "title": "Trace assigned reports to exact scanned artifacts and inputs",
       "status": "blocked",
       "covers": [],
-      "files": [],
-      "note": "Scan-reader connection discovery returns 403 insufficient_scope."
+      "files": [
+        ".github/scripts/inventory_security_occurrences.py"
+      ],
+      "note": "Synthetic coverage, immutable input, report, companion and provenance binding implemented; broker credential:list and credential:assume-role both return 403 insufficient_scope, so assigned reports remain unverified."
     },
     {
       "id": "AC-01-t2",
@@ -51,8 +53,10 @@
       "covers": [
         "AC-01-c2"
       ],
-      "files": [],
-      "note": "Assigned private reports cannot be read."
+      "files": [
+        ".github/scripts/tests/test_inventory_security_occurrences.py"
+      ],
+      "note": "Ten synthetic binding/tamper cases pass (102 related tests passed, 2 skipped); assigned private SARIF hashes, counts and coverage still cannot be checked without broker authorization."
     },
     {
       "id": "AC-02-c1",
@@ -78,7 +82,7 @@
       "files": [
         "platform/security/curl-8.22.0/verify-upstream.sh"
       ],
-      "note": "No container builder for exact candidate TLS and runtime tests."
+      "note": "No local container builder; CodeBuild access cannot be verified until the named broker role can be assumed. Exact candidate TLS and runtime checks are outstanding."
     },
     {
       "id": "AC-02-c2",
@@ -102,7 +106,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "No candidate container available for runtime fixtures."
+      "note": "No local candidate builder; remote build access awaits named role assumption. Runtime fixtures are outstanding."
     },
     {
       "id": "AC-02-c3",
@@ -126,7 +130,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "No builder for composed overlay checks."
+      "note": "No local builder; CodeBuild access cannot be verified until the named broker role can be assumed. Overlay checks are outstanding."
     },
     {
       "id": "AC-03-c1",
