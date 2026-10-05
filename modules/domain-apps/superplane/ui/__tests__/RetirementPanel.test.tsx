@@ -285,7 +285,7 @@ describe('source-backed removal request re-entry', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
     expect(await screen.findByText('Operation state: running')).toBeInTheDocument();
     expect(screen.getByText('Server operation ID: server-operation-id')).toBeInTheDocument();
-    expect(screen.getByText(/does not verify resource deletion/i)).toBeInTheDocument();
+    expect(screen.getByText(/Operation status alone does not prove resource deletion/i)).toBeInTheDocument();
     cleanup();
     mount(store);
     await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
@@ -393,5 +393,56 @@ describe('retirement principal and scope recovery', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Review removal' }));
     expect(await screen.findByText(/signed-in identity is unavailable/i)).toBeInTheDocument();
     expect(store.keys()).toHaveLength(0);
+  });
+});
+
+
+describe('retirement progress is not cleanup proof', () => {
+  const originalRequestId = '0ea80a51-7003-471a-a068-19741601856f';
+
+  it.each(['accepted', 'running', 'succeeded', 'failed', 'cancelled', 'unknown'] as const)(
+    'reports %s independently from verified absence and residual cost', async (operationState) => {
+      const store = memoryReceiptStore();
+      const intent = `retire-workspace:${workspaceId}`;
+      await claimPreviewIdentity(store, scope, intent, { workspaceId }, () => originalRequestId, new Date().toISOString());
+      await markSubmissionStage(store, scope, intent, originalRequestId, 'submitted');
+      let admissions = 0;
+      server.use(
+        http.get(API('/operations/by-idempotency/:requestId'), ({ params }) => {
+          expect(params.requestId).toBe(originalRequestId);
+          return HttpResponse.json({
+            request_id: originalRequestId, provisioning_operation_id: 'operation-1',
+            workspace_id: workspaceId, state: operationState, phase: 'execution',
+            observed_at: '2026-10-05T11:25:00Z', retryable: false,
+          });
+        }),
+        http.post(API('/workspaces/:workspaceId/retirement'), () => {
+          admissions += 1;
+          return HttpResponse.json({});
+        }),
+      );
+      mount(store);
+      await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+      expect(await screen.findByText(`Operation state: ${operationState}`)).toBeInTheDocument();
+      expect(screen.getByText('Verified removal: Not established. Operation status alone does not prove resource deletion or preservation.')).toBeInTheDocument();
+      expect(screen.getByText(/Residual cost: Unknown/)).toBeInTheDocument();
+      expect(screen.getByText('Last observed: 2026-10-05T11:25:00.000Z')).toBeInTheDocument();
+      if (operationState === 'succeeded') expect(screen.getByText(/provider absence and preserved resources have not been verified/i)).toBeInTheDocument();
+      if (operationState === 'failed' || operationState === 'cancelled') expect(screen.getByText(/Some owned resources may remain/i)).toBeInTheDocument();
+      expect(admissions).toBe(0);
+      expect(readReceipt(store, scope, intent)?.retirementOperationId).toBe('operation-1');
+    },
+  );
+
+  it('leaves 503 recovery and an unfinished preview unverified rather than calling them zero-cost cleanup', async () => {
+    const store = memoryReceiptStore();
+    const intent = `retire-workspace:${workspaceId}`;
+    await claimPreviewIdentity(store, scope, intent, { workspaceId }, () => originalRequestId, new Date().toISOString());
+    await markSubmissionStage(store, scope, intent, originalRequestId, 'submitted');
+    server.use(http.get(API('/operations/by-idempotency/:requestId'), () => HttpResponse.json({ detail: 'operation status unavailable' }, { status: 503 })));
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/Provider absence is not verified; residual cost is unknown/i)).toBeInTheDocument();
+    expect(readReceipt(store, scope, intent)?.idempotencyKey).toBe(originalRequestId);
   });
 });

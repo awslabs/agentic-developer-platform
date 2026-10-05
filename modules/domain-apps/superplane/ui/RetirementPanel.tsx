@@ -4,13 +4,22 @@ import { Alert, Button } from '@/components/ui';
 import { getAccessToken } from '@/services/auth';
 
 import { isSuperseded, previewRetirement, recoverOperation, type ScopeGuard } from './client';
-import { ENDPOINTS, type OperationReceipt, type RetirementReview, unavailableFor, type Unavailable } from './contract';
+import { ENDPOINTS, type OperationReceipt, type OperationState, type RetirementReview, unavailableFor, type Unavailable } from './contract';
 import { claimPreviewIdentity, readReceipt, recordRetirementLineage, type ClaimOutcome, type ReceiptScope, type ReceiptStore } from './operations';
 
 type ReviewState =
   | { phase: 'idle' | 'loading' }
   | { phase: 'failed'; unavailable: Unavailable }
   | { phase: 'reviewed'; review: RetirementReview };
+
+const OPERATION_PROGRESS: Record<OperationState, string> = {
+  accepted: 'The request was accepted, not completed. Check the original request rather than submitting another removal.',
+  running: 'Work may still be running. Check the original request rather than submitting another removal.',
+  succeeded: 'The operation reported success, but provider absence and preserved resources have not been verified.',
+  failed: 'The operation failed. Some owned resources may remain; keep the original request for authorized recovery.',
+  cancelled: 'The operation was cancelled. Some owned resources may remain; keep the original request for authorized recovery.',
+  unknown: 'The outcome is uncertain. Resources may still exist; recover the original request before any further action.',
+};
 
 export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken }: {
   workspaceId: string;
@@ -150,11 +159,16 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
         {recovery.phase === 'loading' && <p role="status">Checking the original request without submitting another removal…</p>}
         {recovery.phase === 'failed' && <Alert variant="warning" title="Removal request status unavailable">
           {recovery.unavailable.detail} Keep the original request ID and retry the lookup; no new removal was submitted.
+          Provider absence is not verified; residual cost is unknown.
         </Alert>}
         {recovery.phase === 'observed' && <div role="status">
           <p>Operation state: {recovery.receipt.state}</p>
           <p className="break-all">Server operation ID: {recovery.receipt.operationId ?? 'Not yet assigned'}</p>
-          <p>Operation status does not verify resource deletion or preservation. Review the workspace and provider inventory independently.</p>
+          <p>Last observed: {Number.isFinite(Date.parse(recovery.receipt.observedAt))
+            ? new Date(recovery.receipt.observedAt).toISOString() : 'Not reported'}</p>
+          <p>{OPERATION_PROGRESS[recovery.receipt.state]}</p>
+          <p>Verified removal: Not established. Operation status alone does not prove resource deletion or preservation.</p>
+          <p>Residual cost: Unknown. Preserved or partially cleaned resources may continue to incur charges.</p>
         </div>}
       </div>
       <p className="mt-2 text-sm">Review owned deletions and resources that must survive before requesting removal. Reviewing does not delete anything.</p>
@@ -203,6 +217,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
                 <li key={resource} className="break-words">{resource}</li>
               ))}</ul>
             )}
+            <p className="text-sm">These are planned survivors, not verified preservation evidence.</p>
           </div>
           <Alert variant="warning" title="Removal cannot be submitted">
             The service requires separately approved cleanup access before it can admit a complete removal plan. No approval request is available and no deletion was submitted.

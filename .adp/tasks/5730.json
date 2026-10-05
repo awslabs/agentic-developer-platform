@@ -330,24 +330,26 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Distinguish retirement acceptance and progress from verified removal and residual costs",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
       ],
-      "note": "Operation state is separated from verified cleanup; producer evidence remains pending."
+      "note": "Operation accepted/running/failed/cancelled/unknown/succeeded states are described separately from verified cleanup. The UI labels provider absence and preservation unverified and residual cost unknown until authoritative producer evidence exists; it never derives removal from operation success."
     },
     {
       "id": "AC-04-t3",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Test partial cleanup, unknown costs and absence-proof requirements",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c2"
       ],
-      "files": [],
-      "note": "Pending."
+      "files": [
+        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
+      ],
+      "note": "72 focused tests passed including six actual operation-response states, partial-failure wording, 503 recovery, planned survivor versus verified preservation, unknown cost and no POST retirement. TypeScript and domain-UI lint passed."
     },
     {
       "id": "AC-05-c1",
