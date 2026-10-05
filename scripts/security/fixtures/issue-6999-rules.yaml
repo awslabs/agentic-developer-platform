@@ -1,0 +1,326 @@
+rules:
+- id: gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs
+  patterns:
+  - pattern-either:
+    - pattern-inside: function ($REQ, $RES, ...) {...}
+    - pattern-inside: function $FUNC($REQ, $RES, ...) {...}
+    - pattern-inside: $X = function $FUNC($REQ, $RES, ...) {...}
+    - pattern-inside: var $X = function $FUNC($REQ, $RES, ...) {...};
+    - pattern-inside: $APP.$METHOD(..., function $FUNC($REQ, $RES, ...) {...})
+  - pattern-either:
+    - pattern: |
+        new Function(..., <... $REQ.$QUERY.$VAR ...>, ...)
+    - pattern: |
+        new Function(..., <... $REQ.$QUERY ...>, ...)
+    - pattern: |
+        eval(..., <... $REQ.$QUERY.$VAR ...>, ...)
+    - pattern: |
+        eval(..., <... $REQ.$QUERY ...>, ...)
+    - pattern: |
+        setTimeout(..., <... $REQ.$QUERY.$VAR ...>, ...)
+    - pattern: |
+        setTimeout(..., <... $REQ.$QUERY ...>, ...)
+    - pattern: |
+        setInterval(..., <... $REQ.$QUERY.$VAR ...>, ...)
+    - pattern: |
+        setInterval(..., <... $REQ.$QUERY ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY.$VAR ...>;
+        ...
+        new Function(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY ...>;
+        ...
+        new Function(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY.$VAR ...>;
+        ...
+        eval(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY ...>;
+        ...
+        eval(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY.$VAR ...>;
+        ...
+        setTimeout(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY ...>;
+        ...
+        setTimeout(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY.$VAR ...>;
+        ...
+        setInterval(..., <... $INP ...>, ...)
+    - pattern: |
+        $INP = <... $REQ.$QUERY ...>;
+        ...
+        setInterval(..., <... $INP ...>, ...)
+  message: |
+    User controlled data in eval() or similar functions may result in Server Side Injection or Remote Code Injection
+  languages:
+  - javascript
+  severity: ERROR
+  metadata:
+    cwe: CWE-95
+    shortDescription: Improper neutralization of directives in dynamically evaluated
+      code ('Eval Injection')
+    category: security
+    owasp:
+    - A1:2017-Injection
+    - A03:2021-Injection
+    security-severity: HIGH
+    primary_identifier: nodejs_scan.javascript-eval-rule-eval_nodejs
+    secondary_identifiers:
+    - name: NodeJS Scan ID javascript-eval-rule-eval_nodejs
+      type: njsscan_rule_type
+      value: User controlled data in eval() or similar functions may result in Server
+        Side Injection or Remote Code Injection
+    license: MIT
+    vulnerability_class:
+    - Other
+    source: https://semgrep.dev/r/gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs
+    shortlink: https://sg.run/WAdEz
+    semgrep.dev:
+      rule:
+        r_id: 144397
+        rv_id: 920488
+        rule_id: r6UydR7
+        version_id: vdTvQ34
+        url: https://semgrep.dev/playground/r/vdTvQ34/gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs
+        origin: community
+- id: gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+  mode: taint
+  pattern-sources:
+  - patterns:
+    - focus-metavariable: $REQ
+    - pattern: function ($REQ, $RES, ...) {...}
+  - patterns:
+    - focus-metavariable: $REQ
+    - pattern: function $FUNC($REQ, $RES, ...) {...}
+  pattern-sanitizers:
+  - patterns:
+    - pattern-either:
+      - pattern: "if($VALIDATION){\n...\n} \n"
+      - pattern: |
+          $A = $VALIDATION
+          ...
+          if($A){
+          ...
+          }
+    - metavariable-pattern:
+        metavariable: $VALIDATION
+        pattern-either:
+        - pattern: "$AL.includes(...)  \n"
+        - pattern: |
+            $AL.indexOf(...) !== -1
+        - pattern: |
+            $AL.find(...) !== undefined
+        - pattern: |
+            $ALS.has(...)
+  pattern-sinks:
+  - pattern-either:
+    - patterns:
+      - pattern-either:
+        - pattern-inside: |
+            $NEEDLE = require('needle');
+            ...
+        - pattern-inside: |
+            import $NEEDLE from 'needle'
+            ...
+      - pattern-either:
+        - pattern: $NEEDLE('$VERB', ...)
+        - pattern: $NEEDLE.$VERB($REQ. ...,...)
+      - metavariable-regex:
+          metavariable: $VERB
+          regex: ^(get|put|post|patch|delete|head)$
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $AXIOS = require('axios');
+          ...
+      - pattern-inside: |
+          import $AXIOS from 'axios'
+          ...
+    - pattern-either:
+      - patterns:
+        - pattern: $AXIOS(...)
+        - pattern-not-inside: |
+            if($ARR.indexof(<...$REQ...>) != -1){...}
+      - patterns:
+        - pattern: $AXIOS.$VERB(...)
+        - metavariable-regex:
+            metavariable: $VERB
+            regex: ^(get|put|post|patch|delete|head)$
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          {..., request, ... } = require('urllib');
+          ...
+      - pattern-inside: |
+          import {..., request, ... } from 'urllib'
+          ...
+    - pattern: request(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $URLLIIB = require('urllib');
+          ...
+      - pattern-inside: |
+          import $URLLIIB from 'urllib'
+          ...
+    - pattern: $URLLIIB.request(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $SA = require('superagent');
+           ...
+      - pattern-inside: |
+          import $SA from 'superagent'
+          ...
+    - patterns:
+      - pattern: $SA.$VERB(...)
+      - metavariable-regex:
+          metavariable: $VERB
+          regex: ^(get|put|post|patch|delete|head)$
+  - pattern: fetch(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $HTTP = require('$PKG');
+          ...
+      - pattern-inside: |
+          import $HTTP from $PKG
+          ...
+    - pattern-either:
+      - patterns:
+        - pattern: $HTTP.$VERB(...)
+        - metavariable-regex:
+            metavariable: $VERB
+            regex: ^(get|put|post|patch|delete|head)$
+    - metavariable-regex:
+        metavariable: $PKG
+        regex: ^(http|https)$
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $IO = require('socket.io-client');
+          ...
+      - pattern-inside: |
+          import $IO from 'socket.io-client'
+          ...
+    - pattern: $IO(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $NET = require('net');
+          ...
+          $NETCLIENT = new $NET.Socket()
+          ...
+      - pattern-inside: |
+          import $NET from 'net'
+          ...
+          $NETCLIENT = new $NET.Socket()
+          ...
+    - pattern: $NETCLIENT.connect(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $BENT = require('bent');
+          ...
+      - pattern-inside: |
+          import $BENT from 'bent';
+          ...
+    - pattern: $BENT(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $BENT = require('bent');
+          ...
+          $MTD = $BENT(...)
+      - pattern-inside: |
+          import $BENT from 'bent';
+          ...
+          $MTD = $BENT(...)
+    - pattern: $MTD(...)
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $BENT = require('bent');
+          ...
+          $GETBENT = $BENT('$PKG')
+          ...
+      - pattern-inside: |
+          import $BENT from 'bent';
+          ...
+          $GETBENT = $BENT('$PKG')
+          ...
+    - pattern: $GETBENT(...)
+    - metavariable-regex:
+        metavariable: $PKG
+        regex: ^(json|buffer)$
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          import $GOT from 'got';
+          ...
+    - pattern: $GOT.$VERB(...)
+    - metavariable-regex:
+        metavariable: $VERB
+        regex: ^(get|put|post|patch|delete|head)$
+  - patterns:
+    - pattern-either:
+      - pattern-inside: |
+          $REQUEST = require('request');
+          ...
+      - pattern-inside: |
+          import $REQUEST from 'request';
+          ...
+    - pattern: $REQUEST(...)
+  message: "This application allows user-controlled URLs to be passed directly to
+    HTTP client libraries.  This can result in Server-Side Request Forgery (SSRF).
+    SSRF refers to an attack where the attacker can abuse functionality on  the server
+    to force it to make requests to other internal systems within your  infrastructure
+    that are not directly exposed to the internet.  This allows the attacker to access
+    internal resources they do not have direct access to.\nSome risks of SSRF are:\n-
+    Access and manipulation of internal databases, APIs, or administrative panels
+    - Ability to scan internal network architecture and services - Can be used to
+    pivot attacks into the internal network - Circumvent network segregation and firewall
+    rules\nTo avoid this, try using hardcoded HTTP request calls or a whitelisting
+    object to  check whether the user input is trying to access allowed resources
+    or not.\nHere is an example: ``` var whitelist = [\n  \"https://example.com\",
+    \n  \"https://example.com/sample\"\n]\napp.get('/ssrf/node-ssrf/axios/safe/3',
+    function (req, res) {\n  if(whitelist.includes(req.query.url)){\n      axios.get(url,
+    {})\n          .then(function (response) {\n              console.log(response);\n
+    \         })\n          .catch(function (response) {\n              console.log(response);
+    \ \n          })\n  }\n}); ```  For more information on SSRF see OWASP: https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html\n"
+  languages:
+  - javascript
+  severity: ERROR
+  metadata:
+    owasp:
+    - A1:2017-Injection
+    - A03:2021-Injection
+    cwe: CWE-918
+    shortDescription: Server-side request forgery (SSRF)
+    security-severity: CRITICAL
+    category: security
+    primary_identifier: nodejs_scan.javascript-ssrf-rule-node_ssrf
+    secondary_identifiers:
+    - name: NodeJS Scan ID javascript-ssrf-rule-node_ssrf
+      type: njsscan_rule_type
+      value: User controlled URL in http client libraries can result in Server Side
+        Request Forgery (SSRF).
+    license: MIT
+    vulnerability_class:
+    - Other
+    source: https://semgrep.dev/r/gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+    shortlink: https://sg.run/ZqdGn
+    semgrep.dev:
+      rule:
+        r_id: 144435
+        rv_id: 920526
+        rule_id: AbU9DZO
+        version_id: YDTYbzN
+        url: https://semgrep.dev/playground/r/YDTYbzN/gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+        origin: community
