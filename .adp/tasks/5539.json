@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-05T20:53:30.895Z",
+  "updated_at": "2026-10-05T23:46:17.232Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior implementation, inspection and full-domain evidence retained; unchanged by the prepared merge.",
+      "note": "Merged in #6992.",
       "commits": [
         "0c74add"
       ]
@@ -24,7 +24,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Unchanged implementation retains passing full-domain evidence. Provider observations remain diagnostic.",
+      "note": "Merged offline boundary.",
       "commits": [
         "44d8888"
       ]
@@ -37,7 +37,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior full-domain evidence retained; invalid phase evidence prevents provider reads.",
+      "note": "Merged.",
       "commits": [
         "c7d2d6a"
       ]
@@ -52,7 +52,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Passed in the completed full domain run. Offline evidence only; not repeated."
+      "note": "Prior passing offline evidence."
     },
     {
       "id": "AC-01-t2",
@@ -65,7 +65,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Prior passing full-domain evidence retained.",
+      "note": "Prior passing offline evidence.",
       "commits": [
         "023c2a3"
       ]
@@ -81,7 +81,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Prior replay, retry and refusal regression results retained.",
+      "note": "Prior passing offline evidence.",
       "commits": [
         "1481dd2"
       ]
@@ -97,7 +97,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Prior passing negatives retained. No live cleanup, cost or serving acceptance claimed.",
+      "note": "Prior passing offline evidence; no live proof.",
       "commits": [
         "76fa319"
       ]
@@ -112,7 +112,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Prior offline target, credential and incomplete-inventory results retained."
+      "note": "Prior passing offline evidence."
     },
     {
       "id": "AC-01-t6",
@@ -124,7 +124,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Prior passing report fixtures retained; live_acceptance remains false."
+      "note": "Prior passing offline evidence."
     },
     {
       "id": "AC-02-c1",
@@ -136,7 +136,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
       ],
-      "note": "Private-file handling and named-pipe refusal repairs remain unchanged and retain passing evidence.",
+      "note": "Merged; fixture mode remains offline.",
       "commits": [
         "8116dfc"
       ]
@@ -151,7 +151,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py"
       ],
-      "note": "Re-entry repair and previously inspected UI compatibility are preserved.",
+      "note": "Merged read-only contract.",
       "commits": [
         "a1d1fa0"
       ]
@@ -165,10 +165,8 @@
       "covers": [
         "AC-02-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py"
-      ],
-      "note": "Prior integration, sanitization, permissions and no-overwrite results retained."
+      "files": [],
+      "note": "Prior passing fixtures."
     },
     {
       "id": "AC-02-t2",
@@ -180,10 +178,8 @@
         "AC-02-c1",
         "AC-02-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli_negative.py"
-      ],
-      "note": "Prior passing full-domain results retained.",
+      "files": [],
+      "note": "Prior passing fixtures.",
       "commits": [
         "984c5b7"
       ]
@@ -197,10 +193,8 @@
       "covers": [
         "AC-02-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py"
-      ],
-      "note": "Prior probe, delayed-load and timeout fixture results retained. These do not establish live acceptance."
+      "files": [],
+      "note": "Prior passing fixtures."
     },
     {
       "id": "AC-02-c-preview",
@@ -209,10 +203,8 @@
       "title": "Bind newly published C1 re-entry and review-only retirement-preview targets",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py"
-      ],
-      "note": "Previously verified identity and disabled-removal bindings remain unchanged."
+      "files": [],
+      "note": "Merged read-only bindings."
     },
     {
       "id": "AC-02-t6",
@@ -223,11 +215,8 @@
       "covers": [
         "AC-02-c-preview"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli_negative.py"
-      ],
-      "note": "Prior passing full-domain evidence retained."
+      "files": [],
+      "note": "Prior passing fixtures."
     },
     {
       "id": "AC-02-t7",
@@ -238,21 +227,20 @@
       "covers": [
         "AC-02-c-preview"
       ],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py"
-      ],
-      "note": "Prior pinned-source and merged-base inspection retained. The new base changes no Superplane UI source or relevant workflow."
+      "files": [],
+      "note": "Previously verified against published source."
     },
     {
       "id": "AC-02-c-browser",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Connect full authenticated browser creation, recovery and removal to released interfaces",
-      "status": "blocked",
+      "title": "Connect authenticated browser creation, recovery and capability-gated removal to released interfaces",
+      "status": "open",
       "covers": [],
-      "files": [],
-      "note": "#5534/#5535 admission and compatible released interfaces remain outstanding. Separately deferred outside this owner-authorized bounded merge."
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/"
+      ],
+      "note": "Reopened for the owner’s newer live-driver assignment; positive retirement parsing awaits an actual producer checkpoint."
     },
     {
       "id": "AC-02-t5",
@@ -264,7 +252,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "deployed-target: #5540 operations evaluator; requires approved release, live authorization, admission and provider observations. Not attempted."
+      "note": "deployed-target: #5540 operations evaluator; approved release, admission, authorization and provider observations required. No live run in this assignment."
     },
     {
       "id": "AC-02-c2",
@@ -276,7 +264,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Existing documentation and cleanup-preserving rollback handoff remain unchanged.",
+      "note": "Merged offline guidance; live commands need a separately tested update.",
       "commits": [
         "68d882c"
       ]
@@ -291,7 +279,73 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Prior documented-command and public-documentation evidence retained. No documentation edits made."
+      "note": "Prior passing results."
+    },
+    {
+      "id": "AC-02-c-provider",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Read selected AWS resource ownership and surviving peers without mutation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/"
+      ],
+      "note": "Added for the newer owner-directed independent provider observer."
+    },
+    {
+      "id": "AC-02-t8",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run browser transport-double creation, approval, re-entry, recovery and refusal fixtures",
+      "status": "open",
+      "covers": [
+        "AC-02-c-browser"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/"
+      ],
+      "note": "Added for the newer live-driver assignment."
+    },
+    {
+      "id": "AC-02-t9",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run provider wrong-role, denied-inventory, partial-cleanup and survivor fixtures",
+      "status": "open",
+      "covers": [
+        "AC-02-c-provider"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/"
+      ],
+      "note": "Added for independent read-only observations."
+    },
+    {
+      "id": "AC-02-c-live-cli",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Gate live invocation on private authority and persist resumable sanitized evidence",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
+      ],
+      "note": "Added for owner-directed real, opt-in driver; no implicit offline fallback."
+    },
+    {
+      "id": "AC-02-t10",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run live-envelope, lost-response, expiry and resume transport fixtures",
+      "status": "open",
+      "covers": [
+        "AC-02-c-live-cli"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/"
+      ],
+      "note": "Added for explicit authorization and resume safety."
     },
     {
       "id": "AC-03-c1",
@@ -300,10 +354,8 @@
       "title": "Identify and retain required domain and applicable shared validation commands",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Maintained validation requirements retained. Prepared merge introduces no story-specific changes outside the already reviewed acceptance/browser repair.",
+      "files": [],
+      "note": "Merged.",
       "commits": [
         "663f87e"
       ]
@@ -315,22 +367,20 @@
       "title": "Keep offline onboarding fixtures independent of the browser runtime",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
-      ],
-      "note": "Repair is published in 17bf03396be428039d3d33ec270d9b2911189be7. Both repaired file hashes match the locally validated content."
+      "files": [],
+      "note": "Merged."
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Run offline domain and applicable remote checks",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Retain local results: 6574 tests and 12 subtests passed, 11 manifest skips, four live deselected, all 336 PostgreSQL-named cases passed. Supplied CI at 17bf0339 reports UI and selector success but domain still in progress. Await completed required CI for the published base-merged revision; no failure is reported."
+      "note": "Verified required domain, UI, selector and browser CI passed on merged #6992 head 819ca5c; prior local full-domain result retained."
     },
     {
       "id": "AC-03-t2",
@@ -341,10 +391,8 @@
       "covers": [
         "AC-03-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py"
-      ],
-      "note": "Prior 44-fixture and full-domain results retained; published content is identical."
+      "files": [],
+      "note": "Prior passing results."
     },
     {
       "id": "AC-03-t3",
@@ -355,10 +403,8 @@
       "covers": [
         "AC-03-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py"
-      ],
-      "note": "Before/after regression evidence retained. Published repair preserves mandatory browser dependencies for browser execution."
+      "files": [],
+      "note": "Prior passing results."
     },
     {
       "id": "AC-03-t4",
@@ -369,11 +415,22 @@
       "covers": [
         "AC-03-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py",
-        ".github/workflows/superplane-ui-browser-ci.yml"
+      "files": [],
+      "note": "Verified successful merged PR browser check."
+    },
+    {
+      "id": "AC-03-t5",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run affected domain and applicable final-head remote checks for live-driver source",
+      "status": "open",
+      "covers": [
+        "AC-02-c-browser",
+        "AC-02-c-provider",
+        "AC-02-c-live-cli"
       ],
-      "note": "Supplied browser job succeeded at 17bf03396be428039d3d33ec270d9b2911189be7: https://github.com/aws-e/adp/actions/runs/37370820567/job/111967388825. Verified that its entry script unconditionally invokes onboarding after serving and batch scenarios. Relevant scripts and workflow are unchanged by the prepared merge. Fixture evidence only; not live acceptance."
+      "files": [],
+      "note": "Added because prior CI cannot validate new source."
     },
     {
       "id": "AC-04-c1",
@@ -382,10 +439,8 @@
       "title": "Publish ready PR with truthful evaluator and rollback handoff",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Controller confirms repair publication at 17bf03396be428039d3d33ec270d9b2911189be7, matching local HEAD. Existing handoff retained; only the newly prepared base merge awaits publication.",
+      "files": [],
+      "note": "Prior ready PR #6992 merged.",
       "commits": [
         "83115b5"
       ]
@@ -395,12 +450,36 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify PR revision, checks and criterion-level handoff",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Repair publication and browser coverage verified at 17bf0339. Prepared merge is conflict-free, incoming files match base 1fc70986, and diff checks pass. Final-head domain CI, required approval and merged-state confirmation remain pending. Preserve wider backend/live holds."
+      "note": "Verified #6992 merged at e730c6e after passing relevant checks; no live acceptance implied."
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Publish new ready PR and updated operator invocation without asserting live acceptance",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
+      ],
+      "note": "Added for the owner’s later source assignment; do not merge."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify published revision, required checks and criterion-specific evaluator handoff",
+      "status": "open",
+      "covers": [
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "Foreground owns review/merge; broader story remains open."
     }
   ]
 }
