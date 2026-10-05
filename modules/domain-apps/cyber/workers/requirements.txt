@@ -17,11 +17,11 @@ oletools==0.60.2
 # which fails to build on python:3.12-slim. See #238 for history.
 # python-ssdeep==1.1.post1 does not exist on PyPI; ppdeep provides the same fuzzy-hash API.
 ppdeep==20260221
-magika==0.6.3
+magika==1.0.3
 
 # AWS + HTTP
-boto3>=1.35,<2
-requests>=2.33,<3
+boto3>=1.43.107,<2
+requests>=2.34.2,<3
 
 # Data modeling
-pydantic>=2.9,<3
+pydantic>=2.13.5,<3
