@@ -68,27 +68,26 @@ tests under #6127. The `adp_role` column labels scenarios; no role claim is pass
 to this grant-only evaluator, which is why production role consumption remains
 #6485's responsibility.
 
-## Owner decisions requested (proposed; no widening shipped)
+## Owner decisions requested (proposals only; no widening shipped)
 
-1. **Preset names/mapping:** Retire the unused `workspace_*` ADP-role helper as a
-   role *assignment* path; if presets are needed in an eventual domain access UI,
-   propose viewer→read, operator→spend, provisioner→provision+renew, owner→administer.
-   Store explicit permission sets, not preset strings. Domain/auth owner approval
-   required; existing stored grants are unchanged, raw JWT roles remain inert.
-2. **Privilege ceiling:** Propose typed human workspace administrators may grant
-   only permissions they hold on the same workspace; organization administrators
-   may bootstrap the *first* workspace and grant there only through the reviewed
-   installation path. No service self-grant or cross-tenant grant. This would
-   constrain future admin surfaces, not change existing ADP admin-role assignment.
-3. **Revocation bound:** Propose no positive authorization cache: re-read live
-   typed grant at admission and each sensitive operation (current DB behavior),
-   fail closed on unavailable storage; require current ADP membership at request
-   and at long-running execution (#6127). No fixed seconds-based cache promise
-   until shared ADP contract owner confirms its membership revocation bound.
-4. **Last administrator:** Propose refuse removal of the final active human
-   organization/workspace administrator, with audited owner-operated recovery
-   using ADP identity plus explicit grants; never synthesize access from a
-   platform_admin role. Requires domain/auth owner approval and a safe admin API.
+D1 and D5 require recorded domain/auth-owner disposition; the Harness/domain
+approval owner must also agree to the D1 approver handoff. The architect approved
+fixed contract fixtures, **not** these policy choices. A grant fixture is not a
+safe grant-mutation surface or evidence of current ADP identity at admission.
+
+| Decision | Proposed disposition | Compatibility impact and handoff |
+| --- | --- | --- |
+| D1 distinct approver access | Before a first-workspace or continuation/retirement approval, an audited, owner-controlled access workflow (#6486) must place a **second**, verified, currently eligible human in the exact organization/workspace approval scope. For the first workspace, issue explicit organization authority before any workspace exists; on existing workspaces require an explicit typed workspace administrator grant. Never use requester self-approval, a service identity, a raw ADP admin role or an approval from another plan. | An installation with only one eligible administrator cannot submit an approved operation until the separate approver handoff exists. No public domain grant administration surface exists today; keep activation pending D1 rather than silently substituting the requester or bypassing approval. The Harness/domain approval owner must confirm the handoff and recovery of no-approver cases. |
+| D5 candidate presets | Retire `workspace_*` as an ADP-role assignment path. If a domain access UI later offers presets, propose viewer→read, operator→spend, provisioner→provision+renew, owner→administer; persist explicit typed permission sets, never a preset name or raw token role. | Existing stored grants remain unchanged and candidate role strings remain inert. Offering provisioner would bundle credential renewal with provisioning, so do not expose or migrate this bundle without domain/auth-owner review; importing canonical ADP roles as workspace grants would violate the fixed no-inheritance boundary. |
+| D5 assignment ceiling | A verified human workspace administrator may grant only permissions they hold on that workspace. An eligible current selected-org administrator may bootstrap the initial organization/first-workspace grant through the reviewed installation path, not manage later workspaces by role. No service self-grant, cross-tenant grant or ordinary ADP role-based administration. | Constrains a future #6486 administration workflow; does not change Gateway role assignment or existing typed grants. Check original principal and target scope before enabling it; no public mutation route exists now. |
+| D5 revocation bound | No positive authorization cache: read live typed grants at admission and each sensitive operation, fail closed when unavailable, and require #6127 current ADP membership/disabled-state checks at request and long-running execution. The shared auth owner must specify the maximum age of the current-identity read before claiming a numeric revocation bound. | Stored domain grants already re-read; composed membership/disabled checks are not established by this fixture. Enforcement may refuse a previously accepted run after revocation, which is intentional. Do not advertise a seconds-based bound or enable stale positive identity caches before shared-owner approval. |
+| D5 last-administrator recovery | Refuse removal of the last active **human** explicit organization/workspace administrator. Use a separately audited, owner-operated restoration with verified ADP identity and scoped typed grants; never synthesize access from `platform_admin`. | Recovery remains unavailable until #6486 provides a safe surface and domain/auth owners approve the policy. Single-administrator installations need an authorized second human before removing their only administrator. |
+
+The executable approval fixtures exercise the shared Harness decision predicate with
+first-workspace and teardown cases. They do not test the unavailable grant handoff
+or replace a composed current-identity check. Neither CLI `--yes` nor a service
+run's delegated workspace permission constitutes a human approval; the executor
+still checks its own admission authority.
 
 ## Remaining acceptance / owners
 

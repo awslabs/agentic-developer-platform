@@ -1,6 +1,22 @@
 {
   "version": 1,
   "columns": ["name", "org", "workspace", "subject", "principal_type", "adp_role", "grant_org", "grant_workspace", "grant_type", "permissions", "request", "active", "revoked", "allow"],
+  "approval_columns": ["name", "action", "approver", "status", "result", "request_org", "request_workspace", "changed_plan", "record_present", "allow"],
+  "approval_cases": [
+    ["first workspace selected current human", "provision", "bob", "current", "allowed-once", "O1", "W0", false, true, true],
+    ["first workspace no selected approver", "provision", "bob", "missing", "allowed-once", "O1", "W0", false, true, false],
+    ["first workspace requester self-approval", "provision", "alice", "current", "allowed-once", "O1", "W0", false, true, false],
+    ["revoked selected approver", "provision", "bob", "revoked", "allowed-once", "O1", "W0", false, true, false],
+    ["stale selected approver membership", "provision", "bob", "stale", "allowed-once", "O1", "W0", false, true, false],
+    ["read-only human cannot approve", "provision", "bob", "read_only", "allowed-once", "O1", "W0", false, true, false],
+    ["rejected answer is not approval", "provision", "bob", "current", "rejected", "O1", "W0", false, true, false],
+    ["approval request alone is not decision", "provision", "bob", "current", "allowed-once", "O1", "W0", false, false, false],
+    ["other organization approval denied", "provision", "bob", "current", "allowed-once", "O2", "W0", false, true, false],
+    ["other workspace approval denied", "provision", "bob", "current", "allowed-once", "O1", "W1", false, true, false],
+    ["changed plan approval denied", "provision", "bob", "current", "allowed-once", "O1", "W0", true, true, false],
+    ["retirement needs exact selected human", "teardown", "bob", "current", "allowed-once", "O1", "W0", false, true, true],
+    ["retirement stale approver denied", "teardown", "bob", "stale", "allowed-once", "O1", "W0", false, true, false]
+  ],
   "organization_columns": ["name", "org", "bound", "workspace_count", "subject", "principal_type", "adp_role", "grant_org", "grant_type", "org_permissions", "revoked", "workspace_permissions", "all_workspaces", "request", "allow"],
   "organization_cases": [
     ["first workspace org admin role alone", "O1", true, 0, "alice", "human", "org_admin", null, null, [], false, [], false, "workspace:provision", false],

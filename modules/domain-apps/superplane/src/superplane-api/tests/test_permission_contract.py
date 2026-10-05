@@ -5,11 +5,21 @@ import importlib.util
 import json
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from harness_jobs.approval import (
+    APPROVAL_PERMISSION,
+    ApprovalBinding,
+    ApprovalRecord,
+    ApprovalResult,
+    ApproverStatus,
+    SpendEnvelope,
+    evaluate_approval,
+)
+from harness_jobs.identity import OperationRequest, ResolvedPrincipal
 
 from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
@@ -44,6 +54,7 @@ def _contract(name):
 MATRIX = _contract("action-permissions-v1.json")
 ACCESS = _contract("access-cases-v1.json")
 CASES = [dict(zip(ACCESS["columns"], values, strict=True)) for values in ACCESS["cases"]]
+APPROVAL_CASES = [dict(zip(ACCESS["approval_columns"], values, strict=True)) for values in ACCESS["approval_cases"]]
 ORGANIZATION_CASES = [
     dict(zip(ACCESS["organization_columns"], values, strict=True)) for values in ACCESS["organization_cases"]
 ]
@@ -192,6 +203,72 @@ def test_sensitive_actions_have_independent_requirements():
     assert MATRIX["verification"]["principal_and_extra"] == "declared_requirements_not_full_enforcement_evidence"
     assert "service_run_delegation_if_service" in actions["batch.submit"]["extra"]
     assert "service_run_delegation_if_service" in actions["serving.submit"]["extra"]
+
+
+
+@pytest.mark.parametrize("case", APPROVAL_CASES, ids=lambda case: case["name"])
+def test_exact_human_approval_binding_and_current_status_cases(case):
+    assert APPROVAL_PERMISSION == Permission.ADMINISTER.value
+    now = datetime(2026, 10, 5, tzinfo=UTC)
+    requester = ResolvedPrincipal(org_id="O1", workspace_id="W0", subject="alice")
+    request = OperationRequest(
+        action=case["action"], idempotency_key="contract-approval", parameters={"size": "small"},
+    )
+    envelope = SpendEnvelope(max_resource_units=1, max_runtime_seconds=60, max_cost_micros=1000000)
+    record = ApprovalRecord(
+        approval_id="contract-approval-id", binding=ApprovalBinding.for_request(requester, request),
+        envelope=envelope, result=ApprovalResult(case["result"]),
+        approvers=frozenset({case["approver"]}), decided_by=case["approver"],
+        decided_at=now - timedelta(minutes=1), expires_at=now + timedelta(minutes=10),
+    ) if case["record_present"] else None
+    status = case["status"]
+    current_statuses = {} if status == "missing" else {
+        case["approver"]: ApproverStatus(
+            subject=case["approver"], is_member=status != "stale",
+            revoked=status == "revoked",
+            permissions=frozenset({Permission.READ.value if status == "read_only" else Permission.ADMINISTER.value}),
+        )
+    }
+    current_principal = ResolvedPrincipal(
+        org_id=case["request_org"], workspace_id=case["request_workspace"], subject="alice",
+    )
+    current_request = OperationRequest(
+        action=case["action"], idempotency_key="contract-approval",
+        parameters={"size": "large" if case["changed_plan"] else "small"},
+    )
+    decision = evaluate_approval(
+        record, principal=current_principal, request=current_request,
+        requested_envelope=envelope, approver_statuses=current_statuses, now=now,
+    )
+    assert decision.permitted is case["allow"]
+
+
+def test_approval_delegation_and_domain_human_checks_stay_separate():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    assert actions["approval.request"]["principal"] == "human"
+    assert {"requester_exact_workspace_grant", "organization_scope_for_first_workspace", "approval_not_execution"} <= set(actions["approval.request"]["extra"])
+    assert actions["approval.decision"]["principal"] == "human"
+    assert {"selected_distinct_current_human_approver", "exact_request_workspace_plan_binding", "approval_not_execution"} <= set(actions["approval.decision"]["extra"])
+    for action_id, conditional in (
+        ("workspace.lifecycle_proposal", "exact_human_approval_on_continue"),
+        ("workspace.retirement", "exact_human_approval_on_admit"),
+    ):
+        assert conditional in actions[action_id]["extra"]
+    for action_id in ("serving.submit", "batch.submit"):
+        assert {"service_run_delegation_if_service", "approval_separate_from_service_delegation", "executor_permission_separate"} <= set(actions[action_id]["extra"])
+        assert actions[action_id]["permission"] == Permission.SPEND.value
+    approval_service = ast.parse((DOMAIN / "src/superplane-api/app/services/operation_approvals.py").read_text())
+    methods = next(node for node in approval_service.body if isinstance(node, ast.ClassDef) and node.name == "ApprovalService")
+    decision_method = next(node for node in methods.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "decide")
+    decision_source = ast.unparse(decision_method)
+    assert "caller.account_type != 'human'" in decision_source
+    assert "caller.subject == row.requester" in decision_source
+    assert "status.may_approve" in decision_source
+    assert "row.revoked" in decision_source
+    authority_source = (DOMAIN / "src/superplane-api/app/adapters/operation_authority_source.py").read_text()
+    assert 'WorkspaceGrantRecord.principal_type == "human"' in authority_source
+    assert 'OrganizationGrantRecord.principal_type == "human"' in authority_source
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "human" and not case["allow"] for case in CASES)
 
 
 def test_maintained_ui_action_names_and_routes_are_real():
