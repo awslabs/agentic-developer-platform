@@ -1,0 +1,403 @@
+{
+  "version": 1,
+  "issue": 5055,
+  "updated_at": "2026-10-05T23:34:09.647Z",
+  "tasks": [
+    {
+      "id": "R5.1-c1",
+      "kind": "code",
+      "criterion": "R5.1",
+      "title": "Preserve access-token-only admission on mounted domain routes",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
+      ],
+      "note": "Inspect merged behavior; change only if a failure is demonstrated."
+    },
+    {
+      "id": "R5.1-t1",
+      "kind": "test",
+      "criterion": "R5.1",
+      "title": "Run mounted access-token and ID-token refusal tests",
+      "status": "open",
+      "covers": [
+        "R5.1-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.2-c1",
+      "kind": "code",
+      "criterion": "R5.2",
+      "title": "Preserve fail-closed client allowlist configuration",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.2-t1",
+      "kind": "test",
+      "criterion": "R5.2",
+      "title": "Run unit and mounted wrong-client and empty-allowlist tests",
+      "status": "open",
+      "covers": [
+        "R5.2-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.3-c1",
+      "kind": "code",
+      "criterion": "R5.3",
+      "title": "Preserve strict domain validation and separate internal credentials",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/internal.py"
+      ],
+      "note": "Do not create another validator or revive #5386."
+    },
+    {
+      "id": "R5.3-t1",
+      "kind": "test",
+      "criterion": "R5.3",
+      "title": "Run mounted domain and internal credential-boundary tests",
+      "status": "open",
+      "covers": [
+        "R5.3-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.3-t2",
+      "kind": "test",
+      "criterion": "R5.3",
+      "title": "Verify malformed Unicode internal bearer denies without a server error",
+      "status": "open",
+      "covers": [
+        "R5.3-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
+      ],
+      "note": "Negative-path regression for the merged repair."
+    },
+    {
+      "id": "R5.4-c1",
+      "kind": "code",
+      "criterion": "R5.4",
+      "title": "Preserve server-derived organization authority on domain requests",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.4-t1",
+      "kind": "test",
+      "criterion": "R5.4",
+      "title": "Run mounted spoofed-organization refusal tests",
+      "status": "open",
+      "covers": [
+        "R5.4-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.5-c1",
+      "kind": "code",
+      "criterion": "R5.5",
+      "title": "Retain enforcement configuration without activating a target",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
+      ],
+      "note": "Local configuration behavior only; no deployment is authorized."
+    },
+    {
+      "id": "R5.5-t1",
+      "kind": "test",
+      "criterion": "R5.5",
+      "title": "Record the actual deployed credential-binding flag",
+      "status": "blocked",
+      "covers": [
+        "R5.5-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: #5540 evaluator; named configured API and approved access are unresolved."
+    },
+    {
+      "id": "R5.6-c1",
+      "kind": "code",
+      "criterion": "R5.6",
+      "title": "Preserve scoped service and admitted-operation authorization",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": "Current-identity integration belongs to #6127/#6485/#5535."
+    },
+    {
+      "id": "R5.6-t1",
+      "kind": "test",
+      "criterion": "R5.6",
+      "title": "Run mounted service-scope and injected-operation unit negatives",
+      "status": "open",
+      "covers": [
+        "R5.6-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Injected state is not production-identity evidence."
+    },
+    {
+      "id": "R5.6-t2",
+      "kind": "test",
+      "criterion": "R5.6",
+      "title": "Prove current service authority against production identity",
+      "status": "blocked",
+      "covers": [
+        "R5.6-c1"
+      ],
+      "files": [],
+      "note": "#6127/#6485/#5535 own the current-identity interface, grant consumption, and runtime composition."
+    },
+    {
+      "id": "R5.7-c1",
+      "kind": "code",
+      "criterion": "R5.7",
+      "title": "Preserve sanitized proxy ingress and server-derived actor context",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "R5.7-t1",
+      "kind": "test",
+      "criterion": "R5.7",
+      "title": "Run spoofed-header, body-actor and sanitized-context tests",
+      "status": "open",
+      "covers": [
+        "R5.7-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Negative-path isolation evidence."
+    },
+    {
+      "id": "R6.1-c1",
+      "kind": "code",
+      "criterion": "R6.1",
+      "title": "Preserve kubeconfig permission enforcement on the mounted endpoint",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": "Consume #6993 fixtures; do not rewrite its historical baseline."
+    },
+    {
+      "id": "R6.1-t1",
+      "kind": "test",
+      "criterion": "R6.1",
+      "title": "Run merged before-and-after mounted kubeconfig denial tests",
+      "status": "open",
+      "covers": [
+        "R6.1-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Negative path: same-organization nonmember cannot receive credentials."
+    },
+    {
+      "id": "R6.2-c1",
+      "kind": "code",
+      "criterion": "R6.2",
+      "title": "Preserve explicit classification for all mounted routes",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
+      ],
+      "note": "Read-only unless a gap is demonstrated; coordinate any inventory edit with #6484."
+    },
+    {
+      "id": "R6.2-t1",
+      "kind": "test",
+      "criterion": "R6.2",
+      "title": "Run mounted inventory parity and domain/internal denial tests",
+      "status": "open",
+      "covers": [
+        "R6.2-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Include organization collections, workspaces, proposal approvals and internal endpoints."
+    },
+    {
+      "id": "R6.2-t2",
+      "kind": "test",
+      "criterion": "R6.2",
+      "title": "Reject unclassified mounted routes rather than permitting exposure",
+      "status": "open",
+      "covers": [
+        "R6.2-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Negative-path cross-workspace exposure check."
+    },
+    {
+      "id": "R6.3-c1",
+      "kind": "code",
+      "criterion": "R6.3",
+      "title": "Retain policy roles without inventing issuable production grants",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
+      ],
+      "note": "Role/grant contract decisions belong to #6484/#6485."
+    },
+    {
+      "id": "R6.3-t1",
+      "kind": "test",
+      "criterion": "R6.3",
+      "title": "Run offline role and workspace-grant enforcement tests",
+      "status": "open",
+      "covers": [
+        "R6.3-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Fixtures do not prove production issuance."
+    },
+    {
+      "id": "R6.3-t2",
+      "kind": "test",
+      "criterion": "R6.3",
+      "title": "Verify production-issuable roles through a real identity handoff",
+      "status": "blocked",
+      "covers": [
+        "R6.3-c1"
+      ],
+      "files": [],
+      "note": "#6127/#6484/#6485 own the production identity and grant contracts."
+    },
+    {
+      "id": "R6.4-c1",
+      "kind": "code",
+      "criterion": "R6.4",
+      "title": "Integrate operation-time current identity and distinct permission checks",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "#6127/#6485/#5535 own this integration; outside the approved reconciliation slice."
+    },
+    {
+      "id": "R6.4-t1",
+      "kind": "test",
+      "criterion": "R6.4",
+      "title": "Prove revocation across preview, decision, admission and renewal",
+      "status": "blocked",
+      "covers": [
+        "R6.4-c1"
+      ],
+      "files": [],
+      "note": "Requires those owners’ composed current-identity runtime."
+    },
+    {
+      "id": "COV-85-c1",
+      "kind": "code",
+      "criterion": "COV-85",
+      "title": "Keep any bounded repair consistent with existing API behavior",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app"
+      ],
+      "note": "No speculative production edits."
+    },
+    {
+      "id": "COV-85-t1",
+      "kind": "test",
+      "criterion": "COV-85",
+      "title": "Measure changed API/service coverage and run full relevant suites",
+      "status": "open",
+      "covers": [
+        "COV-85-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": "Report measured coverage and final-head local and remote checks separately."
+    },
+    {
+      "id": "U14-L1-c1",
+      "kind": "code",
+      "criterion": "U14-L1",
+      "title": "Preserve offline enforcement without claiming deployed activation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app"
+      ],
+      "note": "Local reconciliation does not activate a workload."
+    },
+    {
+      "id": "U14-L1-t1",
+      "kind": "test",
+      "criterion": "U14-L1",
+      "title": "Verify configured deployed R5/R6 denial matrix",
+      "status": "blocked",
+      "covers": [
+        "U14-L1-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: #5540 evaluator; named API, approved configuration, and test identities are unresolved."
+    },
+    {
+      "id": "U14-L1-t2",
+      "kind": "test",
+      "criterion": "U14-L1",
+      "title": "Record remaining live and current-identity obligations without false closure",
+      "status": "open",
+      "covers": [
+        "U14-L1-c1"
+      ],
+      "files": [],
+      "note": "Criterion-level evidence map in ready PR; no live claim from fixtures."
+    }
+  ]
+}
