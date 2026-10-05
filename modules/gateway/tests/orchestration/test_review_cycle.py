@@ -912,3 +912,79 @@ async def test_retry_lineage_refuses_missing_revoked_or_changed_parent(cycle, ch
     with pytest.raises(CycleBlockedError, match="retry_parent_unverifiable"):
         await ctx.service.retry_parent(ORG, raw, grant)
     assert len(ctx.calls) == 1
+
+
+async def test_budget_delayed_review_gets_fresh_startup_clock(cycle):
+    from src.orchestration.execution_policy import DenyReason
+    from src.orchestration.work_admission import cancel_unstarted_claim
+
+    cycle.reserve.return_value = Decision.block(DenyReason.SPEND_LIMIT_EXCEEDED, "budget wait")
+    await tick(cycle)
+    _, _, _, actions = await state(cycle)
+    assert len(actions) == 1 and not cycle.calls
+    async with cycle.factory() as db:
+        action = await db.get(OrchestrationAction, actions[0].id)
+        action.detail = {**action.detail, "arrived_at": (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        await db.commit()
+    cycle.reserve.return_value = Decision.permit("budget restored")
+    before = datetime.now(UTC) - timedelta(seconds=1)
+    assert (await tick(cycle)).effects_succeeded == 1
+    envelope = cycle.calls[-1]
+    assert datetime.fromisoformat(envelope["arrived_at"].replace("Z", "+00:00")) >= before
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+    assert not cancel_unstarted_claim(cycle.store, raw, now=datetime.now(UTC))
+
+
+@pytest.mark.parametrize("allowance", [1, 2])
+async def test_startup_cancelled_review_retries_with_same_claim_and_bounded_attempts(cycle, allowance):
+    from src.orchestration.work_admission import cancel_unstarted_claim, recover_exited_claims
+
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = allowance
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(cycle)).effects_succeeded == 1
+    failed_run = cycle.calls[-1]["message_id"]
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
+    assert cancel_unstarted_claim(cycle.store, raw, now=datetime.now(UTC) + timedelta(hours=1))
+    async with cycle.factory() as db:
+        recovery = await recover_exited_claims(db, store=cycle.store, workloads=SimpleNamespace())
+        await db.commit()
+    assert recovery.released == 0
+    result = await tick(cycle)
+    execution, claim, node, actions = await state(cycle)
+    assert node.attempts == 1 and claim.generation == 5
+    assert cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")["status"] == {"S": "cancelled"}
+    if allowance == 1:
+        assert result.effects_succeeded == 0 and len(actions) == 1
+        assert execution.block_code == "attempts_exhausted"
+    else:
+        assert result.effects_succeeded == 1, (result, execution.block_detail)
+        assert len(actions) == 2 and execution.attempts == 2
+        retry = cycle.calls[-1]
+        assert retry["message_id"] != failed_run
+        assert retry["review_expect"]["author_run_id"] == cycle.root
+        assert retry["correlation"]["parent_principal"] == f"{cycle.root}#1"
+        assert claim.active_run_id == retry["message_id"]
+        assert actions[-1].detail["bootstrap_retry_of"] == failed_run
+
+
+@pytest.mark.parametrize("change", ["binding", "issued", "revoked", "unrelated_cancellation"])
+async def test_startup_retry_refuses_other_cancellations(cycle, change):
+    assert (await tick(cycle)).effects_succeeded == 1
+    run = cycle.calls[-1]["message_id"]
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+    raw.update(status={"S": "cancelled"}, work_claim_cancellation={"S": "startup_deadline_exceeded"})
+    if change == "binding":
+        raw["workload_binding"] = {"S": "a-worker-existed"}
+    elif change == "issued":
+        raw["bootstrap_authority_issued_at"] = {"S": "2026-10-05T00:00:00Z"}
+    elif change == "revoked":
+        raw["status"] = {"S": "revoked"}
+    else:
+        raw["work_claim_cancellation"] = {"S": "operator_cancelled"}
+    cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    assert (await tick(cycle)).effects_succeeded == 0
+    assert len(cycle.calls) == 1
