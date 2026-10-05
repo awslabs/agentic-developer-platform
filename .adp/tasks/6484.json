@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-05T23:41:56.203Z",
+  "updated_at": "2026-10-05T23:44:37.261Z",
   "tasks": [
     {
       "id": "AC01-c1",
@@ -92,33 +92,38 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Contract suite: 74 passed, 2 existing expected failures; adjacent authorization subset: 8 passed."
+      "note": "Contract suite: 74 passed, 2 expected failures; adjacent authorization subset: 8 passed."
     },
     {
       "id": "AC04-c1",
       "kind": "code",
       "criterion": "AC04",
       "title": "Prepare bounded D1 and D5 decisions with compatibility impact",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
+        "modules/domain-apps/superplane/contracts/access-cases-v1.json"
       ],
-      "note": "Next task; do not enable privilege-widening behavior without owner disposition."
+      "note": "Covered by AC04-t1; pushed at d16445f. Owner disposition still pending separately.",
+      "commits": [
+        "d16445f"
+      ]
     },
     {
       "id": "AC04-t1",
       "kind": "test",
       "criterion": "AC04",
       "title": "Test approval and delegation declarations against fixed contract fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC04-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": ""
+      "note": "Contract suite: 88 passed, 2 expected failures; Harness approval suite: 41 passed."
     },
     {
       "id": "AC04-c2",
@@ -157,7 +162,7 @@
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Respect read-only ownership of shared identity and endpoint inventory."
+      "note": "Next task; respect read-only ownership of shared identity and endpoint inventory."
     },
     {
       "id": "AC05-t1",
