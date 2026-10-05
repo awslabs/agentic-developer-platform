@@ -1,55 +1,56 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T14:54:11.279Z",
+  "updated_at": "2026-10-05T15:03:45.107Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Map all 18 findings to current inputs, call sites, and artifact consumers",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src",
-        "modules/agent-factory/codex-harness/src/github-entry.mjs",
-        "modules/agent-factory/codex-reviewer/src/github.ts"
+        "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Inspect the original private SARIF through the authorized scan-reader connection; preserve hash and individual selectors in the evidence."
+      "note": "Issue selectors, source fetches and build consumers are cataloged at 19c9252; private report reconciliation awaits an authorized scan-reader connection. adp-cred list returned 403 insufficient_scope.",
+      "commits": [
+        "19c9252"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Verify record-by-record mapping against the original report and source revision",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-01-c1"
       ],
       "files": [
-        ".github/scripts/diff_security_findings.py"
+        ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Check severity using native ratings before CVSS; retain unresolved entries rather than calling them safe."
+      "note": "Published-selector test passes; original SARIF hash and severity cannot be independently checked without scan-reader access."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Verify or repair configured GitLab origin and shared URL-guard behavior",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/agent-factory/agent/src/lib/url-guard.ts",
         "modules/agent-factory/agent/src/clients/gitlab_client.ts"
       ],
-      "note": "Reuse merged PR #6733 and preserve supported operator-configured services."
+      "note": "Verified merged PR #6733 protections at current source; no duplicate source edit."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run GitLab and URL-guard unit fixtures for allowed requests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
@@ -57,7 +58,7 @@
         "modules/agent-factory/agent/src/clients/gitlab_client.test.ts",
         "modules/agent-factory/agent/src/lib/url-guard.test.ts"
       ],
-      "note": ""
+      "note": "npm ci --include=dev; 2 suites and 61 tests passed."
     },
     {
       "id": "AC-02-c2",
@@ -71,7 +72,7 @@
         "modules/agent-factory/agent/src/utils/comment-authority.ts",
         "modules/agent-factory/agent/src/utils/installation.ts"
       ],
-      "note": "Also trace the assigned check-run call."
+      "note": "Next independent code task; also trace check-run calls."
     },
     {
       "id": "AC-02-t2",
@@ -99,7 +100,7 @@
         "modules/agent-factory/agent/src/invocability-probe",
         "modules/agent-factory/agent/src/lib"
       ],
-      "note": "Include persona-policy and recall paths after input tracing."
+      "note": ""
     },
     {
       "id": "AC-02-t3",
@@ -153,7 +154,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/url-guard.ts"
       ],
-      "note": "Confirm any shared helper reaches its actual callers."
+      "note": ""
     },
     {
       "id": "AC-02-t5",
@@ -173,7 +174,7 @@
         "modules/agent-factory/codex-harness/src",
         "modules/agent-factory/codex-reviewer/src"
       ],
-      "note": "Assert untrusted destinations never receive credentials."
+      "note": ""
     },
     {
       "id": "AC-03-c1",
@@ -185,7 +186,7 @@
       "files": [
         "data/security"
       ],
-      "note": "Keep private raw reports outside public documentation; name unresolved records explicitly."
+      "note": "Private baseline remains unavailable; catalog intentionally records all dispositions as unresolved."
     },
     {
       "id": "AC-03-t1",
@@ -199,7 +200,7 @@
       "files": [
         ".github/scripts/diff_security_findings.py"
       ],
-      "note": "Retain raw candidate results and check for new critical/high findings."
+      "note": ""
     },
     {
       "id": "AC-04-c-wire",
@@ -213,7 +214,7 @@
         "modules/agent-factory/codex-harness",
         "modules/agent-factory/codex-reviewer"
       ],
-      "note": "Open and maintain a ready PR; do not merge or claim rollout."
+      "note": "Ready PR pending completion of implementation and pre-submit checks."
     },
     {
       "id": "AC-04-t1",
@@ -229,7 +230,7 @@
         "modules/agent-factory/codex-harness/package.json",
         "modules/agent-factory/codex-reviewer/package.json"
       ],
-      "note": "Record exact revision and actual results."
+      "note": ""
     },
     {
       "id": "AC-04-c1",
@@ -239,7 +240,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Post-merge integration belongs to the epic coordinator; pending until the PR is merged."
+      "note": "Post-merge integration belongs to the epic coordinator."
     },
     {
       "id": "AC-04-t2",
@@ -251,7 +252,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Post-merge verification belongs to the epic coordinator; production rollout is separate."
+      "note": "Post-merge verification belongs to the epic coordinator."
     }
   ]
 }
