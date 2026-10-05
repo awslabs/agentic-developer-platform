@@ -196,6 +196,9 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
         return SimpleNamespace(total_usd=ctx.spend)
 
     monkeypatch.setattr("src.orchestration.flow_meter.read_flow_meter", meter)
+    monkeypatch.setattr(
+        "src.orchestration.flow_meter.reconcile_flow_meter", AsyncMock(side_effect=lambda session, **kwargs: SimpleNamespace(total_usd=ctx.spend))
+    )
 
     async def authorization(db, **kwargs):
         return AuthorizationContext(

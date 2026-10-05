@@ -169,6 +169,7 @@ async def test_claude_routes_emit_one_additive_durable_decision(metering, path, 
     logged = metering.usage.log_request.await_args.kwargs
     assert logged["cost_usd"] == Decimal(".007650") and isinstance(logged["cost_usd"], Decimal)
     assert logged["input_tokens"] == 100 and logged["cache_creation_input_tokens"] == 700
+    assert logged["reservation_usage_known"] is True
     assert logged["client_tool"] == "claude_code"
     assert logged["request_id"] == event["request_id"]
     assert metering.reconcile.await_args.kwargs["actual_cost_usd"] == Decimal(".007650")
@@ -668,6 +669,7 @@ async def test_upstream_failure_keeps_error_log_without_a_settlement_charge(mete
     await flush_logs()
     metering.usage.log_request.assert_awaited_once()
     logged = metering.usage.log_request.await_args.kwargs
+    assert logged["reservation_usage_known"] is False
     assert logged["status_code"] == (502 if stream else 500)
     assert logged["input_tokens"] == logged["output_tokens"] == 0
     assert logged["cost_usd"] == Decimal("0")

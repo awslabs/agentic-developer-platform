@@ -237,6 +237,9 @@ class BudgetSettlementReceipt(Base):
     """Claim and all budget debits commit together; historical rows are not inferred."""
 
     __tablename__ = "budget_settlement_receipts"
+    # Present only when the proxy verified provider usage for these exact scopes.
+    # Legacy receipts and diagnostic pricing decisions cannot release a hold.
+    reservation_scope_keys: Mapped[list[str] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     allocation_key: Mapped[str] = mapped_column(String(64), nullable=False)
     org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_id: Mapped[str] = mapped_column(String(255), primary_key=True)

@@ -58,6 +58,7 @@ class UsageService(IUsageService):
         cache_creation_input_tokens: int | None = None,
         client_tool: str | None = None,
         pricing_decision: "PricingDecision | None" = None,
+        reservation_usage_known: bool = False,
         provider_request_id: str | None = None,
         destination_region: str | None = None,
     ) -> None:
@@ -125,7 +126,9 @@ class UsageService(IUsageService):
         if isinstance(pricing_decision, PricingDecision) and request_id:
             from src.budget.settlement import settle_priced_usage
 
-            fresh = await settle_priced_usage(self.db, context=context, request_id=request_id, decision=pricing_decision)
+            fresh = await settle_priced_usage(
+                self.db, context=context, request_id=request_id, decision=pricing_decision, reservation_usage_known=reservation_usage_known
+            )
             if not fresh:
                 # The tracker can win the receipt before this gateway writes its
                 # diagnostic row. Serialize gateway replays on the shared receipt,

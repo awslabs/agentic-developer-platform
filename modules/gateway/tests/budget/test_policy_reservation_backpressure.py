@@ -289,3 +289,25 @@ async def test_http_500_to_real_ledger_allows_only_an_affordable_retry(ledger, m
     assert (await ledger.store.snapshot(ledger.flow)).total_usd == QUOTE
     assert (await request(ledger)).status == 402
     assert (await request(ledger, quote=Decimal(1))).status == 200
+
+
+@pytest.mark.parametrize("mutation", [None, "expired", "lost_anchor", "settled_first", "unbounded"])
+async def test_durable_receipt_retry_preserves_strict_accounting(ledger, mutation):
+    assert (await ledger.store.reserve("request", QUOTE, [ledger.flow])).admitted
+    before = await ledger.client.hget(ledger.flow.key(), "request")
+    if mutation == "expired":
+        ledger.clock[0] += 172801
+    if mutation == "lost_anchor":
+        await ledger.client.hdel(ledger.flow.key(), "__initialized__")
+    if mutation == "settled_first":
+        await ledger.store.reconcile("request", Decimal("0.5"), [ledger.flow])
+    if mutation == "unbounded":
+        await ledger.client.hset(ledger.flow.key(), "unbounded:request", "0:1000")
+    original = await ledger.client.hgetall(ledger.flow.key())
+    changed = await ledger.store.reconcile_receipt("request", Decimal("0.1"), ledger.flow)
+    assert changed is (mutation is None)
+    if not changed:
+        assert await ledger.client.hgetall(ledger.flow.key()) == original
+    else:
+        assert (await ledger.client.hget(ledger.flow.key(), "request")).split(":")[1] == before.split(":")[1]
+        assert not await ledger.store.reconcile_receipt("request", Decimal("0.1"), ledger.flow)

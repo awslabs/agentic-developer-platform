@@ -641,11 +641,11 @@ async def authorize_node_dispatch(
     # first asynchronous usage row arrives. Fresh admissions also reconcile the
     # settled ledger's completed-node holds.
     if continuing_node:
-        from .flow_meter import read_flow_meter
+        from .flow_meter import reconcile_flow_meter
 
         if node.state != NodeState.RUNNING.value:
             return Decision.block(DenyReason.WORK_NOT_OWNED, "continuation no longer belongs to a running node")
-        meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        meter = await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
         spend = SpendObservation(total_usd=meter.total_usd if meter is not None else None)
     else:
         spend = await _observed_spend(session, org_id=node.org_id, flow_slug=flow_slug, nodes=flow_nodes)

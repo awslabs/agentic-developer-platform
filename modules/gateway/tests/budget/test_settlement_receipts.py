@@ -275,3 +275,29 @@ async def test_migration_creates_receipt_contract_and_preserves_on_rollback(pg_u
 
         await connection.run_sync(upgrade)
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_receipt_scope_evidence_is_atomic_and_replay_does_not_double_debit(ledger):
+    params = dict(org_id="tenant", request_id="receipt", user_id="owner", cost=Decimal("1"), total_tokens=10, entities=[("user", "owner")])
+    async with ledger() as db:
+        assert await settle_usage(db, **params, reservation_scope_keys=["flow-models"])
+        await db.rollback()
+        assert await db.get(BudgetSettlementReceipt, ("tenant", "receipt")) is None
+        assert (await db.scalars(select(BudgetUsage))).all() == []
+        assert await settle_usage(db, **params)  # A legacy/tracker receipt has no scope authority.
+        await db.commit()
+        row = await db.get(BudgetSettlementReceipt, ("tenant", "receipt"))
+        assert row.reservation_scope_keys is None
+        assert not await settle_usage(db, **params, reservation_scope_keys=["flow-models"])
+        await db.commit()
+        assert not await settle_usage(db, **params, reservation_scope_keys=["flow-models", "parent-models"])
+        await db.commit()
+        await db.refresh(row)
+        assert row.reservation_scope_keys == ["flow-models", "parent-models"]
+        assert all(row.request_count == 1 and row.total_cost_usd == 1 for row in await db.scalars(select(BudgetUsage)))
+        with pytest.raises(ValueError, match="conflicting"):
+            await settle_usage(db, **{**params, "cost": Decimal("2")}, reservation_scope_keys=["unrelated"])
+        await db.rollback()
+        await db.refresh(row)
+        assert row.reservation_scope_keys == ["flow-models", "parent-models"]

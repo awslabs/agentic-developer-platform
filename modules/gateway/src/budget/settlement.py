@@ -13,7 +13,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.shared.models.budget import BudgetSettlementReceipt, BudgetUsage
 
 
-async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, entities, timestamp=None):
+async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, entities, timestamp=None, reservation_scope_keys=None):
     if not org_id or not request_id or not user_id:
         raise ValueError("settlement requires tenant, server request and owner")
     amount = Decimal(str(cost)).quantize(Decimal("0.000001"))
@@ -32,6 +32,7 @@ async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, e
             cost_usd=amount,
             total_tokens=total_tokens,
             allocation_key=allocation_key,
+            reservation_scope_keys=sorted(set(reservation_scope_keys)) if reservation_scope_keys else None,
         )
         .on_conflict_do_nothing(index_elements=["org_id", "request_id"])
         .returning(BudgetSettlementReceipt.request_id)
@@ -39,10 +40,12 @@ async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, e
     if claimed.scalar_one_or_none() is None:
         receipt = (
             await db.execute(
-                select(BudgetSettlementReceipt).where(
+                select(BudgetSettlementReceipt)
+                .where(
                     BudgetSettlementReceipt.org_id == org_id,
                     BudgetSettlementReceipt.request_id == request_id,
                 )
+                .with_for_update()
             )
         ).scalar_one()
         if (
@@ -52,6 +55,8 @@ async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, e
             or receipt.allocation_key != allocation_key
         ):
             raise ValueError("conflicting settlement replay")
+        if reservation_scope_keys:
+            receipt.reservation_scope_keys = sorted(set(receipt.reservation_scope_keys or []) | set(reservation_scope_keys))
         return False
     periods = {"daily": day, "weekly": day - timedelta(days=day.weekday()), "monthly": day.replace(day=1)}
     for entity_type, entity_id in sorted(set(entities)):
@@ -82,7 +87,7 @@ async def settle_usage(db, *, org_id, request_id, user_id, cost, total_tokens, e
     return True
 
 
-async def settle_priced_usage(db, *, context, request_id, decision):
+async def settle_priced_usage(db, *, context, request_id, decision, reservation_usage_known=False):
     """Resolve accounting hierarchy only from the verified caller context."""
     from src.budget.enforcement_service import _unqualify_root_principal_id
 
@@ -110,4 +115,9 @@ async def settle_priced_usage(db, *, context, request_id, decision):
         total_tokens=total_tokens,
         entities=entities,
         timestamp=context._budget_request_timestamp,
+        reservation_scope_keys=[
+            target.key() for target in (context._budget_admission_targets or context._run_scope_reservations) if target.require_initialization
+        ]
+        if reservation_usage_known
+        else None,
     )

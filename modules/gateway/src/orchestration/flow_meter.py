@@ -85,6 +85,44 @@ async def read_flow_meter(*, org_id: str, flow_id: str, policy: ExecutionPolicy)
     return await store.snapshot(meter_target(org_id=org_id, flow_id=flow_id, policy=policy))
 
 
+async def reconcile_flow_meter(session, *, org_id: str, flow_id: str, policy: ExecutionPolicy):
+    """Repair missed settlement before admitting subsequent work, never infer $0.
+
+    Receipt and debit commit together. Only the proxy's explicit strict-usage
+    attestation binds a receipt to a reservation key; legacy/diagnostic rows are
+    insufficient. A failed retry leaves the original conservative meter in place.
+    """
+    import logging
+
+    from sqlalchemy import select
+
+    from src.budget.config import budget_config
+    from src.shared.models.budget import BudgetSettlementReceipt
+
+    store = get_flow_reservations()
+    if not budget_config.budget_reservation_enabled or not store.enabled:
+        return None
+    target = meter_target(org_id=org_id, flow_id=flow_id, policy=policy)
+    try:
+        ids = await store.unresolved_requests(target)
+        # Batch IDs rather than limit matching rows: legacy/untrusted receipts
+        # must not starve a later recoverable request.
+        for offset in range(0, len(ids), 200):
+            receipts = await session.scalars(
+                select(BudgetSettlementReceipt).where(
+                    BudgetSettlementReceipt.org_id == org_id,
+                    BudgetSettlementReceipt.request_id.in_(ids[offset : offset + 200]),
+                    BudgetSettlementReceipt.reservation_scope_keys.is_not(None),
+                )
+            )
+            for receipt in receipts:
+                if target.key() in (receipt.reservation_scope_keys or []):
+                    await store.reconcile_receipt(receipt.request_id, receipt.cost_usd, target)
+    except Exception:
+        logging.getLogger(__name__).warning("Flow receipt reconciliation deferred; unreconciled reservations retained", exc_info=True)
+    return await read_flow_meter(org_id=org_id, flow_id=flow_id, policy=policy)
+
+
 def estimate_policy_model_cost(body: bytes, path: str) -> Decimal:
     """The bounded upper-bound amount for a policy-governed model request.
 

@@ -29,9 +29,9 @@ async def test_shared_refusal_survives_rollback_without_admission_side_effects(s
     monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=123))
     monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=42))
     monkeypatch.setattr("src.shared.identity.resolver.resolve_root_user_entity_id", AsyncMock(return_value="human"))
-    meter = shared_policy.read_flow_meter
+    meter = shared_policy.reconcile_flow_meter
     if reason == "budget_unavailable":
-        monkeypatch.setattr(shared_policy, "read_flow_meter", AsyncMock(return_value=None))
+        monkeypatch.setattr(shared_policy, "reconcile_flow_meter", AsyncMock(return_value=None))
     async with ctx.factory.kw["bind"].begin() as connection:
         await connection.run_sync(lambda c: Base.metadata.create_all(c, tables=[OrchestrationEdge.__table__]))
     async with ctx.factory() as db:
@@ -96,7 +96,7 @@ async def test_shared_refusal_survives_rollback_without_admission_side_effects(s
         assert progress.actor == ("platform-operator" if reason == "budget_unavailable" else "engine")
         assert progress.next_action and progress.next_check_at is None and progress.scheduled_action is None
     if reason == "budget_unavailable":
-        monkeypatch.setattr(shared_policy, "read_flow_meter", meter)
+        monkeypatch.setattr(shared_policy, "reconcile_flow_meter", meter)
         async with ctx.factory() as db:
             report = await run_dispatch_pass(db, config=ctx.service.config)
             assert report.dispatched == 1 and len(report.pending) == 1

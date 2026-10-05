@@ -653,6 +653,7 @@ class ProxyService(IProxyService):
                         # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
                         bedrock_account_id=bedrock_account_id,
                         pricing_decision=pricing_decision,
+                        reservation_usage_known=pricing_decision is not None and not pricing_failed,
                         provider_request_id=pricing_capture.provider_request_id if pricing_capture else None,
                         destination_region=pricing_capture.routing.endpoint_region if pricing_capture and pricing_capture.routing else None,
                     )

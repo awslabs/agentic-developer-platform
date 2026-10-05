@@ -84,7 +84,10 @@ async def settled(settlement, usage, *, stream):
     """The usage_known flag the production hook passed for this response."""
     await call(usage, stream=stream)
     settlement.assert_awaited_once()
-    return settlement.await_args.kwargs
+    kwargs = settlement.await_args.kwargs
+    logged = mantle_service.UsageService(None).log_request.await_args.kwargs
+    assert logged["reservation_usage_known"] is kwargs["usage_known"]
+    return kwargs
 
 
 @pytest.mark.parametrize("stream", [False, True])

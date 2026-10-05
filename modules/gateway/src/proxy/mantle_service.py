@@ -872,6 +872,7 @@ class MantlePassthroughService:
                     client_tool=_current_client_tool.get(),
                     bedrock_account_id=routing_decision.target.account_id if routing_decision and routing_decision.target else None,
                     pricing_decision=decision,
+                    reservation_usage_known=decision is not None and trusted.known,
                     provider_request_id=getattr(usage, "provider_request_id", None),
                     destination_region=evidence.endpoint_region if evidence else None,
                 )
