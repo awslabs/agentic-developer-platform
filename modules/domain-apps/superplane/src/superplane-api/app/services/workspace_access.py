@@ -39,9 +39,18 @@ def _response(row: WorkspaceGrantRecord, event: Event | None = None) -> Workspac
     )
 
 
-async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller) -> WorkspaceAccessResponse:
-    if caller.principal.account_type != "human":
+async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, reader) -> WorkspaceAccessResponse:
+    if caller.principal.account_type != "human" or not caller.source_org_id:
         raise HTTPException(403, "human workspace identity required")
+    if reader is None:
+        raise HTTPException(503, "current ADP identity reader unavailable")
+    try:
+        await require_current_identity(
+            reader, subject=caller.principal.subject, principal_type="human",
+            adp_org_id=caller.source_org_id, membership_id=caller.identity_evidence,
+        )
+    except IdentityUnavailable:
+        raise HTTPException(403, "current human membership required") from None
     row = await db.scalar(select(WorkspaceGrantRecord).where(
         WorkspaceGrantRecord.workspace_id == workspace_id,
         WorkspaceGrantRecord.org_id == uuid.UUID(caller.principal.org_id),

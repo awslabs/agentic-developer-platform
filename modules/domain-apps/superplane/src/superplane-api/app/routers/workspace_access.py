@@ -21,7 +21,10 @@ async def my_workspace_access(
     caller = getattr(request.state, "caller", None)
     if caller is None:
         raise HTTPException(403, "verified human workspace identity required")
-    return await read_my_access(db, workspace_id, caller)
+    return await read_my_access(
+        db, workspace_id, caller,
+        getattr(request.app.state, "current_identity_reader", None),
+    )
 
 
 @router.post("/grants", response_model=WorkspaceAccessResponse)
