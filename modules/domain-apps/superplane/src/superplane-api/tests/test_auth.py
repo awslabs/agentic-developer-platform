@@ -1726,6 +1726,39 @@ class TestRouteInventoryCoverage:
             )
             assert requirement is not None
 
+    @pytest.mark.parametrize(
+        "method,path,expected_class,expected_scope",
+        [
+            ("GET", "/health", "public", None),
+            ("GET", "/workspaces", "domain", "organization"),
+            ("POST", "/workspaces", "domain", "organization"),
+            ("GET", "/accounts", "domain", "organization"),
+            ("GET", "/workspaces/{workspace_id}", "domain", "workspace"),
+            (
+                "PATCH",
+                "/api/v1/research/proposals/{proposal_id}/approve",
+                "domain",
+                "organization",
+            ),
+            (
+                "POST",
+                "/operation-approvals/{approval_id}/decision",
+                "domain",
+                "organization",
+            ),
+            ("POST", "/internal/heartbeat", "internal", None),
+            ("POST", "/internal/cost-reconcile", "internal", None),
+            ("POST", "/internal/provider-operations", "internal", None),
+        ],
+    )
+    def test_mounted_route_families_retain_their_class_and_scope(
+        self, method, path, expected_class, expected_scope
+    ):
+        assert (method, path) in self._mounted()
+        route_class, requirement = classify(method, path)
+        assert route_class.value == expected_class
+        assert (requirement[0].value if requirement else None) == expected_scope
+
     def test_kubeconfig_requires_provision_not_read(self):
         """It reads like a getter and it hands out live cluster credentials."""
         _, (_, permission) = classify("POST", "/workspaces/{workspace_id}/kubeconfig")
@@ -2357,8 +2390,11 @@ class TestEnforcementDisabledPath:
 class TestUninventoriedRouteFailsClosed:
     """A route nobody classified must be refused, not served."""
 
+    @pytest.mark.parametrize("present_valid_token", [False, True])
     @pytest.mark.asyncio
-    async def test_route_absent_from_the_inventory_is_refused(self, enforcing):
+    async def test_route_absent_from_the_inventory_is_refused(
+        self, enforcing, present_valid_token
+    ):
         """The property that makes the inventory safe to rely on.
 
         Registered on a throwaway app carrying the same guard, because the point
@@ -2383,8 +2419,13 @@ class TestUninventoriedRouteFailsClosed:
             return {"reached": True}  # pragma: no cover - must be unreachable
 
         transport = ASGITransport(app=probe)
+        headers = (
+            {"Authorization": f"Bearer {_mint(enforcing)}"}
+            if present_valid_token
+            else {}
+        )
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            response = await ac.get("/never-classified")
+            response = await ac.get("/never-classified", headers=headers)
 
         assert response.status_code == 403
         assert "no recorded authorization decision" in response.text
