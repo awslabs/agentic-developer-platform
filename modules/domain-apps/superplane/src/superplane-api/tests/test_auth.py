@@ -993,6 +993,32 @@ class TestWorkspaceAuthorizationEnforcement:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_peer_workspace_grant_cannot_authorize_kubeconfig(
+        self, client, enforcing
+    ):
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:provision")
+        target_workspace = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=target_workspace,
+                    org_id=org_id,
+                    name="ungranted-peer",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.post(
+            f"/workspaces/{target_workspace}/kubeconfig",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_refusals_are_indistinguishable_across_causes(
         self, client, enforcing
     ):
