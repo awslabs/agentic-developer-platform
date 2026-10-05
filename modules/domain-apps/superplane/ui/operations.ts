@@ -73,6 +73,7 @@ const RECEIPT_PREFIX = 'adp.superplane.onboarding.receipt';
 export interface ReceiptScope {
   deploymentId: string;
   orgId: string;
+  principalId?: string;
 }
 
 export interface StoredReceipt {
@@ -87,6 +88,9 @@ export interface StoredReceipt {
   workspaceId: string | null;
   submissionStage?: 'draft' | 'approval' | 'submitted';
   approvalId?: string;
+  accessRequestId?: string;
+  accessOperationId?: string;
+  retirementOperationId?: string;
 }
 
 /** The minimal storage surface used, so tests and the CLI can substitute one. */
@@ -127,7 +131,8 @@ export function memoryReceiptStore(): ReceiptStore {
 }
 
 function scopeKey(scope: ReceiptScope, intent: string): string {
-  return `${RECEIPT_PREFIX}.${scope.deploymentId}.${scope.orgId}.${intent}`;
+  const principal = scope.principalId ? `principal:${encodeURIComponent(scope.principalId)}.` : '';
+  return `${RECEIPT_PREFIX}.${scope.deploymentId}.${scope.orgId}.${principal}${intent}`;
 }
 
 /**
@@ -243,8 +248,9 @@ function blank(
   };
 }
 
-function sameScope(a: ReceiptScope, b: ReceiptScope): boolean {
-  return a.deploymentId === b.deploymentId && a.orgId === b.orgId;
+function sameScope(current: ReceiptScope, expected: ReceiptScope): boolean {
+  return current.deploymentId === expected.deploymentId && current.orgId === expected.orgId &&
+    current.principalId === expected.principalId;
 }
 
 export function isTerminal(state: OperationState): boolean {
@@ -510,6 +516,26 @@ export async function markSubmissionStage(
     if (!receipt || receipt.idempotencyKey !== requestId) return null;
     if (receipt.submissionStage === 'submitted' && stage === 'approval') return receipt;
     const updated = { ...receipt, submissionStage: stage, ...(approvalId ? { approvalId } : {}) };
+    store.setItem(scopeKey(scope, intent), JSON.stringify(updated));
+    return updated;
+  });
+}
+
+export async function recordRetirementLineage(
+  store: ReceiptStore, scope: ReceiptScope, intent: string, requestId: string, workspaceId: string,
+  identities: Pick<StoredReceipt, 'accessRequestId' | 'accessOperationId' | 'retirementOperationId'>,
+  section: ExclusiveSection = browserExclusive,
+): Promise<StoredReceipt | null> {
+  return section(`${scopeKey(scope, intent)}.claim`, () => {
+    const receipt = readReceipt(store, scope, intent);
+    if (!receipt || receipt.idempotencyKey !== requestId ||
+        (receipt.workspaceId !== null && receipt.workspaceId !== workspaceId)) return null;
+    for (const field of ['accessRequestId', 'accessOperationId', 'retirementOperationId'] as const) {
+      const identity = identities[field];
+      if (identity !== undefined && (!identity || (receipt[field] && receipt[field] !== identity))) return null;
+    }
+    const updated: StoredReceipt = { ...receipt, workspaceId, ...identities };
+    if (!receiptIsSecretFree(updated)) return null;
     store.setItem(scopeKey(scope, intent), JSON.stringify(updated));
     return updated;
   });

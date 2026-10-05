@@ -5,7 +5,7 @@ import { getAccessToken } from '@/services/auth';
 
 import { isSuperseded, previewRetirement, recoverOperation, type ScopeGuard } from './client';
 import { ENDPOINTS, type OperationReceipt, type RetirementReview, unavailableFor, type Unavailable } from './contract';
-import { claimPreviewIdentity, readReceipt, type ClaimOutcome, type ReceiptScope, type ReceiptStore } from './operations';
+import { claimPreviewIdentity, readReceipt, recordRetirementLineage, type ClaimOutcome, type ReceiptScope, type ReceiptStore } from './operations';
 
 type ReviewState =
   | { phase: 'idle' | 'loading' }
@@ -26,7 +26,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
     { phase: 'failed'; unavailable: Unavailable }
   >({ phase: 'idle' });
   const recoverRequest = async () => {
-    if (getAccessToken() !== sessionToken) {
+    if (!scope.principalId || getAccessToken() !== sessionToken) {
       setRecovery({ phase: 'failed', unavailable: {
         reason: 'not-permitted', detail: 'Your session changed. Sign in again to recover this removal request.',
       } });
@@ -62,6 +62,22 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
       } });
       return;
     }
+    if (result.value.operationId) {
+      let savedLineage;
+      try {
+        savedLineage = await recordRetirementLineage(
+          store, scope, `retire-workspace:${workspaceId}`, saved.idempotencyKey,
+          workspaceId, { retirementOperationId: result.value.operationId },
+        );
+      } catch { savedLineage = null; }
+      if (!guard.isCurrent(generation) || getAccessToken() !== sessionToken) return;
+      if (!savedLineage) {
+        setRecovery({ phase: 'failed', unavailable: {
+          reason: 'unknown', detail: 'The original removal operation could not be saved safely. Keep the request ID and retry the lookup.',
+        } });
+        return;
+      }
+    }
     setRecovery({ phase: 'observed', receipt: result.value });
   };
   const reviewRef = useRef<HTMLDivElement>(null);
@@ -73,6 +89,12 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
 
   const reviewRemoval = async () => {
     if (!ENDPOINTS.previewRetirement.served || state.phase === 'loading') return;
+    if (!scope.principalId) {
+      setState({ phase: 'failed', unavailable: {
+        reason: 'not-permitted', detail: 'Your signed-in identity is unavailable. Sign in again before reviewing removal.',
+      } });
+      return;
+    }
     if (getAccessToken() !== sessionToken) {
       setState({ phase: 'failed', unavailable: {
         reason: 'not-permitted', detail: 'Your session changed. Sign in and review the workspace again.',

@@ -261,26 +261,29 @@
       "kind": "code",
       "criterion": "AC-03",
       "title": "Preserve scoped retirement and access identities across refresh, scope changes and uncertain replies",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
+        "modules/domain-apps/superplane/ui/operations.ts",
+        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
+        "modules/domain-apps/superplane/ui/OnboardingView.tsx"
       ],
-      "note": "Next independent source task; current re-entry retains the retirement ID."
+      "note": "Retirement-only receipts now include the authenticated ADP principal in addition to deployment/org. Distinct access and retirement operation IDs are persisted under the same cross-tab lock only when the original scoped request and workspace agree. No admission was enabled."
     },
     {
       "id": "AC-03-t5",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Test stale authority, changed workspace, cross-scope replay and lost-response recovery",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c4"
       ],
       "files": [
+        "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
         "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
       ],
-      "note": "Pending."
+      "note": "116 focused frontend tests passed including A→B→A retention, lost 503 response, late session/scope change, different workspace/principal, immutable access/retirement lineage and absent current identity. TypeScript and domain UI lint passed."
     },
     {
       "id": "AC-04-c1",

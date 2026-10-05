@@ -512,7 +512,7 @@ export function OnboardingView() {
           )}
           {selected && mayOnboard && token && !selected.is_default && (
             <RetirementPanel key={`retirement:${scope.orgId}:${principalId}:${selected.id}`} workspaceId={selected.id}
-              scope={scope} store={store} guard={guardRef.current} sessionToken={token} />
+              scope={{ ...scope, principalId }} store={store} guard={guardRef.current} sessionToken={token} />
           )}
           {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} />}
           {selected && <BatchPanel workspaceId={selected.id} scope={scope} store={store} />}

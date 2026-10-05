@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { server } from '@/mocks/server';
 import { ScopeGuard } from '@superplane-ui/client';
 import { DOMAIN_BASE, ENDPOINTS } from '@superplane-ui/contract';
-import { claimPreviewIdentity, markSubmissionStage, memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
+import { claimPreviewIdentity, markSubmissionStage, memoryReceiptStore, readReceipt, recordObservation, type ReceiptStore } from '@superplane-ui/operations';
 import { RetirementPanel } from '@superplane-ui/RetirementPanel';
 
 const workspaceId = '6ac27035-3856-49d6-bb80-3c19b73a4511';
 const API = (path: string) => `/api${DOMAIN_BASE}${path}`;
-const scope = { orgId: 'org-a', deploymentId: window.location.origin };
+const scope = { orgId: 'org-a', deploymentId: window.location.origin, principalId: 'principal-a' };
 
 function reviewFor(requestId: string) {
   return {
@@ -29,8 +29,8 @@ function reviewFor(requestId: string) {
   };
 }
 
-function mount(store: ReceiptStore = memoryReceiptStore(), guard = new ScopeGuard()) {
-  render(<RetirementPanel workspaceId={workspaceId} scope={scope} store={store} guard={guard} sessionToken="test-token" />);
+function mount(store: ReceiptStore = memoryReceiptStore(), guard = new ScopeGuard(), activeScope = scope, activeWorkspaceId = workspaceId) {
+  render(<RetirementPanel workspaceId={activeWorkspaceId} scope={activeScope} store={store} guard={guard} sessionToken="test-token" />);
   return store;
 }
 
@@ -316,5 +316,82 @@ describe('source-backed removal request re-entry', () => {
     expect(await screen.findByText(/original removal review is saved, but no removal was submitted/i)).toBeInTheDocument();
     expect(screen.getByText(`Saved removal request ID: ${originalRequestId}`)).toBeInTheDocument();
     expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
+  });
+});
+
+describe('retirement principal and scope recovery', () => {
+  const originalRequestId = 'fc44b266-78c2-412a-b04a-e33770575776';
+
+  async function uncertainReceipt() {
+    const store = memoryReceiptStore();
+    const intent = `retire-workspace:${workspaceId}`;
+    await claimPreviewIdentity(store, scope, intent, { workspaceId }, () => originalRequestId, new Date().toISOString());
+    await markSubmissionStage(store, scope, intent, originalRequestId, 'submitted');
+    recordObservation(store, scope, intent, { idempotencyKey: originalRequestId, operationId: null, state: 'unknown', workspaceId });
+    return store;
+  }
+
+  it('preserves an uncertain request through A to B to A without revealing it to B', async () => {
+    const store = await uncertainReceipt();
+    let lookups = 0;
+    server.use(http.get(API('/operations/by-idempotency/:requestId'), () => {
+      lookups += 1;
+      return HttpResponse.json({ detail: 'operation not currently readable' }, { status: 503 });
+    }));
+    mount(store, new ScopeGuard(), { ...scope, principalId: 'principal-b' });
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/original scoped removal request could not be read/i)).toBeInTheDocument();
+    expect(lookups).toBe(0);
+    cleanup();
+    mount(store);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/Keep the original request ID and retry the lookup/i)).toBeInTheDocument();
+    expect(lookups).toBe(1);
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)).toMatchObject({
+      idempotencyKey: originalRequestId, state: 'unknown', submissionStage: 'submitted',
+    });
+  });
+
+  it('does not recover a different workspace from the same signed-in scope', async () => {
+    const store = await uncertainReceipt();
+    mount(store, new ScopeGuard(), scope, 'different-workspace');
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    expect(await screen.findByText(/original scoped removal request could not be read/i)).toBeInTheDocument();
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
+  });
+  it('drops a late recovery reply after the session and scope change', async () => {
+    const store = await uncertainReceipt();
+    const guard = new ScopeGuard();
+    let release!: () => void;
+    let requested!: () => void;
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    server.use(http.get(API('/operations/by-idempotency/:requestId'), async () => {
+      requested();
+      await pending;
+      return HttpResponse.json({
+        request_id: originalRequestId, provisioning_operation_id: 'late-operation',
+        workspace_id: workspaceId, state: 'succeeded', phase: 'execution',
+      });
+    }));
+    mount(store, guard);
+    await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
+    await started;
+    guard.supersede();
+    window.sessionStorage.removeItem('cognito_access_token');
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('Operation state: succeeded')).toBeNull();
+    expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)).toMatchObject({
+      idempotencyKey: originalRequestId, state: 'unknown', operationId: null,
+    });
+  });
+
+  it('refuses removal review without a current principal identity', async () => {
+    const store = memoryReceiptStore();
+    mount(store, new ScopeGuard(), { deploymentId: scope.deploymentId, orgId: scope.orgId });
+    await userEvent.click(screen.getByRole('button', { name: 'Review removal' }));
+    expect(await screen.findByText(/signed-in identity is unavailable/i)).toBeInTheDocument();
+    expect(store.keys()).toHaveLength(0);
   });
 });
