@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6999,
-  "updated_at": "2026-10-05T16:46:41.936Z",
+  "updated_at": "2026-10-05T19:02:36.467Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,9 +14,10 @@
         "docs/security/issue-6999-evidence.md",
         ".github/scripts/reconcile_6999.py"
       ],
-      "note": "Source inventory is published; the verified owner-selected target role can list CodeBuild projects but cannot read the separate platform-account SARIF (HeadObject 403, GetObject AccessDenied). Original indices and native ratings remain unverified.",
+      "note": "Source inventory is published, but cross-account GetObject is denied; original indices and native ratings remain unverified.",
       "commits": [
-        "f365039"
+        "f365039",
+        "fc9d196"
       ]
     },
     {
@@ -31,7 +32,7 @@
       "files": [
         ".github/scripts/tests/test_reconcile_6999.py"
       ],
-      "note": "Four synthetic tests pass; credential discovery and target-role assumption now work, but original-report verification cannot run because cross-account GetObject returns AccessDenied."
+      "note": "Four synthetic tests pass; the frozen-report check cannot run without authorized report access."
     },
     {
       "id": "AC-02-c1",
@@ -45,7 +46,7 @@
         "modules/gateway/frontend/src/services/auth.ts",
         "modules/gateway/frontend/src/pages/DomainMRI.tsx"
       ],
-      "note": "Credential-bearing browser fetches reject redirects; source contexts are documented. Final per-record dispositions remain under AC-03.",
+      "note": "Credential-bearing browser fetches reject redirects; final per-record dispositions remain under AC-03.",
       "commits": [
         "25dd503"
       ]
@@ -62,7 +63,7 @@
       "files": [
         "modules/gateway/frontend/src/__tests__/services/domainMriRedirect.test.tsx"
       ],
-      "note": "Frontend 2,915 tests, heartbeat/control 36 tests, and Task SDK 26 tests pass."
+      "note": "Current run: 2,915 frontend, 28 heartbeat/deadline, and 26 Task SDK tests pass; earlier broader heartbeat/control checks also passed."
     },
     {
       "id": "AC-02-t2",
@@ -78,7 +79,7 @@
         "modules/agent-factory/agent/src/run-heartbeat.test.ts",
         "modules/tools/task-sdk/test/codex.test.mjs"
       ],
-      "note": "Loopback redirect cases and callable-timer/cleanup checks pass.",
+      "note": "Redirect and callable-timer checks pass; the Task SDK fake-loopback Codex CLI case passes without provider calls.",
       "commits": [
         "cc69c9a"
       ]
@@ -93,7 +94,7 @@
       "files": [
         "docs/security/issue-6999-evidence.md"
       ],
-      "note": "All eleven candidate rows remain explicitly unresolved: the target role cannot read original evidence from the separate account (GetObject AccessDenied), so identities, native ratings and dispositions cannot be reviewed."
+      "note": "All eleven rows remain unresolved until the denied original report can be reconciled and dispositions reviewed."
     },
     {
       "id": "AC-03-t1",
@@ -108,7 +109,7 @@
         "scripts/security/verify_issue_6999_semgrep.py",
         "scripts/security/fixtures/issue-6999-unsafe.txt"
       ],
-      "note": "Pinned two-rule scan reports eleven assigned matches and both unsafe controls, with no scan errors; a wider registry scan partially analyzed one file and is not claimed clean.",
+      "note": "Pinned scoped scan detects eleven assigned matches and both unsafe controls, with no scan errors; raw output is run-local, not durable reviewer evidence.",
       "commits": [
         "fb63b63"
       ]
@@ -123,7 +124,7 @@
       "files": [
         "docs/security/issue-6999-evidence.md"
       ],
-      "note": "Local consumer and rollback prerequisites are documented; final reviewed, merged artifact and deployed digests are not verified.",
+      "note": "Local consumer and rollback prerequisites are documented; reviewed merge and final composed-artifact verification remain pending.",
       "commits": [
         "5aeed50"
       ]
@@ -138,7 +139,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Frontend and agent builds pass; full frontend, affected heartbeat, and complete Task SDK suites pass, including the local Codex CLI loopback fixture.",
+      "note": "Frontend and agent builds, full frontend suite, affected heartbeat tests, and complete Task SDK suite pass on the candidate.",
       "commits": [
         "56c997d"
       ]
