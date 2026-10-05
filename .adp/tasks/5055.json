@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:47:47.390Z",
+  "updated_at": "2026-10-05T23:50:16.794Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -227,7 +227,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Mounted guard publishes the sanitized mapping; verified principal remains authoritative."
+      "note": "Mounted guard publishes a sanitized mapping with the verified principal."
     },
     {
       "id": "R5.7-t1",
@@ -242,7 +242,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_proxy.py"
       ],
-      "note": "205 auth/proxy tests passed; commit 314e66d.",
+      "note": "Auth/proxy 205 passed; commit 314e66d.",
       "commits": [
         "314e66d"
       ]
@@ -252,26 +252,31 @@
       "kind": "code",
       "criterion": "R6.1",
       "title": "Preserve kubeconfig permission enforcement on the mounted endpoint",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Consume #6993 fixtures without rewriting its historical baseline."
+      "note": "Current source retains the mounted PROVISION guard; #6993 fixture files unchanged."
     },
     {
       "id": "R6.1-t1",
       "kind": "test",
       "criterion": "R6.1",
       "title": "Run merged before-and-after mounted kubeconfig denial tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R6.1-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_history.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py"
       ],
-      "note": ""
+      "note": "Historical/current pair and same-org peer grant denial; 159 passed. Commit 185fd23f.",
+      "commits": [
+        "185fd23"
+      ]
     },
     {
       "id": "R6.2-c1",
