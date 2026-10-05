@@ -23,6 +23,7 @@ function fixture() {
     enqueue: async () => { events.push("enqueue"); queued = true; },
   };
   const result: EngineReviewResult = { status: "engine_reviewed", sha: head, merged: false, reviewed_base_sha: base,
+    summary: 'Reviewed', closure_report: undefined,
     repair_base_sha: null, checkpoint_remaining: [], body: "Reviewed", report: { verdict: "approve", findings: [],
       stages: { functional: "completed", security: "completed" }, stage_details: { functional: "done", security: "done" } } };
   const envelope: CodexEngineReviewEnvelope = { kind: "codex_engine_review", version: "1.0", message_id: "review-run", arrived_at: "now",

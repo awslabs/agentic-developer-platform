@@ -77,6 +77,19 @@ approval. Explain which requirement remains unverified and what would verify it.
 For example, a rebuilt-image scan explicitly required by a security story is a
 blocking gap until that exact artifact has been validated.
 
+Provide `closureReport` in each structured inspection: short, plain-language
+lists for the person following this run. Write the verdict summary in one or
+two plain-language sentences too, leaving detailed hashes and commands to the
+evidence fields. The closure report should contain
+lists of what is completed and what remains, including separately deferred live
+or backend work and its owner when known. Explain user-visible results rather
+than repeating task IDs or commands. In `verifiedTasks`, name only existing task
+IDs whose completion you actually established, with a concise evidence note.
+After final-head CI, explicitly include the validation tasks its results resolve.
+Do not mark deferred tasks completed, infer live acceptance, or claim a merge;
+the controller supplies the actual delivery outcome. Reporting omissions or
+formatting problems are not code defects or new approval blockers.
+
 Respect an explicit separation of code merge from later deployment or live
 qualification in the driving issue or accepted scope. When the code may merge
 with a separately tracked qualification hold, review and repair the code-stage

@@ -1,4 +1,5 @@
 import { DEVELOPMENT_TIMEOUT_MS } from "./timeouts.js";
+import { parseReviewClosure, reconcileReviewedTasks, reviewClosureReport, reviewClosureSchema, type ReviewClosure } from './closure-report.js';
 import { reviewEvents, reviewSignal, reviewOperation } from "./review-observer.js";
 /** One reviewer owns inspection, repairs, CI and deterministic merge delivery. */
 import { loadSharedInstructions } from "./shared-instructions.js";
@@ -25,6 +26,7 @@ import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carr
 export interface EngineVerdict extends ReviewVerdict {
   stages: { functional: "completed" | "failed"; security: "completed" | "failed" };
   stageDetails: string;
+  closureReport?: ReviewClosure;
 }
 
 export const engineReviewSchema = {
@@ -40,8 +42,9 @@ export const engineReviewSchema = {
       required: ["functional", "security"],
     },
     stageDetails: { type: "string" },
+    closureReport: reviewClosureSchema,
   },
-  required: [...reviewOutputSchema.required, "stages", "stageDetails"],
+  required: [...reviewOutputSchema.required, "stages", "stageDetails", "closureReport"],
 };
 
 export function parseEngineVerdict(raw: string): EngineVerdict {
@@ -51,6 +54,7 @@ export function parseEngineVerdict(raw: string): EngineVerdict {
         ["completed", "failed"].includes(verdict.stages[name as keyof EngineVerdict["stages"]]))) {
     throw new Error("Codex did not report functional and security review completion");
   }
+  verdict.closureReport = parseReviewClosure(verdict.closureReport);
   return verdict;
 }
 
@@ -498,6 +502,9 @@ async function runEngineReviewPass(
     checkpoint_remaining: head !== expected && milestone?.outcome === 'checkpoint' ? milestone.remainingWork : [],
     ...(milestone?.outcome === "awaiting_ci" ? { awaiting_ci: true } : {}),
     ...(milestone?.outcome === "blocked" ? { repair_blocked: milestone.summary } : {}),
+    ...(board ? { task_board: board } : {}),
+    closure_report: parseReviewClosure(verdict.closureReport),
+    summary: verdict.summary,
     report: engineReport(verdict),
     body: engineReviewBody(verdict, head),
   };
@@ -505,6 +512,41 @@ async function runEngineReviewPass(
 
 /** Retain both SDK threads through CI and merge. Polling makes no model calls. */
 export async function runEngineReview(
+  envelope: CodexEngineReviewEnvelope, runtime: ReviewRuntime, supplied?: EngineReviewServices,
+) {
+  const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });
+  const result = await runEngineReviewLoop(envelope, runtime, controller);
+  // Reporting happens after the delivery decision. No metadata-only commit,
+  // new CI cycle, or reporting exception can undo a verified merge.
+  try {
+    const board = result.merged && result.report.verdict === 'approve'
+      ? reconcileReviewedTasks(result.task_board ?? [], result.closure_report, result.sha)
+      : result.task_board ?? [];
+    const report = reviewClosureReport({ summary: result.summary, tasks: board, closure: result.closure_report,
+      merged: result.merged, sha: result.sha, blocker: 'delivery_blocked' in result ? result.delivery_blocked : undefined });
+    if (result.merged && board.length) {
+      const attempt = async (name: string, work: () => unknown | Promise<unknown>) => {
+        try { await work(); } catch { report.reporting_notes.push(`${name} could not be updated. The verified merge is unaffected.`); }
+      };
+      await attempt('Saved task file', () => writeTaskBoardFile(runtime.workspace, envelope.issue_number, board));
+      await attempt('Saved checklist', () => runtime.observer?.progress?.(renderTaskBoard(board, { heading: '' }),
+        { id: 'adp-task-board', category: 'plan', state: 'completed', plan_scope: 'assignment' }));
+      if (controller.github.updatePullRequestBody) await attempt('PR checklist', () => reviewOperation(runtime.observer, async () => {
+        const pr = await controller.github.getPullRequest(envelope.cycle.pr_number);
+        if (pr.head.sha !== result.sha) throw new Error('PR head changed');
+        await controller.github.updatePullRequestBody!(envelope.cycle.pr_number,
+          upsertTaskBoardSection(pr.body, board, { status: `PR merged; final review verified at ${result.sha}. Deferred work remains listed.` }));
+      }));
+    }
+    runtime.observer?.closure?.(report);
+  } catch {
+    // Best effort even if a reporter itself is unavailable. Preserve the result.
+    try { runtime.observer?.activity('Closure reporting could not be completed; the review and merge result is unchanged.'); } catch { /* reporting only */ }
+  }
+  return result;
+}
+
+async function runEngineReviewLoop(
   envelope: CodexEngineReviewEnvelope, runtime: ReviewRuntime, supplied?: EngineReviewServices,
 ) {
   const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });

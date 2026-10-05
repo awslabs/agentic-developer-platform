@@ -11,7 +11,7 @@
  * remains for standalone use from the activity table.
  */
 
-import { RunRecordSummary } from '@/components/RunRecordSummary';
+import { RunRecordSummary, RunClosureReport } from '@/components/RunRecordSummary';
 import { parseRunRecord } from '@/utils/runRecord';
 import { Children, isValidElement, type ReactNode } from 'react';
 import './transcript.css';
@@ -130,10 +130,13 @@ export function TranscriptContent({
       )}
 
       {!isLoading && !error && markdown && (
-        <div className="run-archive-grid">
+        <>
+          <RunClosureReport record={parseRunRecord(markdown, invocationId)} />
+          <div className="run-archive-grid">
           <RunRecordSummary record={parseRunRecord(markdown, invocationId)} />
           <div className="min-w-0"><TranscriptMarkdown markdown={markdown} /></div>
-        </div>
+          </div>
+        </>
       )}
 
       {!isLoading && !error && !markdown && (
