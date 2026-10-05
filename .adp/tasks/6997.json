@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T19:02:58.378Z",
+  "updated_at": "2026-10-05T19:04:09.292Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Seven identities retained; private baseline logs not independently rechecked.",
+      "note": "Seven original identities retained; private baseline logs not independently rechecked.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed previously and in this continuation."
+      "note": "Passed locally."
     },
     {
       "id": "AC-01-t2",
@@ -45,7 +45,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed previously and in this continuation."
+      "note": "Passed locally."
     },
     {
       "id": "AC-02-c1",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Prior fix b7d60f5 verified by three successful no-push builds at 5d352a49; build IDs and evidence recorded in PR.",
+      "note": "Committed at b7d60f5; three authorized, no-push builds succeeded.",
       "commits": [
         "b7d60f5"
       ]
@@ -76,20 +76,20 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Three successful CodeBuild runs each logged five in-image regressions; five host regressions passed; codebuild/tests/: 99 passed, 1 expected skip."
+      "note": "Each build logged five in-image regressions; local CodeBuild suite: 99 passed, 1 expected skip."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Resolve pinned ingestion input",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Prior compatibility repair committed; exact donor manifest and permission need verification.",
+      "note": "Platform ingestion repository denies exact-manifest BatchGetImage and DescribeImages to selected role; digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -99,14 +99,14 @@
       "kind": "test",
       "criterion": "AC-02",
       "title": "Build ingestion family and reject invalid inputs",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c2"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Invalid-input checks pass locally; actual builds pending."
+      "note": "34 focused local tests passed; actual builds await verified donor access."
     },
     {
       "id": "AC-02-c-wire",
@@ -142,13 +142,13 @@
       "kind": "code",
       "criterion": "AC-03",
       "title": "Preserve revision, pins and paired provenance",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "codebuild/scan_security_images.py",
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local guard committed; authenticated paired artifacts pending.",
+      "note": "Local guard committed; platform registry and frozen baseline evidence remain inaccessible to selected role.",
       "commits": [
         "d67a512"
       ]
@@ -158,26 +158,26 @@
       "kind": "test",
       "criterion": "AC-03",
       "title": "Verify paired Grype/Syft scan coverage",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-03-c1"
       ],
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and coordinator after integration; scan authorization and artifact access unverified."
+      "note": "deployed-target: executor and coordinator after integration; authenticated scan and paired artifacts pending."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Preserve cleanup and finding-assignment contract",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "codebuild/scan_security_images.py"
       ],
-      "note": "Local receipt guard committed; run evidence pending.",
+      "note": "Local guard committed; no completed scan from which to verify cleanup or recovered findings.",
       "commits": [
         "271d3bb"
       ]
@@ -187,7 +187,7 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify terminal children, cleanup and dated owners",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-04-c1"
       ],
