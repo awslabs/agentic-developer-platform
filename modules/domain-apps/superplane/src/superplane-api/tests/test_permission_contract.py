@@ -9,8 +9,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
-from app.auth import load_workspace_authorization
+from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
     DOMAIN_ROUTES,
     PRIVATE_DOMAIN_ROUTES,
@@ -19,6 +20,7 @@ from app.endpoint_inventory import (
 )
 from app.main import app
 from app.models.organization import Organization
+from app.models.organization_grant import OrganizationGrantRecord, ORGANIZATION_ADMINISTER, ORGANIZATION_READ
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from superplane_auth.policy import (
@@ -42,6 +44,9 @@ def _contract(name):
 MATRIX = _contract("action-permissions-v1.json")
 ACCESS = _contract("access-cases-v1.json")
 CASES = [dict(zip(ACCESS["columns"], values, strict=True)) for values in ACCESS["cases"]]
+ORGANIZATION_CASES = [
+    dict(zip(ACCESS["organization_columns"], values, strict=True)) for values in ACCESS["organization_cases"]
+]
 
 
 def test_matrix_matches_real_mounted_domain_routes():
@@ -60,6 +65,12 @@ def test_matrix_matches_real_mounted_domain_routes():
         assert action["surface"] == "absent" or action["surface"].startswith(("cli:", "ui:", "tool:"))
         assert all(surface.startswith("cli:") and surface != action["surface"] for surface in action.get("also_surfaces", []))
         assert all(surface.startswith("cli:") and surface not in [action["surface"], *action.get("also_surfaces", [])] for surface in action.get("unavailable_surfaces", []))
+        if action["scope"] == "organization":
+            assert action["organization_grant"] == (
+                ORGANIZATION_READ if action["permission"] == Permission.READ.value else ORGANIZATION_ADMINISTER
+            )
+        else:
+            assert "organization_grant" not in action
         if not action["routes"]:
             assert action["surface"] == "absent"
             assert action["scope"] in {"workspace", "cluster"}
@@ -83,6 +94,79 @@ def test_all_permission_implications_and_non_implications(granted, requested):
     expected = requested == granted or requested is Permission.READ or granted is Permission.ADMINISTER
     assert (requested in expand_permissions({granted})) is expected
     assert not expand_permissions({"unknown-role-or-permission"}) & set(Permission)
+
+
+
+def test_fixed_permission_vocabulary_and_separate_cluster_scope():
+    assert {permission.value for permission in Permission} == {
+        "workspace:read", "workspace:spend", "workspace:provision",
+        "workspace:renew_credential", "workspace:administer",
+    }
+    assert {ORGANIZATION_READ, ORGANIZATION_ADMINISTER}.isdisjoint({permission.value for permission in Permission})
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    assert all(actions[name]["scope"] == "organization" for name in (
+        "workspace.create", "workspace.list", "org.settings", "approval.decision",
+    ))
+    assert actions["workspace.create"]["organization_grant"] == ORGANIZATION_ADMINISTER
+    assert actions["workspace.list"]["organization_grant"] == ORGANIZATION_READ
+    for name in ("cluster.use", "cluster.administer", "cluster.observe"):
+        assert actions[name]["scope"] == "cluster"
+        assert actions[name]["permission"] == name.replace("cluster.", "cluster:")
+        assert actions[name]["routes"] == [] and actions[name]["surface"] == "absent"
+    assert actions["workspace.list"]["scope"] == "organization"
+    assert "cli:cluster list" in actions["workspace.list"]["also_surfaces"]
+    assert "first installation grant" in MATRIX["scope_gate"]["bootstrap"]
+    assert "revocation denies fallback" in MATRIX["scope_gate"]["organization"]
+
+
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case["name"])
+@pytest.mark.asyncio
+async def test_bound_org_and_legacy_scope_grant_cases(case):
+    assert ACCESS["version"] == 1
+    org_ids = {name: uuid.uuid4() for name in ("O1", "O2")}
+    subject = case["subject"]
+    workspace_ids = []
+    async with async_session_test() as db:
+        for name, org_id in org_ids.items():
+            db.add(Organization(
+                id=org_id, name=f"contract-org-{name}", billing_plan="free",
+                adp_org_id=f"selected-{name}" if case["bound"] else None,
+            ))
+        for index in range(case["workspace_count"]):
+            workspace_id = uuid.uuid4()
+            workspace_ids.append(workspace_id)
+            db.add(Workspace(
+                id=workspace_id, org_id=org_ids["O1"], name=f"contract-org-w{index}",
+                isolation_mode="shared", status="active",
+            ))
+        if case["grant_org"]:
+            db.add(OrganizationGrantRecord(
+                org_id=org_ids[case["grant_org"]], principal=subject,
+                principal_type=case["grant_type"], permissions=" ".join(case["org_permissions"]),
+                granted_by="fixture", revoked_at=datetime.now(UTC) if case["revoked"] else None,
+            ))
+        for workspace_id in workspace_ids if case["all_workspaces"] else workspace_ids[:1]:
+            if case["workspace_permissions"]:
+                db.add(WorkspaceGrantRecord(
+                    workspace_id=workspace_id, org_id=org_ids["O1"], principal=subject,
+                    principal_type=case["principal_type"], permissions=" ".join(case["workspace_permissions"]),
+                ))
+        await db.commit()
+        principal = DomainPrincipal(
+            subject=subject, org_id=str(org_ids[case["org"]]), client_id="offline-test-client",
+            account_type=case["principal_type"],
+        )
+        caller = VerifiedCaller(principal=principal, safe_headers={})
+        if case["allow"]:
+            assert await authorize_organization_operation(db, caller, Permission(case["request"])) is None
+        else:
+            with pytest.raises(HTTPException) as denied:
+                await authorize_organization_operation(db, caller, Permission(case["request"]))
+            assert denied.value.status_code == 403
+        if case["bound"] and case["allow"] and workspace_ids and not case["workspace_permissions"]:
+            model, stored_org = await load_workspace_authorization(db, workspace_ids[0], subject, case["principal_type"])
+            with pytest.raises(AuthorizationDeniedError):
+                model.authorize(principal, str(workspace_ids[0]), Permission.READ, workspace_org_id=stored_org)
 
 
 def test_sensitive_actions_have_independent_requirements():

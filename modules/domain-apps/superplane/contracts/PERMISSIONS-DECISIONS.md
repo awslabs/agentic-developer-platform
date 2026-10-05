@@ -9,7 +9,14 @@ organization-scoped route is its *current inventory label*, not a workspace
 grant: bound organizations require a separate typed `organization:read` or
 `organization:administer` grant (and organization-scoped provisioning/credential
 actions currently require administer); unbound legacy organizations use the
-conservative all-live-workspaces gate. No ordinary ADP role provides either grant.
+conservative all-live-workspaces gate. No ordinary ADP role provides either grant. Each organization-scoped matrix
+row now records `organization_grant`, the minimum explicit grant checked for
+bound organizations; the `permission` field remains the exact endpoint inventory
+label. An organization administrator grant also satisfies an organization read,
+but neither organization grant supplies a workspace grant. The same label on an
+unbound legacy organization instead requires live grants on every live workspace.
+Only the eligible current selected-org administrator may receive the initial
+installation grant through bootstrap; revoked access cannot revive that path.
 
 Only the mounted route, scope and permission labels are proven by the inventory
 test. `principal` and `extra` record declared requirements, not evidence that all
@@ -42,7 +49,8 @@ cluster observation authority; there is no new principal-type restriction here.
 | `modules/gateway/src/auth/workspaces.py` | ADP workspace selector changes *selected organization* via active `tenant_memberships`; it is not the execution workspace identifier. A selected org_admin is not platform admin. |
 | `auth/superplane_auth/policy.py` | Five permissions and implications; the four unused `workspace_viewer`, `workspace_operator`, `workspace_provisioner`, `workspace_owner` mapping names are **candidate domain presets**, not ADP roles. Production reads explicit typed grants and drops unknown permission strings. |
 
-`access-cases-v1.json` pins the two-org/two-workspace/two-human/service examples;
+`access-cases-v1.json` pins the two-org/two-workspace/two-human/service examples
+and separate bound-organization/legacy cases for zero and multiple workspaces;
 the SQLite-backed grant-layer contract test exercises stored principal type and revocation,
 as well as same-org disjoint grants. The role-source check executes Gateway's
 membership normalization: even a membership row labeled `platform_admin` remains

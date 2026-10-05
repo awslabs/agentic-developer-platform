@@ -1,6 +1,23 @@
 {
   "version": 1,
   "columns": ["name", "org", "workspace", "subject", "principal_type", "adp_role", "grant_org", "grant_workspace", "grant_type", "permissions", "request", "active", "revoked", "allow"],
+  "organization_columns": ["name", "org", "bound", "workspace_count", "subject", "principal_type", "adp_role", "grant_org", "grant_type", "org_permissions", "revoked", "workspace_permissions", "all_workspaces", "request", "allow"],
+  "organization_cases": [
+    ["first workspace org admin role alone", "O1", true, 0, "alice", "human", "org_admin", null, null, [], false, [], false, "workspace:provision", false],
+    ["first workspace explicit organization admin", "O1", true, 0, "alice", "human", "org_admin", "O1", "human", ["organization:administer"], false, [], false, "workspace:provision", true],
+    ["first workspace platform admin role alone", "O1", true, 0, "alice", "human", "platform_admin", null, null, [], false, [], false, "workspace:provision", false],
+    ["organization read cannot provision", "O1", true, 2, "alice", "human", "member", "O1", "human", ["organization:read"], false, [], false, "workspace:provision", false],
+    ["organization read permits read", "O1", true, 2, "alice", "human", "member", "O1", "human", ["organization:read"], false, [], false, "workspace:read", true],
+    ["organization admin does not require workspace grant", "O1", true, 2, "alice", "human", "member", "O1", "human", ["organization:administer"], false, [], false, "workspace:spend", true],
+    ["workspace admin cannot access bound org", "O1", true, 2, "alice", "human", "org_admin", null, null, [], false, ["workspace:administer"], true, "workspace:read", false],
+    ["revoked org grant defeats all workspace grants", "O1", true, 2, "alice", "human", "org_admin", "O1", "human", ["organization:administer"], true, ["workspace:administer"], true, "workspace:read", false],
+    ["unknown org permission grants nothing", "O1", true, 2, "alice", "human", "org_admin", "O1", "human", ["organization:unknown"], false, [], false, "workspace:read", false],
+    ["service cannot use human org grant", "O1", true, 2, "runner", "service", "service", "O1", "human", ["organization:administer"], false, [], false, "workspace:read", false],
+    ["typed service explicit org grant", "O1", true, 2, "runner", "service", "service", "O1", "service", ["organization:read"], false, [], false, "workspace:read", true],
+    ["other organization grant does not carry over", "O2", true, 0, "alice", "human", "org_admin", "O1", "human", ["organization:administer"], false, [], false, "workspace:read", false],
+    ["legacy partial workspace grants deny collection", "O1", false, 2, "alice", "human", "member", null, null, [], false, ["workspace:read"], false, "workspace:read", false],
+    ["legacy all live workspace grants allow collection", "O1", false, 2, "alice", "human", "member", null, null, [], false, ["workspace:read"], true, "workspace:read", true]
+  ],
   "cases": [
     ["O1 W1 read only", "O1", "W1", "alice", "human", "member", "O1", "W1", "human", ["workspace:read"], "workspace:read", true, false, true],
     ["O1 W1 read cannot spend", "O1", "W1", "alice", "human", "member", "O1", "W1", "human", ["workspace:read"], "workspace:spend", true, false, false],
