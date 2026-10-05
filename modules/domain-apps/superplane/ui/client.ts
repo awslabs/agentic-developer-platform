@@ -417,6 +417,53 @@ export function getWorkspace(
   return call(guard, 'getWorkspace', { workspace_id: workspaceId }, undefined, parseWorkspace);
 }
 
+export interface HumanWorkspaceAccess {
+  workspace_id: string;
+  grant_id: string;
+  revision: number;
+  principal_type: 'human';
+  subject: string;
+  effective_permissions: string[];
+  granted_by: string | null;
+  reason: string | null;
+  request_id: string | null;
+}
+
+function parseHumanWorkspaceAccess(raw: unknown): HumanWorkspaceAccess | null {
+  if (!isRecord(raw) || typeof raw.workspace_id !== 'string' ||
+      typeof raw.grant_id !== 'string' || !Number.isInteger(raw.revision) ||
+      (raw.revision as number) < 1 || raw.principal_type !== 'human' ||
+      typeof raw.subject !== 'string' || !Array.isArray(raw.effective_permissions) ||
+      !raw.effective_permissions.every((permission) => typeof permission === 'string' &&
+        ['workspace:read', 'workspace:spend', 'workspace:provision', 'workspace:renew_credential', 'workspace:administer'].includes(permission)) ||
+      (raw.granted_by !== null && typeof raw.granted_by !== 'string') ||
+      (raw.reason !== null && typeof raw.reason !== 'string') ||
+      (raw.request_id !== null && typeof raw.request_id !== 'string')) return null;
+  return raw as unknown as HumanWorkspaceAccess;
+}
+
+export function getWorkspaceAccess(guard: ScopeGuard, workspaceId: string): Promise<Outcome<HumanWorkspaceAccess>> {
+  return call(guard, 'getWorkspaceAccess', { workspace_id: workspaceId }, undefined,
+    (raw) => {
+      const parsed = parseHumanWorkspaceAccess(raw);
+      return parsed?.workspace_id === workspaceId ? parsed : null;
+    });
+}
+
+export function grantWorkspaceAccess(
+  guard: ScopeGuard, workspaceId: string, targetSubject: string, requestId: string,
+): Promise<Outcome<HumanWorkspaceAccess>> {
+  return call(guard, 'grantWorkspaceAccess', { workspace_id: workspaceId }, {
+    target_subject: targetSubject, principal_type: 'human', permissions: ['workspace:read'],
+    reason: 'approver_setup', expected_revision: 0, request_id: requestId,
+  }, (raw) => {
+    const parsed = parseHumanWorkspaceAccess(raw);
+    return parsed?.workspace_id === workspaceId && parsed.subject === targetSubject &&
+      parsed.request_id === requestId && parsed.principal_type === 'human' &&
+      parsed.effective_permissions.includes('workspace:read') ? parsed : null;
+  });
+}
+
 export function parseRetirementReview(raw: unknown): RetirementReview | null {
   if (!isRecord(raw) || raw.admission_available !== false ||
       raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null ||

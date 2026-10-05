@@ -30,6 +30,33 @@ def test_all_public_routes_come_from_maintained_inventory():
     assert actual == expected
 
 
+@pytest.mark.parametrize("method,tail", [
+    ("GET", "me"),
+    ("POST", "grants"),
+])
+def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, method, tail):
+    calls = []
+    body = {"target_subject": "human-approver", "principal_type": "human", "permissions": ["workspace:read"],
+            "reason": "approver_setup", "expected_revision": 0, "request_id": "11111111-1111-1111-1111-111111111111"} if method == "POST" else None
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(403, json={"detail": "workspace authority refused"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    route = f"/superplane/v1/workspaces/example/access/v1/{tail}"
+    assert client.request(method, route).status_code == 401
+    assert calls == []
+    response = client.request(method, route, json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == 403
+    assert len(calls) == 1
+    assert calls[0].method == method
+    assert str(calls[0].url).endswith(f"/workspaces/example/access/v1/{tail}")
+    if body is not None:
+        assert json.loads(calls[0].content) == body
+
+
 @pytest.mark.parametrize(
     "path",
     [

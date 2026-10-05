@@ -146,6 +146,7 @@ async def test_service_target_and_unsupported_permissions_refused(access):
     assert (await client.post(url, json=_grant_request(principal_type="service"), headers=token())).status_code == 422
     assert (await client.post(url, json=_grant_request(permissions=["cluster:administer"]), headers=token())).status_code == 422
     assert (await client.post(url, json=_grant_request(permissions=["workspace:read", "workspace:read"]), headers=token())).status_code == 422
+    assert (await client.post(url, json=_grant_request(target_subject="approver@example.invalid"), headers=token())).status_code == 422
 
 
 @pytest.mark.asyncio

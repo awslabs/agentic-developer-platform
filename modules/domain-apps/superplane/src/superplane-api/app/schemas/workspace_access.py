@@ -3,7 +3,7 @@
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from superplane_auth.policy import Permission
 
 
@@ -16,6 +16,13 @@ class GrantHumanAccessRequest(BaseModel):
     reason: Literal["approver_setup"]
     expected_revision: int = Field(ge=0)
     request_id: uuid.UUID
+
+    @field_validator("target_subject")
+    @classmethod
+    def require_immutable_subject(cls, value: str) -> str:
+        if "@" in value or value != value.strip():
+            raise ValueError("target_subject must be an immutable subject, not an email address")
+        return value
 
 
 class WorkspaceAccessResponse(BaseModel):

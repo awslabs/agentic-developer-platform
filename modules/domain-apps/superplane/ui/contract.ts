@@ -91,6 +91,8 @@ export interface EndpointDeclaration {
 export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
+  getWorkspaceAccess: { method: 'GET', path: '/workspaces/{workspace_id}/access/v1/me', served: true },
+  grantWorkspaceAccess: { method: 'POST', path: '/workspaces/{workspace_id}/access/v1/grants', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
   batchResult: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/result', served: true },
   batchAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting', served: true },
