@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T16:38:23.344Z",
+  "updated_at": "2026-10-05T16:41:05.012Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "platform/automation-infra/Dockerfile",
         "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "Selected connection adp-agent--embark1 returns 403 insufficient_scope for credential:list and credential:assume-role; original reports remain inaccessible. Partial implementation: c6b43a7.",
+      "note": "Broker denies credential:list and credential:assume-role with 403 insufficient_scope. Original reports remain inaccessible; partial commit c6b43a7.",
       "commits": [
         "c6b43a7"
       ]
@@ -32,7 +32,7 @@
       "files": [
         "platform/arc-runner/security/scan/test_reconcile.py"
       ],
-      "note": "Five synthetic tests passed this turn; private report hashes and occurrences remain unverified."
+      "note": "Five synthetic tests passed in the preceding turn; private report hashes and occurrences remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -44,19 +44,19 @@
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Original finding paths and executable provenance are inaccessible; no image build path can be authorized through the denied broker. Pinned Node 22.23.3 is still the latest upstream Node 22 release."
+      "note": "Assigned finding paths, executable provenance and authorized image-build access remain unavailable."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Pin automation derivative to the reviewed ARC base image",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "Await reviewed immutable ARC candidate digest."
+      "note": "No newly reviewed immutable ARC candidate digest exists; do not substitute an older image."
     },
     {
       "id": "AC-02-t1",
@@ -69,7 +69,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "No local Docker and AWS CodeBuild access cannot be verified while credential assumption returns 403."
+      "note": "Local Docker is unavailable; CodeBuild access cannot be checked before broker identity verification."
     },
     {
       "id": "AC-02-t2",
@@ -92,7 +92,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Original reports and candidate scans needed; all assigned occurrences unresolved."
+      "note": "Original reports and candidate scans needed; all assigned occurrences remain unresolved."
     },
     {
       "id": "AC-03-t1",
@@ -126,7 +126,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Candidate digest and rollback handoff pending."
+      "note": "Exact tested digests and rollback handoff pending."
     },
     {
       "id": "AC-04-c-wire",
