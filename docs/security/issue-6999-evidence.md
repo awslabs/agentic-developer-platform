@@ -54,8 +54,9 @@ one partially analyzed file; it is **not** evidence of a clean full scan.
 
 The full frontend suite passed 2,915 tests across 176 files (the focused
 redirect subset passed 99); the frontend and agent builds passed, 36
-heartbeat/control tests passed, and 25 Task SDK tests passed with one optional
-Codex CLI integration test skipped because `CODEX_BRIDGE_TEST_BIN` was not set.
+heartbeat/control tests passed, and all 26 Task SDK tests passed. The
+previously skipped Codex CLI integration case used the local investigator build
+and the installed CLI against a fake loopback model, not a provider service.
 Local Node tests and Semgrep do not establish a deployed artifact or production
 availability. These local checks ran no provider workloads.
 
