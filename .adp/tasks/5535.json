@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-05T23:45:53.078Z",
+  "updated_at": "2026-10-05T23:50:36.055Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/executor/superplane_executor/task_worker.py"
       ],
-      "note": "Committed as 6d8a26ed3; controller-only refusal remains.",
+      "note": "Committed as 6d8a26ed3; covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1868,12 +1868,17 @@
       "kind": "code",
       "criterion": "AC-01",
       "title": "Expose authenticated non-consuming installed-worker binding proof",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/gateway/src"
+        "modules/gateway/src/internal/domain_operation_binding_proof_routes.py",
+        "modules/gateway/src/internal/domain_operation_store.py",
+        "modules/gateway/src/internal/controller_execution_routes.py"
       ],
-      "note": "Next task; reuse protected producer and binding authorities."
+      "note": "Committed as 931919ffe; covered by AC-01-t5. Deployment permissions and activation remain separate work.",
+      "commits": [
+        "931919f"
+      ]
     },
     {
       "id": "AC-01-c3",
@@ -1913,7 +1918,7 @@
       "files": [
         "modules/domain-apps/superplane/executor/tests/test_native_paid_worker_mode.py"
       ],
-      "note": "Added because the existing AC-01-t1 covers an unfinished cross-component journey; 114 focused executor, image, and handoff tests passed locally.",
+      "note": "114 focused executor, image and handoff tests passed locally.",
       "commits": [
         "105f0f8",
         "3cede13",
@@ -3762,6 +3767,21 @@
       ]
     },
     {
+      "id": "AC-01-t5",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run Gateway installed-binding proof and internal-route guard tests",
+      "status": "done",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_domain_operation_binding_proof.py",
+        "modules/gateway/tests/orchestration/test_internal_plane_guard.py"
+      ],
+      "note": "Added to cover the bounded proof route while end-to-end AC-01-t1 remains open; 113 tests passed locally, including mismatched and inactive installations."
+    },
+    {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
@@ -3794,7 +3814,7 @@
         "modules/domain-apps/superplane/executor/tests",
         "modules/gateway/tests"
       ],
-      "note": ""
+      "note": "The focused binding negatives passed; the broader cross-component cases remain."
     },
     {
       "id": "AC-01-t3",
@@ -3833,7 +3853,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/paid_worker.py"
       ],
-      "note": ""
+      "note": "Must address scoped Gateway read permission and reviewed-release comparison; current installation remains paused and controller-only."
     },
     {
       "id": "AC-02-t1",
