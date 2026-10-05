@@ -1057,8 +1057,14 @@ def test_different_owners_of_same_arn_receive_different_ids(app_and_client):
     assert client.post("/auth/credentials/aws/import", json=body).json()["external_id"] == alice["external_id"]
 
 
-@pytest.mark.parametrize("account,role", [("999999999999", "ordinary"), ("123456789012", "path/adp-gateway")])
-def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_sm, account, role):
+@pytest.mark.parametrize(
+    "account,role,reason,hint",
+    [
+        ("999999999999", "ordinary", "platform_account_not_allowed", "Connect a different AWS account"),
+        ("123456789012", "path/adp-gateway", "reserved_role_name", "dedicated customer role"),
+    ],
+)
+def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_sm, account, role, reason, hint):
     response = alice_client.post(
         "/auth/credentials/aws/import",
         json={
@@ -1068,4 +1074,32 @@ def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_
         },
     )
     assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == reason
+    assert hint in response.json()["detail"]["hint"]
+    assert not mock_sm._secrets
+
+
+@pytest.mark.parametrize("endpoint", ["connect", "import"])
+@pytest.mark.parametrize("platform_configured", [True, False])
+def test_connection_rejection_explains_who_can_resolve_it(alice_client, mock_sm, monkeypatch, endpoint, platform_configured):
+    if not platform_configured:
+        monkeypatch.delenv("ADP_GATEWAY_ACCOUNT_ID")
+        monkeypatch.delenv("ADP_GATEWAY_ROLE_ARN")
+    response = alice_client.post(
+        f"/auth/credentials/aws/{endpoint}",
+        json={
+            "nickname": "my-task",
+            "account_id": "999999999999",
+            "role_arn": "arn:aws:iam::999999999999:role/ADP-Agent-my-task",
+        },
+    )
+    detail = response.json()["detail"]
+    assert response.status_code == (422 if platform_configured else 503)
+    assert detail["error"] == "invalid_role"  # Preserve the existing API error category.
+    assert detail["reason"] == ("platform_account_not_allowed" if platform_configured else "platform_identity_unavailable")
+    assert "platform administrator" in detail["hint"]
+    assert "configuration is incomplete" in detail["message"] if not platform_configured else "used by the ADP platform" in detail["message"]
+    # No internal platform identifiers or credentials are disclosed in the response.
+    assert "999999999999" not in response.text
+    assert "adp-gateway" not in response.text
     assert not mock_sm._secrets

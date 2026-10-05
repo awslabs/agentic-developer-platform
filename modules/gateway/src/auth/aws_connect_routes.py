@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.sts_assume_service import STSAssumeError, assume_role, require_external_id_enforcement
-from src.shared.aws_role_trust import validate_customer_role
+from src.shared.aws_role_trust import CustomerRoleValidationError, validate_customer_role
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.vault import UserCredential
@@ -716,10 +716,11 @@ async def _audit_trust_rejection(db, org_id, user_id, credential_id, reason):
 async def _require_customer_role(role_arn, db, org_id, user_id):
     try:
         validate_customer_role(role_arn)
-    except ValueError:
-        await _audit_trust_rejection(db, org_id, user_id, None, "invalid_target")
+    except CustomerRoleValidationError as exc:
+        await _audit_trust_rejection(db, org_id, user_id, None, exc.reason)
         raise HTTPException(
-            422, detail={"error": "invalid_role", "message": "This role cannot be registered as a personal AWS connection."}
+            exc.status_code,
+            detail={"error": "invalid_role", "reason": exc.reason, "message": exc.message, "hint": exc.hint},
         ) from None
 
 
