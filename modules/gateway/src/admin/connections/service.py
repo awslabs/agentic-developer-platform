@@ -103,6 +103,8 @@ _EXPECTED_APP_PERMISSIONS: dict[str, str] = {
     "issues": "write",
     "pull_requests": "write",
     "checks": "write",
+    "actions": "write",
+    "workflows": "write",
     "metadata": "read",
 }
 

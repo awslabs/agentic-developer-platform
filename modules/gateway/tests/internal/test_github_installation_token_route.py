@@ -435,8 +435,11 @@ class TestMintHappyPath:
         permissions = kwargs["permissions"]
         assert permissions, "a mint with no permissions map inherits the App's full grant"
         assert set(permissions) <= set(AGENT_RUN_PERMISSIONS)
-        # Nothing that would let a hijacked run change the org or its automation.
-        for forbidden in ("administration", "members", "secrets", "workflows", "actions"):
+        # CI execution and workflow edits are part of the assigned repository work.
+        assert permissions["actions"] == "write"
+        assert permissions["workflows"] == "write"
+        # Repository CI access does not grant organization or secrets management.
+        for forbidden in ("administration", "members", "secrets"):
             assert forbidden not in permissions
 
     @pytest.mark.asyncio

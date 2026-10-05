@@ -54,6 +54,8 @@ GOOD_PERMISSIONS = {
     "issues": "write",
     "pull_requests": "write",
     "checks": "write",
+    "actions": "write",
+    "workflows": "write",
     "metadata": "read",
     "members": "read",
 }
@@ -167,6 +169,20 @@ class TestDiffAppConfig:
         # Unrelated checks stay green — drift is per-field, not all-or-nothing.
         assert result.webhook_url_matches is True
         assert result.events_match is True
+
+    @pytest.mark.parametrize("permission", ["actions", "workflows"])
+    def test_missing_workflow_permission_names_the_required_grant(self, permission):
+        from src.admin.connections.service import diff_app_config
+
+        result = diff_app_config(
+            actual_webhook_url=EXPECTED_WEBHOOK,
+            actual_permissions={key: value for key, value in GOOD_PERMISSIONS.items() if key != permission},
+            actual_events=GOOD_EVENTS,
+            expected_webhook_url=EXPECTED_WEBHOOK,
+        )
+
+        assert result.permissions_match is False
+        assert any(permission in warning and "write" in warning for warning in result.warnings)
 
     def test_revoked_event_subscription_is_drift(self):
         from src.admin.connections.service import diff_app_config

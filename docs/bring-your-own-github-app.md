@@ -82,13 +82,9 @@ tenant (bug #2823). This is the single most commonly missed setting.
 > `register-github-app.sh` validate live App config against that function's
 > output. If this table and the code disagree, the code wins.
 
-Permissions are tiered so the request you take to your GitHub org /
-enterprise admin is easy to approve. The **core set** is all a hosted ADP
-deployment needs for the full agent loop (issue in → PR out) — it matches
-what the manifest flow requests, and it contains none of the scopes
-enterprise admins scrutinize (no repo administration, no Actions control, no
-org-wide access). Request the optional tiers only if your deployment uses
-those features, and say which feature in the request.
+The core permissions support the agent loop, including reading CI results,
+dispatching or rerunning workflows, and publishing workflow repairs. They match
+what the manifest flow requests. Repository administration remains separate.
 
 Everything in this section is a **repository** permission: defined on the
 App, but granted per installation and scoped to **only the repos selected at
@@ -106,22 +102,27 @@ re-prompts for permissions.
 | Issues | **Read and write** | agents read task issues, comment progress, open child issues. Also covers conversation comments on issues *and* PRs — GitHub has no separate "comments" permission |
 | Pull requests | **Read and write** | agents open/update PRs, post inline review comments |
 | Checks | **Read and write** | agents publish check runs (pass/fail gates) |
+| Actions | **Read and write** | agents inspect workflow runs, logs and artifacts, and dispatch, rerun or cancel CI workflows |
+| Workflows | **Read and write** | agents publish workflow repairs under `.github/workflows/` |
 | Metadata | **Read** | mandatory baseline (GitHub forces it) |
 
-**Optional — agents may edit CI workflows:**
+Agent tokens are narrowed to the repository assigned to the run. `Actions`
+authorizes workflow execution and run/log/artifact access; `Workflows` authorizes
+publishing changes under `.github/workflows/`. These are separate GitHub grants.
+Accepted orchestration policies and independent reviewer tokens retain their
+narrower permission sets; enabling the default does not override those policies.
 
-| Permission | Access | Why |
-|---|---|---|
-| Workflows | **Read and write** | without it, GitHub rejects any agent push touching `.github/workflows/**` with "refusing to allow a GitHub App to create or update workflow". Agents hit this the first time an issue asks for a CI change. Safe to omit initially — every other agent capability keeps working, and only workflow-editing pushes fail (visibly, in the agent's progress comments). |
+For an existing App, enable both permissions in **Permissions & events**, then
+accept any requested permission update on its installation. An App's configured
+permissions and its installation's approved permissions must both include the
+new grants. Existing agent tokens need renewal (or a new run) after the gateway
+update. The Connections configuration check identifies missing App grants.
 
-**Optional — self-hosted-runner (ARC) deployments only.** Skip this tier for
-hosted deployments; these are the scopes admins push back on hardest, so do
-not request them by default:
+**Optional — self-hosted-runner (ARC) deployments:**
 
 | Permission | Access | Why |
 |---|---|---|
 | Administration | **Read and write** | ARC registers repo-scoped self-hosted runners |
-| Actions | **Read and write** | those runners claim and run workflow jobs |
 
 **Organization permissions (optional):**
 
