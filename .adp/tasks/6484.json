@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-05T23:39:56.044Z",
+  "updated_at": "2026-10-05T23:41:56.203Z",
   "tasks": [
     {
       "id": "AC01-c1",
@@ -61,34 +61,38 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "59 passed, 2 existing expected failures; MCP tools confirmed separate from domain API routes."
+      "note": "Focused suite passed."
     },
     {
       "id": "AC03-c1",
       "kind": "code",
       "criterion": "AC03",
       "title": "Pin independent workspace permissions and separate organization and cluster scopes",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
-        "modules/domain-apps/superplane/contracts/access-cases-v1.json"
+        "modules/domain-apps/superplane/contracts/access-cases-v1.json",
+        "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Next task; cover bootstrap, revocation precedence and no inherited workspace authority."
+      "note": "Covered by AC03-t1; pushed at 81ec76d.",
+      "commits": [
+        "81ec76d"
+      ]
     },
     {
       "id": "AC03-t1",
       "kind": "test",
       "criterion": "AC03",
       "title": "Test all implications and non-implications plus scope and revoked-grant denials",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC03-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": ""
+      "note": "Contract suite: 74 passed, 2 existing expected failures; adjacent authorization subset: 8 passed."
     },
     {
       "id": "AC04-c1",
@@ -100,7 +104,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Do not enable privilege-widening behavior without owner disposition."
+      "note": "Next task; do not enable privilege-widening behavior without owner disposition."
     },
     {
       "id": "AC04-t1",
