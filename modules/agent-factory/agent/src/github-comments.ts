@@ -128,6 +128,16 @@ export class LiveStatusComment {
     // SSRF guard: validateBaseUrl returns the normalized origin, breaking
     // semgrep's taint path from options.apiBaseUrl → fetch() (#3582, #3713)
     this.options.apiBaseUrl = validateBaseUrl(this.options.apiBaseUrl);
+    if (this.options.apiBaseUrl !== 'https://api.github.com') {
+      throw new Error('Live status comments require the GitHub API origin');
+    }
+    if (!/^[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(this.options.owner) ||
+        this.options.owner.length > 39 ||
+        !/^[a-z\d_.-]+$/i.test(this.options.repo) ||
+        this.options.repo === '.' || this.options.repo === '..' ||
+        !Number.isSafeInteger(this.options.issueNumber) || this.options.issueNumber < 1) {
+      throw new Error('Live status comments require a valid GitHub repository and issue');
+    }
     this.runStartTime = Date.now();
     this.heartbeat = setInterval(() => {
       if (this.commentId) this.scheduleUpdate();
