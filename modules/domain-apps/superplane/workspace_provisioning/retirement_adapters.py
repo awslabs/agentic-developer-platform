@@ -67,6 +67,80 @@ class OwnedResourceRemover:
                 return self.network.revoke(inventory, prerequisite)
         raise BootstrapRefused("retirement removal adapter is not implemented")
 
+    def observe(self, step, inventory):
+        plan = compose_retirement_plan(inventory)
+        if step not in plan.steps:
+            raise BootstrapRefused("retirement observation lacks approved ownership")
+        if (step.provider, step.operation_kind) == (KUBERNETES, DELETE_COMPONENT):
+            index = int(step.step_id.removeprefix("delete-component-"))
+            component = inventory.components[index]
+            body, identity = component.desired, component.identity
+            if (
+                not component.owned
+                or body.get("kind")
+                not in {"ServiceAccount", "Role", "RoleBinding", "Deployment"}
+                or body.get("metadata", {}).get("namespace") != inventory.namespace
+                or not identity.get("creation")
+                or not identity.get("uid")
+            ):
+                raise BootstrapRefused("component has no exclusive deletion ownership")
+            observed = self.kubernetes._get(
+                {"cluster_arn": inventory.cluster_arn, "body": body}
+            )
+            if observed is None:
+                return CallOutcome.SUCCEEDED, "owned component absent", identity["uid"]
+            return CallOutcome.UNKNOWN, "owned component still present", identity["uid"]
+        if (step.provider, step.operation_kind) in {
+            (KUBERNETES, REVOKE_GRANT),
+            (AWS, REVOKE_GRANT),
+        }:
+            index = int(step.step_id.removeprefix("revoke-grant-"))
+            grant = inventory.grants[index]
+            spec, identity = grant.spec, grant.identity
+            if (
+                spec.get("kind") == "kubernetes"
+                and spec.get("body", {}).get("kind") in {"Role", "RoleBinding"}
+                and identity.get("uid")
+            ):
+                adapter, reference = self.kubernetes, identity["uid"]
+            elif spec.get("kind") == "eks-entry" and identity.get("arn"):
+                adapter, reference = self.eks, identity["arn"]
+            else:
+                raise BootstrapRefused("grant has no exclusive deletion ownership")
+            if adapter.observe(spec) is None:
+                return CallOutcome.SUCCEEDED, "owned grant absent", reference
+            return CallOutcome.UNKNOWN, "owned grant still present", reference
+        if (step.provider, step.operation_kind) == (AWS, REVOKE_PREREQUISITE):
+            index = int(step.step_id.removeprefix("revoke-prerequisite-"))
+            prerequisite = inventory.prerequisites[index]
+            if prerequisite.kind == "EksAccessEntry":
+                matches = [
+                    grant
+                    for grant in inventory.grants
+                    if grant.spec.get("kind") == "eks-entry"
+                    and grant.identity.get("arn")
+                    == prerequisite.identifier.partition("#")[0]
+                ]
+                if len(matches) != 1:
+                    raise BootstrapRefused(
+                        "access prerequisite lacks complete retained grant identity"
+                    )
+                grant = matches[0]
+                if self.eks.observe(grant.spec) is None:
+                    return (
+                        CallOutcome.SUCCEEDED,
+                        "owned grant absent",
+                        grant.identity["arn"],
+                    )
+                return (
+                    CallOutcome.UNKNOWN,
+                    "owned grant still present",
+                    grant.identity["arn"],
+                )
+            if self.network is not None:
+                return self.network.observe(inventory, prerequisite)
+        return CallOutcome.UNKNOWN, "no authoritative absence observation", None
+
     def _component(self, inventory, component):
         body, identity = component.desired, component.identity
         if (
@@ -145,6 +219,12 @@ class SecurityGroupRules:
         self.session, self.target, self.expected = session, target, expected
 
     def revoke(self, inventory, prerequisite):
+        return self._check(inventory, prerequisite, remove=True)
+
+    def observe(self, inventory, prerequisite):
+        return self._check(inventory, prerequisite, remove=False)
+
+    def _check(self, inventory, prerequisite, *, remove):
         if (
             not prerequisite.removable
             or prerequisite.kind
@@ -231,15 +311,17 @@ class SecurityGroupRules:
                 )
             if type(rule.get("IsEgress")) is not bool:
                 raise BootstrapRefused("network prerequisite direction unavailable")
-            revoke = (
-                ec2.revoke_security_group_egress
-                if rule["IsEgress"]
-                else ec2.revoke_security_group_ingress
-            )
-            revoke(
-                GroupId=rule["GroupId"], SecurityGroupRuleIds=[prerequisite.identifier]
-            )
-        if read() is not None:
+            if remove:
+                revoke = (
+                    ec2.revoke_security_group_egress
+                    if rule["IsEgress"]
+                    else ec2.revoke_security_group_ingress
+                )
+                revoke(
+                    GroupId=rule["GroupId"],
+                    SecurityGroupRuleIds=[prerequisite.identifier],
+                )
+        if (read() if remove else rule) is not None:
             return (
                 CallOutcome.UNKNOWN,
                 "network revocation awaiting observation",

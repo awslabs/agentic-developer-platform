@@ -34,12 +34,13 @@ from .retirement_plan import (
 from .retirement_terraform import ACTION, PROVIDER
 
 
-def verify_retirement_inventory(operation, inventory):
-    lease = operation.grant.lease
+def verify_retirement_inventory(operation, inventory, *, lease=None):
+    current_lease = lease if lease is not None else operation.grant.lease
+    request = operation.admitted_request() if lease is not None else operation.request
     if (inventory.workspace_id, inventory.org_id) != (
-        lease.workspace_id,
-        lease.org_id,
-    ) or operation.request.parameters.get("retirement_inventory_sha256") != digest(
+        current_lease.workspace_id,
+        current_lease.org_id,
+    ) or request.parameters.get("retirement_inventory_sha256") != digest(
         asdict(inventory)
     ):
         raise OperationRefused(
@@ -220,3 +221,86 @@ class RetirementRuntime:
             # finalization. A call RELEASE alone never releases the allocation.
             return await self.verify_inventory(operation, inventory, authorize)
         raise OperationRefused("retirement action has no configured provider adapter")
+
+
+class RetirementRecoveryObserver:
+    """Observe an original deletion under a new, authenticated recovery claim."""
+
+    def __init__(self, *, connect, principal, resolve):
+        from harness_jobs.identity import ResolvedPrincipal
+
+        if (
+            not isinstance(principal, ResolvedPrincipal)
+            or "workspace:recover" not in principal.permissions
+        ):
+            raise OperationRefused("retirement recovery requires current scope")
+        self.connect, self.principal, self.resolve = connect, principal, resolve
+
+    async def __call__(self, lease, key, provider, operation_kind, target):
+        from harness_jobs.execution import CallStage, read_call
+        from harness_jobs.recovery_grant import RecoveryGrant, lock_recovery_grant
+
+        from .retirement_adapters import OwnedResourceRemover
+
+        grant = RecoveryGrant(self.principal, lease)
+        async with self.connect() as connection, connection.transaction():
+            if not await lock_recovery_grant(connection, grant):
+                raise OperationRefused("retirement recovery claim changed")
+            call = await read_call(connection, idempotency_key=key)
+            record = await OperationStore().get(
+                connection, self.principal, lease.operation_id
+            )
+            if (
+                call.stage is not CallStage.INTENDED
+                or call.operation_id != lease.operation_id
+                or (call.org_id, call.workspace_id)
+                != (lease.org_id, lease.workspace_id)
+                or (call.provider, call.operation_kind, call.target)
+                != (provider, operation_kind, target)
+                or record is None
+                or record.action != "teardown"
+                or record.job_id != call.job_id
+                or call.fence_token >= lease.fence_token
+                or not record.admitted_request().parameters.get("allocation_id")
+                or record.admitted_request().parameters["allocation_id"]
+                != record.admitted_request().parameters.get("original_allocation_id")
+            ):
+                raise OperationRefused("retirement recovery call changed")
+            matched = [
+                step
+                for step in admitted_steps(record)
+                if step_key(record, step) == key
+                and (step.provider, step.operation_kind, step.target)
+                == (provider, operation_kind, target)
+            ]
+            if len(matched) != 1:
+                raise OperationRefused("retirement recovery step was not approved")
+        inventory, removals = await self.resolve(grant, record)
+        if not isinstance(removals, OwnedResourceRemover):
+            raise OperationRefused("retirement recovery has no scoped provider reads")
+        verify_retirement_inventory(record, inventory, lease=grant.lease)
+        if [
+            (step.step_id, step.provider, step.operation_kind, step.target)
+            for step in compose_retirement_plan(inventory).steps
+        ] != [
+            (step.step_id, step.provider, step.operation_kind, step.target)
+            for step in admitted_steps(record)
+        ]:
+            raise OperationRefused("retirement recovery inventory changed")
+        step = matched[0]
+        if (step.provider, step.operation_kind) in {
+            (KUBERNETES, DELETE_COMPONENT),
+            (KUBERNETES, REVOKE_GRANT),
+            (AWS, REVOKE_GRANT),
+            (AWS, REVOKE_PREREQUISITE),
+        }:
+            admitted = ExecutionStep(
+                step.step_id, step.provider, step.operation_kind, step.target
+            )
+            result = await asyncio.to_thread(removals.observe, admitted, inventory)
+        else:
+            result = CallOutcome.UNKNOWN, "no authoritative absence observation", None
+        async with self.connect() as connection, connection.transaction():
+            if not await lock_recovery_grant(connection, grant):
+                raise OperationRefused("retirement recovery claim expired")
+        return result

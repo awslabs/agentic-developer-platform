@@ -99,6 +99,41 @@ def component_step(record):
     )
 
 
+@pytest.mark.parametrize("presence", ["present", "absent", "replaced", "unreadable"])
+def test_recovery_reads_original_component_without_mutation(owned, presence):
+    remover, api, record = owned
+    if presence == "absent":
+        api.body = None
+    elif presence == "replaced":
+        api.body["metadata"]["uid"] = "replacement"
+    elif presence == "unreadable":
+        api.error = 403
+    step = component_step(record)
+    if presence == "unreadable":
+        with pytest.raises(ApiError):
+            remover.observe(step, record)
+    else:
+        observed, _, reference = remover.observe(step, record)
+        assert observed is (
+            CallOutcome.SUCCEEDED if presence == "absent" else CallOutcome.UNKNOWN
+        )
+        assert reference == record.components[0].identity["uid"]
+    assert api.deletes == []
+
+
+def test_recovery_refuses_changed_or_adopted_ownership(owned):
+    remover, api, record = owned
+    step = component_step(record)
+    with pytest.raises(BootstrapRefused):
+        remover.observe(step, replace(record, components=()))
+    with pytest.raises(BootstrapRefused):
+        remover.observe(
+            step,
+            replace(record, components=(replace(record.components[0], owned=False),)),
+        )
+    assert api.deletes == []
+
+
 def test_component_removal_rechecks_identity_and_confirms_provider_absence(owned):
     remover, api, record = owned
     step = component_step(record)
@@ -189,7 +224,10 @@ def test_complete_grant_journal_drives_real_adapter(owned):
         for step in compose_retirement_plan(record).steps
         if step.operation_kind == "revoke-grant"
     )
+    assert remover.observe(step, record)[0] is CallOutcome.UNKNOWN
+    assert not api.deletes
     assert remover.execute(step, record)[0] is CallOutcome.SUCCEEDED
+    assert remover.observe(step, record)[0] is CallOutcome.SUCCEEDED
     assert api.deletes[0]["body"]["preconditions"] == {
         "uid": "rb-1",
         "resourceVersion": "3",
@@ -205,9 +243,10 @@ def test_unimplemented_actions_are_not_given_sealed_allocation_authority():
 
 
 def test_network_removal_uses_owned_rule_id_and_provider_absence(owned):
-    from workspace_provisioning.retirement_adapters import SecurityGroupRules
     from superplane_bootstrap.inventory import OwnedPrerequisite
     from superplane_bootstrap.prerequisites import ExpectedPrerequisites
+
+    from workspace_provisioning.retirement_adapters import SecurityGroupRules
 
     remover, _, record = owned
     target = remover.kubernetes.target
@@ -280,5 +319,17 @@ def test_network_removal_uses_owned_rule_id_and_provider_absence(owned):
     with pytest.raises(BootstrapRefused):
         network.revoke(record, replace(prerequisite, ownership="adopted"))
     assert not calls
+    assert network.observe(record, prerequisite)[0] is CallOutcome.UNKNOWN
+    assert not calls
+    remover.network = network
+    authorized = replace(record, prerequisites=(prerequisite,))
+    step = next(
+        item
+        for item in compose_retirement_plan(authorized).steps
+        if item.operation_kind == "revoke-network-prerequisite"
+    )
+    assert remover.observe(step, authorized)[0] is CallOutcome.UNKNOWN
+    assert not calls
     assert network.revoke(record, prerequisite)[0] is CallOutcome.SUCCEEDED
+    assert remover.observe(step, authorized)[0] is CallOutcome.SUCCEEDED
     assert calls == [{"GroupId": "sg-1", "SecurityGroupRuleIds": ["sgr-1"]}]

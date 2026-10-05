@@ -47,7 +47,7 @@ separate authorization. Offline evidence — however real the database — never
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -80,6 +80,7 @@ from harness_jobs.leases import LeaseRefused
 from harness_jobs.recovery import request_cancellation, sweep_expired_leases
 from harness_jobs.store import stored_outcome
 
+from workspace_provisioning.artifacts import digest
 from workspace_provisioning.retirement_plan import (
     DELETE_COMPONENT,
     DELETE_NAMESPACE,
@@ -259,7 +260,9 @@ def _plan():
     )
 
 
-async def _open(harness, plan, *, ledger=None, key="retire-ws-1"):
+async def _open(
+    harness, plan, *, ledger=None, key="retire-ws-1", retirement_inventory=None
+):
     """Admit the retirement through the REAL facade, plan included in the request.
 
     The encoded plan travels as the `execution_steps` parameter, so the approval's
@@ -282,6 +285,11 @@ async def _open(harness, plan, *, ledger=None, key="retire-ws-1"):
             "idempotency_key": key,
             "allocation_id": "original-workspace-allocation",
             "original_allocation_id": "original-workspace-allocation",
+            **(
+                {"retirement_inventory_sha256": digest(asdict(retirement_inventory))}
+                if retirement_inventory is not None
+                else {}
+            ),
         },
     )
 
