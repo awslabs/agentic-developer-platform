@@ -8,14 +8,14 @@ ownership, approval, provider credentials, artifact paths or accounting results.
 import asyncio
 from dataclasses import asdict
 
-from harness_jobs.execution_plan import admitted_steps, step_key
 from harness_jobs.execution import CallOutcome
+from harness_jobs.execution_plan import admitted_steps, step_key
 from harness_jobs.identity import OperationRefused
 from harness_jobs.leases import lock_lease
 from harness_jobs.store import OperationStore
 
-from .execution_contract import ExecutionStep
 from .artifacts import digest
+from .execution_contract import ExecutionStep
 from .retirement_inventory import load_bootstrap_retirement_inventory
 from .retirement_plan import (
     AWS,
@@ -75,14 +75,19 @@ class RetirementRuntime:
     async def __call__(self, call):
         operation, binding = await self.context(call)
         lease = operation.grant.lease
-        if operation.request.action != "teardown" or any(
-            getattr(lease, key) != getattr(call, key)
-            for key in (
-                "operation_id",
-                "org_id",
-                "workspace_id",
-                "attempt_id",
-                "fence_token",
+        if (
+            operation.request.action != "teardown"
+            or not getattr(operation, "job_id", None)
+            or operation.job_id != getattr(call, "job_id", None)
+            or any(
+                getattr(lease, key) != getattr(call, key)
+                for key in (
+                    "operation_id",
+                    "org_id",
+                    "workspace_id",
+                    "attempt_id",
+                    "fence_token",
+                )
             )
         ):
             raise OperationRefused("retirement call differs from its admitted attempt")
@@ -98,6 +103,9 @@ class RetirementRuntime:
             if (
                 current_binding != binding
                 or current.request != operation.request
+                or current.job_id != operation.job_id
+                or current.plan_digest != operation.plan_digest
+                or current.request_payload != operation.request_payload
                 or any(
                     getattr(current.grant.lease, key) != getattr(lease, key)
                     for key in (
