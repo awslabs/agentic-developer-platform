@@ -18,7 +18,7 @@ FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki
 FROM public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS node-release
 FROM ${ZOEKT_IMAGE} AS zoekt
 
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \
@@ -227,12 +227,10 @@ ENV HOME="/home/appuser" \
     NPM_CONFIG_CACHE="/home/appuser/.npm" \
     PYTHONDONTWRITEBYTECODE="1"
 
-# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+# Verify the reviewed Python 3.13.16 source bytes and security behavior.
 COPY security-stdlib/ /opt/adp-stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/adp-stdlib-security/apply.py \
-    && python /opt/adp-stdlib-security/check.py \
-    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
+    && python /opt/adp-stdlib-security/check.py
 
 COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
 COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb

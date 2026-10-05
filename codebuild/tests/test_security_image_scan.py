@@ -251,6 +251,22 @@ def test_shared_stdlib_recipe_uses_reviewed_base_and_regressions(image):
                next(target for target in discover(ROOT) if target["dockerfile"] == str(dockerfile.relative_to(ROOT)))["prepare"])
 
 
+@pytest.mark.parametrize("image", ("ingestion", "parser"))
+def test_ingestion_family_keeps_exact_donor_and_reviewed_stdlib(image):
+    root = ROOT / "modules/agent-context/images"
+    recipe = (root / image / "Dockerfile").read_text()
+    donor = (root / "ingestion/high-security/Dockerfile").read_text().splitlines()[0]
+    donor = donor.removesuffix(" AS tools")
+    assert donor.endswith("@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2")
+    assert recipe.count(donor) == 1
+    gateway_base = (ROOT / "modules/gateway/Dockerfile").read_text().splitlines()[7].split(" AS ", 1)[0]
+    assert gateway_base in recipe
+    assert "COPY security-stdlib/ /opt/adp-stdlib-security/" in recipe
+    assert "python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json" in recipe
+    assert "&& python /opt/adp-stdlib-security/check.py" in recipe
+    assert "apt-get install -y --no-install-recommends patch" not in recipe
+
+
 def test_reviewed_stdlib_sources_and_security_boundaries(tmp_path):
     if sys.version_info[:3] != (3, 13, 16):
         pytest.skip("CPython 3.13.16 source verification requires the reviewed interpreter")
