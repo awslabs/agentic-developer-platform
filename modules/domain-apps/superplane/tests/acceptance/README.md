@@ -4,6 +4,160 @@ Wave evaluations #5067–#5070 remain open until their real-boundary criteria pa
 Offline tests, fixture matches, missing inputs and skipped tests do not establish
 live acceptance. Implementation stories own these checks; operations executes them.
 
+## Demo 1: existing-account dedicated workspace diagnostics (#5539)
+
+The `superplane_acceptance.demo1_cli` **fixture driver** checks a bounded
+managed/dedicated workspace's input, creation and recovery phase lineage,
+independent-provider inventory shape, and the current C1 retirement refusal.
+It produces a scenario report and an AC-01–AC-04 matrix. The report is labelled
+`offline-fixture` and can only say `FAIL`, `BLOCKED`, or `NOT RUN`: a completed
+fixture command (exit 0) **does not mean the workspace is Ready or removed**.
+No cloud, browser, database, approval, or provider action is performed by this
+command. Its live mode currently refuses before reading inputs or making effects.
+
+From the repository root, with Python 3.12+ and no private credentials, run
+the same fictional input builder used by the acceptance tests. `mktemp -d`
+creates a private directory; the builder writes both files with mode 0600.
+Use a new directory for each invocation because report output is exclusive:
+
+```sh
+DEMO1_FIXTURE_DIR="$(mktemp -d)"
+export DEMO1_FIXTURE_DIR
+PYTHONPATH=modules/domain-apps/superplane/tests/acceptance python3 - <<'PY'
+import os
+from pathlib import Path
+from test_demo1_cli import fixture_documents, write_private
+
+directory = Path(os.environ["DEMO1_FIXTURE_DIR"])
+selected, evidence = fixture_documents()
+write_private(directory / "private.json", selected)
+write_private(directory / "fixture.json", evidence)
+PY
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode fixture --private-input "$DEMO1_FIXTURE_DIR/private.json" \
+  --fixture "$DEMO1_FIXTURE_DIR/fixture.json" \
+  --report "$DEMO1_FIXTURE_DIR/report.json"
+```
+
+Expect `Fixture diagnostics: BLOCKED (not live acceptance)` and exit 0. Read
+`$DEMO1_FIXTURE_DIR/report.json` locally; it is mode 0600, never overwrites an
+existing file, and contains opaque hashes of linked identities rather than
+private account, connection, role or workspace identifiers. An invalid phase
+or wrong provider target yields `FAIL` and exit 1 with a report; invalid
+private inputs yield `BLOCKED` and exit 2 without a report. Do not upload
+private input or fixture files, raw browser traces, credentials or provider
+receipts to this public repository. Input errors intentionally do not echo
+their values.
+
+For an operator-supplied **offline** fixture, substitute *absolute* paths to
+two previously prepared, non-symlink, owner-only regular files in the command
+above; supply a new report path in an existing private directory. Do not use
+this fixture path as a shortcut to a live authorization or a real cleanup
+receipt. There is no supported live invocation command until #5534/#5535,
+#5730 and #5538 provide compatible reviewed interfaces and the Wave 6
+operations owner authorizes an exact target, identity, release, budget,
+deadline and cleanup continuation. Do not run `--mode live` in this assignment.
+
+### Private schema and provenance
+
+| File/version | Required content | Meaning and restrictions |
+|---|---|---|
+| Selection `demo1-v1` | Exact full 40-character release Git SHA, 64-character image digest, schema revision; connected account, region, connection UUID and role; org/requester/distinct approver UUIDs; managed/dedicated placement, name, original request UUID and reviewed plan SHA-256 | Source and target **selection**, not independently authenticated deployment or authorization. Only private 0600 files; no tokens, credentials or arbitrary additional keys. |
+| Selection limits `demo1-v1` | Finite positive `budget_usd`, timezone-aware `authorized_at` and later `deadline`, cleanup owner, recovery checkpoint and nonempty unique survivor baseline | A missing cost observation remains unknown; zero cost cannot be inferred from budget or an empty fixture. No account creation or BYOC in this scenario. |
+| Observation `demo1-fixture-v1` | `phases`, `owned_resources`, `inventory` (nullable), optional `retirement` | Phase excerpts bind one workspace and original request to each phase's operation UUID, plan revision, approval ID, artifact digest, attempt/fence, admission/observation times, state and source. The approval excerpt uses the maintained approval ticket's decision, approver, requester, expiry and revocation fields. It is *not* an authenticated ticket. |
+| Provider/retirement excerpts | Inventory has selected connection, role, account, region, workspace, read status (`complete`, `denied`, `incomplete`), owned/survivor listings, observed time and nullable cost. Retirement carries HTTP `status_code`, its **separate** operation UUID and C1 preview body. | The provider boundary is read-only. Denied/incomplete inventory cannot prove absence; a missing survivor or remaining owned resource refutes cleanup. The current preview is review-only (`admission_available: false`, staged cleanup access required, no approval request or price). HTTP 403/503 are blocked, not absence. |
+
+The C1 mapping is pinned to #5730's `2026-10-05.1` source checkpoint
+`40b67d26d200e2b4fce91525fcda25c71388cec9` (not a deployed release).
+The read-only browser probe uses the currently rendered `Workspaces` heading,
+workspace-selection button, `Readiness` region, `Review this plan` group and
+`Review an operation approval` region. It can check visibility after refresh,
+but **does not** sign a user in, submit creation or prove Ready. The proposed
+`Workspace retirement` region / `Review removal` button are not rendered at
+this pin, so no selector or success claim is made for them. The server's
+retirement admission currently refuses; a future success contract belongs
+to #5534/#5535 rather than a fixture invented here.
+
+Source-only #5730 extensions `8ef3966cd617e657fff4e8ab7f047b9ce15e59ef`
+and `061fc683927cf13b4897a07318f76317baf17ee7` now render `Workspace
+details` / `Refresh workspace details` and `Workspace retirement` / `Review
+removal`. The acceptance probe reads the original workspace, provisioning
+operation and request IDs before and after details refresh. It only inspects an
+**already rendered** `Retirement review`, with matched original/review IDs,
+unknown cost and a disabled `Remove workspace` button; it never clicks `Review
+removal` or submits deletion. These source-only UI observations always remain
+`BLOCKED` without separately verified session, provider and cleanup evidence.
+The UI source and fixture probes are not a deployed browser lifecycle driver.
+
+### Evidence matrix and ownership
+
+| Criterion / demo slice | Fixture command evidence | Required remaining proof / owner |
+|---|---|---|
+| AC-01 – reject fabricated/stale/foreign, replay, partial cleanup and batch-only serving | With pytest installed, `PYTHONPATH=modules/domain-apps/superplane python3 -m pytest modules/domain-apps/superplane/tests/acceptance/test_demo1_*.py -q` covers the offline negative predicates. Scenario `FAIL` refutes a bad excerpt, not live exposure. | Batch, serving and other-provider harness scenarios remain separate; operations must supply independently authenticated observations before live acceptance. |
+| AC-02 – exact commands and evidence matrix | The fixture command above emits `demo1-cli-v1` AC statuses and an `existing-account-dedicated-workspace` scenario; missing browser/retirement evidence stays `BLOCKED` or `NOT RUN`. | #5730 owns real UI/selectors; #5534/#5535 own production retirement and admission. #5540 later runs a fully implemented, authorized browser/provider journey; it must not implement missing driver behavior during evaluation. |
+| AC-03 – affected final-head checks | Run offline domain checks on the final PR head: `python3 -m pytest modules/domain-apps/superplane/ -m 'not superplane_live' -v --tb=short`. Review shared Gateway/Agent Control impact and their required remote lanes separately. | Assigned developer records revision, result, skips and remote CI evidence; focused tests never substitute for required final validation. No paid tests or new validation service are required. |
+| AC-04 – reviewed implementation and evaluator handoff | The ready PR records code and test revision; this fixture does **not** mark AC-04 passed. | Foreground reviews/merges; Wave 6 operations authorizes target/release/plan and #5540 captures live evidence. A blocked or not-run code criterion prevents code closure. |
+
+### Evaluator handoff and rollback
+
+This is code-only tooling, not a deployable acceptance run. Before #5540 can
+invoke a future live driver, the operations owner must record the reviewed
+release Git SHA, image digest and schema, the selected account/connection/role,
+org and distinct requester/approver, reviewed plan and exact original request,
+finite spend/runtime deadline, recovery checkpoint, survivor baseline, cleanup
+owner and cleanup deadline in private inputs. They must independently confirm
+that the released browser create/removal controls and backend admission exist,
+obtain the named Wave 6 authorization, and observe each original operation,
+approval, attempt and fence together with provider inventory. An unavailable
+interface or denied/incomplete read is `BLOCKED`, not a reason to fill in a
+fixture or issue a retry. There is **no** executable live command to hand off
+until those capabilities have been reviewed and implemented.
+
+Reverting this harness changes reporting code only: it does not undo a
+workspace, close an account, or discharge cleanup ownership. Before a tooling
+rollback, retain the private original-operation lineage, pending responses,
+provider observations and named cleanup continuation for the assigned owner;
+do not delete or publish them with the report. Separately verify compute,
+storage and network absence, the surviving peer and actual spend with fresh
+independent provider reads before closing a future live run. An unverified
+resource or cost remains pending/unknown, including after process termination.
+
+### Final-head check selection
+
+The maintained `.github/scripts/superplane_ci_scope.py` classifies changes
+under `superplane_acceptance/` and `tests/acceptance/` as **domain**. This PR
+does not change product UI, the Gateway, Agent Control, shared lifecycle or API
+source, so those optional component matrices are not selected. The required
+`Superplane Domain CI` PR workflow still runs its stable selector and **domain**
+job; a focused fixture test alone never substitutes for that job's full offline
+suite, lint, CLI guard, classifier, migration/placement and MCP checks. Recheck
+the selected components if the PR gains files outside this acceptance scope.
+
+On the final PR head, from the repository root, use Python 3.12 with the
+maintained domain/Gateway development test dependencies and Ruff installed.
+The CI domain runner also requires PostgreSQL-backed tests to execute; if a
+local PostgreSQL test fixture is not available, report their failure or skip
+honestly and rely on the required CI result, rather than provisioning a new
+validation service or treating skipped database criteria as passed:
+
+```sh
+ruff check modules/domain-apps/superplane/
+ruff format --check modules/domain-apps/superplane/
+python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
+ACCOUNT_PROVISIONING_REQUIRE_POSTGRES=1 PYTHONPATH=modules/domain-apps/superplane \
+  python3 -m pytest modules/domain-apps/superplane/ \
+  -m 'not superplane_live' -v --tb=short
+```
+
+The domain job additionally checks CLI evaluation guards with its installed
+pytest-socket dependency. Review the workflow result and final SHA on the PR;
+GitHub check visibility and a local focused run are distinct evidence.
+
+The broader retained harness scope includes new-account requests, BYOC and
+shared placement, multiple AWS GPU regions/fleets, multi-org isolation,
+other cloud providers, batch cancellation and authenticated serving. No
+unrelated workload or synthetic receipt closes those scenarios globally.
+
 The [mixed-provider workload demo](MIXED-PROVIDER-DEMO.md) specifies the recovered
 AWS + Nebius / single-EKS acceptance baseline, including jobs on both providers and
 one authenticated serving endpoint with backend correlation. Its driver and hybrid

@@ -1,0 +1,406 @@
+{
+  "version": 1,
+  "issue": 5539,
+  "updated_at": "2026-10-05T20:53:30.895Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Validate versioned private inputs and phase-linked evidence",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation, inspection and full-domain evidence retained; unchanged by the prepared merge.",
+      "commits": [
+        "0c74add"
+      ]
+    },
+    {
+      "id": "AC-01-c2",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Define independent provider inventory and survivor observer boundaries",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Unchanged implementation retains passing full-domain evidence. Provider observations remain diagnostic.",
+      "commits": [
+        "44d8888"
+      ]
+    },
+    {
+      "id": "AC-01-c-wire",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Wire lifecycle evidence validation into the dedicated scenario report",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior full-domain evidence retained; invalid phase evidence prevents provider reads.",
+      "commits": [
+        "c7d2d6a"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run linked creation and recovery fixtures",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Passed in the completed full domain run. Offline evidence only; not repeated."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run fabricated, stale, foreign and swapped-target negatives",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior passing full-domain evidence retained.",
+      "commits": [
+        "023c2a3"
+      ]
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run replay, duplicate-request, expired-approval and lost-response negatives",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior replay, retry and refusal regression results retained.",
+      "commits": [
+        "1481dd2"
+      ]
+    },
+    {
+      "id": "AC-01-t4",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run partial-cleanup, unknown-cost and batch-only-serving negatives",
+      "status": "done",
+      "covers": [
+        "AC-01-c2",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior passing negatives retained. No live cleanup, cost or serving acceptance claimed.",
+      "commits": [
+        "76fa319"
+      ]
+    },
+    {
+      "id": "AC-01-t5",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run independent-provider observation fixtures",
+      "status": "done",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [],
+      "note": "Prior offline target, credential and incomplete-inventory results retained."
+    },
+    {
+      "id": "AC-01-t6",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run linked criterion-report fixture",
+      "status": "done",
+      "covers": [
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior passing report fixtures retained; live_acceptance remains false."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Expose fixture-mode CLI and sanitized criterion reports",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
+      ],
+      "note": "Private-file handling and named-pipe refusal repairs remain unchanged and retain passing evidence.",
+      "commits": [
+        "8116dfc"
+      ]
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Bind read-only browser probes to pinned C1 targets and report unsupported retirement",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py"
+      ],
+      "note": "Re-entry repair and previously inspected UI compatibility are preserved.",
+      "commits": [
+        "a1d1fa0"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run fixture CLI report integration",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py"
+      ],
+      "note": "Prior integration, sanitization, permissions and no-overwrite results retained."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run missing-authority and unavailable-admission CLI negatives",
+      "status": "done",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli_negative.py"
+      ],
+      "note": "Prior passing full-domain results retained.",
+      "commits": [
+        "984c5b7"
+      ]
+    },
+    {
+      "id": "AC-02-t4",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run pinned-C1 browser-probe and retirement-refusal fixtures",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py"
+      ],
+      "note": "Prior probe, delayed-load and timeout fixture results retained. These do not establish live acceptance."
+    },
+    {
+      "id": "AC-02-c-preview",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Bind newly published C1 re-entry and review-only retirement-preview targets",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py"
+      ],
+      "note": "Previously verified identity and disabled-removal bindings remain unchanged."
+    },
+    {
+      "id": "AC-02-t6",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run C1 re-entry and retirement-preview fixtures and refusal negatives",
+      "status": "done",
+      "covers": [
+        "AC-02-c-preview"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py",
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli_negative.py"
+      ],
+      "note": "Prior passing full-domain evidence retained."
+    },
+    {
+      "id": "AC-02-t7",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Verify browser probe selectors against published C1 source checkpoints",
+      "status": "done",
+      "covers": [
+        "AC-02-c-preview"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py",
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_c1.py"
+      ],
+      "note": "Prior pinned-source and merged-base inspection retained. The new base changes no Superplane UI source or relevant workflow."
+    },
+    {
+      "id": "AC-02-c-browser",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Connect full authenticated browser creation, recovery and removal to released interfaces",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "#5534/#5535 admission and compatible released interfaces remain outstanding. Separately deferred outside this owner-authorized bounded merge."
+    },
+    {
+      "id": "AC-02-t5",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run authorized browser and provider-backed lifecycle integration",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c-browser"
+      ],
+      "files": [],
+      "note": "deployed-target: #5540 operations evaluator; requires approved release, live authorization, admission and provider observations. Not attempted."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Document commands, private inputs, residual scenarios and evaluator matrix",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
+      ],
+      "note": "Existing documentation and cleanup-preserving rollback handoff remain unchanged.",
+      "commits": [
+        "68d882c"
+      ]
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run documented fixture command and public-documentation checker",
+      "status": "done",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [],
+      "note": "Prior documented-command and public-documentation evidence retained. No documentation edits made."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Identify and retain required domain and applicable shared validation commands",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
+      ],
+      "note": "Maintained validation requirements retained. Prepared merge introduces no story-specific changes outside the already reviewed acceptance/browser repair.",
+      "commits": [
+        "663f87e"
+      ]
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Keep offline onboarding fixtures independent of the browser runtime",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Repair is published in 17bf03396be428039d3d33ec270d9b2911189be7. Both repaired file hashes match the locally validated content."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run offline domain and applicable remote checks",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Retain local results: 6574 tests and 12 subtests passed, 11 manifest skips, four live deselected, all 336 PostgreSQL-named cases passed. Supplied CI at 17bf0339 reports UI and selector success but domain still in progress. Await completed required CI for the published base-merged revision; no failure is reported."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run offline onboarding fixture tests without Playwright",
+      "status": "done",
+      "covers": [
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py"
+      ],
+      "note": "Prior 44-fixture and full-domain results retained; published content is identical."
+    },
+    {
+      "id": "AC-03-t3",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject browser execution before effects when Playwright is unavailable",
+      "status": "done",
+      "covers": [
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py"
+      ],
+      "note": "Before/after regression evidence retained. Published repair preserves mandatory browser dependencies for browser execution."
+    },
+    {
+      "id": "AC-03-t4",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run maintained onboarding browser fixture scenarios in CI",
+      "status": "done",
+      "covers": [
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py",
+        ".github/workflows/superplane-ui-browser-ci.yml"
+      ],
+      "note": "Supplied browser job succeeded at 17bf03396be428039d3d33ec270d9b2911189be7: https://github.com/aws-e/adp/actions/runs/37370820567/job/111967388825. Verified that its entry script unconditionally invokes onboarding after serving and batch scenarios. Relevant scripts and workflow are unchanged by the prepared merge. Fixture evidence only; not live acceptance."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Publish ready PR with truthful evaluator and rollback handoff",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
+      ],
+      "note": "Controller confirms repair publication at 17bf03396be428039d3d33ec270d9b2911189be7, matching local HEAD. Existing handoff retained; only the newly prepared base merge awaits publication.",
+      "commits": [
+        "83115b5"
+      ]
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify PR revision, checks and criterion-level handoff",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Repair publication and browser coverage verified at 17bf0339. Prepared merge is conflict-free, incoming files match base 1fc70986, and diff checks pass. Final-head domain CI, required approval and merged-state confirmation remain pending. Preserve wider backend/live holds."
+    }
+  ]
+}
