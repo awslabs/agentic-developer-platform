@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "issue": 6486,
+  "updated_at": "2026-10-05T23:41:43.553Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Mount a versioned human workspace-grant API with explicit request and response schemas",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/",
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/"
+      ],
+      "note": "Coordinate only new route inventory and consumer contract on #6970; preserve existing routes."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Prove grant request, effective response and mounted HTTP contract with API tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Enforce live explicit administrator authority, same-org current human target and assignable ceiling",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+      ],
+      "note": "No platform/org-role inheritance, service target or implicit restoration."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Exercise denied viewer, cross-org, lost membership and privilege-ceiling cases via HTTP and database tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Exercise human/service substitution and self-escalation denial via HTTP and database tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Persist grants transactionally with request identity, revision conflicts and commit-time revalidation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+      ],
+      "note": "Existing revoked rows stay revoked; no authority cache."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Prove duplicate delivery, concurrent writes, stale authority and revoked-row behavior against PostgreSQL",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Write tenant-scoped grant audit evidence atomically with the mutation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/services/"
+      ],
+      "note": "Record actor, target, principal types, scope, before/after, reason, timestamp and correlation without secrets."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify persisted audit completeness and failure rollback with database tests",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-05-c1",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Wire the new grant endpoint into the maintained API and endpoint inventory",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
+      ],
+      "note": "Restrict shared-file edits to this route after #6970 coordination."
+    },
+    {
+      "id": "AC-05-t1",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Run mounted-path PostgreSQL integration and relevant final-head suites",
+      "status": "open",
+      "covers": [
+        "AC-05-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/"
+      ],
+      "note": "No validation infrastructure will be provisioned; report any unavailable PostgreSQL or remote CI evidence precisely."
+    }
+  ]
+}
