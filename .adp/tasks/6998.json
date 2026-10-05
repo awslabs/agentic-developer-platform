@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T16:28:24.255Z",
+  "updated_at": "2026-10-05T16:44:42.242Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
+      "note": "Source mapping pushed at 19c9252; original private SARIF cannot be read because credential discovery returns 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Published-selector test passes; original SARIF comparison remains blocked."
+      "note": "Published selectors and scanned-source fetches verified; original report hash and severity remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -148,7 +148,7 @@
         "modules/agent-factory/codex-reviewer/src/github.test.ts",
         "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
       ],
-      "note": "Reviewer focused GitHub tests: 45 pass; harness full suite: 156 pass. Reviewer full-suite installed-skill fixture gap remains under AC-04-t1."
+      "note": "Reviewer focused GitHub tests: 45 pass; harness suite: 156 pass. Reviewer full-suite gap remains under AC-04-t1."
     },
     {
       "id": "AC-02-c-wire",
@@ -161,7 +161,7 @@
         "modules/agent-factory/agent/src/github-comments.ts",
         "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Verified live worker constructors invoke the guarded clients; no duplicate helper change required."
+      "note": "Verified runtime constructors use the guarded clients."
     },
     {
       "id": "AC-02-t5",
@@ -180,7 +180,7 @@
         "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts",
         "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
       ],
-      "note": "Local GitLab, vault and GitHub fixtures prove allowed credential delivery and zero requests to redirect targets; malformed-input tests passed. Four agent suites, 90 tests and build passed; pushed at f83a57d.",
+      "note": "Local redirect targets received zero requests; four agent suites, 90 tests and build passed. Pushed at f83a57d.",
       "commits": [
         "f83a57d"
       ]
@@ -190,26 +190,31 @@
       "kind": "code",
       "criterion": "AC-03",
       "title": "Record individual candidate dispositions and reproducible scanner evidence",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "data/security"
+        "data/security/issue-6998-http-destinations.json",
+        ".github/scripts/issue_6998_candidate.py"
       ],
-      "note": "Next task; all records remain unresolved until report and candidate evidence are reviewed."
+      "note": "Provisional per-record evidence pushed at 7049c2e; all 18 remain unresolved. Private original report and durable raw-result publication are unavailable.",
+      "commits": [
+        "7049c2e"
+      ]
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Rerun exact Semgrep rule with reviewed suppressions and compare all 18 records",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-03-c1"
       ],
       "files": [
+        ".github/scripts/tests/test_issue_6998_http_destinations.py",
         ".github/scripts/diff_security_findings.py"
       ],
-      "note": ""
+      "note": "Current-registry candidate scan matched 18; 13 in-source unaccepted, five unsuppressed. Three catalog tests and 38 resolver tests pass. Exact scan-time ruleset and original report cannot be compared."
     },
     {
       "id": "AC-04-c-wire",
@@ -223,7 +228,7 @@
         "modules/agent-factory/codex-harness",
         "modules/agent-factory/codex-reviewer"
       ],
-      "note": "Ready PR awaits completed implementation and required pre-submit checks."
+      "note": "Next independent work; ready PR awaits required pre-submit checks."
     },
     {
       "id": "AC-04-t1",
@@ -239,7 +244,7 @@
         "modules/agent-factory/codex-harness/package.json",
         "modules/agent-factory/codex-reviewer/package.json"
       ],
-      "note": "Agent and harness builds pass; full reviewer suite fails in installed-skill fixture tests that cannot locate their expected path."
+      "note": "Full agent suite not yet run; full reviewer suite fails in installed-skill fixture tests that cannot locate their expected path."
     },
     {
       "id": "AC-04-c1",
