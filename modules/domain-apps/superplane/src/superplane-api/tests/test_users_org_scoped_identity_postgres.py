@@ -25,10 +25,14 @@ acceptance evidence.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import uuid
+from pathlib import Path
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -78,6 +82,60 @@ async def _seed_org(session, name: str) -> uuid.UUID:
     session.add(Organization(id=org_id, name=name, billing_plan="free"))
     await session.flush()
     return org_id
+
+
+async def test_migration_036_preserves_existing_user_and_reference(users_db):
+    engine = users_db.kw["bind"]
+    user_id = uuid.uuid4()
+    subject = "existing-immutable-subject"
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP INDEX ix_users_org_cognito_sub"))
+        await connection.execute(text("CREATE UNIQUE INDEX ix_users_cognito_sub ON users(cognito_sub)"))
+        await connection.execute(text(
+            "CREATE TABLE user_refs (user_id UUID REFERENCES users(id), reference TEXT NOT NULL)"
+        ))
+
+    async with users_db() as session:
+        first_org = await _seed_org(session, "existing-org")
+        second_org = await _seed_org(session, "second-org")
+        session.add(User(
+            id=user_id, org_id=first_org, email="existing@example.test",
+            cognito_sub=subject, role="developer", status="active",
+        ))
+        await session.flush()
+        await session.execute(
+            text("INSERT INTO user_refs (user_id, reference) VALUES (:user_id, 'preserved')"),
+            {"user_id": user_id},
+        )
+        await session.commit()
+
+    path = Path(__file__).parents[1] / "alembic/versions/036_users_cognito_sub_per_org.py"
+    spec = importlib.util.spec_from_file_location("users_org_migration_036", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def upgrade(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+
+    async with engine.begin() as connection:
+        await connection.run_sync(upgrade)
+
+    async with users_db() as session:
+        preserved = (await session.execute(
+            text("SELECT users.id, users.role, user_refs.reference FROM users JOIN user_refs ON user_refs.user_id=users.id WHERE users.cognito_sub=:subject"),
+            {"subject": subject},
+        )).one()
+        assert preserved == (user_id, "developer", "preserved")
+        session.add(User(
+            id=uuid.uuid4(), org_id=second_org, email="second@example.test",
+            cognito_sub=subject, role="org-admin", status="active",
+        ))
+        await session.commit()
+        rows = (await session.execute(
+            text("SELECT org_id, role FROM users WHERE cognito_sub=:subject"), {"subject": subject}
+        )).all()
+        assert {org_id: role for org_id, role in rows} == {first_org: "developer", second_org: "org-admin"}
 
 
 async def test_one_subject_holds_a_row_in_two_organizations(users_db):

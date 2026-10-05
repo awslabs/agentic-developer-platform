@@ -48,6 +48,19 @@ async def test_unbound_legacy_uuid_behavior_survives():
         assert await bind_caller(db, original) == original
 
 
+async def test_uuid_shaped_binding_cannot_select_a_different_legacy_tenant():
+    legacy_id, mapped_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add_all([
+            Organization(id=legacy_id, name="legacy-ambiguous"),
+            Organization(id=mapped_id, name="mapped-ambiguous", adp_org_id=str(legacy_id)),
+        ])
+        await db.commit()
+        with pytest.raises(HTTPException) as denied:
+            await bind_caller(db, caller(str(legacy_id)))
+        assert denied.value.status_code == 403
+
+
 async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(client, monkeypatch):
     from app import auth
     from app.main import app
