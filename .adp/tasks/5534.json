@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-05T23:45:10.915Z",
+  "updated_at": "2026-10-05T23:51:45.178Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "modules/domain-apps/superplane/workspace_provisioning/retirement_access_plan.py",
         "modules/domain-apps/superplane/workspace_provisioning/retirement_access_runtime.py"
       ],
-      "note": "Original-seal refusal committed and tested. D3 needs an approved scoped actor/procedure for creating exact-name ClusterRole and ClusterRoleBinding; namespace-scoped registrar cannot create them, and broad cluster-admin fallback is prohibited.",
+      "note": "Original-seal refusal is tested. D3 still needs an approved scoped procedure to create exact-name cluster RBAC without a broad cluster-admin fallback.",
       "commits": [
         "c83f065"
       ]
@@ -33,7 +33,7 @@
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_access_seal_postgres.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests"
       ],
-      "note": "75 cleanup-access tests passed with zero skips; new test checks the seal guard against PostgreSQL, but end-to-end sealed inventory and exact grant execution await D3."
+      "note": "Seal-guard test passes; real allocation-bound grant execution awaits D3."
     },
     {
       "id": "AC-01-c2",
@@ -45,7 +45,10 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py"
       ],
-      "note": ""
+      "note": "Checkpoint 6a58d0d hardens attempt identity. Still needs a production provider observer under protected successor recovery authority.",
+      "commits": [
+        "6a58d0d"
+      ]
     },
     {
       "id": "AC-01-t2",
@@ -57,9 +60,9 @@
         "AC-01-c2"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_execution_postgres.py"
       ],
-      "note": "Cover duplicate spend and retained unknown effects."
+      "note": "All planned lost-reply boundaries pass against PostgreSQL; observer is doubled until production recovery is composed."
     },
     {
       "id": "AC-01-t3",
@@ -101,7 +104,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/services/retirement.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/retirement_access.py"
       ],
-      "note": "Do not replace review-only refusal until full approved admission is wired."
+      "note": "Review-only refusal stays until full approved admission is wired."
     },
     {
       "id": "AC-02-c2",
@@ -233,7 +236,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Foreground owns merge; a ready PR is not a merged code-story closure."
+      "note": "Foreground owns merge; a ready PR is not merged code-story closure."
     }
   ]
 }
