@@ -75,6 +75,8 @@ async def grant_human_access(
         raise HTTPException(403, "current human ADP organization binding required")
     if reader is None:
         raise HTTPException(503, "current ADP identity reader unavailable")
+    if body.target_subject == caller.principal.subject:
+        raise HTTPException(403, "self-assignment is not supported")
     requested = set(body.permissions)
     if len(requested) != len(body.permissions):
         raise HTTPException(422, "duplicate workspace permission")

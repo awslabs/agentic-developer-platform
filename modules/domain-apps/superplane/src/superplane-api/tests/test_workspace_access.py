@@ -183,3 +183,58 @@ async def test_read_requires_current_member_even_without_guard_setting(access, m
     membership.allowed.remove("owner")
     response = await client.get(f"/workspaces/{workspace_id}/access/v1/me", headers=token())
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_stale_revision_and_reused_request_identity_conflict(access):
+    client, workspace_id, _, token = access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    first = _grant_request()
+    created = await client.post(url, json=first, headers=token())
+    assert created.status_code == 200, created.text
+    assert (await client.post(url, json=_grant_request(expected_revision=0), headers=token())).status_code == 409
+    changed = await client.post(url, json={
+        **first, "request_id": str(uuid.uuid4()), "expected_revision": 1,
+        "permissions": ["workspace:spend"],
+    }, headers=token())
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["revision"] == 2
+    assert changed.json()["effective_permissions"] == ["workspace:read", "workspace:spend"]
+    assert (await client.post(url, json=first, headers=token())).status_code == 409
+    assert (await client.post(url, json={
+        **first, "permissions": ["workspace:provision"],
+    }, headers=token())).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_revoked_grant_never_reactivated_by_retry(access):
+    from datetime import UTC, datetime
+    from sqlalchemy import select
+
+    client, workspace_id, _, token = access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    first = _grant_request()
+    created = await client.post(url, json=first, headers=token())
+    assert created.status_code == 200, created.text
+    async with async_session_test() as db:
+        target = await db.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id,
+            WorkspaceGrantRecord.principal == "approver",
+        ))
+        target.revoked_at = datetime.now(UTC)
+        await db.commit()
+    assert (await client.post(url, json=first, headers=token())).status_code == 409
+    assert (await client.post(url, json=_grant_request(expected_revision=1), headers=token())).status_code == 409
+    assert (await client.get(
+        f"/workspaces/{workspace_id}/access/v1/me", headers=token("approver"),
+    )).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_self_assignment_refused_even_by_sole_administrator(access):
+    client, workspace_id, _, token = access
+    response = await client.post(
+        f"/workspaces/{workspace_id}/access/v1/grants",
+        json=_grant_request(target_subject="owner", expected_revision=1), headers=token(),
+    )
+    assert response.status_code == 403
