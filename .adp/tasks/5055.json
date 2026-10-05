@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:42:55.747Z",
+  "updated_at": "2026-10-05T23:44:23.129Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -130,7 +130,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Own workspace 200; foreign workspace 403; 150 auth tests passed. Commit 2537952.",
+      "note": "Commit 2537952.",
       "commits": [
         "2537952"
       ]
@@ -140,12 +140,12 @@
       "kind": "code",
       "criterion": "R5.5",
       "title": "Retain enforcement configuration without activating a target",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": ""
+      "note": "Local health reports configured flag independently of loaded strict policy; not deployed evidence."
     },
     {
       "id": "R5.5-t1",
@@ -158,6 +158,23 @@
       ],
       "files": [],
       "note": "deployed-target: #5540 evaluator; named configured API and approved access are unresolved."
+    },
+    {
+      "id": "R5.5-t2",
+      "kind": "test",
+      "criterion": "R5.5",
+      "title": "Verify local health reports configured Cognito flag and loaded strict policy",
+      "status": "done",
+      "covers": [
+        "R5.5-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+      ],
+      "note": "Added because R5.5-t1 requires a deployed target. Both flag values passed; 152 auth tests passed. Commit cdf629e.",
+      "commits": [
+        "cdf629e"
+      ]
     },
     {
       "id": "R5.6-c1",
