@@ -57,7 +57,7 @@ redirect subset passed 99); the frontend and agent builds passed, 36
 heartbeat/control tests passed, and 25 Task SDK tests passed with one optional
 Codex CLI integration test skipped because `CODEX_BRIDGE_TEST_BIN` was not set.
 Local Node tests and Semgrep do not establish a deployed artifact or production
-availability. No provider workload was run.
+availability. These local checks ran no provider workloads.
 
 ## Verification and handoff
 
@@ -66,8 +66,25 @@ then run `python3 .github/scripts/reconcile_6999.py <private-sarif-path>` and
 record only the eleven selectors, native ratings, suppression statuses and
 original indices in a restricted evidence store. Check the candidate scan for
 those same selectors and unsafe positive controls before marking any record
-fixed or evidence-reviewed not applicable. The frontend's release artifact is
-its built browser bundle; heartbeat and Task SDK require their respective
-package builds. No deployed digest, rollout or rollback target is established
-by this source-level inventory. Rollback of a candidate change means restoring
-its prior release artifact through the component maintainer's approved process.
+fixed or evidence-reviewed not applicable. This local check used source revision
+`cc69c9a1cf60ebcc060e8c55c2608130328cefcb`; the frontend build's
+`dist/index.html` SHA-256 was
+`aaafb747ad314660954d659e3fd5fec4b8555b0b7d5d08c7a85b7fbf5f60af9c`.
+This is a local artifact digest, **not** the release's built bundle or deployed
+checksum: the deployment workflow injects environment configuration at build
+time. No immutable release image digest, rollout or rollback target has been
+verified here.
+
+The frontend release consumer is `.github/workflows/gateway-frontend-deploy.yml`:
+when separately authorized it builds a main-branch commit with release-specific
+settings, publishes `dist/` and verifies the served `index.html`. The agent
+runtime and embedded Task SDK are copied into the image assembled by
+`modules/agent-factory/agent-worker-image/Dockerfile`; the build/rollout consumer
+is `.github/workflows/agent-worker-image.yml`, which requires an immutable image
+digest before new worker jobs use it. The separate chat-agent consumer uses
+`.github/workflows/chat-agent-deploy.yml` and its agent Dockerfile. The image
+maintainer must supply the tested source revision, the actual image digest and
+current pinned deployment input for **each** consumer before release handoff.
+If a rollout is approved and must be undone, restore the maintainer-recorded
+previous frontend bundle or previous pinned worker/chat image using the
+existing release process. No production update is requested by this review.
