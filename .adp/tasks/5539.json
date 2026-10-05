@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-05T23:46:17.232Z",
+  "updated_at": "2026-10-05T23:52:29.422Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -235,12 +235,15 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Connect authenticated browser creation, recovery and capability-gated removal to released interfaces",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
       ],
-      "note": "Reopened for the owner’s newer live-driver assignment; positive retirement parsing awaits an actual producer checkpoint."
+      "note": "Source checkpoint 9c7a3ec covers creation, approval wait, lost-reply recovery and review-only retirement. Positive admission, complete lifecycle and the released UI contract are not yet available; full browser journey is not done.",
+      "commits": [
+        "9c7a3ec"
+      ]
     },
     {
       "id": "AC-02-t5",
@@ -252,7 +255,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "deployed-target: #5540 operations evaluator; approved release, admission, authorization and provider observations required. No live run in this assignment."
+      "note": "deployed-target: #5540 operations evaluator; requires approved release, admission, authorization and provider observations. Not attempted."
     },
     {
       "id": "AC-02-c2",
@@ -264,7 +267,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Merged offline guidance; live commands need a separately tested update.",
+      "note": "Merged offline guidance; live commands still need a tested update.",
       "commits": [
         "68d882c"
       ]
@@ -279,7 +282,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Prior passing results."
+      "note": "Prior passing results; no documentation edited this turn."
     },
     {
       "id": "AC-02-c-provider",
@@ -291,21 +294,21 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/"
       ],
-      "note": "Added for the newer owner-directed independent provider observer."
+      "note": "Next independent source task."
     },
     {
       "id": "AC-02-t8",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run browser transport-double creation, approval, re-entry, recovery and refusal fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c-browser"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/acceptance/"
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
       ],
-      "note": "Added for the newer live-driver assignment."
+      "note": "142 offline acceptance tests passed at 9c7a3ec; these cover the source checkpoint, not positive removal or a live browser run."
     },
     {
       "id": "AC-02-t9",
@@ -319,7 +322,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/"
       ],
-      "note": "Added for independent read-only observations."
+      "note": "Pending provider adapter."
     },
     {
       "id": "AC-02-c-live-cli",
@@ -331,7 +334,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
       ],
-      "note": "Added for owner-directed real, opt-in driver; no implicit offline fallback."
+      "note": "Existing live CLI still refuses; no executable live command is published."
     },
     {
       "id": "AC-02-t10",
@@ -345,7 +348,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/"
       ],
-      "note": "Added for explicit authorization and resume safety."
+      "note": "Pending live CLI."
     },
     {
       "id": "AC-03-c1",
@@ -380,7 +383,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Verified required domain, UI, selector and browser CI passed on merged #6992 head 819ca5c; prior local full-domain result retained."
+      "note": "Prior #6992 final-head CI passed."
     },
     {
       "id": "AC-03-t2",
@@ -416,7 +419,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Verified successful merged PR browser check."
+      "note": "Prior #6992 browser CI passed."
     },
     {
       "id": "AC-03-t5",
@@ -430,7 +433,7 @@
         "AC-02-c-live-cli"
       ],
       "files": [],
-      "note": "Added because prior CI cannot validate new source."
+      "note": "Focused tests passed; new full final-head validation and CI remain pending."
     },
     {
       "id": "AC-04-c1",
@@ -440,7 +443,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior ready PR #6992 merged.",
+      "note": "Prior PR #6992 merged.",
       "commits": [
         "83115b5"
       ]
@@ -455,7 +458,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Verified #6992 merged at e730c6e after passing relevant checks; no live acceptance implied."
+      "note": "Prior #6992 merged after relevant checks."
     },
     {
       "id": "AC-04-c2",
@@ -467,7 +470,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Added for the owner’s later source assignment; do not merge."
+      "note": "Ready PR #7052 is open and matches pushed checkpoint; operator invocation awaits a working guarded CLI."
     },
     {
       "id": "AC-04-t2",
@@ -479,7 +482,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Foreground owns review/merge; broader story remains open."
+      "note": "Final-head checks and handoff pending; foreground owns review/merge."
     }
   ]
 }
