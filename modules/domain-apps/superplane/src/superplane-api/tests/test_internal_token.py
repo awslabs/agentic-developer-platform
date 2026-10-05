@@ -35,8 +35,16 @@ from app.main import app, vault_sync_reconciler
         [(b"authorization", b"Bearer ")],
         [(b"authorization", b"Bearer wrong")],
         [(b"authorization", b"Bearer \xfc")],
+        [(b"authorization", b"Bearer caf\xc3\xa9")],
     ],
-    ids=["missing", "wrong-scheme", "empty-bearer", "wrong-ascii", "raw-non-ascii"],
+    ids=[
+        "missing",
+        "wrong-scheme",
+        "empty-bearer",
+        "wrong-ascii",
+        "raw-non-ascii",
+        "utf8-non-ascii",
+    ],
 )
 async def test_invalid_internal_token_never_reaches_handler(
     client, internal_token_header, monkeypatch, method, path, route_path, body, headers

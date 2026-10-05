@@ -941,6 +941,18 @@ class TestWorkspaceAuthorizationEnforcement:
         assert response.headers["WWW-Authenticate"] == "Bearer"
 
     @pytest.mark.asyncio
+    async def test_internal_credential_cannot_authenticate_domain_route(
+        self, client, enforcing, internal_token_header
+    ):
+        _, workspace_id = await _seed_workspace("workspace:read")
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers=internal_token_header
+        )
+
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.asyncio
     async def test_no_token_is_401(self, client, enforcing):
         _, workspace_id = await _seed_workspace("workspace:read")
         response = await client.get(f"/workspaces/{workspace_id}")
