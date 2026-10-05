@@ -1423,6 +1423,25 @@ class TestIdentitySpoofing:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_spoofed_organization_headers_cannot_switch_tenant(
+        self, client, enforcing
+    ):
+        own_org, own_workspace = await _seed_workspace("workspace:read")
+        foreign_org, foreign_workspace = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(own_org)})
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Org-Id": str(foreign_org),
+            "X-ADP-Org-Id": str(foreign_org),
+            "X-Forwarded-Org-Id": str(foreign_org),
+        }
+        own = await client.get(f"/workspaces/{own_workspace}", headers=headers)
+        foreign = await client.get(f"/workspaces/{foreign_workspace}", headers=headers)
+
+        assert own.status_code == 200
+        assert foreign.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_identity_headers_are_stripped_from_request_state(
         self, client, enforcing
     ):
