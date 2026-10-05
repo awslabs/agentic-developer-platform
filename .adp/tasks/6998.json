@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T15:24:11.154Z",
+  "updated_at": "2026-10-05T15:53:08.359Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
+      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access after credential discovery returned 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -99,7 +99,7 @@
       "files": [
         "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Vault caller URL must match operator configuration; existing signed-gateway and provider protections checked. Pushed at 3f2661b.",
+      "note": "Vault origin bound to operator configuration; pushed at 3f2661b.",
       "commits": [
         "3f2661b"
       ]
@@ -115,39 +115,40 @@
       ],
       "files": [
         "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts",
-        "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.test.ts",
-        "modules/agent-factory/agent/src/complex-task-chat/vault/tools.test.ts",
-        "modules/agent-factory/agent/src/aws-creds-injector.test.ts"
+        "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.test.ts"
       ],
-      "note": "Nine suites, 136 tests and agent build passed; assigned recall tests updated for existing no-identity-forwarding contract."
+      "note": "Nine suites, 136 tests and agent build passed."
     },
     {
       "id": "AC-02-c4",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Constrain Codex harness and reviewer GitHub call sites",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/codex-harness/src/github-entry.mjs",
-        "modules/agent-factory/codex-reviewer/src/github.ts"
+        "modules/agent-factory/codex-reviewer/src/github.ts",
+        "modules/agent-factory/codex-harness/src/github-entry.mjs"
       ],
-      "note": "Next task."
+      "note": "Reviewer repository identifier checked before token acquisition; existing redirect and loopback controls verified. Pushed at 03d35c3.",
+      "commits": [
+        "03d35c3"
+      ]
     },
     {
       "id": "AC-02-t4",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run harness and reviewer unit fixtures for trusted requests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c4"
       ],
       "files": [
-        "modules/agent-factory/codex-harness",
-        "modules/agent-factory/codex-reviewer"
+        "modules/agent-factory/codex-reviewer/src/github.test.ts",
+        "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
       ],
-      "note": ""
+      "note": "Reviewer focused GitHub tests: 45 pass; harness full suite: 156 pass. Reviewer full suite remains open under AC-04-t1 because an installed-skill fixture fails."
     },
     {
       "id": "AC-02-c-wire",
@@ -159,7 +160,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/url-guard.ts"
       ],
-      "note": ""
+      "note": "Next task."
     },
     {
       "id": "AC-02-t5",
@@ -191,7 +192,7 @@
       "files": [
         "data/security"
       ],
-      "note": "Every record remains unresolved pending private baseline review and candidate scan."
+      "note": "All catalog dispositions remain unresolved pending private baseline review and candidate scan."
     },
     {
       "id": "AC-03-t1",
@@ -219,7 +220,7 @@
         "modules/agent-factory/codex-harness",
         "modules/agent-factory/codex-reviewer"
       ],
-      "note": "Ready PR awaits completed implementation and pre-submit checks."
+      "note": "Ready PR awaits completed implementation and required pre-submit checks."
     },
     {
       "id": "AC-04-t1",
@@ -235,7 +236,7 @@
         "modules/agent-factory/codex-harness/package.json",
         "modules/agent-factory/codex-reviewer/package.json"
       ],
-      "note": ""
+      "note": "Agent and harness builds pass; full reviewer suite fails in an installed-skill fixture test that cannot locate its expected skill path."
     },
     {
       "id": "AC-04-c1",
