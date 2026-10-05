@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T16:41:05.012Z",
+  "updated_at": "2026-10-05T18:51:42.666Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "platform/automation-infra/Dockerfile",
         "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "Broker denies credential:list and credential:assume-role with 403 insufficient_scope. Original reports remain inaccessible; partial commit c6b43a7.",
+      "note": "Partial commit c6b43a7 exists. Broker listing and one named-role assumption now work; access to the original platform-account reports remains unverified.",
       "commits": [
         "c6b43a7"
       ]
@@ -32,7 +32,7 @@
       "files": [
         "platform/arc-runner/security/scan/test_reconcile.py"
       ],
-      "note": "Five synthetic tests passed in the preceding turn; private report hashes and occurrences remain unverified."
+      "note": "Five synthetic tests passed previously; original report hashes and occurrences have not been checked."
     },
     {
       "id": "AC-02-c1",
@@ -44,7 +44,7 @@
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Assigned finding paths, executable provenance and authorized image-build access remain unavailable."
+      "note": "Original finding paths and a reviewed image-build path remain unverified; the subsequent named-role assumption for CodeBuild discovery returned broker HTTP 403 insufficient_scope."
     },
     {
       "id": "AC-02-c-wire",
@@ -56,7 +56,7 @@
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "No newly reviewed immutable ARC candidate digest exists; do not substitute an older image."
+      "note": "No newly reviewed ARC candidate digest exists."
     },
     {
       "id": "AC-02-t1",
@@ -69,7 +69,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Local Docker is unavailable; CodeBuild access cannot be checked before broker identity verification."
+      "note": "Docker is unavailable locally; CodeBuild discovery did not reach AWS because the broker denied the second assumption."
     },
     {
       "id": "AC-02-t2",
@@ -82,7 +82,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Await executable candidate inventory."
+      "note": "Next open task; awaits an executable candidate image and inventory."
     },
     {
       "id": "AC-03-c1",
@@ -104,7 +104,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Await immutable candidates and authorized scanner path."
+      "note": "Await immutable candidates and an authorized scanner path."
     },
     {
       "id": "AC-03-t2",
