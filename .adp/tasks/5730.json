@@ -125,28 +125,28 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Consume mounted cleanup-access and positive retirement contracts without enabling unsupported admission",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/ui/contract.ts",
         "modules/domain-apps/superplane/ui/client.ts"
       ],
-      "note": "Added for the new assignment. Current cleanup-access routes are dormant and retirement admission always refuses; reconcile exact producer schema before enabling mutation."
+      "note": "Producer branch 8cf97d0 still leaves cleanup-access router unmounted/unallowlisted/uninventoried and retirement admission always 503. Source-shaped preview parsing and no-request gate are implemented; a real positive schema and mounted routes are needed before this title can be marked done."
     },
     {
       "id": "AC-02-t5",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test mounted contract, incomplete evidence and malformed retirement responses",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c3"
       ],
       "files": [
-        "modules/domain-apps/superplane/ui/__tests__/contract.test.ts",
-        "modules/domain-apps/superplane/ui/__tests__/client.test.ts"
+        "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts",
+        "modules/domain-apps/superplane/ui/__tests__/contract.test.ts"
       ],
-      "note": "Added for the new assignment; test current refusal as well as any published positive schema."
+      "note": "102 adjacent frontend tests pass, including 4 new source-bound checks for current refusal, missing route and malformed/mismatched access responses. Positive mounted admission still needs a producer contract and fresh verification."
     },
     {
       "id": "AC-02-c4",

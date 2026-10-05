@@ -156,6 +156,18 @@ export const ENDPOINTS = {
     served: true,
     capability: 'submitting an approved workspace retirement',
   },
+  previewRetirementAccess: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement/access/preview',
+    served: false,
+    capability: 'reviewing separate cleanup access for workspace removal',
+  },
+  admitRetirementAccess: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement/access',
+    served: false,
+    capability: 'requesting approved cleanup access for workspace removal',
+  },
 
   /**
    * Adopt a cluster the user already operates (bring-your-own-cluster).
@@ -460,6 +472,29 @@ export interface RetirementReview {
   blocked_reason: 'staged_cleanup_access_required';
   approval_request: null;
   revision: string;
+}
+
+export interface RetirementAccessReview {
+  retirement_request_id: string;
+  request_id: string;
+  workspace_id: string;
+  source_operation_id: string;
+  phase: string;
+  revision: string;
+  allocation_id: string;
+  original_allocation_id: string;
+  inventory_sha256: string;
+  access_plan: Record<string, unknown>;
+  authority: Record<string, unknown>;
+  preserved: readonly string[];
+  max_resource_units: number;
+  max_cost_micros: number;
+  approval_request: {
+    workspace_id: string;
+    action: string;
+    idempotency_key: string;
+    parameters: Record<string, unknown>;
+  };
 }
 
 /**
