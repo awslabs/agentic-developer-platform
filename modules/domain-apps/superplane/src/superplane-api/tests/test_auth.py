@@ -1182,6 +1182,36 @@ class TestWorkspaceAuthorizationEnforcement:
         assert revoked.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_role_claims_never_replace_workspace_grants(self, client, enforcing):
+        """Synthetic role-like claims do not confer production authority."""
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="granted-user"
+        )
+        granted_token = _mint(
+            enforcing,
+            sub="granted-user",
+            **{"custom:org_id": str(org_id), "role": "workspace_viewer"},
+        )
+        claimed_owner = _mint(
+            enforcing,
+            sub="ungranted-user",
+            **{
+                "custom:org_id": str(org_id),
+                "role": "workspace_owner",
+                "custom:role": "workspace_owner",
+            },
+        )
+        path = f"/workspaces/{workspace_id}"
+        allowed = await client.get(
+            path, headers={"Authorization": f"Bearer {granted_token}"}
+        )
+        denied = await client.get(
+            path, headers={"Authorization": f"Bearer {claimed_owner}"}
+        )
+        assert allowed.status_code == 200
+        assert denied.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_administer_implies_read_via_policy_closure(self, client, enforcing):
         """The implication closure comes from the policy, not from this service."""
         org_id, workspace_id = await _seed_workspace("workspace:administer")
