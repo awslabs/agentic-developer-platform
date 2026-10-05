@@ -1,48 +1,51 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T14:52:26.200Z",
+  "updated_at": "2026-10-05T14:57:38.396Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Classify all seven failed builds against original inventory and evidence",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "First task: inspect recipes, original coverage and logs; retain each original gap in reconciliation."
+      "note": "Seven issue-reported failure identities retained; documentation classification guarded by recipe inputs and README.",
+      "commits": [
+        "3943c86"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Exercise seven-target inventory reconciliation with coverage fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Prove neither missing targets nor original denominator silently disappear."
+      "note": "Tests verify seven original identities and distinguish 41/34 historical coverage from current executable coverage."
     },
     {
       "id": "AC-01-t2",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Reject undocumented exclusion of the example-account recipe",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Classify the documentation recipe only after establishing whether it is executable."
+      "note": "Modified registry inputs or missing maintenance-artifact classification reject exclusion."
     },
     {
       "id": "AC-02-c1",
@@ -55,7 +58,7 @@
         "modules/gateway/security/stdlib/apply.py",
         "modules/gateway/security/stdlib/check.py"
       ],
-      "note": "Diagnose actual error first; retain security regression checks."
+      "note": "Next task: determine exact failure without private logs if possible; retain regression tests."
     },
     {
       "id": "AC-02-t1",
@@ -69,7 +72,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Check CodeGraph, context-MCP and LiteLLM build/prepare paths."
+      "note": "CodeGraph, context-MCP and LiteLLM."
     },
     {
       "id": "AC-02-c2",
@@ -82,7 +85,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Verify exact artifact identity and authorization before changing any digest; no broader IAM."
+      "note": "Exact manifest/provenance verification pending; credential discovery returned insufficient_scope."
     },
     {
       "id": "AC-02-t2",
@@ -96,7 +99,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Include overlay and parser; an inaccessible artifact must not count as covered."
+      "note": "No inaccessible artifact counts as coverage."
     },
     {
       "id": "AC-02-c-wire",
@@ -109,7 +112,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Cross-component build-to-scan contract."
+      "note": "Keep production scanner path intact."
     },
     {
       "id": "AC-02-t3",
@@ -123,7 +126,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Exercise existing scanner reconciliation suite."
+      "note": "Run existing reconciliation suite."
     },
     {
       "id": "AC-03-c1",
@@ -136,7 +139,7 @@
         "codebuild/scan_security_images.py",
         ".github/workflows/security-scan.yml"
       ],
-      "note": "Inspect existing enforcement before deciding whether changes are necessary."
+      "note": "Inspect current enforcement."
     },
     {
       "id": "AC-03-t1",
@@ -148,7 +151,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and coordinator after integration; needs authorized scan identity, explicit revision/account/region and metered rerun."
+      "note": "deployed-target: executor and coordinator after integration; authorized account, role and metered rerun required."
     },
     {
       "id": "AC-04-c1",
@@ -160,7 +163,7 @@
       "files": [
         "codebuild/scan_security_images.py"
       ],
-      "note": "Review existing lifecycle; implement only any identified gap."
+      "note": "Review existing lifecycle."
     },
     {
       "id": "AC-04-t1",
@@ -172,7 +175,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and final verification owner; requires completed authorized paired run and actual finding records."
+      "note": "deployed-target: executor and final verification owner after authenticated scan."
     }
   ]
 }
