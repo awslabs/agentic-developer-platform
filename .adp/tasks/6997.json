@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T15:24:07.227Z",
+  "updated_at": "2026-10-05T15:42:07.857Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Verified by AC-01-t1/t2 at 3943c86.",
+      "note": "Records seven issue-reported failure identities and the guarded documentation classification; private log and ECR-manifest confirmation remain unverified.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Seven identities and old/new denominators tested."
+      "note": "Tests retain seven identities and old/new denominators."
     },
     {
       "id": "AC-01-t2",
@@ -45,7 +45,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Changed inputs reject classification."
+      "note": "Changed documentation inputs reject the exclusion."
     },
     {
       "id": "AC-02-c1",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Recipe repair at b7d60f5 awaits actual image builds.",
+      "note": "Recipes repaired at b7d60f5; covering real builds need an existing builder.",
       "commits": [
         "b7d60f5"
       ]
@@ -76,7 +76,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local source-hash, security and recipe checks pass; no container builder/socket."
+      "note": "Local hashes, five security regressions, and recipe tests pass; actual builds not run."
     },
     {
       "id": "AC-02-c2",
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Python repair at 467acf4; exact ECR donor manifest remains inaccessible under current credential scope. Digest unchanged.",
+      "note": "Python compatibility repaired at 467acf4; exact ECR donor manifest and authorization remain unverified under current credential scope. Digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -106,7 +106,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local donor consistency tested; real registry input and builds unverified."
+      "note": "Local donor-consistency test passes; manifest check and real builds need authorized access."
     },
     {
       "id": "AC-02-c-wire",
@@ -118,7 +118,7 @@
       "files": [
         "codebuild/security_image_targets.py"
       ],
-      "note": "Verified by AC-02-t3 at e590b19.",
+      "note": "Six executable recipes required at e590b19.",
       "commits": [
         "e590b19"
       ]
@@ -135,7 +135,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Missing parser recipe fails discovery."
+      "note": "Deleting a required recipe fails discovery."
     },
     {
       "id": "AC-03-c1",
@@ -148,7 +148,7 @@
         "codebuild/scan_security_images.py",
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local validation at d67a512; cannot mark code done until its covering authenticated paired run succeeds.",
+      "note": "Local paired-correction validation committed at d67a512; covering authenticated run pending.",
       "commits": [
         "d67a512"
       ]
@@ -165,19 +165,22 @@
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and coordinator after integration; authorized scan identity and metered rerun required."
+      "note": "deployed-target: executor and coordinator after integration; requires authorized metered run and actual artifacts."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Preserve cleanup receipt and recovered finding assignment contract",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Next task: inspect lifecycle and local checks."
+      "note": "Local cleanup-receipt validation committed at 271d3bb; live result and findings pending.",
+      "commits": [
+        "271d3bb"
+      ]
     },
     {
       "id": "AC-04-t1",
@@ -188,8 +191,10 @@
       "covers": [
         "AC-04-c1"
       ],
-      "files": [],
-      "note": "deployed-target: executor and final verification owner after authenticated run."
+      "files": [
+        ".github/scripts/tests/test_security_scan_tool_invocations.py"
+      ],
+      "note": "deployed-target: executor and final verification owner; requires completed authenticated run and actual recovered records."
     }
   ]
 }
