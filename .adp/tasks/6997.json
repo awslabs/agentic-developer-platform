@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T14:57:38.396Z",
+  "updated_at": "2026-10-05T15:02:48.558Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Seven issue-reported failure identities retained; documentation classification guarded by recipe inputs and README.",
+      "note": "Verified by AC-01-t1/t2 at 3943c86.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Tests verify seven original identities and distinguish 41/34 historical coverage from current executable coverage."
+      "note": "Seven identities and original/current denominators tested."
     },
     {
       "id": "AC-01-t2",
@@ -45,34 +45,38 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Modified registry inputs or missing maintenance-artifact classification reject exclusion."
+      "note": "Changed inputs fail classification."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair common stdlib apply/check build path for three images",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "modules/gateway/security/stdlib/apply.py",
-        "modules/gateway/security/stdlib/check.py"
+        "modules/agent-context/images/codegraph-context/Dockerfile",
+        "modules/agent-context/images/context-mcp/Dockerfile",
+        "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Next task: determine exact failure without private logs if possible; retain regression tests."
+      "note": "Recipes repaired at b7d60f5; code task awaits its covering actual-build test because no container builder/socket is available here.",
+      "commits": [
+        "b7d60f5"
+      ]
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run stdlib checks and affected recipe builds",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "CodeGraph, context-MCP and LiteLLM."
+      "note": "Reviewed source hashes, negative legacy-patch check, five security regressions and recipe tests pass; actual image builds require an existing authorized builder, not new test infrastructure."
     },
     {
       "id": "AC-02-c2",
@@ -85,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Exact manifest/provenance verification pending; credential discovery returned insufficient_scope."
+      "note": "Next independent task; registry identity/provenance unresolved."
     },
     {
       "id": "AC-02-t2",
@@ -99,7 +103,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "No inaccessible artifact counts as coverage."
+      "note": "Do not count inaccessible images."
     },
     {
       "id": "AC-02-c-wire",
@@ -112,7 +116,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Keep production scanner path intact."
+      "note": "Retain required-target rejection."
     },
     {
       "id": "AC-02-t3",
@@ -126,7 +130,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Run existing reconciliation suite."
+      "note": "Run scanner reconciliation suite."
     },
     {
       "id": "AC-03-c1",
@@ -139,7 +143,7 @@
         "codebuild/scan_security_images.py",
         ".github/workflows/security-scan.yml"
       ],
-      "note": "Inspect current enforcement."
+      "note": "Inspect existing enforcement."
     },
     {
       "id": "AC-03-t1",
@@ -151,7 +155,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and coordinator after integration; authorized account, role and metered rerun required."
+      "note": "deployed-target: executor and coordinator after integration; authenticated metered rerun needed."
     },
     {
       "id": "AC-04-c1",
@@ -163,7 +167,7 @@
       "files": [
         "codebuild/scan_security_images.py"
       ],
-      "note": "Review existing lifecycle."
+      "note": "Review lifecycle."
     },
     {
       "id": "AC-04-t1",
@@ -175,7 +179,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and final verification owner after authenticated scan."
+      "note": "deployed-target: executor and final verification owner after authenticated run."
     }
   ]
 }
