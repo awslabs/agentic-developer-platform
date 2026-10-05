@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T18:58:35.062Z",
+  "updated_at": "2026-10-05T19:18:16.869Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Prior commit 716512b; covered by AC-01-t1.",
+      "note": "Prior commit 716512b; covered by synthetic tests.",
       "commits": [
         "716512b"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_inventory_security_occurrences.py"
       ],
-      "note": "Passed in the prior run."
+      "note": "Passed locally."
     },
     {
       "id": "AC-01-c2",
@@ -42,7 +42,7 @@
       "files": [
         ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Provenance-binding code is in 369f37b; selected-role S3 GetObject for frozen coverage returns AccessDenied.",
+      "note": "Binding code is in 369f37b; selected-role S3 GetObject for frozen coverage returns AccessDenied.",
       "commits": [
         "369f37b"
       ]
@@ -59,33 +59,34 @@
       "files": [
         ".github/scripts/tests/test_inventory_security_occurrences.py"
       ],
-      "note": "Assigned private coverage and reports cannot yet be read."
+      "note": "Assigned private coverage and reports cannot be read."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair or substantiate shared curl package and backport behavior",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "platform/security/curl-8.22.0/Dockerfile"
       ],
-      "note": "Next independent task: inspect current source and build options; assigned-report applicability remains gated by S3 access."
+      "note": "Reused #6540 signed-source fix built and passed source checks; matching its packages and patches to this scan’s assigned paths and advisories requires the denied reports."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test curl source provenance, TLS variants, and HTTPS/Git fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
-        "platform/security/curl-8.22.0/verify-upstream.sh"
+        "platform/security/curl-8.22.0/verify-upstream.sh",
+        "platform/security/curl-8.22.0/verify_https_git.py"
       ],
-      "note": "CodeBuild discovery succeeds; build and scan permissions remain untested."
+      "note": "CodeBuild 867315b4: signed source; 1,834/1,834 OpenSSL and 1,830/1,830 GnuTLS selected tests; both static QUIC suites; three packages installed; non-root HTTPS/Git and certificate/hostname refusals passed. This is build-stage evidence, not candidate-image clearance."
     },
     {
       "id": "AC-02-c2",
@@ -97,7 +98,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile"
       ],
-      "note": "Affected package paths and advisories require the inaccessible assigned reports."
+      "note": "Assigned package paths are inaccessible; the ordinary build also requires a pinned cross-account ECR input denied by BatchGetImage."
     },
     {
       "id": "AC-02-t2",
@@ -109,7 +110,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "No repaired candidate image has been built."
+      "note": "No reviewed composed candidate can be built from the denied input."
     },
     {
       "id": "AC-02-c3",
@@ -121,7 +122,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "Frozen coverage and validated parent composition remain unavailable."
+      "note": "Frozen coverage and pinned parent access are required to establish a safe composition."
     },
     {
       "id": "AC-02-t3",
@@ -133,7 +134,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "No composed candidate image has been built."
+      "note": "No composed candidate image is available."
     },
     {
       "id": "AC-03-c1",
@@ -160,7 +161,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Assigned reports are inaccessible and exact candidates have not been built."
+      "note": "Frozen reports and exact candidates are unavailable; no occurrence is claimed cleared."
     },
     {
       "id": "AC-03-t2",
@@ -174,7 +175,7 @@
       "files": [
         ".github/scripts/tests/test_review_security_occurrences.py"
       ],
-      "note": "Synthetic ledger checks passed in the prior run."
+      "note": "Related local synthetic finding-tool suite passed: 56 tests."
     },
     {
       "id": "AC-04-c-wire",
@@ -187,7 +188,7 @@
         "modules/agent-context/images/deepwiki/Dockerfile",
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "No reviewed candidate artifact or verified high-security parent binding yet."
+      "note": "Cross-account ECR denies the pinned DeepWiki input; the curl build was not published or rescanned."
     },
     {
       "id": "AC-04-t1",
@@ -199,7 +200,7 @@
         "AC-04-c-wire"
       ],
       "files": [],
-      "note": "Requires composed candidate images."
+      "note": "Requires both composed images."
     },
     {
       "id": "AC-04-c1",
@@ -209,7 +210,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Tested digests and complete finding dispositions are unavailable; production rollout is separate."
+      "note": "Exact tested image digests and complete occurrence dispositions remain unavailable; rollout is separate."
     },
     {
       "id": "AC-04-t2",
@@ -221,7 +222,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Requires candidate and disposition evidence."
+      "note": "Requires frozen scan evidence and reviewed candidate images."
     }
   ]
 }
