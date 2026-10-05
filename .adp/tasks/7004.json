@@ -1,31 +1,36 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T14:54:37.981Z",
+  "updated_at": "2026-10-05T15:02:08.129Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Build occurrence inventory and provenance reconciliation",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        ".github/scripts/diff_security_findings.py"
+        ".github/scripts/inventory_security_occurrences.py"
       ],
-      "note": "Keep native severity precedence and package/path occurrences distinct; do not publish private report contents."
+      "note": "Committed as 716512b; the inventory retains result indexes, paths, rule details, and report hash.",
+      "commits": [
+        "716512b"
+      ]
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Test inventory with synthetic SARIF fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1"
       ],
-      "files": [],
-      "note": "Cover duplicate advisories at different paths, unrated errors, and accepted suppressions."
+      "files": [
+        ".github/scripts/tests/test_inventory_security_occurrences.py"
+      ],
+      "note": "41 inventory and existing differ tests passed locally."
     },
     {
       "id": "AC-01-c2",
@@ -35,7 +40,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Credential broker returned 403 insufficient_scope for credential:list; the specified scan-reader connection cannot yet be selected."
+      "note": "Credential broker returned 403 insufficient_scope for credential:list; the scan-reader connection cannot yet be selected."
     },
     {
       "id": "AC-01-t2",
@@ -143,7 +148,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Needs report access and a compatible builder/scanner; no validation infrastructure will be provisioned just for tests."
+      "note": "Needs report access and a compatible builder/scanner; no validation service will be provisioned just for tests."
     },
     {
       "id": "AC-03-t2",
