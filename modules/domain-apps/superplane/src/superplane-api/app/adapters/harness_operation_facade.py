@@ -42,14 +42,13 @@ import asyncio
 import logging
 from typing import Any
 
+from app.operation_activation import require_admission_enabled
 from app.services.provisioning import (
     OperationProgress,
     ProvisioningError,
     ProvisioningRefused,
     ProvisioningUnavailable,
 )
-
-from app.operation_activation import require_admission_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +61,11 @@ class HarnessOperationFacade:
     are the domain's and which the service refuses to be built without.
     """
 
-    def __init__(self, service: Any, *, enabled: bool = True) -> None:
+    def __init__(
+        self, service: Any, *, enabled: bool = True, lifecycle_verify=None
+    ) -> None:
         self._service = service
+        self._lifecycle_verify = lifecycle_verify
         if type(enabled) is not bool:
             raise ValueError("operation admission enabled must be a boolean")
         self._enabled = enabled
@@ -78,9 +80,20 @@ class HarnessOperationFacade:
         parameters: dict[str, str],
     ) -> OperationProgress:
         """Authorize and start one operation, returning the facade's first report."""
-        require_admission_enabled(
-            enabled=self._enabled, lifecycle="runtime_config_sha256" in parameters
+        lifecycle = (
+            "runtime_config_sha256" in parameters or "lifecycle_phase" in parameters
         )
+        require_admission_enabled(enabled=self._enabled, lifecycle=lifecycle)
+        if lifecycle:
+            from app.operation_activation import expected_lifecycle_binding
+
+            if self._lifecycle_verify is None or not await self._lifecycle_verify(
+                org_id, expected_lifecycle_binding()
+            ):
+                raise ProvisioningUnavailable(
+                    "paid worker binding verification is unavailable"
+                )
+            require_admission_enabled(enabled=self._enabled, lifecycle=True)
         progress = await self._call(
             self._service.open_operation(
                 action=action,

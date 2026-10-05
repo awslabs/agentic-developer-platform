@@ -400,6 +400,9 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     if PORT_OPERATION_FACADE in outstanding:
         adapters[PORT_OPERATION_FACADE] = HarnessOperationFacade(
             enabled=result.dispatch_enabled,
+            lifecycle_verify=result.dispatcher.binding_ready
+            if result.dispatcher
+            else None,
             service=OperationFacadeService(
                 connect=connect,
                 resolver=authority_source,

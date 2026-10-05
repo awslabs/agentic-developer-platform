@@ -5,8 +5,8 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import botocore.auth
 import botocore.awsrequest
@@ -130,7 +130,9 @@ class ProducerTransport:
 
 
 class OperationDispatcher:
-    def __init__(self, connect, transport, *, policy_for=None, interval=5, enabled=True):
+    def __init__(
+        self, connect, transport, *, policy_for=None, interval=5, enabled=True
+    ):
         self.connect, self.transport, self.policy_for = connect, transport, policy_for
         self.outbox = DispatchOutbox()
         if type(enabled) is not bool:
@@ -198,6 +200,32 @@ class OperationDispatcher:
                 and data.get("org_id") == org_id
                 and data.get("domain_org_id") == org_id
                 and data.get("adp_org_id") == policy.adp_org_id
+            )
+        except Exception:
+            return False
+
+    async def binding_ready(self, org_id, expected):
+        """A fresh installed-worker read is required before each lifecycle admission."""
+        from datetime import UTC, datetime, timedelta
+
+        if not self.enabled or not dispatch_enabled():
+            return False
+        try:
+            policy = await self._policy(org_id)
+            proof = await self.transport.post(
+                "/binding-proof", {"domain": "superplane", "org_id": org_id}
+            )
+            checked_at = datetime.fromisoformat(proof["checked_at"])
+            now = datetime.now(UTC)
+            return (
+                proof.get("version") == 1
+                and proof.get("installed") is True
+                and proof.get("domain") == "superplane"
+                and proof.get("org_id") == org_id
+                and proof.get("adp_org_id") == policy.adp_org_id
+                and checked_at.tzinfo is not None
+                and now - timedelta(seconds=60) <= checked_at <= now
+                and all(proof.get(key) == value for key, value in expected.items())
             )
         except Exception:
             return False
@@ -358,7 +386,7 @@ class OperationDispatcher:
 
     def start(self):
         if not self.enabled or not dispatch_enabled():
-            return None
+            return
         if self._task is None:
             self._task = asyncio.create_task(
                 self._run(), name="superplane-operation-outbox"
