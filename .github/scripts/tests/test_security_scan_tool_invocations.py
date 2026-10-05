@@ -54,6 +54,7 @@ reconcile = importlib.util.module_from_spec(RECONCILE_SPEC)
 RECONCILE_SPEC.loader.exec_module(reconcile)
 
 from diff_security_findings import process_tool_findings
+from security_image_targets import ORIGINAL_COVERAGE, non_runtime_fixtures
 
 
 @pytest.fixture(scope="module")
@@ -558,6 +559,40 @@ def write_image_evidence(root: Path, tool: str, source_revision: str, digest: st
         "succeeded": 1,
         "targets": [{"name": "image", "status": "succeeded", "digest": digest, "artifact_sha256": artifact_sha256}],
     })
+
+
+@pytest.mark.parametrize("tamper", ("missing_exclusion", "wrong_original_count", "wrong_reason", "different_scanners", "duplicate_target"))
+def test_paired_inventory_correction_must_match_historical_gap(tmp_path, tamper):
+    revision = "a" * 40
+    for tool in ("grype", "syft"):
+        write_image_evidence(tmp_path, tool, revision, "sha256:" + "b" * 64)
+        coverage_path = tmp_path / tool / "coverage.json"
+        coverage = json.loads(coverage_path.read_text())
+        coverage.update({
+            "scope": "all",
+            "discovered": 2,
+            "excluded_non_runtime": non_runtime_fixtures(REPO),
+            "original_gap": ORIGINAL_COVERAGE,
+        })
+        write_json(coverage_path, coverage)
+    result = reconcile.observed_results(tmp_path, tmp_path / "valid", revision, {"image"}, False)
+    assert result["coverage_complete"] is True
+
+    coverage_path = tmp_path / "grype/coverage.json"
+    coverage = json.loads(coverage_path.read_text())
+    if tamper == "missing_exclusion":
+        coverage["excluded_non_runtime"] = []
+    elif tamper == "wrong_original_count":
+        coverage["original_gap"]["expected"] = 40
+    elif tamper == "wrong_reason":
+        coverage["excluded_non_runtime"][0]["reason"] = "unreviewed exclusion"
+    elif tamper == "different_scanners":
+        coverage["discovered"] += 1
+    else:
+        coverage["targets"].append(coverage["targets"][0])
+    write_json(coverage_path, coverage)
+    with pytest.raises(ValueError):
+        reconcile.observed_results(tmp_path, tmp_path / "rejected", revision, {"image"}, False)
 
 
 def test_observed_receipt_inputs_preserve_cleanup_and_hash_real_private_artifacts(tmp_path):

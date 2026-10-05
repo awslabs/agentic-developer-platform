@@ -20,6 +20,7 @@ ORIGINAL_GAPS = {
     "modules-agent-context-images-parser": "pinned ingestion ECR input returned 403",
 }
 
+ORIGINAL_COVERAGE = {"run": "37278531434/1", "expected": 41, "succeeded": 34, "failures": ORIGINAL_GAPS}
 REQUIRED_CONTEXT_DOCKERFILES = {
     f"modules/agent-context/images/{name}/Dockerfile"
     for name in ("codegraph-context", "context-mcp", "ingestion", "ingestion/high-security", "litellm-proxy", "parser")

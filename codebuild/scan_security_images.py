@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
-from security_image_targets import ORIGINAL_GAPS, discover, non_runtime_fixtures
+from security_image_targets import ORIGINAL_COVERAGE, discover, non_runtime_fixtures
 
 
 def command(args, **kwargs):
@@ -352,12 +352,7 @@ def main():
         "expected": len(targets),
         "discovered": len(targets) + len(excluded),
         "excluded_non_runtime": excluded,
-        "original_gap": {
-            "run": "37278531434/1",
-            "expected": 41,
-            "succeeded": 34,
-            "failures": ORIGINAL_GAPS,
-        } if scope == "all" else None,
+        "original_gap": ORIGINAL_COVERAGE if scope == "all" else None,
         "succeeded": 0,
         "targets": [],
     }
