@@ -37,7 +37,7 @@ export async function runStandaloneReview(
         state: checks.failing.length ? 'failed' : checks.ready || checks.total === 0 ? 'passed' : 'pending',
         open: pr.state === 'open', merged: pr.merged === true,
         base_repair_required: pr.mergeable === false || pr.mergeable_state === 'dirty',
-        reasons: checks.pending, checks: [], failures: checks.failing };
+        reasons: checks.pending, checks: checks.observations ?? [], failures: checks.failing };
     },
     async deliver(review) {
       const pr = await github.getPullRequest(number);

@@ -28,6 +28,19 @@ step. `request_changes` is an intermediate verdict, not completion of the task.
 Your controller publishes commits, waits for required CI, returns failures for
 repair, and merges the verified head. Do not duplicate its GitHub operations.
 
+When repairs are ready for publication and only controller-owned CI or final
+published-revision evidence remains, return repair outcome `awaiting_ci` with
+the specific checks/evidence still needed in `remainingWork`. This includes a
+required browser test that cannot run locally but has a maintained CI runner.
+Keep these tasks open until their results are verified. The controller will
+publish inspected changes, wait without consuming model turns, return concrete
+failures for repair, and supply the published commit and check results for final
+inspection. Publication, pending CI and the eventual merge are not external
+blockers. Use `checkpoint` for remaining implementation or local validation,
+and `blocked` only for a concrete dependency or decision the controller cannot
+resolve through publication and CI. Never approve merely because CI is green;
+verify that its evidence covers the outstanding requirements.
+
 Use the issue to establish what this PR must do. Do not turn a linked design or
 another story into a separate review assignment. Repair missing implementation
 using the accepted scope and existing contracts. If an external decision really

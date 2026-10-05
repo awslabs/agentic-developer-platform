@@ -125,6 +125,7 @@ test("shared live-fleet diagnostics do not block an otherwise ready merge", asyn
       failing: [],
       pending: [],
       total: 1,
+      observations: [{ name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" }],
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -157,6 +158,7 @@ test("unavailable legacy statuses do not hide accessible check runs", async () =
       failing: [],
       pending: [],
       total: 1,
+      observations: [{ name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" }],
     });
   } finally {
     globalThis.fetch = originalFetch;
