@@ -107,5 +107,18 @@ class Issue6998MappingTest(unittest.TestCase):
         self.assertEqual(hits["agent/src/utils/installation.ts"][0]["suppression"], "inSource-unaccepted")
         self.assertEqual(hits["agent/src/utils/comment-authority.ts"][0]["suppression"], "accepted")
 
+    def test_handoff_keeps_missing_evidence_and_failed_suites_visible(self):
+        catalog = json.loads(CATALOG.read_text())
+        handoff = catalog["integrationHandoff"]
+        subprocess.check_call(["git", "cat-file", "-e", handoff["testedRevision"] + "^{commit}"], cwd=ROOT)
+        self.assertEqual(set(handoff["acceptance"]), {"AC-01", "AC-02", "AC-03", "AC-04"})
+        self.assertIn("blocked", handoff["acceptance"]["AC-01"])
+        self.assertIn("blocked", handoff["acceptance"]["AC-03"])
+        self.assertIn("pending", handoff["acceptance"]["AC-04"])
+        self.assertIn("140/141", handoff["localChecks"]["agent"])
+        self.assertIn("196/198", handoff["localChecks"]["codexReviewer"])
+        self.assertIsNone(catalog["candidateImageDigest"])
+        self.assertTrue(all(record["disposition"] == "unresolved" for record in catalog["records"]))
+
 if __name__ == "__main__":
     unittest.main()
