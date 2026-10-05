@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T16:41:21.858Z",
+  "updated_at": "2026-10-05T16:42:11.817Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Seven original identities and the guarded documentation-fixture classification remain recorded; private logs are not verified.",
+      "note": "Seven original identities and guarded documentation-fixture classification retained; private logs not verified.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Included in passing local scan-inventory suite."
+      "note": "Passed locally."
     },
     {
       "id": "AC-01-t2",
@@ -45,7 +45,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Included in passing local scan-inventory suite."
+      "note": "Passed locally."
     },
     {
       "id": "AC-02-c1",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Repair committed at b7d60f5; real builds need authorized role assumption.",
+      "note": "Repair committed at b7d60f5; real builds require an authorized role.",
       "commits": [
         "b7d60f5"
       ]
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Prior repair committed at 467acf4; donor manifest and role remain unverified. Digest unchanged.",
+      "note": "Repair committed at 467acf4; exact donor manifest and authorization unverified. Digest unchanged.",
       "commits": [
         "467acf4"
       ]
@@ -106,7 +106,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local input tests pass; actual ingestion-family builds remain unrun."
+      "note": "Local rejection tests pass; actual builds remain unrun."
     },
     {
       "id": "AC-02-c-wire",
@@ -118,7 +118,7 @@
       "files": [
         "codebuild/security_image_targets.py"
       ],
-      "note": "Six executable context recipes remain required at e590b19.",
+      "note": "Six executable recipes required at e590b19.",
       "commits": [
         "e590b19"
       ]
@@ -135,7 +135,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Included in passing local scan-inventory suite."
+      "note": "Passed locally."
     },
     {
       "id": "AC-03-c1",
@@ -148,7 +148,7 @@
         "codebuild/scan_security_images.py",
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local guard committed at d67a512; authenticated paired artifacts remain pending.",
+      "note": "Local guard committed at d67a512; authenticated paired artifacts pending.",
       "commits": [
         "d67a512"
       ]
@@ -165,7 +165,7 @@
       "files": [
         ".github/scripts/tests/test_security_scan_tool_invocations.py"
       ],
-      "note": "deployed-target: executor and coordinator after integration; selected-role assumption is denied."
+      "note": "deployed-target: executor and coordinator after integration; broker denies selected-role assumption."
     },
     {
       "id": "AC-04-c1",
@@ -177,7 +177,7 @@
       "files": [
         ".github/scripts/reconcile_security_scan.py"
       ],
-      "note": "Local guard committed at 271d3bb; actual receipt and recovered findings remain pending.",
+      "note": "Local guard committed at 271d3bb; actual receipt and findings pending.",
       "commits": [
         "271d3bb"
       ]
