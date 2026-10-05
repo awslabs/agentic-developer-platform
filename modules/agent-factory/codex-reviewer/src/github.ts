@@ -141,6 +141,11 @@ export class GitHubClient {
     if (!isRootedPath(path)) {
       throw new Error(`GitHub request path must start with "/": ${path}`);
     }
+    const repositoryParts = this.repository.split("/");
+    if (repositoryParts.length !== 2 || !repositoryParts.every(part =>
+      /^[a-z0-9_.-]+$/i.test(part) && part !== "." && part !== "..")) {
+      throw new Error("GitHub repository must be a single owner/name pair");
+    }
     const token = await this.tokenProvider(refreshed);
     const options: RequestInit = {
       ...init,

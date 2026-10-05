@@ -349,3 +349,26 @@ test('retry context reads recent persisted checklists beyond the first comment p
   assert.ok(urls[0]!.endsWith('page=2'));
   assert.ok(urls[1]!.endsWith('page=3'));
 });
+
+for (const repository of [
+  "owner/../other/repo", "owner/.", "owner/..", "owner/repo?x=1",
+  "owner/repo#fragment", "//attacker.invalid/repo", "owner/@attacker.invalid",
+]) {
+  test(`malformed repository ${repository} cannot acquire or send an installation token`, async t => {
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; });
+    let tokenRequests = 0;
+    let fetchRequests = 0;
+    globalThis.fetch = async () => {
+      fetchRequests += 1;
+      return new Response(JSON.stringify({ number: 1 }));
+    };
+    const github = new GitHubClient(repository, async () => {
+      tokenRequests += 1;
+      return "synthetic-fixture-token";
+    });
+    await assert.rejects(() => github.getPullRequest(1), /owner\/name pair/);
+    assert.equal(tokenRequests, 0);
+    assert.equal(fetchRequests, 0);
+  });
+}
