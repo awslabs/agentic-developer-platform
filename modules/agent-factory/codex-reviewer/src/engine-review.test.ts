@@ -1058,6 +1058,51 @@ async function seedBoardFile(state: Awaited<ReturnType<typeof fixture>>, tasks: 
 const boardTask = (id: string, kind: Task["kind"], status: Task["status"], covers: string[] = []): Task =>
   ({ id, kind, status, covers, criterion: id.split("-")[0]!, title: `${kind} ${id}`, files: [], note: "" });
 
+for (const failedSink of ['none', 'file', 'pr', 'progress', 'closure'] as const) {
+test(`merged delivery survives ${failedSink} reporting failure and preserves deferred work`, async t => {
+  const state = await fixture(t);
+  const tasks = [boardTask('AC1-c1', 'code', 'done'), boardTask('AC1-t1', 'test', 'open', ['AC1-c1']),
+    { ...boardTask('AC1-live', 'test', 'blocked', ['AC1-c1']), note: 'Separate live qualification' }];
+  const head = await seedBoardFile(state, tasks);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let merged = false;
+  let boardText = '', report: import('./closure-report.js').ClosureReport | undefined;
+  const result = await runEngineReview(state.envelope, { ...state.runtime, observer: {
+    explanation() {}, activity() {}, session() {}, async finish() {}, async fail() {},
+    progress(text) { assert.equal(merged, true); if (failedSink === 'progress') throw new Error('reporter down'); boardText = text; },
+    closure(value) { assert.equal(merged, true); if (failedSink === 'closure') throw new Error('archive down'); report = value; },
+  } }, {
+    github: { ...state.github, updatePullRequestBody: async (_number, body) => {
+      assert.equal(merged, true);
+      if (failedSink === 'pr') throw new Error('GitHub reporting unavailable');
+      assert.match(body, /PR merged/);
+    } },
+    review: async () => ({ ...approved, closureReport: { completed: ['The UI passed browser validation.'], remaining: ['Live demo remains.'],
+      verifiedTasks: [{ id: 'AC1-t1', evidence: 'Browser check passed' }] } }),
+    fix: async () => assert.fail('reporting must not require another repair'),
+    checks: async sha => checkObservation(sha, 'passed', state.sha),
+    deliver: async () => {
+      merged = true;
+      if (failedSink === 'file') {
+        await rm(join(state.workspace, '.adp/tasks'), { recursive: true });
+        await writeFile(join(state.workspace, '.adp/tasks'), 'not a directory');
+      }
+      return { state: 'merged' };
+    },
+  });
+  assert.equal(result.merged, true);
+  assert.equal(await state.git('rev-parse', 'HEAD'), head, 'no reporting commit or CI restart');
+  const saved = await readTaskBoardFile(state.workspace, 42);
+  if (failedSink !== 'file') assert.deepEqual(saved.tasks?.map(task => task.status), ['done', 'done', 'blocked']);
+  if (failedSink !== 'progress') assert.match(boardText, /test 1\/2/);
+  if (failedSink !== 'closure') {
+    assert.equal(report?.delivery, 'Pull request merged.');
+    assert.match(report!.remaining.join(' '), /Separate live qualification/);
+    if (failedSink !== 'none') assert.match(report!.reporting_notes.join(' '), /could not be updated/);
+  }
+});
+}
+
 test("milestones per publish defaults to three and ignores invalid overrides", t => {
   const previous = process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH;
   t.after(() => { if (previous === undefined) delete process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH; else process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = previous; });
@@ -1122,7 +1167,7 @@ test("several repair tasks are finished before one inspection and one publicatio
   assert.equal(await state.git("rev-parse", "HEAD^"), start, "the batch is a single published commit");
   assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1, AC2-t1$/);
   assert.match(prompts[1]!, /Files changed by this repair batch: code.txt/);
-  assert.equal(bodies.length, 1);
+  assert.equal(bodies.length, 2, 'one batch update and one post-merge checklist update');
   assert.match(bodies[0]!, /^Developer prose/);
   assert.doesNotMatch(bodies[0]!, /adp-task-board-data/);
   const published = (await state.git("rev-parse", "HEAD")).slice(0, 7);

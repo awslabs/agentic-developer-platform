@@ -174,3 +174,20 @@ test('archives Codex assignment progress across repair and inspection SDK sessio
   expect(record.latest_checklist.tasks.map((t: any) => t.text)).toEqual(['Deliver story']);
   expect(record.latest_checklist.tasks[0].status).toBe('pending');
 });
+
+test('final reviewer closure and reconciled tasks reach the saved transcript', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.progress!('- ☐ Browser validation\n- ⛔ Live demo', { id: 'board', category: 'plan', state: 'running' });
+  reporter.progress!('- ☑ Browser validation\n- ⛔ Live demo', { id: 'board', category: 'plan', state: 'completed' });
+  reporter.closure!({ summary: 'The workspace UI is ready for integration.', completed: ['Browser validation passed.'],
+    remaining: ['Live demo remains with the evaluator.'], delivery: 'Pull request merged.', reporting_notes: [] });
+  await reporter.finish({ summary: 'Reviewer finished: merged' });
+  const writes = (fs.writeFileSync as jest.Mock).mock.calls.filter(([path]) => path === '/tmp/adp-run-transcript.md.tmp');
+  const markdown = writes.at(-1)![1] as string;
+  const encoded = /^<!-- adp-run-record:v1 ([A-Za-z0-9+/=]+) -->/.exec(markdown)![1];
+  const record = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'pending']);
+  expect(record.closure_report.summary).toBe('The workspace UI is ready for integration.');
+  expect(record.closure_report.remaining).toEqual(['Live demo remains with the evaluator.']);
+  expect(markdown).toContain('## Closure report');
+});

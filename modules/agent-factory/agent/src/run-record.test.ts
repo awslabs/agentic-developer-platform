@@ -45,3 +45,21 @@ test('bounds long runs while preserving the original baseline', () => {
   expect(c.record.session_ids).toHaveLength(32);
   expect(c.record.evidence[0].text).toBe('Observation 8');
 });
+
+test('archives the final checklist and sanitized closure ahead of transcript history', () => {
+  const c = capture();
+  c.checklist('- ☑ Workspace screen\n- ☐ Browser validation\n- ⛔ Live demo — deferred to evaluator');
+  c.checklist('- ☑ Workspace screen\n- ☑ Browser validation\n- ⛔ Live demo — deferred to evaluator');
+  process.env.TEST_API_KEY = 'a-private-api-key';
+  try {
+    c.closure({ summary: 'The workspace screen is ready for integration.', completed: ['Browser validation passed.'],
+      remaining: ['Run the live demo with a-private-api-key.'], delivery: 'Pull request merged.', reporting_notes: [] });
+    c.close();
+    const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'));
+    expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'completed', 'pending']);
+    expect(record.closure_report.delivery).toBe('Pull request merged.');
+    expect(record.closure_report.remaining[0]).toContain('[redacted]');
+    expect(c.markdown().indexOf('## Closure report')).toBeLessThan(c.markdown().indexOf('## Run record'));
+    expect(c.markdown()).not.toContain('a-private-api-key');
+  } finally { delete process.env.TEST_API_KEY; }
+});

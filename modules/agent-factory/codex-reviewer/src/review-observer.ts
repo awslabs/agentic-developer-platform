@@ -1,4 +1,5 @@
 import type { ThreadEvent } from '@openai/codex-sdk';
+import type { ClosureReport } from './closure-report.js';
 import { publishDeveloperEvent, scopedProgress, type DeveloperReporter } from './developer-stream.js';
 
 export interface ReviewObserver extends Pick<DeveloperReporter, 'progress' | 'explanation' | 'activity' | 'session' | 'observeEvent'> {
@@ -9,6 +10,7 @@ export interface ReviewObserver extends Pick<DeveloperReporter, 'progress' | 'ex
   };
   finish(result: { summary: string }): Promise<void>;
   fail(error: unknown): Promise<void>;
+  closure?(report: ClosureReport): void;
 }
 
 export function reviewEvents(observer?: ReviewObserver, structured = false, planScope: 'assignment' | 'inspection' = 'assignment') {
