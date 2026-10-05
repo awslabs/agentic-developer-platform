@@ -1495,6 +1495,47 @@ class TestIdentitySpoofing:
         assert "x-forwarded-user" not in {k.lower() for k in safe}
 
     @pytest.mark.asyncio
+    async def test_mounted_route_exposes_only_sanitized_headers(
+        self, client, enforcing, monkeypatch
+    ):
+        observed = []
+        verify = domain_auth.require_verified_caller
+
+        async def capture(request, credentials):
+            caller = await verify(request, credentials)
+            observed.append((request.state.safe_headers, caller))
+            return caller
+
+        monkeypatch.setattr(domain_auth, "require_verified_caller", capture)
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-ADP-Principal": "other-user",
+                "X-Caller-Id": "other-user",
+                "X-Org-Id": "other-org",
+                "X-Forwarded-User": "other-user",
+                "X-Probe-Metadata": "kept",
+            },
+        )
+
+        assert response.status_code == 200
+        assert len(observed) == 1
+        safe_headers, caller = observed[0]
+        assert safe_headers == caller.safe_headers
+        assert safe_headers["x-probe-metadata"] == "kept"
+        assert all(
+            header not in safe_headers
+            for header in (
+                "x-adp-principal", "x-caller-id", "x-org-id", "x-forwarded-user"
+            )
+        )
+        assert caller.principal.subject == "user-abc"
+        assert caller.principal.org_id == str(org_id)
+
+    @pytest.mark.asyncio
     async def test_body_supplied_approver_is_not_trusted(self, client, enforcing):
         """The legacy `approved_by` body field must not become the actor.
 
