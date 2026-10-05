@@ -1,64 +1,68 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-05T23:41:50.181Z",
+  "updated_at": "2026-10-05T23:46:14.189Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Serve authenticated versioned human identity for the registered producer organization",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/gateway/src/internal/controller_execution_routes.py",
-        "modules/gateway/src/shared/identity/workspaces.py"
+        "modules/gateway/src/internal/domain_current_identity.py",
+        "modules/gateway/src/internal/domain_operation_routes.py"
       ],
-      "note": "Use actual membership and Cognito enabled state; refuse unsupported service delegation."
+      "note": "Commit 02119b1; covered by AC-01-t1 and AC-01-t2.",
+      "commits": [
+        "02119b1"
+      ]
     },
     {
       "id": "AC-01-c-wire",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Consume producer-bound identity without email linking or organization privilege union",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Export the typed reader contract for adjacent stories."
+      "note": "Commit 02119b1; reader is typed and restricted to its configured organization. Startup composition remains AC-05."
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Run Gateway and domain identity unit tests with two-organization membership fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1",
         "AC-01-c-wire"
       ],
       "files": [
-        "modules/gateway/tests/internal/test_controller_execution_routes.py",
+        "modules/gateway/tests/internal/test_domain_current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": ""
+      "note": "Gateway 9 passed; domain identity and binding suites 19 passed."
     },
     {
       "id": "AC-01-t2",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Reject arbitrary organizations, inactive membership, disabled humans and unsupported service identity in authenticated route tests",
-      "status": "open",
+      "title": "Reject arbitrary organizations, revoked membership, disabled humans and unsupported service identity in authenticated route tests",
+      "status": "done",
       "covers": [
         "AC-01-c1",
         "AC-01-c-wire"
       ],
       "files": [
-        "modules/gateway/tests/internal/test_controller_execution_routes.py"
+        "modules/gateway/tests/internal/test_domain_current_identity.py"
       ],
-      "note": ""
+      "note": "Corrected inactive-selection assumption: nonrevoked membership remains valid after workspace switch. Route tests also cover missing membership, substitution, unavailable Cognito and registry mismatch."
     },
     {
       "id": "AC-02-c1",
@@ -70,7 +74,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
       ],
-      "note": "Inspect existing migration 036 and change only a demonstrated gap."
+      "note": "Inspect migration 036; add only demonstrated gap."
     },
     {
       "id": "AC-02-t1",
@@ -110,7 +114,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Preserve existing permission implications and narrow first-workspace bootstrap."
+      "note": ""
     },
     {
       "id": "AC-03-c2",
@@ -122,7 +126,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
       ],
-      "note": "Do not use optional worker context as the organization authority."
+      "note": ""
     },
     {
       "id": "AC-03-t1",
@@ -167,7 +171,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests"
       ],
-      "note": "Consume #6048's authoritative membership contract when available; do not create another store."
+      "note": "Consume #6048's authoritative membership contract when available."
     },
     {
       "id": "AC-04-c1",
@@ -179,7 +183,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
       ],
-      "note": "Reuse verified run and approval records rather than worker-supplied identity."
+      "note": ""
     },
     {
       "id": "AC-04-c2",
@@ -192,7 +196,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Human-only provider must explicitly refuse unsupported service delegation."
+      "note": ""
     },
     {
       "id": "AC-04-t1",
@@ -250,7 +254,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
         "modules/domain-apps/superplane/src/superplane-api/app/routers/health.py"
       ],
-      "note": "Coordinate common composition boundaries with #5535; do not enable an unqualified reader."
+      "note": "Coordinate common composition boundaries with #5535."
     },
     {
       "id": "AC-05-c-wire",
@@ -263,7 +267,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Use existing registered producer authentication and SigV4 transport."
+      "note": "Route registration exists at this checkpoint; signed transport and real composition still need integration proof."
     },
     {
       "id": "AC-05-t1",
@@ -278,7 +282,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests"
       ],
-      "note": "No cloud provisioning or paid test infrastructure."
+      "note": ""
     },
     {
       "id": "AC-05-t2",
