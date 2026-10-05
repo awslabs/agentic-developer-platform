@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T15:11:57.898Z",
+  "updated_at": "2026-10-05T15:24:11.154Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Source catalog pushed at 19c9252; private SARIF read awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
+      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -43,7 +43,7 @@
         "modules/agent-factory/agent/src/lib/url-guard.ts",
         "modules/agent-factory/agent/src/clients/gitlab_client.ts"
       ],
-      "note": "Merged PR #6733 provides the protection; verified against current source."
+      "note": "Verified merged PR #6733."
     },
     {
       "id": "AC-02-t1",
@@ -58,7 +58,7 @@
         "modules/agent-factory/agent/src/clients/gitlab_client.test.ts",
         "modules/agent-factory/agent/src/lib/url-guard.test.ts"
       ],
-      "note": "2 suites, 61 tests passed."
+      "note": "Two suites, 61 tests passed."
     },
     {
       "id": "AC-02-c2",
@@ -70,7 +70,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.ts"
       ],
-      "note": "Pinned live-status requests to the GitHub API origin and validated repository/issue identifiers; existing fixed-origin callers inspected. Pushed at abb4039.",
+      "note": "Live status pinned to GitHub API origin; pushed at abb4039.",
       "commits": [
         "abb4039"
       ]
@@ -85,40 +85,41 @@
         "AC-02-c2"
       ],
       "files": [
-        "modules/agent-factory/agent/src/github-comments.test.ts",
-        "modules/agent-factory/agent/src/components/checkRunStreamer.test.ts",
-        "modules/agent-factory/agent/src/utils/comment-authority.test.ts",
-        "modules/agent-factory/agent/src/utils/installation.test.ts"
+        "modules/agent-factory/agent/src/github-comments.test.ts"
       ],
-      "note": "6 suites, 139 tests passed with inherited GitHub token variables removed; npm run build passed."
+      "note": "Six suites, 139 tests and agent build passed with inherited GitHub token variables removed."
     },
     {
       "id": "AC-02-c3",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Constrain gateway, Door, Bedrock, and artifact calls without breaking configured services",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src/complex-task-chat",
-        "modules/agent-factory/agent/src/invocability-probe",
-        "modules/agent-factory/agent/src/lib"
+        "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Next independent task."
+      "note": "Vault caller URL must match operator configuration; existing signed-gateway and provider protections checked. Pushed at 3f2661b.",
+      "commits": [
+        "3f2661b"
+      ]
     },
     {
       "id": "AC-02-t3",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run signed-gateway and provider unit fixtures for trusted requests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c3"
       ],
       "files": [
-        "modules/agent-factory/agent/src"
+        "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/vault/tools.test.ts",
+        "modules/agent-factory/agent/src/aws-creds-injector.test.ts"
       ],
-      "note": ""
+      "note": "Nine suites, 136 tests and agent build passed; assigned recall tests updated for existing no-identity-forwarding contract."
     },
     {
       "id": "AC-02-c4",
@@ -131,7 +132,7 @@
         "modules/agent-factory/codex-harness/src/github-entry.mjs",
         "modules/agent-factory/codex-reviewer/src/github.ts"
       ],
-      "note": ""
+      "note": "Next task."
     },
     {
       "id": "AC-02-t4",
@@ -190,7 +191,7 @@
       "files": [
         "data/security"
       ],
-      "note": "All catalog dispositions remain unresolved pending evidence."
+      "note": "Every record remains unresolved pending private baseline review and candidate scan."
     },
     {
       "id": "AC-03-t1",
@@ -218,7 +219,7 @@
         "modules/agent-factory/codex-harness",
         "modules/agent-factory/codex-reviewer"
       ],
-      "note": "Ready PR pending completed implementation and pre-submit checks."
+      "note": "Ready PR awaits completed implementation and pre-submit checks."
     },
     {
       "id": "AC-04-t1",
