@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "issue": 6127,
+  "updated_at": "2026-10-05T23:41:50.181Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Serve authenticated versioned human identity for the registered producer organization",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/internal/controller_execution_routes.py",
+        "modules/gateway/src/shared/identity/workspaces.py"
+      ],
+      "note": "Use actual membership and Cognito enabled state; refuse unsupported service delegation."
+    },
+    {
+      "id": "AC-01-c-wire",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Consume producer-bound identity without email linking or organization privilege union",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": "Export the typed reader contract for adjacent stories."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run Gateway and domain identity unit tests with two-organization membership fixtures",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_controller_execution_routes.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Reject arbitrary organizations, inactive membership, disabled humans and unsupported service identity in authenticated route tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_controller_execution_routes.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Preserve organization-local subject mapping and reject ambiguous legacy projections",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
+      ],
+      "note": "Inspect existing migration 036 and change only a demonstrated gap."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run PostgreSQL migration-preservation tests against existing user references and two-org subjects",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Reject ambiguous legacy organization mappings in database-backed binding tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Require current scoped identity alongside explicit workspace grants on mapped API requests",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": "Preserve existing permission implications and narrow first-workspace bootstrap."
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Revalidate stored organization identity at worker admission and credential boundaries",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
+      ],
+      "note": "Do not use optional worker context as the organization authority."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run API and worker grant tests for read, spend, provision, renew and administer implications",
+      "status": "open",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject revoked workspace grants and first-workspace fallback in API/worker tests",
+      "status": "open",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-03-t3",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject shared-cluster use and cross-workspace observation without distinct authority in integration tests",
+      "status": "open",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": "Consume #6048's authoritative membership contract when available; do not create another store."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Recheck durably recorded original requester and deciding approver at protected execution boundaries",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
+      ],
+      "note": "Reuse verified run and approval records rather than worker-supplied identity."
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Keep human and service credentials and scoped observations separate in authority decisions",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
+      ],
+      "note": "Human-only provider must explicitly refuse unsupported service delegation."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run protected worker/API tests for requester and approver revocation between preview, approval and execution",
+      "status": "open",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": "Assert denial before executor side effects."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject principal-type and subject substitution in authenticated API/worker tests",
+      "status": "open",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-04-t3",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject cross-workspace credential and observation substitution in scoped integration tests",
+      "status": "open",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-05-c1",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Compose the signed domain identity reader and report truthful startup readiness",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/health.py"
+      ],
+      "note": "Coordinate common composition boundaries with #5535; do not enable an unqualified reader."
+    },
+    {
+      "id": "AC-05-c-wire",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Register producer-restricted Gateway route and domain transport contract",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/internal/controller_execution_routes.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
+      ],
+      "note": "Use existing registered producer authentication and SigV4 transport."
+    },
+    {
+      "id": "AC-05-t1",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Run real API/PostgreSQL/registered-worker composition with deterministic current-membership fixtures",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": "No cloud provisioning or paid test infrastructure."
+    },
+    {
+      "id": "AC-05-t2",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Prove zero-workspace onboarding and restart preserve valid and revoked grant behavior",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-05-t3",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Reject provider unavailability and missing membership without paid side effects in composition tests",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "AC-05-t4",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify deployed identity and workspace behavior against an authorized live target",
+      "status": "blocked",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
+    }
+  ]
+}
