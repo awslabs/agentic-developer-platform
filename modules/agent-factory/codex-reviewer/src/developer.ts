@@ -1,3 +1,4 @@
+import { DEVELOPMENT_TIMEOUT_MS } from "./timeouts.js";
 import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex, type CodexOptions, type RunResult } from "@openai/codex-sdk";
 import { readFile, mkdir, writeFile, rm } from "node:fs/promises";
@@ -284,7 +285,7 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
 
   // Developer: one retained thread, many tasks, one PR. The board is published
   // by the controller after each validated turn; the model never writes it.
-  const budget = new ModelExecutionBudget(task.timeoutMs ?? 180 * 60 * 1000);
+  const budget = new ModelExecutionBudget(task.timeoutMs ?? DEVELOPMENT_TIMEOUT_MS);
   // Resume from the branch board when a previous process left one.
   const existing = await readTaskBoardFile(workspace, task.issue);
   if (existing.error) sink.activity(`Task board file ${taskBoardPath(task.issue)} is unreadable and will be rewritten: ${existing.error}`);

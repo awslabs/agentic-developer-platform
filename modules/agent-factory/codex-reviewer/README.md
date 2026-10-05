@@ -48,7 +48,13 @@ optional under the existing repository policy. The controller never turns an
 unavailable observation into success.
 
 CI polling does not consume `CODEX_REVIEWER_TURN_TIMEOUT_MS`: that allowance covers
-cumulative model execution across retained review, repair and verification turns.
+cumulative model execution across retained review, repair and verification turns
+and defaults to six hours (21,600,000 ms). The CI/merge delivery allowance also
+defaults to six hours. The shared worker caps the entire developer or reviewer
+process at six hours of wall time, including CI waits, with 30 seconds to exit
+before killing remaining descendants. These allowances do not add together.
+Explicit model-time overrides remain supported; cancellation, turn limits and
+other policy controls can still end a run earlier.
 The gateway still enforces the flow's policy window, spend and claim on every
 observation and model call. A repair that makes no progress returns its real
 findings rather than repeating model calls on the same head.
@@ -169,7 +175,7 @@ test that covers it), commits with the task id, pushes and keeps one ready PR
 current. Turns end in a structured `complete | checkpoint | blocked` outcome; a
 checkpoint continues the same SDK thread, so the run stops only on completion,
 a concrete blocker, or the allowance. `CODEX_DEVELOPER_TURN_TIMEOUT_MS` (default
-180 minutes of cumulative model execution) and `CODEX_DEVELOPER_MAX_TURNS`
+360 minutes of cumulative model execution) and `CODEX_DEVELOPER_MAX_TURNS`
 (default 24) bound the run. A PR is reported only with the honest outcome: a
 `checkpoint` or exhausted run returns `pr_created` with `completion` and
 `remainingWork` so the reviewer finishes from the published board; a `complete`

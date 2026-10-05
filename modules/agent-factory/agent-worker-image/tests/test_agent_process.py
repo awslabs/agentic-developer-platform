@@ -1,5 +1,8 @@
 import sys
 import time
+from unittest.mock import MagicMock
+
+import pytest
 
 from lib.agent_process import run_agent
 
@@ -101,3 +104,33 @@ def test_control_state_only_counts_running_work(monkeypatch):
     assert progress_is_suspended(env)
     assert progress_is_suspended({"ADP_CONTROL_TOKEN": "test-token"})
     assert not progress_is_suspended({})
+
+
+@pytest.mark.parametrize("persona,expected", [
+    ("developer", 21600), ("reviewer", 21600),
+    ("agent-codex-developer", 21600), ("agent-codex-reviewer", 21600),
+    ("agent-codex-architect", 7200), ("architect", 7200), ("investigator", 7200),
+    ("", 7200),
+])
+@pytest.mark.parametrize("explicit_timeout", [None, 12])
+def test_persona_deadline_reaches_child(monkeypatch, persona, expected, explicit_timeout):
+    child = MagicMock()
+    child.__enter__.return_value = child
+    child.communicate.return_value = ("finished", "")
+    child.returncode = 0
+    monkeypatch.setattr("lib.agent_process.subprocess.Popen", lambda *args, **kwargs: child)
+    monkeypatch.setattr("lib.agent_process.time.monotonic", lambda: 100)
+    result = run_agent(["agent"], env={"AGENT_TYPE": persona}, timeout=explicit_timeout)
+    child.communicate.assert_called_once_with(None, timeout=expected if explicit_timeout is None else explicit_timeout)
+    assert result.returncode == 0
+
+
+def test_inherited_persona_uses_six_hour_deadline(monkeypatch):
+    monkeypatch.setenv("AGENT_TYPE", "agent-codex-developer")
+    child = MagicMock()
+    child.__enter__.return_value = child
+    child.communicate.return_value = (None, None)
+    monkeypatch.setattr("lib.agent_process.subprocess.Popen", lambda *args, **kwargs: child)
+    monkeypatch.setattr("lib.agent_process.time.monotonic", lambda: 100)
+    run_agent(["agent"])
+    child.communicate.assert_called_once_with(None, timeout=21600)

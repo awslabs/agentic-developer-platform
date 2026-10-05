@@ -10,6 +10,10 @@ import subprocess
 
 
 DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60
+DEVELOPMENT_TIMEOUT_SECONDS = 6 * 60 * 60
+DEVELOPMENT_PERSONAS = frozenset({
+    "developer", "reviewer", "agent-codex-developer", "agent-codex-reviewer",
+})
 
 
 def repository_fingerprint(cwd):
@@ -44,9 +48,12 @@ def progress_is_suspended(env):
         return True  # Unknown control state cannot establish active-work time.
 
 
-def run_agent(command, *, timeout=DEFAULT_TIMEOUT_SECONDS, grace=30,
+def run_agent(command, *, timeout=None, grace=30,
               first_progress_timeout=None, progress_poll_seconds=30, progress_suspended=None, **options):
-    env = options.get("env") or {}
+    env = options.get("env") if options.get("env") is not None else os.environ
+    if timeout is None:
+        timeout = (DEVELOPMENT_TIMEOUT_SECONDS if env.get("AGENT_TYPE") in DEVELOPMENT_PERSONAS
+                   else DEFAULT_TIMEOUT_SECONDS)
     if first_progress_timeout is None and env.get("ADP_REQUIRE_IMPLEMENTATION_PROGRESS") == "true":
         first_progress_timeout = 30 * 60
         progress_suspended = lambda: progress_is_suspended(env)

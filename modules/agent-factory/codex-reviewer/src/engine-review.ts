@@ -1,3 +1,4 @@
+import { DEVELOPMENT_TIMEOUT_MS } from "./timeouts.js";
 import { reviewEvents, reviewSignal, reviewOperation } from "./review-observer.js";
 /** One reviewer owns inspection, repairs, CI and deterministic merge delivery. */
 import { loadSharedInstructions } from "./shared-instructions.js";
@@ -160,7 +161,7 @@ export function createReviewServices(runtime: ReviewRuntime & { repository: stri
   const codex = new Codex({ baseUrl: runtime.proxyBaseUrl,
     apiKey: "sigv4-proxy-placeholder", config: { developer_instructions: instructions.text }, env: { ...childEnvironment(), ...(runtime.observer?.control ? { ADP_CODEX_CONTROL_SOCKET: runtime.observer.control.socket } : {}) } });
   // Retained turns share one execution allowance; CI polling does not consume it.
-  const budget = new ModelExecutionBudget(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000));
+  const budget = new ModelExecutionBudget(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? DEVELOPMENT_TIMEOUT_MS));
   const thread = () => codex.startThread({ workingDirectory: runtime.workspace,
     model: selectedModel(), modelReasoningEffort: "high", sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never", networkAccessEnabled: false, webSearchMode: "disabled",
@@ -516,7 +517,7 @@ export async function runEngineReview(
   if (result.merged) return result;
   if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");
   const now = controller.now ?? Date.now;
-  const timeout = controller.deliveryTimeoutMs ?? 60 * 60 * 1000;
+  const timeout = controller.deliveryTimeoutMs ?? DEVELOPMENT_TIMEOUT_MS;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid delivery timeout");
   let deadline = now() + timeout;
   const wait = async (milliseconds: number) => {

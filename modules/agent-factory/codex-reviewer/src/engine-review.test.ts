@@ -642,7 +642,8 @@ test("persistent Git validation failure is bounded and never publishes", async t
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
-for (const queued of [false, true]) test(`delivery deadline retains inspection when ${queued ? "queue" : "CI"} never finishes`, async t => {
+for (const deliveryTimeoutMs of [undefined, 90_000])
+for (const queued of [false, true]) test(`delivery deadline (${deliveryTimeoutMs ?? "default"}) retains inspection when ${queued ? "queue" : "CI"} never finishes`, async t => {
   const state = await fixture(t);
   state.envelope.cycle.reviewer_owned_delivery = true;
   let clock = 0;
@@ -652,10 +653,10 @@ for (const queued of [false, true]) test(`delivery deadline retains inspection w
     fix: async () => { assert.fail("No repair while waiting"); },
     checks: async head => checkObservation(head, queued ? "passed" : "pending", state.sha),
     deliver: async () => ({ state: "pending", queued }),
-    now: () => clock, deliveryTimeoutMs: 90_000,
+    now: () => clock, deliveryTimeoutMs,
     wait: async ms => { clock += ms; },
   });
-  assert.equal(clock, 90_000);
+  assert.equal(clock, deliveryTimeoutMs ?? 21_600_000);
   assert.equal(inspections, 1);
   assert.equal(result.sha, state.sha);
   assert.equal(result.merged, false);
