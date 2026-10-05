@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T15:53:08.359Z",
+  "updated_at": "2026-10-05T16:28:24.255Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access after credential discovery returned 403 insufficient_scope.",
+      "note": "Catalog pushed at 19c9252; private SARIF verification awaits scan-reader access. Credential discovery returned 403 insufficient_scope.",
       "commits": [
         "19c9252"
       ]
@@ -130,7 +130,7 @@
         "modules/agent-factory/codex-reviewer/src/github.ts",
         "modules/agent-factory/codex-harness/src/github-entry.mjs"
       ],
-      "note": "Reviewer repository identifier checked before token acquisition; existing redirect and loopback controls verified. Pushed at 03d35c3.",
+      "note": "Reviewer repository validated before token acquisition; existing redirect and loopback controls verified. Pushed at 03d35c3.",
       "commits": [
         "03d35c3"
       ]
@@ -148,26 +148,27 @@
         "modules/agent-factory/codex-reviewer/src/github.test.ts",
         "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
       ],
-      "note": "Reviewer focused GitHub tests: 45 pass; harness full suite: 156 pass. Reviewer full suite remains open under AC-04-t1 because an installed-skill fixture fails."
+      "note": "Reviewer focused GitHub tests: 45 pass; harness full suite: 156 pass. Reviewer full-suite installed-skill fixture gap remains under AC-04-t1."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Wire shared destination checks into the affected runtime paths",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/agent-factory/agent/src/lib/url-guard.ts"
+        "modules/agent-factory/agent/src/github-comments.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Next task."
+      "note": "Verified live worker constructors invoke the guarded clients; no duplicate helper change required."
     },
     {
       "id": "AC-02-t5",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run local HTTP negative fixtures for hostile origins, redirects, and malformed identifiers",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1",
         "AC-02-c2",
@@ -176,11 +177,13 @@
         "AC-02-c-wire"
       ],
       "files": [
-        "modules/agent-factory/agent/src",
-        "modules/agent-factory/codex-harness/src",
-        "modules/agent-factory/codex-reviewer/src"
+        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts",
+        "modules/agent-factory/codex-reviewer/src/github-redirect.test.ts"
       ],
-      "note": ""
+      "note": "Local GitLab, vault and GitHub fixtures prove allowed credential delivery and zero requests to redirect targets; malformed-input tests passed. Four agent suites, 90 tests and build passed; pushed at f83a57d.",
+      "commits": [
+        "f83a57d"
+      ]
     },
     {
       "id": "AC-03-c1",
@@ -192,7 +195,7 @@
       "files": [
         "data/security"
       ],
-      "note": "All catalog dispositions remain unresolved pending private baseline review and candidate scan."
+      "note": "Next task; all records remain unresolved until report and candidate evidence are reviewed."
     },
     {
       "id": "AC-03-t1",
@@ -236,7 +239,7 @@
         "modules/agent-factory/codex-harness/package.json",
         "modules/agent-factory/codex-reviewer/package.json"
       ],
-      "note": "Agent and harness builds pass; full reviewer suite fails in an installed-skill fixture test that cannot locate its expected skill path."
+      "note": "Agent and harness builds pass; full reviewer suite fails in installed-skill fixture tests that cannot locate their expected path."
     },
     {
       "id": "AC-04-c1",
