@@ -106,6 +106,7 @@ from app.adapters.operation_authority_source import (
     set_acting_principal,
 )
 from app.current_identity import (
+    IdentityDenied,
     IdentityUnavailable,
     identity_checks_enabled,
     require_current_identity,
@@ -245,8 +246,10 @@ async def _authorize(
                 principal_type=caller.principal.account_type,
                 adp_org_id=caller.source_org_id,
             )
-        except IdentityUnavailable:
+        except IdentityDenied:
             raise HTTPException(403, "current ADP identity required") from None
+        except IdentityUnavailable:
+            raise HTTPException(503, "current ADP identity unavailable") from None
         caller = replace(caller, identity_evidence=identity.membership_id)
     request.state.caller = caller
 

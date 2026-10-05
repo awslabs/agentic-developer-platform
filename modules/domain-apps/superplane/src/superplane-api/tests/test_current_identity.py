@@ -9,9 +9,58 @@ from app.adapters.operation_authority_source import (
 )
 from app.current_identity import (
     CurrentIdentity,
+    IdentityDenied,
     IdentityUnavailable,
+    ProducerIdentityReader,
     require_current_identity,
 )
+
+
+class ProducerFixture:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def post(self, route, payload, *, distinguish_denial=False):
+        self.calls.append((route, payload, distinguish_denial))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+async def test_registered_producer_reader_checks_version_scope_and_membership():
+    response = dict(
+        version=1, subject="alice", principal_type="human", adp_org_id="O1",
+        membership_id="member-one", active=True, enabled=True,
+    )
+    transport = ProducerFixture(response)
+    reader = ProducerIdentityReader(transport, domain_org_id="domain-one", adp_org_id="O1")
+    identity = await require_current_identity(reader, subject="alice", principal_type="human", adp_org_id="O1")
+    assert identity.membership_id == "member-one"
+    assert transport.calls == [(
+        "/current-identity",
+        {"domain": "superplane", "org_id": "domain-one", "subject": "alice", "principal_type": "human"},
+        True,
+    )]
+    with pytest.raises(IdentityDenied):
+        await reader.read(subject="alice", principal_type="human", adp_org_id="O2")
+    assert len(transport.calls) == 1
+    transport.result = {**response, "version": 2}
+    with pytest.raises(IdentityUnavailable):
+        await reader.read(subject="alice", principal_type="human", adp_org_id="O1")
+    transport.result = {**response, "enabled": False}
+    with pytest.raises(IdentityDenied):
+        await require_current_identity(reader, subject="alice", principal_type="human", adp_org_id="O1")
+
+
+@pytest.mark.parametrize("failure", ["denied", "unavailable"])
+async def test_registered_producer_reader_distinguishes_denial_from_outage(failure):
+    from app.adapters.operation_dispatch import ProducerRefusedError
+
+    transport = ProducerFixture(ProducerRefusedError() if failure == "denied" else RuntimeError("offline"))
+    reader = ProducerIdentityReader(transport, domain_org_id="domain-one", adp_org_id="O1")
+    with pytest.raises(IdentityDenied if failure == "denied" else IdentityUnavailable):
+        await require_current_identity(reader, subject="alice", principal_type="human", adp_org_id="O1")
 
 
 class Reader:

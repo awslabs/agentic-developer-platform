@@ -1,10 +1,4 @@
-"""Domain-side contract for authoritative ADP principal and membership reads.
-
-The gateway has no endpoint that establishes this complete contract yet. When explicitly enabled, a
-missing reader or incomplete response refuses mapped-tenant capabilities. The
-reader must use an authenticated ADP interface, not token claims or gateway DB
-tables; its result is deliberately not cached between authority boundaries.
-"""
+"""Domain-side contract for uncached authoritative ADP principal and membership reads."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -31,6 +25,41 @@ class IdentityUnavailable(Exception):
     """The upstream identity contract cannot currently establish authority."""
 
 
+class IdentityDenied(IdentityUnavailable):
+    """The upstream provider established that the principal lacks authority."""
+
+
+class ProducerIdentityReader:
+    def __init__(self, transport, *, domain_org_id: str, adp_org_id: str):
+        self.transport = transport
+        self.domain_org_id = domain_org_id
+        self.adp_org_id = adp_org_id
+
+    async def read(self, *, subject: str, principal_type: str, adp_org_id: str) -> CurrentIdentity:
+        if adp_org_id != self.adp_org_id or principal_type not in {"human", "service"}:
+            raise IdentityDenied("current ADP identity organization or type refused")
+        from app.adapters.operation_dispatch import ProducerRefusedError
+
+        try:
+            response = await self.transport.post(
+                "/current-identity",
+                {"domain": "superplane", "org_id": self.domain_org_id, "subject": subject, "principal_type": principal_type},
+                distinguish_denial=True,
+            )
+        except ProducerRefusedError:
+            raise IdentityDenied("current ADP identity refused") from None
+        except Exception:
+            raise IdentityUnavailable("current ADP identity provider unavailable") from None
+        if type(response.get("version")) is not int or response["version"] != 1:
+            raise IdentityUnavailable("unsupported ADP identity contract")
+        try:
+            return CurrentIdentity(**{key: response[key] for key in (
+                "subject", "principal_type", "adp_org_id", "membership_id", "active", "enabled"
+            )})
+        except (KeyError, TypeError):
+            raise IdentityUnavailable("incomplete ADP identity contract") from None
+
+
 async def require_current_identity(
     reader: CurrentIdentityReader | None,
     *,
@@ -45,6 +74,8 @@ async def require_current_identity(
         identity = await reader.read(
             subject=subject, principal_type=principal_type, adp_org_id=adp_org_id
         )
+    except IdentityDenied:
+        raise
     except Exception as exc:
         raise IdentityUnavailable("current ADP identity could not be read") from exc
     if (
@@ -62,7 +93,7 @@ async def require_current_identity(
         or (principal_type == "service" and not identity.delegation_id)
         or (principal_type == "human" and identity.delegation_id is not None)
     ):
-        raise IdentityUnavailable("current ADP principal authority was not established")
+        raise IdentityDenied("current ADP principal authority was not established")
     return identity
 
 

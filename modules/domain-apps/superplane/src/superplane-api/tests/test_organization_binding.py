@@ -75,7 +75,7 @@ async def test_bound_adp_request_uses_server_grant_and_rejects_uuid_bypass(clien
     # Upgrade compatibility: the existing signed-token/live-grant path still works.
     assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 200
     monkeypatch.setattr(settings, "current_identity_enforced", True)
-    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 403
+    assert (await client.get(f"/workspaces/{workspace}", headers=headers)).status_code == 503
 
     class Memberships:
         enabled = True
