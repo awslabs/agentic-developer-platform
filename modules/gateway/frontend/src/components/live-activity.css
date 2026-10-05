@@ -1,0 +1,73 @@
+/* Live Markdown needs explicit typography: this app does not install Tailwind Typography. */
+.live-activity {
+  --live-text: #1e293b;
+  --live-muted: #526176;
+  --live-border: #cbd5e1;
+  --live-surface: #fff;
+  --live-panel: #f1f5f9;
+  --live-accent: #1d4ed8;
+  color: var(--live-text);
+  border-top: 1px solid var(--live-border);
+  padding-top: 1rem;
+}
+.live-activity .live-muted { color: var(--live-muted); }
+.live-checklist { border:1px solid var(--live-border); border-radius:.5rem; padding:1rem; background:var(--live-surface); max-height:18rem; overflow:auto; }
+.live-history { max-height:clamp(20rem, 52vh, 44rem); overflow-y:auto; padding:.25rem; scrollbar-gutter:stable; }
+.live-event { min-width:0; border:1px solid var(--live-border); border-left:3px solid var(--live-accent); border-radius:.5rem; padding:1rem; margin-bottom:1rem; background:var(--live-surface); }
+.live-event[data-category=tool] { border-left-color:var(--live-muted); }
+.live-event-meta { display:flex; flex-wrap:wrap; justify-content:space-between; gap:.25rem 1rem; color:var(--live-muted); font-size:.75rem; margin-bottom:.75rem; }
+.live-event-meta > span { font-weight:650; }
+.live-jump { display:inline-block; color:var(--live-accent); text-decoration:underline; text-underline-offset:3px; font-size:.875rem; margin-bottom:.75rem; }
+.live-markdown { font-size:.9375rem; line-height:1.7; overflow-wrap:anywhere; }
+.live-markdown :is(h1,h2,h3,h4,h5,h6) { font-weight:650; line-height:1.4; margin:1rem 0 .5rem; }
+.live-markdown h1 { font-size:1.25rem; }
+.live-markdown h2 { font-size:1.125rem; }
+.live-markdown h3 { font-size:1rem; }
+.live-markdown p { margin:.65rem 0; }
+.live-markdown > :first-child { margin-top:0; }
+.live-markdown > :last-child { margin-bottom:0; }
+.live-markdown :is(ul,ol) { padding-left:1.4rem; margin:.75rem 0; }
+.live-markdown ul { list-style:disc; }
+.live-markdown ol { list-style:decimal; }
+.live-markdown li { margin:.4rem 0; }
+.live-markdown li > :is(ul,ol) { margin:.25rem 0; }
+.live-checklist ul, .live-markdown .contains-task-list { list-style:none; padding-left:0; }
+.live-markdown input[type=checkbox] { margin-right:.5rem; accent-color:var(--live-accent); }
+.live-markdown a { color:var(--live-accent); text-decoration:underline; text-underline-offset:3px; }
+.live-markdown code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.85em; }
+.live-markdown :not(pre) > code { background:var(--live-panel); border-radius:.25rem; padding:.1rem .3rem; }
+.live-markdown pre { max-width:100%; overflow-x:auto; white-space:pre; background:var(--live-panel); border:1px solid var(--live-border); border-radius:.375rem; padding:.75rem; margin:.75rem 0; line-height:1.6; }
+.live-markdown blockquote { border-left:3px solid var(--live-border); margin:.75rem 0; padding-left:1rem; color:var(--live-muted); }
+.live-markdown hr { border:0; border-top:1px solid var(--live-border); margin:1rem 0; }
+.live-table-scroll { overflow-x:auto; margin:.75rem 0; }
+.live-markdown table { border-collapse:collapse; width:100%; font-size:.875rem; }
+.live-markdown :is(th,td) { border:1px solid var(--live-border); padding:.5rem .75rem; text-align:left; }
+.live-markdown th { background:var(--live-panel); font-weight:650; }
+.live-activity :is(a,button,pre,.live-table-scroll,.live-history,.live-checklist):focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }
+@media (prefers-color-scheme:dark) {
+  .live-activity { --live-text:#e2e8f0; --live-muted:#b6c2d2; --live-border:#475569; --live-surface:#1f2937; --live-panel:#111827; --live-accent:#93c5fd; }
+}
+.task-count { font-weight:650; }
+.task-board progress { display:block; width:100%; height:.5rem; accent-color:var(--live-accent); margin:.65rem 0; }
+.task-count-detail, .task-reference, .task-link-help { font-size:.75rem; line-height:1.6; }
+.task-current { border-left:3px solid var(--live-accent); background:var(--live-panel); padding:.65rem; margin:.75rem 0; font-size:.875rem; }
+.task-current p { margin:.35rem 0 0; }
+.task-filter { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; font-size:.875rem; margin:.75rem 0; }
+.task-filter select { width:100%; padding:.45rem; border:1px solid var(--live-border); border-radius:.3rem; background:var(--live-surface); color:var(--live-text); }
+.live-checklist .task-list { margin:0; padding:0; list-style:none; }
+.live-checklist .task-row { border-top:1px solid var(--live-border); padding:.8rem 0; margin:0; }
+.task-row[data-selected=true] { outline:2px solid var(--live-accent); outline-offset:2px; border-radius:.25rem; }
+.task-status { display:inline-block; border:1px solid var(--live-border); border-radius:.3rem; padding:.1rem .4rem; font-size:.75rem; font-weight:650; }
+.task-row[data-status=in_progress] .task-status { color:var(--live-accent); }
+.task-row[data-status=blocked] .task-status { color:#92400e; background:#fffbeb; border-color:#d97706; }
+.task-row[data-status=completed] .task-status { color:#166534; background:#f0fdf4; border-color:#86efac; }
+.task-description { margin:.5rem 0; }
+.task-activity-link, .task-selection button { color:var(--live-accent); text-decoration:underline; text-underline-offset:3px; font-size:.8125rem; }
+.task-original { border-top:1px solid var(--live-border); margin-top:.75rem; padding-top:.75rem; font-size:.8125rem; }
+.task-original summary { cursor:pointer; color:var(--live-accent); }
+.task-selection { padding:.75rem; border:1px solid var(--live-accent); background:var(--live-panel); border-radius:.375rem; font-size:.875rem; margin:.75rem 0; overflow-wrap:anywhere; }
+.task-mentions { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; font-size:.75rem; margin:.5rem 0; color:var(--live-muted); }
+.task-mentions button { border:1px solid var(--live-border); border-radius:.25rem; color:var(--live-accent); padding:.15rem .4rem; overflow-wrap:anywhere; }
+.task-filter select:focus-visible, .task-original summary:focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }
+.task-selection-actions { display:flex; flex-wrap:wrap; gap:.5rem 1rem; margin-top:.5rem; }
+.task-row:focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }
