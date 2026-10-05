@@ -132,9 +132,20 @@ def get_engine() -> AsyncEngine:
             if settings.rds_iam_auth and settings.rds_host:
                 # NullPool alone cannot refresh the password stored in the URL.
                 # asyncpg calls this password provider for each new connection.
-                from sqlalchemy.pool import NullPool
+                if settings.rds_pool_enabled is True:
+                    # Authentication is checked when a connection is established,
+                    # not on each query. The callable password provider below
+                    # renews IAM tokens for replacement/recycled connections.
+                    engine_kwargs.update(
+                        pool_size=settings.rds_pool_size,
+                        max_overflow=settings.rds_pool_max_overflow,
+                        pool_timeout=settings.rds_pool_timeout_seconds,
+                        pool_recycle=settings.rds_pool_recycle_seconds,
+                    )
+                else:
+                    from sqlalchemy.pool import NullPool
 
-                engine_kwargs["poolclass"] = NullPool
+                    engine_kwargs["poolclass"] = NullPool
 
                 if settings.rds_tls_verify:
                     ssl_ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE_PATH)

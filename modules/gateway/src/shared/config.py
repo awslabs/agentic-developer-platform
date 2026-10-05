@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     rds_dbname: str = "bedrockgateway"  # Database name
     agent_context_dbname: str = "agent_context"  # Knowledge Layer registry DB (Issue #2182)
     rds_tls_verify: bool = True  # Set BG_RDS_TLS_VERIFY=false only for emergency rollback
+    # Opt-in for long-lived gateway workers. Lambda/short-lived callers retain NullPool.
+    rds_pool_enabled: bool = False
+    rds_pool_size: int = Field(default=5, ge=1, le=20)
+    rds_pool_max_overflow: int = Field(default=5, ge=0, le=20)
+    rds_pool_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    rds_pool_recycle_seconds: int = Field(default=600, ge=60, le=3600)
 
     # Redis (optional)
     redis_url: str | None = None

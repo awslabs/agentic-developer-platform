@@ -188,7 +188,8 @@ class TestIsSqliteUrl:
 class TestGetEngine:
     """Tests for get_engine function."""
 
-    def test_long_lived_iam_engine_refreshes_connection_password(self):
+    @pytest.mark.parametrize("pool_enabled", [False, True])
+    def test_long_lived_iam_engine_refreshes_connection_password(self, pool_enabled):
         """A background factory must survive the original token's expiry."""
         from src.shared import database
 
@@ -200,6 +201,11 @@ class TestGetEngine:
             rds_dbname="testdb",
             aws_region="us-east-1",
             rds_tls_verify=True,
+            rds_pool_enabled=pool_enabled,
+            rds_pool_size=5,
+            rds_pool_max_overflow=5,
+            rds_pool_timeout_seconds=10,
+            rds_pool_recycle_seconds=600,
         )
         client = MagicMock()
         client.generate_db_auth_token.side_effect = ["initial-token", "renewed-token"]
@@ -216,6 +222,19 @@ class TestGetEngine:
                 engine = database.get_engine()
                 factory = database.get_session_factory()
                 connect_args = create.call_args.kwargs["connect_args"]
+                engine_options = create.call_args.kwargs
+                if pool_enabled:
+                    assert "poolclass" not in engine_options
+                    assert engine_options["pool_size"] == 5
+                    assert engine_options["max_overflow"] == 5
+                    assert engine_options["pool_timeout"] == 10
+                    assert engine_options["pool_recycle"] == 600
+                else:
+                    from sqlalchemy.pool import NullPool
+
+                    assert engine_options["poolclass"] is NullPool
+                    assert "pool_size" not in engine_options
+                assert engine_options["pool_pre_ping"] is True
                 password = connect_args["password"]
                 assert password() == "initial-token"
                 clock.return_value = 901  # RDS tokens expire after 15 minutes.

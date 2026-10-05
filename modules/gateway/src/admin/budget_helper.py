@@ -55,7 +55,7 @@ class BudgetHelperService:
             from src.shared.config import get_settings
 
             settings = get_settings()
-            if settings.rds_iam_auth and settings.rds_host:
+            if settings.rds_iam_auth and settings.rds_host and settings.rds_pool_enabled is not True:
                 reset_engine()
             factory = get_session_factory()
             async with factory() as session:
