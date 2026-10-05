@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T18:57:39.696Z",
+  "updated_at": "2026-10-05T19:02:58.378Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Prior classification retained; private logs not independently verified.",
+      "note": "Seven identities retained; private baseline logs not independently rechecked.",
       "commits": [
         "3943c86"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed in prior run."
+      "note": "Passed previously and in this continuation."
     },
     {
       "id": "AC-01-t2",
@@ -45,21 +45,21 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed in prior run."
+      "note": "Passed previously and in this continuation."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair common stdlib build path",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/agent-context/images/codegraph-context/Dockerfile",
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Repair committed at b7d60f5; authorized builder and actual builds remain to be verified.",
+      "note": "Prior fix b7d60f5 verified by three successful no-push builds at 5d352a49; build IDs and evidence recorded in PR.",
       "commits": [
         "b7d60f5"
       ]
@@ -69,14 +69,14 @@
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run stdlib checks and three recipe builds",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local checks passed previously; actual builds pending."
+      "note": "Three successful CodeBuild runs each logged five in-image regressions; five host regressions passed; codebuild/tests/: 99 passed, 1 expected skip."
     },
     {
       "id": "AC-02-c2",
@@ -89,7 +89,7 @@
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Prior compatibility repair committed; exact donor manifest and permissions unverified.",
+      "note": "Prior compatibility repair committed; exact donor manifest and permission need verification.",
       "commits": [
         "467acf4"
       ]
@@ -106,7 +106,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Local rejection tests passed previously; actual builds pending."
+      "note": "Invalid-input checks pass locally; actual builds pending."
     },
     {
       "id": "AC-02-c-wire",
@@ -135,7 +135,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Passed in prior run."
+      "note": "Passed locally."
     },
     {
       "id": "AC-03-c1",
