@@ -677,7 +677,8 @@ def test_codex_review_archives_progress_before_terminal_status(worker, monkeypat
     archive = MagicMock(return_value="runs/reviewer/transcript.md")
     monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", archive)
     assert entrypoint.main() == 0
-    assert archive.call_args.args[0] == "Live reviewer activity"
+    assert archive.call_args.args[0].startswith("Live reviewer activity")
+    assert "Child process exit code: 0" in archive.call_args.args[0]
     entrypoint._record_session_id.assert_called_once()
     assert row(client, envelope)["transcript_key"] == {"S": "runs/reviewer/transcript.md"}
 

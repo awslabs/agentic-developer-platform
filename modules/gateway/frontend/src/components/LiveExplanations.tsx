@@ -1,12 +1,14 @@
+import './run-workspace.css';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useRevalidatingFeaturesQuery } from '@/hooks/useFeatures';
 import { FeedError, readExplanations, type LiveExplanation } from '@/services/agentExplanations';
 
 /** Authored explanations remain separate from control acknowledgements. */
-export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal }: {
-  invocationId: string; isOpen: boolean; terminal: boolean; onTerminal?: () => void;
+export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, workspace = false }: {
+  invocationId: string; isOpen: boolean; terminal: boolean; onTerminal?: () => void; workspace?: boolean;
 }) {
+  const [filter, setFilter] = useState<'all' | 'updates' | 'tools'>('all');
   const flags = useRevalidatingFeaturesQuery();
   const enabled = !flags.isPending && !flags.isError && flags.data?.agent_explanations === true;
   const [events, setEvents] = useState<LiveExplanation[]>([]);
@@ -81,7 +83,8 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal }:
     void connect();
     return () => { closed = true; clearTimeout(retry); clearInterval(watchdog); controller?.abort(); };
   }, [enabled, invocationId, isOpen, terminal]);
-  if (!enabled || !isOpen) return null;
+  if (!isOpen) return null;
+  if (!enabled) return workspace ? <p className="text-sm">Live explanations are unavailable. Run metadata and any retained transcript remain available.</p> : null;
   const last = events.reduce<LiveExplanation | undefined>((latest, event) => !latest || event.sequence > latest.sequence ? event : latest, undefined);
   return <section aria-label="Implementation explanations" className="space-y-3 border-t pt-4">
     <h3 className="font-semibold">Implementation explanations</h3>
@@ -89,20 +92,31 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal }:
     {last && <p className="text-xs text-gray-500">Last explanation: <time dateTime={last.timestamp}>{new Date(last.timestamp).toLocaleTimeString()}</time></p>}
     {gap && <p role="status">Some live history is unavailable. The final transcript may contain more detail.</p>}
     {!events.length && !terminal && <p className="text-sm">Waiting for an explanation from this run.</p>}
+    <div className={workspace ? "run-progress-grid" : "space-y-4"}>
+    <aside className="run-checklist">
     {plan && <section aria-label="Task checklist" className="rounded border p-3 prose prose-sm dark:prose-invert max-w-none">
       <h4>Task checklist</h4>
       <ReactMarkdown skipHtml components={{ img: () => null }}>{plan.payload.text}</ReactMarkdown>
     </section>}
+    {!plan && <p className="text-sm text-gray-500">{terminal ? 'Assignment checklist was not captured in this live view. Check the retained run record.' : 'Waiting for the assignment checklist.'}</p>}
+    <p className="text-xs text-gray-500 mt-3">Agent-reported tasks. Checked items do not prove review acceptance or merge.</p>
+    </aside>
+    <div className="min-w-0">
+    {workspace && <nav aria-label="Activity filters" className="run-tabs">
+      {(['all', 'updates', 'tools'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{value === 'all' ? 'All activity' : value === 'updates' ? 'Updates' : 'Tools & logs'}</button>)}
+    </nav>}
     {!!updates && <button type="button" className="text-sm text-blue-600 underline" onClick={() => {
       end.current?.scrollIntoView({ block: 'nearest' }); setUpdates(0);
     }}>Jump to latest ({updates} new updates)</button>}
     <div className="max-h-96 overflow-y-auto space-y-4 break-words" tabIndex={0} aria-label="Explanation history">
-      {events.filter(event => event.payload.progress?.category !== 'plan').map(event => <article key={`${event.generation}:${event.payload.progress?.id ?? event.sequence}`} className="prose prose-sm dark:prose-invert max-w-none">
+      {events.filter(event => event.payload.progress?.category !== 'plan' && (!workspace || filter === 'all' || (filter === 'tools' ? event.payload.progress?.category === 'tool' : event.payload.progress?.category !== 'tool'))).map(event => <article key={`${event.generation}:${event.payload.progress?.id ?? event.sequence}`} className="prose prose-sm dark:prose-invert max-w-none">
         {event.payload.progress?.category === 'tool' && event.payload.progress.state === 'running' && !terminal && status !== 'Finished' &&
           <p className="text-xs text-gray-500">{status === 'Connected' ? 'Running' : 'Last reported running'} · {Math.max(0, Math.floor((now - Date.parse(event.payload.progress.started_at)) / 1000))}s elapsed</p>}
         <ReactMarkdown skipHtml components={{ img: () => null }}>{event.payload.text}</ReactMarkdown>
       </article>)}
       <div ref={end} />
+    </div>
+    </div>
     </div>
   </section>;
 }

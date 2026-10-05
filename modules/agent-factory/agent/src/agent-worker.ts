@@ -1485,6 +1485,11 @@ Now, complete the assigned task.`;
       log('INFO', `CheckRunStreamer active for check run ${crId}`);
     }
   }
+  if (!checkRunStreamer) checkRunStreamer = new CheckRunStreamer({
+    checkRunId: 0, repo: `${REPO_OWNER}/${REPO_NAME}`, tokenProvider: () => '',
+    persona: AGENT_TYPE, issueNumber: parseInt(ISSUE_NUMBER) || 0, model: MODEL,
+    log: msg => log('WARN', msg),
+  });
   // ─────────────────────────────────────────────────────────────────────────
 
   // ── Codex Event Watcher ───────────────────────────────────────────────────
@@ -1711,6 +1716,7 @@ Now, complete the assigned task.`;
         onSessionId: (sessionId) => {
           log('INFO', `SDK session id captured: ${sessionId}`, { phase: 'session-id', sessionId });
           writeResultMetadata({ session_id: sessionId });
+          checkRunStreamer?.runRecord.session(sessionId);
         },
         log: (msg) => log('WARN', msg),
       })) {

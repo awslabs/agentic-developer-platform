@@ -49,3 +49,15 @@ test('structured reviewer turns still publish checklist updates before returning
   assert.match(plans[0]!, /0 of 1 tasks complete/);
   assert.match(plans[1]!, /1 of 1 tasks complete/);
 });
+
+test('scopes inspection and assignment SDK threads separately', () => {
+  const scopes: unknown[] = [];
+  const observer: ReviewObserver = {
+    explanation() {}, activity() {}, session() {}, async finish() {}, async fail() {},
+    progress(_text, detail) { scopes.push(detail.plan_scope); },
+  };
+  for (const scope of ['assignment', 'inspection'] as const) {
+    reviewEvents(observer, true, scope)!({ type: 'item.updated', item: { type: 'todo_list', id: 'p', items: [{ text: 'Task', completed: false }] } });
+  }
+  assert.deepEqual(scopes, ['assignment', 'inspection']);
+});

@@ -109,3 +109,12 @@ test('latest sanitized checklist survives history eviction and rapid updates wit
   expect(hub.replay().events[0].payload.text).toContain('omitted');
   expect(JSON.stringify(hub.replay())).not.toContain('AKIA');
 });
+
+it('inspection plans cannot replace the pinned assignment checklist', () => {
+  const hub = new ExplanationEvents('run', 1);
+  hub.publish('- ☐ Repair and deliver', { id: 'assignment', category: 'plan', state: 'running' });
+  hub.publish('- ☑ Read diff', { id: 'inspect', category: 'plan', state: 'completed', plan_scope: 'inspection' });
+  for (let i = 0; i < 200; i++) hub.publish(`Tool activity ${i}`);
+  const plans = hub.replay().events.filter(e => e.payload.progress?.category === 'plan');
+  expect(plans.map(e => e.payload.text)).toEqual(['- ☐ Repair and deliver']);
+});

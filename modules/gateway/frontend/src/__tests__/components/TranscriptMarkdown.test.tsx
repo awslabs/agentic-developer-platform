@@ -20,3 +20,10 @@ describe('saved transcript presentation', () => {
     expect(screen.getByRole('link', { name: 'PR' })).toHaveAttribute('href', 'https://github.com/aws-e/adp/pull/6625');
   });
 });
+
+
+it('hides the machine record envelope from the rendered transcript', () => {
+  render(<TranscriptMarkdown markdown={'<!-- adp-run-record:v1 eyJ2ZXJzaW9uIjoxfQ== -->\n\n# Recorded work'} />);
+  expect(screen.getByRole('heading', { name: 'Recorded work' })).toBeInTheDocument();
+  expect(screen.queryByText(/adp-run-record/)).not.toBeInTheDocument();
+});

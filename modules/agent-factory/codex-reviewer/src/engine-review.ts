@@ -144,7 +144,7 @@ export function createReviewServices(runtime: ReviewRuntime & { repository: stri
       runtime.observer?.explanation('Reviewing correctness and security, and running the relevant tests.');
       return budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
         { outputSchema: engineReviewSchema, signal: reviewSignal(signal, runtime.observer) }, undefined,
-        instructions.verify, reviewEvents(runtime.observer, true))).finalResponse));
+        instructions.verify, reviewEvents(runtime.observer, true, 'inspection'))).finalResponse));
     },
     fix: async prompt => {
       runtime.observer?.explanation('Planning the next repair milestone, then checking and publishing its checkpoint.');

@@ -158,3 +158,19 @@ test.each(['agent-codex-developer', 'agent-codex-reviewer'])('%s retains running
   expect(comments().at(-1)).not.toContain('2 of 2 tasks complete');
   expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining(after), 'utf8');
 });
+
+test('archives Codex assignment progress across repair and inspection SDK sessions', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.session('repair-session');
+  reporter.progress!('- ☐ Deliver story', { id: 'repair-plan', category: 'plan', state: 'running' });
+  reporter.session('inspection-session');
+  reporter.progress!('- ☑ Read diff', { id: 'inspection-plan', category: 'plan', state: 'completed', plan_scope: 'inspection' });
+  await reporter.finish({ summary: 'Inspection done; delivery remains open' });
+  const writes = (fs.writeFileSync as jest.Mock).mock.calls.filter(([path]) => path === '/tmp/adp-run-transcript.md.tmp');
+  const markdown = writes.at(-1)![1] as string;
+  const encoded = /^<!-- adp-run-record:v1 ([A-Za-z0-9+/=]+) -->/.exec(markdown)![1];
+  const record = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  expect(record.session_ids).toEqual(['repair-session', 'inspection-session']);
+  expect(record.latest_checklist.tasks.map((t: any) => t.text)).toEqual(['Deliver story']);
+  expect(record.latest_checklist.tasks[0].status).toBe('pending');
+});

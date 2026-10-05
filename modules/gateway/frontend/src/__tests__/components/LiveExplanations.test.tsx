@@ -102,3 +102,21 @@ it('pins the latest checklist across tool history eviction and clears it on a di
   view.rerender(<LiveExplanations invocationId="other" isOpen terminal />);
   expect(screen.queryByRole('region', { name: 'Task checklist' })).not.toBeInTheDocument();
 });
+
+it('filters tool activity while retaining the checklist and a single stream connection', () => {
+  render(<LiveExplanations invocationId="run" isOpen terminal={false} workspace />);
+  act(() => {
+    const plan = explanation(1, '- ☐ Finish assignment');
+    plan.event!.payload.progress = { id: 'plan', category: 'plan', state: 'running', started_at: '' };
+    send(plan);
+    send(explanation(2, 'Repair explanation'));
+    const tool = explanation(3, 'npm test');
+    tool.event!.payload.progress = { id: 'tool', category: 'tool', state: 'completed', started_at: '' };
+    send(tool);
+  });
+  act(() => screen.getByRole('button', { name: 'Tools & logs' }).click());
+  expect(screen.getByText('npm test')).toBeInTheDocument();
+  expect(screen.queryByText('Repair explanation')).not.toBeInTheDocument();
+  expect(screen.getByText('☐ Finish assignment')).toBeInTheDocument();
+  expect(readExplanations).toHaveBeenCalledTimes(1);
+});

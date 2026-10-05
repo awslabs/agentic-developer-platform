@@ -21,6 +21,8 @@
  */
 
 import * as fs from 'fs';
+import { RunRecordCapture } from '../run-record';
+import { claudeTaskChecklist } from '../claude-progress';
 import { assistantText, truncateUtf8 } from '../reporting-text';
 
 // ---------------------------------------------------------------------------
@@ -135,6 +137,7 @@ export class CheckRunStreamer {
   private readonly startTimeMs: number;
   private readonly warn: (msg: string) => void;
 
+  readonly runRecord: RunRecordCapture;
   private turns: TurnRecord[] = [];
   private totalCostUsd: number = 0;
   /** Estimated Codex delegation cost (display only; issue #2970). */
@@ -151,6 +154,7 @@ export class CheckRunStreamer {
 
   constructor(cfg: CheckRunStreamerConfig) {
     this.cfg = cfg;
+    this.runRecord = new RunRecordCapture(cfg);
     this.startTimeMs = Date.now();
     this.warn = cfg.log ?? ((msg) => console.warn(`[CheckRunStreamer] ${msg}`));
   }
@@ -178,6 +182,8 @@ export class CheckRunStreamer {
     const text = assistantText(data.content);
 
     for (const block of data.content) {
+      const checklist = claudeTaskChecklist(block);
+      if (checklist) this.runRecord.checklist(checklist);
       if (block.name) {
         tools.push({ name: block.name, inputPreview: this._previewInput(block.name, block.input ?? {}) });
       }
@@ -191,6 +197,7 @@ export class CheckRunStreamer {
     }
 
     this.turns.push({ turn: data.turn, tools, text });
+    if (text) this.runRecord.evidence(text);
     this._schedulePatch();
   }
 
@@ -254,6 +261,7 @@ export class CheckRunStreamer {
   /** Clean up timers. Call when the message loop exits. */
   destroy(): void {
     this.destroyed = true;
+    this.runRecord.close();
     this._clearMidTurnTimer();
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
@@ -334,6 +342,7 @@ export class CheckRunStreamer {
   /** Readable archive of captured explanations, independent of GitHub's display budget. */
   buildTranscript(): string {
     const parts = [
+      this.runRecord.markdown(),
       `# Agent implementation transcript: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
       `Model: ${this.cfg.model} · Assistant turns recorded: ${this.turns.length}`,
       'This record preserves captured assistant explanations in order. Claims are agent-reported; '

@@ -110,7 +110,10 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       text = publicDeveloperText(text);
       control.events?.publish(text, detail);
       if (detail.state !== 'running' || detail.category === 'tool' || detail.category === 'plan') {
-        if (detail.category === 'plan') live.setTaskChecklist(text);
+        if (detail.category === 'plan' && detail.plan_scope !== 'inspection') {
+          live.setTaskChecklist(text);
+          check.runRecord.checklist(text);
+        }
         else if (detail.category === 'message') live.setExplanation(text);
         else live.appendActivity(text);
         check.onTurn({ turn: ++sequence, content: [{ type: 'text', text }] });
@@ -124,7 +127,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       check.onTurn({ turn: ++sequence, content: [{ type: 'tool_use', name: 'Codex', input: { command: text } }] });
       log('INFO', text);
     },
-    session(id) { metadata({ session_id: id }); },
+    session(id) { metadata({ session_id: id }); check.runRecord.session(id); },
     async finish(result) {
       if (ended) return;
       try {

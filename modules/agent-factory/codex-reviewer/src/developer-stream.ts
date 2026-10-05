@@ -5,7 +5,7 @@ import { interruptedTransport } from './turn.js';
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string };
   observeEvent?(event: ThreadEvent): void;
-  progress?(text: string, detail: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed' }): void;
+  progress?(text: string, detail: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed'; plan_scope?: 'assignment' | 'inspection' }): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;

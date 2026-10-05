@@ -8,6 +8,7 @@ export interface ProgressDetail {
   category: 'message' | 'tool' | 'plan';
   state: 'running' | 'completed' | 'failed';
   started_at?: string;
+  plan_scope?: 'assignment' | 'inspection';
 }
 export interface ExplanationEvent {
   version: 1;
@@ -37,6 +38,10 @@ export class ExplanationEvents {
   cursor(sequence: number): string { return `${this.invocationId}:${this.generation}:${sequence}`; }
   publish(text: string, progress?: ProgressDetail): void {
     if (!text.trim() || this.ended) return;
+    if (progress?.category === 'plan' && progress.plan_scope === 'inspection') {
+      progress = { ...progress, category: 'message' };
+      text = 'Inspection steps (not the assignment checklist)\n\n' + text;
+    }
     if (containsSecret(text) || Object.entries(process.env).some(([key, value]) =>
       /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
       text = '[Explanation omitted because it contains credential-like content.]';

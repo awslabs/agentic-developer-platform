@@ -11,6 +11,8 @@
  * remains for standalone use from the activity table.
  */
 
+import { RunRecordSummary } from '@/components/RunRecordSummary';
+import { parseRunRecord } from '@/utils/runRecord';
 import { Children, isValidElement, type ReactNode } from 'react';
 import './transcript.css';
 import { useQuery } from '@tanstack/react-query';
@@ -53,7 +55,7 @@ export function TranscriptMarkdown({ markdown }: { markdown: string }) {
           pre: ({ children }) => <pre tabIndex={0} aria-label="Code or command output">{children}</pre>,
         }}
       >
-        {markdown}
+        {markdown.replace(/^<!-- adp-run-record:v1 [A-Za-z0-9+/=]{1,1400000} -->\r?\n?/, '')}
       </ReactMarkdown>
     </article>
   );
@@ -99,7 +101,14 @@ export function TranscriptContent({
   if (!invocationId) return null;
 
   return (
-    <div className="max-h-[70vh] overflow-y-auto">
+    <div>
+      <div className="run-identity mb-4 text-xs"><span>Invocation ID: <code>{invocationId}</code></span>
+        {markdown && <button type="button" className="text-blue-600" onClick={() => {
+          const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+          const link = document.createElement('a'); link.href = url; link.download = `run-${invocationId}.md`; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }}>Download original transcript</button>}
+      </div>
       {isLoading && (
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
@@ -121,7 +130,10 @@ export function TranscriptContent({
       )}
 
       {!isLoading && !error && markdown && (
-        <TranscriptMarkdown markdown={markdown} />
+        <div className="run-archive-grid">
+          <RunRecordSummary record={parseRunRecord(markdown, invocationId)} />
+          <div className="min-w-0"><TranscriptMarkdown markdown={markdown} /></div>
+        </div>
       )}
 
       {!isLoading && !error && !markdown && (
@@ -158,7 +170,7 @@ export function TranscriptViewer({
   if (!invocationId) return null;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Run Transcript" size="xl">
+    <Modal isOpen={isOpen} onClose={onClose} title="Run Transcript" size="workspace">
       <TranscriptContent
         invocationId={invocationId}
         isAdmin={isAdmin}

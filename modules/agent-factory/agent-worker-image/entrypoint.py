@@ -916,7 +916,43 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
             if github_text
             else ""
         )
+    # The child writes this atomically after each observation. Preserve its last
+    # checklist even when it exits before CheckRunStreamer can flush a transcript.
+    # The invocation match prevents stale artifacts from crossing run boundaries.
+    if not transcript_text.startswith("<!-- adp-run-record:v1 "):
+        try:
+            import base64
+            with open(os.path.join(directory, "adp-run-record.json"), "rb") as fh:
+                raw = fh.read(1024 * 1024 + 1)
+            if len(raw) <= 1024 * 1024:
+                record = json.loads(raw)
+                invocation = os.environ.get("ADP_MESSAGE_ID")
+                if (isinstance(record, dict) and record.get("version") == 1
+                        and invocation and record.get("invocation_id") == invocation):
+                    encoded = base64.b64encode(raw).decode("ascii")
+                    transcript_text = (
+                        f"<!-- adp-run-record:v1 {encoded} -->\n\n"
+                        "## Partial run record\n\n"
+                        "Recovered the last saved observations after the child exited. "
+                        "The explanation transcript may be incomplete. "
+                        "Checklist state is agent-reported, not proof of acceptance.\n\n"
+                        + transcript_text
+                    )
+        except (OSError, ValueError, UnicodeError):
+            pass  # A missing or malformed report cannot block terminal handling.
     return github_text, transcript_text
+
+
+def _with_worker_exit_observation(transcript: str, returncode: int) -> str:
+    """Retain the observed process exit without predicting the final delivery outcome."""
+    if not transcript:
+        return transcript
+    return transcript + (
+        "\n\n## Worker exit observation\n\n"
+        f"Child process exit code: {returncode}. "
+        "This records process exit only. Delivery validation and final invocation "
+        "status are recorded separately by the platform.\n"
+    )
 
 
 def _upload_transcript_to_s3(
@@ -2973,6 +3009,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if is_codex_review and abort_outcome is None:
         _record_session_id(message_id, arrived_at)
         _, transcript_text = _read_run_reports()
+        transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
         transcript_key = _upload_transcript_to_s3(
             transcript_text, repo, issue, message_id, arrived_at, persona
         )
@@ -3081,6 +3118,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # GitHub's clipped display is separate from the readable explanation archive.
     # Read outside the check-run block so archival remains independent of finalize.
     final_text, transcript_text = _read_run_reports()
+    transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
     if review_note:
         final_text = _join_notes(final_text or "", review_note)
         transcript_text = _join_notes(transcript_text or "", review_note)
