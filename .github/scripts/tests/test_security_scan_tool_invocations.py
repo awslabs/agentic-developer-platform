@@ -595,6 +595,44 @@ def test_paired_inventory_correction_must_match_historical_gap(tmp_path, tamper)
         reconcile.observed_results(tmp_path, tmp_path / "rejected", revision, {"image"}, False)
 
 
+@pytest.mark.parametrize("tamper", (None, "missing", "unproven", "not_terminal", "not_removed", "mismatch"))
+def test_observed_results_cli_requires_complete_cleanup_receipt(tmp_path, monkeypatch, tamper):
+    source_revision = "a" * 40
+    for tool in ("grype", "syft"):
+        write_image_evidence(tmp_path, tool, source_revision, "sha256:" + "b" * 64)
+    inventory = tmp_path / "inventory.json"
+    write_json(inventory, [{"name": "image"}])
+    children = {
+        tool: {"build_id": f"adp-dev-{tool}-scan:fixture", "terminal_status": "SUCCEEDED", "source_removed": True}
+        for tool in ("grype", "syft")
+    }
+    receipt = {"cleanup_complete": True, "children": children, "errors": []}
+    if tamper == "unproven":
+        del children["syft"]
+    elif tamper == "not_terminal":
+        children["grype"]["terminal_status"] = "IN_PROGRESS"
+    elif tamper == "not_removed":
+        children["syft"]["source_removed"] = False
+    elif tamper == "mismatch":
+        receipt["cleanup_complete"] = False
+    if tamper != "missing":
+        write_json(tmp_path / "cleanup.json", receipt)
+    output = tmp_path / "observed-results.json"
+    monkeypatch.setattr(sys, "argv", [
+        "reconcile_security_scan.py", "observed-results",
+        "--evidence-dir", str(tmp_path), "--provenance-output", str(tmp_path / "provenance"),
+        "--inventory", str(inventory), "--source-revision", source_revision,
+        "--cleanup-complete", "true", "--output", str(output),
+    ])
+    if tamper:
+        with pytest.raises(ValueError):
+            reconcile.main()
+        assert not output.exists()
+    else:
+        reconcile.main()
+        assert json.loads(output.read_text())["cleanup_complete"] is True
+
+
 def test_observed_receipt_inputs_preserve_cleanup_and_hash_real_private_artifacts(tmp_path):
     source_revision = "a" * 40
     digest = "sha256:" + "b" * 64

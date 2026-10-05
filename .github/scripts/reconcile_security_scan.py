@@ -315,6 +315,29 @@ def cleanup_children(state_dir: Path, expected_children: set[str], region: str, 
     return result
 
 
+def validate_cleanup_receipt(path: Path, expected_complete: bool):
+    receipt = load_json(path)
+    if (not isinstance(receipt, dict)
+            or set(receipt) != {"cleanup_complete", "children", "errors"}
+            or type(receipt["cleanup_complete"]) is not bool
+            or receipt["cleanup_complete"] != expected_complete
+            or not isinstance(receipt["children"], dict)
+            or not isinstance(receipt["errors"], list)):
+        raise ValueError("cleanup receipt does not match the observed cleanup state")
+    if expected_complete:
+        if receipt["errors"] or set(receipt["children"]) != {"grype", "syft"}:
+            raise ValueError("cleanup receipt does not prove both children finished")
+        for tool, child in receipt["children"].items():
+            if (not isinstance(child, dict)
+                    or set(child) != {"build_id", "terminal_status", "source_removed"}
+                    or not isinstance(child["build_id"], str)
+                    or not child["build_id"].split(":", 1)[0].endswith(f"-{tool}-scan")
+                    or child["terminal_status"] not in TERMINAL_BUILD_STATES
+                    or child["source_removed"] is not True):
+                raise ValueError(f"cleanup receipt lacks terminal child and source removal: {tool}")
+    return receipt
+
+
 def expected_image_names(path: Path) -> set[str]:
     targets = load_json(path)
     names = {item.get("name") for item in targets if isinstance(item, dict)} if isinstance(targets, list) else set()
@@ -351,7 +374,9 @@ def main():
     if args.command == "validate-findings":
         validate_findings(args.findings_dir, expected_image_names(args.inventory))
     elif args.command == "observed-results":
-        result = observed_results(args.evidence_dir, args.provenance_output, args.source_revision, expected_image_names(args.inventory), args.cleanup_complete == "true")
+        cleanup_complete = args.cleanup_complete == "true"
+        validate_cleanup_receipt(args.evidence_dir / "cleanup.json", cleanup_complete)
+        result = observed_results(args.evidence_dir, args.provenance_output, args.source_revision, expected_image_names(args.inventory), cleanup_complete)
         args.output.write_text(json.dumps(result, sort_keys=True) + "\n")
     elif args.command == "sanitize-summary":
         sanitize_summary(args.summary, args.output, args.source_revision, args.correlation)
