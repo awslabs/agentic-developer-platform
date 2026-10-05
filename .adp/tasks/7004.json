@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "issue": 7004,
+  "updated_at": "2026-10-05T14:54:37.981Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Build occurrence inventory and provenance reconciliation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        ".github/scripts/diff_security_findings.py"
+      ],
+      "note": "Keep native severity precedence and package/path occurrences distinct; do not publish private report contents."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test inventory with synthetic SARIF fixtures",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Cover duplicate advisories at different paths, unrated errors, and accepted suppressions."
+    },
+    {
+      "id": "AC-01-c2",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Trace assigned reports to exact scanned artifacts and inputs",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Credential broker returned 403 insufficient_scope for credential:list; the specified scan-reader connection cannot yet be selected."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify private SARIF hashes, counts, coverage, and provenance",
+      "status": "blocked",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [],
+      "note": "Requires authorized scan-reader access to the assigned private S3 objects."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair or substantiate shared curl package and backport behavior",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/security/curl-8.22.0/Dockerfile"
+      ],
+      "note": "Check merged #6540 source and patch evidence against this scan before changing it."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test curl source provenance, TLS variants, and HTTPS/Git fixtures",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "platform/security/curl-8.22.0/verify-upstream.sh"
+      ],
+      "note": "Existing tests may need a container builder unavailable in this environment."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair applicable DeepWiki OS, Python, npm, and ABI findings",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/Dockerfile"
+      ],
+      "note": "Include actual PyJWT copies; preserve existing application entrypoints."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test DeepWiki startup, indexing, retrieval, imports, and native ABI",
+      "status": "open",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [],
+      "note": "Run existing fixtures without provider workloads."
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair high-security overlay without losing parent fixes",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/high-security/Dockerfile"
+      ],
+      "note": "Verify the overlay's pinned parent against the candidate."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test high-security overlay and non-root runtime regressions",
+      "status": "open",
+      "covers": [
+        "AC-02-c3"
+      ],
+      "files": [],
+      "note": "Check security overlay and preserved runtime identity."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record exact-candidate dispositions for every assigned occurrence",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Use fixed, evidence-reviewed not-applicable, or unresolved; retain private raw evidence outside public docs."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rescan three exact candidate images and compare assigned records",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Needs report access and a compatible builder/scanner; no validation infrastructure will be provisioned just for tests."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject unsupported safe dispositions and new critical/high regressions",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Blank fix versions or a patched version string alone cannot close a record."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate the reviewed curl artifact into both DeepWiki variants",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/Dockerfile",
+        "modules/agent-context/images/deepwiki/high-security/Dockerfile"
+      ],
+      "note": "Keep a single shared curl decision for downstream image owners."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run composed image smoke, TLS, import, and overlay checks",
+      "status": "open",
+      "covers": [
+        "AC-04-c-wire"
+      ],
+      "files": [],
+      "note": "Verify final composed artifacts, not isolated package version strings."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Prepare reviewed candidate, rollback, and rollout handoff",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Report tested revisions and digests; production rollout remains a separate maintainer handoff."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Review AC-to-evidence mapping and downstream curl disposition",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Do not claim merged or deployed acceptance from a PR or local build."
+    }
+  ]
+}
