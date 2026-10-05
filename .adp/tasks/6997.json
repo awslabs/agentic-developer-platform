@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6997,
-  "updated_at": "2026-10-05T15:02:48.558Z",
+  "updated_at": "2026-10-05T15:06:37.965Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -31,7 +31,7 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Seven identities and original/current denominators tested."
+      "note": "Seven identities and old/new denominators tested."
     },
     {
       "id": "AC-01-t2",
@@ -59,7 +59,7 @@
         "modules/agent-context/images/context-mcp/Dockerfile",
         "modules/agent-context/images/litellm-proxy/Dockerfile"
       ],
-      "note": "Recipes repaired at b7d60f5; code task awaits its covering actual-build test because no container builder/socket is available here.",
+      "note": "Recipe repair at b7d60f5 awaits actual image builds to satisfy its covering test.",
       "commits": [
         "b7d60f5"
       ]
@@ -76,34 +76,37 @@
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Reviewed source hashes, negative legacy-patch check, five security regressions and recipe tests pass; actual image builds require an existing authorized builder, not new test infrastructure."
+      "note": "Local source-hash, regression and recipe checks pass; no existing container builder/socket is available."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Resolve pinned ingestion input for ingestion overlays and parser",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/agent-context/images/ingestion/Dockerfile",
         "modules/agent-context/images/parser/Dockerfile"
       ],
-      "note": "Next independent task; registry identity/provenance unresolved."
+      "note": "Python compatibility repaired at 467acf4; exact donor manifest/authorization cannot be determined because credential discovery returns insufficient_scope. Digest remains unchanged.",
+      "commits": [
+        "467acf4"
+      ]
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Build ingestion family and reject invalid registry inputs",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c2"
       ],
       "files": [
         "codebuild/tests/test_security_image_scan.py"
       ],
-      "note": "Do not count inaccessible images."
+      "note": "Pinned-donor consistency tests pass; actual builds and manifest verification require authorized existing registry/builder access."
     },
     {
       "id": "AC-02-c-wire",
@@ -116,7 +119,7 @@
         "codebuild/security_image_targets.py",
         "codebuild/scan_security_images.py"
       ],
-      "note": "Retain required-target rejection."
+      "note": "Next independent task: strengthen required-target rejection without relying on live registry access."
     },
     {
       "id": "AC-02-t3",
@@ -143,7 +146,7 @@
         "codebuild/scan_security_images.py",
         ".github/workflows/security-scan.yml"
       ],
-      "note": "Inspect existing enforcement."
+      "note": "Inspect current enforcement."
     },
     {
       "id": "AC-03-t1",
@@ -155,7 +158,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "deployed-target: executor and coordinator after integration; authenticated metered rerun needed."
+      "note": "deployed-target: executor and coordinator after integration; authorized metered rerun needed."
     },
     {
       "id": "AC-04-c1",
