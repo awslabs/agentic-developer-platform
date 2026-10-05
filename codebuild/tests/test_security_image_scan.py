@@ -16,7 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "codebuild"))
 import scan_security_images as runner
-from security_image_targets import DOC_API_COMPAT, ORIGINAL_GAPS, SUPERPLANE, discover, non_runtime_fixtures
+from security_image_targets import DOC_API_COMPAT, ORIGINAL_GAPS, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, non_runtime_fixtures
 
 
 @pytest.fixture
@@ -287,6 +287,23 @@ def test_reviewed_stdlib_sources_and_security_boundaries(tmp_path):
     (tmp_path / "stringprep.py").write_text("unexpected upstream source")
     with pytest.raises(RuntimeError, match="Unexpected CPython source"):
         module.verify(tmp_path, manifest, "after")
+
+
+def test_full_scan_requires_every_context_image_recipe(source):
+    images = {target["dockerfile"]: target for target in discover(ROOT)}
+    assert set(REQUIRED_CONTEXT_DOCKERFILES) == {path for path in images if path in REQUIRED_CONTEXT_DOCKERFILES}
+    assert all(images[path]["required"] for path in REQUIRED_CONTEXT_DOCKERFILES)
+    (source / "codebuild/security_image_targets.py").touch()
+    for dockerfile in REQUIRED_CONTEXT_DOCKERFILES:
+        destination = source / dockerfile
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / dockerfile, destination)
+    assert len(discover(source, "all")) == len(discover(source, "superplane")) + len(REQUIRED_CONTEXT_DOCKERFILES)
+    missing = source / "modules/agent-context/images/parser/Dockerfile"
+    missing.unlink()
+    with pytest.raises(ValueError, match="Missing maintained image Dockerfiles:.*parser/Dockerfile"):
+        discover(source, "all")
+    assert len(discover(source, "superplane")) == 5
 
 
 def test_copy_tree_preparation_replaces_stale_build_inputs(tmp_path):

@@ -20,6 +20,11 @@ ORIGINAL_GAPS = {
     "modules-agent-context-images-parser": "pinned ingestion ECR input returned 403",
 }
 
+REQUIRED_CONTEXT_DOCKERFILES = {
+    f"modules/agent-context/images/{name}/Dockerfile"
+    for name in ("codegraph-context", "context-mcp", "ingestion", "ingestion/high-security", "litellm-proxy", "parser")
+}
+
 
 def non_runtime_fixtures(root: Path, scope: str = "all") -> list[dict]:
     if scope != "all" or not (root / DOC_API_COMPAT).is_file():
@@ -108,6 +113,8 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
     lock = yaml.safe_load((root / SUPERPLANE / "releases/superplane.lock.yaml").read_text())
     components = lock["maintained_source"]["components"]
     required = {str(SUPERPLANE / path / "Dockerfile") for path in components.values()}
+    if scope == "all" and (root / "codebuild/security_image_targets.py").is_file():
+        required.update(REQUIRED_CONTEXT_DOCKERFILES)
     excluded = {fixture["dockerfile"] for fixture in non_runtime_fixtures(root, scope)}
     targets = []
     for directory, dirs, files in os.walk(root):
@@ -131,7 +138,7 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
         })
     missing = required - {target["dockerfile"] for target in targets}
     if missing:
-        raise ValueError(f"Missing maintained Superplane Dockerfiles: {sorted(missing)}")
+        raise ValueError(f"Missing maintained image Dockerfiles: {sorted(missing)}")
     # Images built from maintained source are covered above; resolved external
     # runtimes (currently SkyPilot) must also be scanned, by digest, never by tag.
     for name, digest in lock["images"].items():
