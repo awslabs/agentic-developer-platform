@@ -493,6 +493,13 @@ jobs:
           cat > /tmp/superplane-handles-cov.ini <<'INI'
           [run]
           concurrency = greenlet,thread
+          [report]
+          include =
+              app/services/provider_handles.py
+              app/services/provider_authority.py
+              app/services/provider_inventory.py
+              app/routers/provider_handles.py
+              app/models/provider_handle.py
           INI
           # The transferred tree is excluded from the general module lint pass.
           # Explicitly lint these maintained provider modules and regressions.
@@ -501,12 +508,12 @@ jobs:
             app/models/provider_handle.py tests/test_provider_handles.py \
             tests/test_provider_handles_postgres.py \
             alembic/versions/013_add_provider_operations.py
+          # Measure the app directory without coverage's dotted-module discovery
+          # importing ORM models before pytest. SQLAlchemy's C-extension state can
+          # retain those provisional imports and fail on the first session flush.
+          # The report keeps the same five modules and unchanged coverage floor.
           python3 -m pytest tests/test_provider_handles.py -v --tb=short \
-            --cov=app.services.provider_handles \
-            --cov=app.services.provider_authority \
-            --cov=app.services.provider_inventory \
-            --cov=app.routers.provider_handles \
-            --cov=app.models.provider_handle \
+            --cov=app \
             --cov-config=/tmp/superplane-handles-cov.ini \
             --cov-report=term-missing --cov-fail-under=85
 

@@ -351,9 +351,10 @@ def main(argv=None) -> int:
             database_check(migrating=args.action == "migrate", verify_role_default=True)
         )
         if args.action == "migrate":
-            from alembic import command
             from alembic.config import Config
             from alembic.script import ScriptDirectory
+
+            from alembic import command
             from app.database import engine
 
             expected = os.environ["SUPERPLANE_EXPECTED_SCHEMA"]

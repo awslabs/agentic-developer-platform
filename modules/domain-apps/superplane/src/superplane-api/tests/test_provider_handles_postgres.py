@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from superplane_contracts import (
@@ -25,8 +27,6 @@ from superplane_contracts import (
     Submitter,
 )
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from app.database import Base
 from app.models.organization import Organization
 from app.models.provider_handle import (
