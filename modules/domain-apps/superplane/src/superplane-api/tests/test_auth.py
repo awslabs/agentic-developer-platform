@@ -2581,6 +2581,18 @@ class TestEnvironmentStateIsObservable:
         assert "domain_auth_enforced" in body
         assert isinstance(body["cognito_enabled"], bool)
 
+    @pytest.mark.parametrize("cognito_enabled", [False, True])
+    @pytest.mark.asyncio
+    async def test_health_reports_configured_cognito_state_with_strict_policy(
+        self, client, enforcing, monkeypatch, cognito_enabled
+    ):
+        monkeypatch.setattr(settings, "cognito_enabled", cognito_enabled)
+        response = await client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["cognito_enabled"] is cognito_enabled
+        assert response.json()["domain_auth_enforced"] is True
+
     @pytest.mark.asyncio
     async def test_health_reflects_the_loaded_policy_not_the_setting(
         self, client, enforcing
