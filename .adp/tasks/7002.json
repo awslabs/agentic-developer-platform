@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7002,
-  "updated_at": "2026-10-05T15:04:02.418Z",
+  "updated_at": "2026-10-05T16:36:21.300Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -15,7 +15,7 @@
         "platform/automation-infra/Dockerfile",
         "platform/arc-runner/security/scan/reconcile.py"
       ],
-      "note": "Original reports and coverage cannot be read: broker denies credential:list and credential:assume-role.",
+      "note": "New owner-selected connection `adp-agent--embark1` returns 403 insufficient_scope for credential:list and credential:assume-role; original reports remain inaccessible. Existing partial commit c6b43a7.",
       "commits": [
         "c6b43a7"
       ]
@@ -32,126 +32,126 @@
       "files": [
         "platform/arc-runner/security/scan/test_reconcile.py"
       ],
-      "note": "Five synthetic tests pass; original report hashes and occurrences remain unverified."
+      "note": "Previous five synthetic tests do not establish original report hashes or occurrence mapping."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Refresh shipped ARC runner toolchain from reviewed upstream releases",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [
         "platform/arc-runner/Dockerfile"
       ],
-      "note": "Cannot select or prove a fix without assigned finding paths and an image-build path; prior merged fixes predate this scan."
+      "note": "Pending exact finding inventory and review of suitable toolchain releases."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Pin automation derivative to the reviewed ARC base image",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "No newly reviewed candidate base digest exists."
+      "note": "Await reviewed immutable ARC candidate digest."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run image build and runner registration/job fixture with CLI smoke checks",
-      "status": "blocked",
+      "status": "open",
       "covers": [
         "AC-02-c1",
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Docker is unavailable; no validation infrastructure was provisioned."
+      "note": "Docker unavailable locally; existing authorized build path not yet verified."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Check runner identity and toolchain regression paths in disposable fixture",
-      "status": "blocked",
+      "status": "open",
       "covers": [
         "AC-02-c1",
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "No candidate image is available for executable and npm inventory."
+      "note": "Await executable candidate inventory."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
       "title": "Record per-occurrence fixed or narrowly supported dispositions",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [],
-      "note": "Private original reports are inaccessible; all dispositions remain unresolved."
+      "note": "Original reports and candidate scans still needed; all assigned occurrences unresolved."
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Rescan both immutable candidate images and compare assigned occurrences",
-      "status": "blocked",
+      "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "No candidate images or local Grype executable."
+      "note": "Await immutable candidates and authorized existing scanner path."
     },
     {
       "id": "AC-03-t2",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Reject unresolved findings and new critical/high regressions",
-      "status": "blocked",
+      "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Requires original reports and candidate scans."
+      "note": "Await original and candidate reports."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Document reviewed image inputs, consumer, and rollback handoff",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [],
-      "note": "Consumer identified from source; exact tested candidate digest and rollback input are pending."
+      "note": "Consumer identified earlier; candidate digest and rollback handoff pending."
     },
     {
       "id": "AC-04-c-wire",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Integrate derivative build against exact reviewed base digest",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [
         "platform/automation-infra/Dockerfile"
       ],
-      "note": "No reviewed base digest or available build path."
+      "note": "Await reviewed ARC candidate."
     },
     {
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Repeat affected checks on final composed artifact",
-      "status": "blocked",
+      "status": "open",
       "covers": [
         "AC-04-c1",
         "AC-04-c-wire"
       ],
       "files": [],
-      "note": "Final composed artifact has not been built."
+      "note": "Await composed candidate."
     }
   ]
 }
