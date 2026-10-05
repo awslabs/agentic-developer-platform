@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:44:23.129Z",
+  "updated_at": "2026-10-05T23:45:54.892Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Verified by mounted test."
+      "note": "Mounted behavior verified."
     },
     {
       "id": "R5.1-t1",
@@ -42,7 +42,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Verified by mounted and startup tests."
+      "note": "Mounted and startup behavior verified."
     },
     {
       "id": "R5.2-t1",
@@ -72,7 +72,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
         "modules/domain-apps/superplane/src/superplane-api/app/routers/internal.py"
       ],
-      "note": "Merged validators unchanged; tests pass."
+      "note": "Merged validators unchanged."
     },
     {
       "id": "R5.3-t1",
@@ -116,7 +116,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Existing binding verified against spoofed headers."
+      "note": "Binding verified against spoofed headers."
     },
     {
       "id": "R5.4-t1",
@@ -145,7 +145,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": "Local health reports configured flag independently of loaded strict policy; not deployed evidence."
+      "note": "Local configuration verified; not deployed evidence."
     },
     {
       "id": "R5.5-t1",
@@ -171,7 +171,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Added because R5.5-t1 requires a deployed target. Both flag values passed; 152 auth tests passed. Commit cdf629e.",
+      "note": "Offline/live split added because R5.5-t1 needs a deployed target; commit cdf629e.",
       "commits": [
         "cdf629e"
       ]
@@ -181,26 +181,29 @@
       "kind": "code",
       "criterion": "R5.6",
       "title": "Preserve scoped service and admitted-operation authorization",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": ""
+      "note": "Offline mounted service scope and server-held grant recheck verified; production integration is not claimed."
     },
     {
       "id": "R5.6-t1",
       "kind": "test",
       "criterion": "R5.6",
       "title": "Run mounted service-scope and injected-operation unit negatives",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R5.6-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Injected state is not production-identity evidence."
+      "note": "Read 200, provision 403, read after revocation 403; 153 auth tests passed. Commit 2992049.",
+      "commits": [
+        "2992049"
+      ]
     },
     {
       "id": "R5.6-t2",
