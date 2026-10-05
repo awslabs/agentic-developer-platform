@@ -1,19 +1,17 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-05T23:50:36.055Z",
+  "updated_at": "2026-10-05T23:55:33.357Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
-      "title": "Dispatch exact approved native lifecycle phases through the registered worker",
+      "title": "Dispatch approved native lifecycle phases through the registered worker",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/executor/superplane_executor/task_worker.py"
-      ],
-      "note": "Committed as 6d8a26ed3; covered by AC-01-t4.",
+      "files": [],
+      "note": "Previously committed; covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1870,12 +1868,8 @@
       "title": "Expose authenticated non-consuming installed-worker binding proof",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/gateway/src/internal/domain_operation_binding_proof_routes.py",
-        "modules/gateway/src/internal/domain_operation_store.py",
-        "modules/gateway/src/internal/controller_execution_routes.py"
-      ],
-      "note": "Committed as 931919ffe; covered by AC-01-t5. Deployment permissions and activation remain separate work.",
+      "files": [],
+      "note": "Previously committed; covered by AC-01-t5.",
       "commits": [
         "931919f"
       ]
@@ -1885,13 +1879,16 @@
       "kind": "code",
       "criterion": "AC-01",
       "title": "Compose governed API lifecycle admission with actual authority and execution dependencies",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": ""
+      "note": "Committed and remote-verified at f6cf57672; covered by AC-01-t6.",
+      "commits": [
+        "f6cf576"
+      ]
     },
     {
       "id": "AC-01-c-wire",
@@ -1900,11 +1897,8 @@
       "title": "Wire admitted operation through durable outbox and registered lifecycle worker",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/executor",
-        "modules/domain-apps/superplane/src/superplane-api"
-      ],
-      "note": ""
+      "files": [],
+      "note": "Next task; public entrypoints must check live binding before domain writes."
     },
     {
       "id": "AC-01-t4",
@@ -1915,10 +1909,8 @@
       "covers": [
         "AC-01-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/executor/tests/test_native_paid_worker_mode.py"
-      ],
-      "note": "114 focused executor, image and handoff tests passed locally.",
+      "files": [],
+      "note": "114 focused tests previously passed.",
       "commits": [
         "105f0f8",
         "3cede13",
@@ -3775,11 +3767,23 @@
       "covers": [
         "AC-01-c2"
       ],
-      "files": [
-        "modules/gateway/tests/internal/test_domain_operation_binding_proof.py",
-        "modules/gateway/tests/orchestration/test_internal_plane_guard.py"
+      "files": [],
+      "note": "113 tests previously passed."
+    },
+    {
+      "id": "AC-01-t6",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run focused API composition, admission, and capability tests",
+      "status": "done",
+      "covers": [
+        "AC-01-c3"
       ],
-      "note": "Added to cover the bounded proof route while end-to-end AC-01-t1 remains open; 113 tests passed locally, including mismatched and inactive installations."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_composition.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py"
+      ],
+      "note": "Added as focused coverage while cross-component AC-01-t1 remains open; 121 tests passed at f6cf57672."
     },
     {
       "id": "AC-01-t1",
@@ -3793,10 +3797,7 @@
         "AC-01-c3",
         "AC-01-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/executor/tests",
-        "modules/domain-apps/superplane/src/superplane-api/tests"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3810,11 +3811,8 @@
         "AC-01-c2",
         "AC-01-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/executor/tests",
-        "modules/gateway/tests"
-      ],
-      "note": "The focused binding negatives passed; the broader cross-component cases remain."
+      "files": [],
+      "note": "Focused binding negatives passed; cross-component cases remain."
     },
     {
       "id": "AC-01-t3",
@@ -3826,9 +3824,7 @@
         "AC-01-c1",
         "AC-01-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/executor/tests"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3838,9 +3834,7 @@
       "title": "Probe compatible real lifecycle and authority dependencies at readiness time",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/capability_probes.py"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3850,10 +3844,8 @@
       "title": "Fence paid-worker activation on verified installed binding and current dependencies",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/installation/paid_worker.py"
-      ],
-      "note": "Must address scoped Gateway read permission and reviewed-release comparison; current installation remains paused and controller-only."
+      "files": [],
+      "note": "Requires scoped Gateway reads and reviewed-release comparison."
     },
     {
       "id": "AC-02-t1",
@@ -3865,10 +3857,7 @@
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_capability_probes.py",
-        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3881,9 +3870,7 @@
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3893,10 +3880,7 @@
       "title": "Keep changed API, worker, installer, and Gateway packages buildable",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane",
-        "modules/gateway"
-      ],
+      "files": [],
       "note": ""
     },
     {
@@ -3919,7 +3903,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "PR #7047 is open; evaluator handoff remains."
+      "note": "PR #7047 is ready and current; evaluator handoff remains."
     },
     {
       "id": "AC-04-t1",
@@ -3931,7 +3915,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": ""
+      "note": "PR head verified at f6cf57672; no checks reported yet."
     },
     {
       "id": "AC-04-c2",
@@ -3953,7 +3937,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "deployed-target: foreground/#5540 owns release and live verification; this assignment authorizes no deployment."
+      "note": "deployed-target: foreground/#5540 owns release and live verification; no deployment authorized."
     }
   ]
 }
