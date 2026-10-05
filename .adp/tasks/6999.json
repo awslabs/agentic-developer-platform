@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "issue": 6999,
+  "updated_at": "2026-10-05T14:53:56.586Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Map all eleven scanner records to call sites, input controls, and prior fixes",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Include native severity, original report identity/hash, and artifact provenance."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify original-record count and mapping against the frozen SARIF report",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Private scan-reader access is not yet verified."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Fix any exposed fetch path and document narrowly supported browser and timer dispositions",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Preserve browser/auth flows and heartbeat/deadline cleanup."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run frontend, heartbeat, and Task SDK unit regression checks",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": ""
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test adversarial URL redirects and timer callback versus string-source behavior",
+      "status": "open",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": ""
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record per-record candidate dispositions without suppressing scanner rules",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Unresolved applicability must remain open."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run Semgrep on all assigned locations and unsafe server-fetch and string-timer controls",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Scanner availability and private SARIF access still need checking."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate evidence and rollback notes for the composed candidate and coordinator handoff",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Production rollout and merge belong to their named owners."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run full affected suites and frontend build on final candidate",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Final artifact and checks will be recorded in the ready PR."
+    }
+  ]
+}
