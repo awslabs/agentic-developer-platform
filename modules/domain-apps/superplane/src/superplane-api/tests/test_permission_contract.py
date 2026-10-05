@@ -58,6 +58,8 @@ def test_matrix_matches_real_mounted_domain_routes():
         assert action["principal"] in {"human", "service", "human_or_service"}
         assert isinstance(action["extra"], list)
         assert action["surface"] == "absent" or action["surface"].startswith(("cli:", "ui:", "tool:"))
+        assert all(surface.startswith("cli:") and surface != action["surface"] for surface in action.get("also_surfaces", []))
+        assert all(surface.startswith("cli:") and surface not in [action["surface"], *action.get("also_surfaces", [])] for surface in action.get("unavailable_surfaces", []))
         if not action["routes"]:
             assert action["surface"] == "absent"
             assert action["scope"] in {"workspace", "cluster"}
@@ -126,6 +128,106 @@ def test_maintained_ui_action_names_and_routes_are_real():
                 assert ui_actions[name] in action["routes"]
                 mapped[name] = ui_actions[name]
     assert mapped == ui_actions
+
+
+
+def test_maintained_cli_and_tool_surface_parity():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    cli = {
+        surface
+        for action in actions.values()
+        for surface in [action["surface"], *action.get("also_surfaces", [])]
+        if surface.startswith("cli:")
+    }
+    assert cli == {
+        "cli:workspace delete", "cli:deploy profiles", "cli:events --workspace",
+        "cli:events", "cli:provider-connection create", "cli:provider-connection show",
+        "cli:provider-connection validate", "cli:provider-connection rotate",
+        "cli:provider-connection revoke", "cli:research findings/proposal list/show, sources/stats",
+        "cli:research proposal create", "cli:research proposal approve/reject",
+        "cli:onboarding capabilities", "cli:workspace create", "cli:onboarding plan",
+        "cli:onboarding create", "cli:onboarding adopt", "cli:workspace list", "cli:cluster list",
+        "cli:workspace describe", "cli:node list", "cli:quota show", "cli:workspace kubeconfig",
+        "cli:onboarding lifecycle list", "cli:onboarding lifecycle preview", "cli:onboarding lifecycle continue",
+        "cli:deploy list", "cli:deploy create", "cli:deploy preview", "cli:deploy delete",
+        "cli:deploy teardown-preview", "cli:quota set", "cli:cost --workspace", "cli:cost --org",
+        "cli:onboarding operation show", "cli:onboarding operation recover",
+        "cli:onboarding approval request", "cli:deploy preview --request-approval",
+        "cli:onboarding approval show", "cli:onboarding approval decide", "cli:account list",
+        "cli:provider list", "cli:onboarding connection credentials", "cli:account onboard",
+        "cli:account delete", "cli:aws-onboard register", "cli:provider add", "cli:provider delete",
+        "cli:onboarding connection bind", "cli:onboarding connection show",
+        "cli:onboarding connection validate", "cli:onboarding connection revoke",
+    }
+    lifecycle = (DOMAIN / "cli/adp-superplane-lifecycle.py").read_text()
+    assert '"delete"' in lifecycle and '"profiles"' in lifecycle
+    assert 'for action in ("create", "show", "validate", "rotate", "revoke"):' in lifecycle
+    assert 'base = BASE + "/workspaces/" + workspace + "/provider-connections"' in lifecycle
+    assert '"validate": "/validation", "rotate": "/rotation"' in lifecycle
+    assert '"DELETE" if action == "revoke" else "POST"' in lifecycle
+    assert '"DELETE",\n        None,\n        before,' in lifecycle
+    for name, route in {
+        "workspace.retire": "DELETE /workspaces/{workspace_id}",
+        "serving.read": "GET /workspaces/{workspace_id}/deployment-profiles",
+        "provider_connection.create": "POST /workspaces/{workspace_id}/provider-connections",
+        "provider_connection.read": "GET /workspaces/{workspace_id}/provider-connections/{connection_id}",
+        "provider_connection.validate": "POST /workspaces/{workspace_id}/provider-connections/{connection_id}/validation",
+        "provider_connection.rotate": "POST /workspaces/{workspace_id}/provider-connections/{connection_id}/rotation",
+        "provider_connection.revoke": "DELETE /workspaces/{workspace_id}/provider-connections/{connection_id}",
+        "workspace.events.read": "GET /events/workspaces/{workspace_id}",
+    }.items():
+        assert route in actions[name]["routes"]
+    research = ast.parse((DOMAIN / "cli/adp-superplane-research.py").read_text())
+    run = next(node for node in research.body if isinstance(node, ast.FunctionDef) and node.name == "execute")
+    first_guard = next(node for node in ast.walk(run) if isinstance(node, ast.If) and "scan" in ast.unparse(node.test) and "generate" in ast.unparse(node.test))
+    access_token = next(node for node in ast.walk(run) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "access_token")
+    assert first_guard.lineno < access_token.lineno
+    assert '"unavailable"' in ast.unparse(first_guard) or "'unavailable'" in ast.unparse(first_guard)
+    gateway = (REPO / "modules/gateway/cli/adp-superplane.py").read_text()
+    for fragment in (
+        'args.subcommand == "kubeconfig"', 'api.request("POST", f"{API_BASE}/workspaces/{segment(identifier)}/kubeconfig")',
+        'api.request("PATCH", path, body)', 'API_BASE + "/orgs/cost"',
+        'API_BASE + "/workspaces"', 'API_BASE + "/accounts"',
+        'DOMAIN_CREDENTIALS = "/vault/credentials"',
+        'api.request("POST", API_BASE + DOMAIN_CREDENTIALS, body)',
+        'api.request("POST", API_BASE + "/operation-approvals", approval)',
+    ):
+        assert fragment in gateway
+    onboarding = ast.parse((REPO / "modules/gateway/cli/adp-superplane-onboarding.py").read_text())
+    endpoint_table = next(node.value for node in onboarding.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "ENDPOINTS" for target in node.targets))
+    endpoints = ast.literal_eval(endpoint_table)
+    for action_id, endpoint_names in {
+        "capabilities.read": ("capabilities",),
+        "workspace.create": ("previewWorkspace", "createWorkspace", "adoptWorkspace"),
+        "workspace.lifecycle_proposal": ("listLifecycleProposals", "previewLifecycleProposal", "continueLifecycleProposal"),
+        "approval.request": ("requestApproval",),
+        "approval.read": ("getApproval",),
+        "approval.decision": ("decideApproval",),
+        "org.operations.read": ("getOperation", "recoverOperation"),
+        "provider_connection.create": ("registerConnection",),
+        "provider_connection.read": ("getConnection",),
+        "provider_connection.validate": ("validateConnection",),
+        "provider_connection.revoke": ("revokeConnection",),
+    }.items():
+        for name in endpoint_names:
+            endpoint = endpoints[name]
+            assert endpoint["served"] is True
+            assert f'{endpoint["method"]} {endpoint["path"]}' in actions[action_id]["routes"]
+    assert '"org":' in gateway and '"user":' in gateway
+    assert actions["org.settings"]["surface"] == actions["org.users.manage"]["surface"] == "absent"
+    assert 'if argv and argv[0] in REDIRECTED:' in gateway
+    assert actions["workspace.kubeconfig"]["surface"] == "cli:workspace kubeconfig"
+    assert actions["workspace.quota.change"]["surface"] == "cli:quota set"
+    assert actions["workspace.cost.read"]["surface"] == "cli:cost --workspace"
+    assert actions["org.accounts.manage"]["surface"] == "cli:account onboard"
+    assert actions["research.scan"]["surface"] == "absent"
+    assert actions["research.scan"]["unavailable_surfaces"] == ["cli:research scan"]
+    assert actions["research.propose"]["unavailable_surfaces"] == ["cli:research proposal generate"]
+    assert "POST /api/v1/research/proposals/generate" in actions["research.propose"]["routes"]
+    assert MATRIX["verification"]["surfaces"] == "ui_routes_checked_cli_gateway_lifecycle_onboarding_research_checked_no_mcp_domain_api_action"
+    mcp = (DOMAIN / "tools/superplane-mcp/superplane_mcp/server.py").read_text()
+    assert "from .contract import CONTRACT_VERSION, IS_MOCK, CapacityContract, ContractError" in mcp
+    assert not any("tool:" in surface for action in actions.values() for surface in [action["surface"], *action.get("also_surfaces", [])])
 
 
 def test_platform_roles_are_not_workspace_presets():

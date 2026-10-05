@@ -13,8 +13,15 @@ conservative all-live-workspaces gate. No ordinary ADP role provides either gran
 
 Only the mounted route, scope and permission labels are proven by the inventory
 test. `principal` and `extra` record declared requirements, not evidence that all
-of them are enforced by every listed endpoint. UI route names are checked; CLI
-and tool descriptions still need integration evidence. Route presence also does
+of them are enforced by every listed endpoint. UI route names and Gateway/onboarding/lifecycle/research CLI action availability are checked; the
+MCP capacity tools use their own contract and do not call the domain API. An
+`also_surfaces` entry records a second maintained client for the same action;
+`unavailable_surfaces` records a command that exists but refuses execution.
+Research CLI scan/generate intentionally return `unavailable` before a request,
+even though their API endpoints are mounted. Other `surface: absent` entries have no maintained domain-API client action
+verified by this matrix. CLI cluster listing is an eligibility view of the
+organization workspace list, not a cluster-use grant. Redirected org/user
+administration commands remain absent as domain administration surfaces. Route presence also does
 not mean a capability is enabled. Consumers must preserve these verification
 limits rather than generate production authorization from this JSON alone.
 
