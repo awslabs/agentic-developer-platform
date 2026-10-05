@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:50:16.794Z",
+  "updated_at": "2026-10-05T23:53:23.287Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -257,7 +257,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Current source retains the mounted PROVISION guard; #6993 fixture files unchanged."
+      "note": "Mounted PROVISION guard retained; #6993 fixtures unchanged."
     },
     {
       "id": "R6.1-t1",
@@ -273,7 +273,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_history.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py"
       ],
-      "note": "Historical/current pair and same-org peer grant denial; 159 passed. Commit 185fd23f.",
+      "note": "Historical/current pair and same-org peer-grant denial; 159 passed. Commit 185fd23f.",
       "commits": [
         "185fd23"
       ]
@@ -283,40 +283,43 @@
       "kind": "code",
       "criterion": "R6.2",
       "title": "Preserve explicit classification for all mounted routes",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
       ],
-      "note": "Coordinate any demonstrated inventory change with #6484."
+      "note": "Existing inventory unchanged; mounted family classes and scopes pinned."
     },
     {
       "id": "R6.2-t1",
       "kind": "test",
       "criterion": "R6.2",
       "title": "Run mounted inventory parity and domain/internal denial tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R6.2-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": ""
+      "note": "Family classification and inventory parity pass; commit 0541bff7.",
+      "commits": [
+        "0541bff"
+      ]
     },
     {
       "id": "R6.2-t2",
       "kind": "test",
       "criterion": "R6.2",
       "title": "Reject unclassified mounted routes rather than permitting exposure",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R6.2-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": ""
+      "note": "Unknown-route 403 with absent and valid signed token; 192 combined tests passed. Commit 0541bff7."
     },
     {
       "id": "R6.3-c1",
