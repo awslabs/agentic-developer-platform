@@ -29,15 +29,24 @@ from .workspace import Workspace
 
 PREFIX = "/internal/v1/controller-execution"
 TERMINAL = {"succeeded", "failed", "unknown", "cancelled"}
+LIFECYCLE_PHASES = frozenset(
+    {"prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"}
+)
+RETIREMENT_ACCESS_PHASE = "prepare-retirement-access"
 
 
-def require_selected_task_mode(*, lifecycle):
+def require_selected_task_mode(*, lifecycle, phase=None):
     """A native-only deployment never inherits lifecycle authority from a queue."""
     mode = os.environ.get("SUPERPLANE_PAID_WORKER_MODE", "legacy")
-    if mode not in {"legacy", "native-controller"}:
+    if mode not in {"legacy", "native-controller", "native-lifecycle"}:
         raise OperationRefused("paid worker deployment mode is unavailable")
-    if lifecycle and mode == "native-controller":
-        raise OperationRefused("native paid worker refuses workspace lifecycle tasks")
+    if lifecycle:
+        if mode != "native-lifecycle":
+            raise OperationRefused("paid worker refuses workspace lifecycle tasks")
+        if phase is not None and phase not in LIFECYCLE_PHASES | {
+            RETIREMENT_ACCESS_PHASE
+        }:
+            raise OperationRefused("paid worker lifecycle phase is unavailable")
 
 
 def write_private(path, value, *, mode=0o600):
@@ -267,11 +276,32 @@ async def execute(transport, original, deadline, stop):
             original["workspace_id"],
         ):
             raise OperationRefused("paid lease changed original admission")
-        require_selected_task_mode(
-            lifecycle="runtime_config_sha256" in operation.request.parameters
-        )
+        parameters = operation.request.parameters
+        phase = parameters.get("lifecycle_phase")
+        lifecycle = "runtime_config_sha256" in parameters or phase is not None
+        require_selected_task_mode(lifecycle=lifecycle, phase=phase)
+        if lifecycle and phase is None:
+            raise OperationRefused("paid worker lifecycle phase is missing")
+        if phase in LIFECYCLE_PHASES and "runtime_config_sha256" not in parameters:
+            raise OperationRefused("paid worker lifecycle configuration is missing")
         domain, execution = await pools(stack)
-        if "runtime_config_sha256" in operation.request.parameters:
+        if phase == RETIREMENT_ACCESS_PHASE:
+            from workspace_provisioning.retirement_access_runtime import (
+                run_retirement_access,
+            )
+
+            await run_retirement_access(
+                operation,
+                SimpleNamespace(
+                    connect=execution.acquire,
+                    domain_connect=domain.acquire,
+                    authority=transport,
+                    policy_file=Path(required("SUPERPLANE_LIFECYCLE_POLICY_FILE")),
+                    state_root=Path(required("SUPERPLANE_LIFECYCLE_STATE_DIR")),
+                    base_session=boto3.Session(),
+                ),
+            )
+        elif phase in LIFECYCLE_PHASES:
             from workspace_provisioning.runtime import run_lifecycle
 
             policy_file = Path(required("SUPERPLANE_LIFECYCLE_POLICY_FILE"))
