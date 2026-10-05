@@ -175,6 +175,18 @@ ENDPOINTS = {
         "served": True,
         "capability": "deciding an operation approval",
     },
+    "previewRetirement": {
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/retirement/preview",
+        "served": True,
+        "capability": "reviewing the exact workspace retirement inventory",
+    },
+    "admitRetirement": {
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/retirement",
+        "served": True,
+        "capability": "submitting an approved workspace retirement",
+    },
     "adoptWorkspace": {
         "method": "POST",
         "path": "/workspaces/adopt",

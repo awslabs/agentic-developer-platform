@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, expect, it } from 'vitest';
@@ -35,6 +36,24 @@ it('submits only the selected human decision for the reviewed approval', async (
   render(<ApprovalPanel approval={{ ...approval, can_decide: true }} guard={new ScopeGuard()} onChange={() => {}} />);
   await user.click(screen.getByRole('button', { name: /approve this operation once/i }));
   await waitFor(() => expect(decision).toEqual({ result: 'allowed-once' }));
+});
+
+it('focuses the approval on opening and its new status after a keyboard decision', async () => {
+  (ENDPOINTS.decideApproval as { served: boolean }).served = true;
+  server.use(http.post('/api/superplane/v1/operation-approvals/approval-1/decision', () =>
+    HttpResponse.json({ ...approval, result: 'allowed-once' })));
+  function Harness() {
+    const [current, setCurrent] = useState<OperationApproval>({ ...approval, can_decide: true });
+    return <ApprovalPanel approval={current} guard={new ScopeGuard()} onChange={setCurrent} />;
+  }
+  const user = userEvent.setup();
+  render(<Harness />);
+  expect(screen.getByRole('heading', { name: 'Operation approval' })).toHaveFocus();
+  const decide = screen.getByRole('button', { name: 'Approve this operation once' });
+  decide.focus();
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(screen.getByRole('status')).toHaveFocus());
+  expect(screen.getByRole('status')).toHaveTextContent('allowed-once');
 });
 
 it('does not offer a decision for expired approval authority', () => {

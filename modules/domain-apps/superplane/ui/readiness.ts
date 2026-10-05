@@ -246,6 +246,12 @@ export function workspaceReading(
   }
 
   const health = workspace.cluster_health;
+  if (!health) return {
+    ready: null,
+    reason: 'The workspace has reported recently, but cluster health has not been reported.',
+    freshness,
+    observedAt: workspace.last_heartbeat ?? null,
+  };
   const healthy = health === 'Healthy';
   return {
     ready: healthy,

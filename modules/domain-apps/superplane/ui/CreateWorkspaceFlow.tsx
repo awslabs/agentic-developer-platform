@@ -413,6 +413,18 @@ export function CreateWorkspaceFlow({
 
   const planIsStale = stage.name === 'reviewing' && stage.planFor !== inputsPrint;
 
+  useEffect(() => {
+    document.getElementById('superplane-create-heading')?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (stage.name === 'blocked' || stage.name === 'conflict') {
+      document.getElementById('superplane-create-problem')?.focus();
+    } else if (stage.name === 'reviewing' && !planIsStale) {
+      document.getElementById('superplane-plan-heading')?.focus();
+    }
+  }, [stage.name, planIsStale]);
+
   return (
     <section
       aria-labelledby="superplane-create-heading"
@@ -420,6 +432,7 @@ export function CreateWorkspaceFlow({
     >
       <h2
         id="superplane-create-heading"
+        tabIndex={-1}
         className="text-lg font-semibold text-gray-900 dark:text-white"
       >
         Create a workspace
@@ -528,7 +541,7 @@ export function CreateWorkspaceFlow({
       )}
 
       {stage.name === 'blocked' && (
-        <div className="mt-4">
+        <div id="superplane-create-problem" tabIndex={-1} role="group" aria-label="Workspace submission problem" className="mt-4">
           <Alert variant="error" title="This cannot be submitted in this environment">
             {stage.unavailable.detail}
           </Alert>
@@ -536,7 +549,7 @@ export function CreateWorkspaceFlow({
       )}
 
       {stage.name === 'conflict' && (
-        <div className="mt-4">
+        <div id="superplane-create-problem" tabIndex={-1} role="group" aria-label="Workspace submission problem" className="mt-4">
           <Alert variant="warning" title="A different submission is already in progress">
             {stage.detail}
           </Alert>
@@ -653,6 +666,7 @@ function PlanReview({ plan }: { plan: OnboardingPlan }) {
     >
       <h3
         id="superplane-plan-heading"
+        tabIndex={-1}
         className="text-sm font-semibold text-gray-900 dark:text-white"
       >
         Review this plan

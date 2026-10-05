@@ -35,13 +35,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Alert, Button, Spinner } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
+import { getAccessToken } from '@/services/auth';
 import { AdminRole } from '@/types';
 
 import { ApprovalLookup } from './ApprovalPanel';
-import { CreateWorkspaceFlow } from './CreateWorkspaceFlow';
+import { CREATE_INTENT, CreateWorkspaceFlow } from './CreateWorkspaceFlow';
 import { LifecycleProposalPanel } from './LifecycleProposalPanel';
 import { ProviderConnectionPanel } from './ProviderConnectionPanel';
 import { ReadinessPanel } from './ReadinessPanel';
+import { RetirementPanel } from './RetirementPanel';
+import { WorkspaceDetails } from './WorkspaceDetails';
 import { ServingPanel } from './ServingPanel';
 import { BatchPanel } from './BatchPanel';
 import {
@@ -59,7 +62,7 @@ import {
   type Unavailable,
   type WorkspaceSummary,
 } from './contract';
-import { browserReceiptStore, pruneOtherScopes, type ReceiptScope } from './operations';
+import { browserReceiptStore, isTerminal, pruneOtherScopes, readReceipt, type ReceiptScope } from './operations';
 import {
   buildReadiness,
   observationFor,
@@ -101,13 +104,14 @@ function canBeginOnboarding(role: AdminRole | undefined): boolean {
 
 type LoadState =
   | { phase: 'loading' }
-  | { phase: 'loaded'; orgId: string; workspaces: WorkspaceSummary[] }
-  | { phase: 'failed'; unavailable: Unavailable };
+  | { phase: 'loaded'; orgId: string; principalId: string; sessionToken: string; workspaces: WorkspaceSummary[] }
+  | { phase: 'failed'; orgId: string; principalId: string; sessionToken: string | null; unavailable: Unavailable };
 
 export function OnboardingView() {
-  const { user } = useAuth();
+  const { user, token, isLoading } = useAuth();
   const orgId = user?.orgId ?? '';
-  const mayOnboard = canBeginOnboarding(user?.role);
+  const principalId = user?.id ?? '';
+  const mayOnboard = Boolean(token) && canBeginOnboarding(user?.role);
 
   const [state, setState] = useState<LoadState>({ phase: 'loading' });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -204,6 +208,13 @@ export function OnboardingView() {
    * happen during the effect's cleanup, before any re-render.
    */
   const guardRef = useRef<ScopeGuard>(new ScopeGuard());
+  const loadingProblemRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (state.phase === 'failed' && state.orgId === orgId &&
+        state.principalId === principalId && state.sessionToken === token) {
+      loadingProblemRef.current?.focus();
+    }
+  }, [state, orgId, principalId, token]);
 
   const load = useCallback(async (guard: ScopeGuard) => {
     setState({ phase: 'loading' });
@@ -214,21 +225,28 @@ export function OnboardingView() {
     // and writing either into state would flash the wrong tenant's data or a
     // spurious error on the new screen.
     if (isSuperseded(listing)) return;
+    if (getAccessToken() !== token) {
+      if (!getAccessToken() && !listing.ok && 'unavailable' in listing &&
+          listing.unavailable.detail === 'Your session has expired. Sign in again to continue.') {
+        setState({ phase: 'failed', orgId, principalId, sessionToken: token, unavailable: listing.unavailable });
+      }
+      return;
+    }
 
     if (!listing.ok && 'unavailable' in listing) {
-      setState({ phase: 'failed', unavailable: listing.unavailable });
+      setState({ phase: 'failed', orgId, principalId, sessionToken: token, unavailable: listing.unavailable });
       return;
     }
     if (!listing.ok) return;
 
-    setState({ phase: 'loaded', orgId, workspaces: listing.value.workspaces });
+    setState({ phase: 'loaded', orgId, principalId, sessionToken: token!, workspaces: listing.value.workspaces });
 
     // Capability discovery is a separate, independently-failing request. It tells
     // us whether a create can be submitted safely; its absence disables create
     // but must not blank the workspace list that already loaded successfully
     // (AC-04 partial failure).
     const report: Outcome<Capabilities> = await getCapabilities(guard);
-    if (isSuperseded(report)) return;
+    if (isSuperseded(report) || getAccessToken() !== token) return;
     if (!report.ok && 'unavailable' in report) {
       setCreateBlocked(report.unavailable);
       // Recorded separately so the connection panel can say the supported
@@ -259,8 +277,17 @@ export function OnboardingView() {
       });
       return;
     }
+    if (report.value.modes.length === 0) {
+      setCreateBlocked({
+        reason: 'not-deployed',
+        detail: 'This environment does not currently support creating or adopting workspaces. Ask your platform administrator to enable a supported onboarding mode.',
+        endpoint: 'capabilities',
+        capability: 'creating or adopting a workspace',
+      });
+      return;
+    }
     setCreateBlocked(null);
-  }, [orgId]);
+  }, [orgId, principalId, token]);
 
   useEffect(() => {
     const guard = new ScopeGuard();
@@ -296,7 +323,19 @@ export function OnboardingView() {
     if (orgId !== '') {
       pruneOtherScopes(store, { deploymentId: window.location.origin, orgId });
     }
-    void load(guard);
+    if (isLoading) {
+      setState({ phase: 'loading' });
+    } else if (!token || !principalId || !orgId) {
+      setState({
+        phase: 'failed', orgId, principalId, sessionToken: token,
+        unavailable: {
+          reason: 'not-permitted',
+          detail: !token ? 'Your session has expired. Sign in again before viewing workspaces.' : 'Select an organization before viewing workspaces.',
+        },
+      });
+    } else {
+      void load(guard);
+    }
     return () => {
       // Leaving this scope — abort what is outstanding and invalidate anything
       // already in flight so it cannot land after the switch.
@@ -304,9 +343,23 @@ export function OnboardingView() {
     };
     // `orgId` in the dependency list is the whole point: an organization switch
     // rebuilds the guard and reloads, and the old guard's replies are discarded.
-  }, [orgId, load, store]);
+  }, [orgId, principalId, token, isLoading, load, store]);
 
-  const workspaces = state.phase === 'loaded' && state.orgId === orgId ? state.workspaces : [];
+  const workspaces = state.phase === 'loaded' && state.orgId === orgId &&
+    state.principalId === principalId && state.sessionToken === token ? state.workspaces : [];
+  let savedReceipt: ReturnType<typeof readReceipt> = null;
+  let receiptProblem: Unavailable | null = null;
+  try {
+    savedReceipt = orgId ? readReceipt(store, scope, CREATE_INTENT) : null;
+  } catch {
+    receiptProblem = {
+      reason: 'unknown', endpoint: 'recoverOperation',
+      capability: 'recovering the original workspace request',
+      detail: 'Browser storage could not read your saved workspace request. Restore storage access and reload this page without clearing saved request references before starting another workspace.',
+    };
+  }
+  const pendingReceipt = savedReceipt && !isTerminal(savedReceipt.state) &&
+    savedReceipt.submissionStage !== 'draft' && savedReceipt.submissionStage !== 'approval' ? savedReceipt : null;
   const selected = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedId) ?? null,
     [workspaces, selectedId],
@@ -354,12 +407,14 @@ export function OnboardingView() {
         workspace: selected,
         validation: observed?.validation ?? null,
         admitsNewWork: observed?.admitsNewWork ?? null,
+        unavailable: !observed?.validation && capabilityProblem ? { provider: capabilityProblem } : undefined,
       },
       now,
     );
-  }, [selected, providerObservation, now]);
+  }, [selected, providerObservation, capabilityProblem, now]);
 
-  if (state.phase === 'loading' || state.phase === 'loaded' && state.orgId !== orgId) {
+  if (state.phase === 'loading' || state.orgId !== orgId ||
+    state.principalId !== principalId || state.sessionToken !== token) {
     return (
       <div className="p-6">
         <Header />
@@ -375,7 +430,7 @@ export function OnboardingView() {
     return (
       <div className="p-6">
         <Header />
-        <div className="mt-6">
+        <div ref={loadingProblemRef} tabIndex={-1} role="group" aria-label="Workspace loading problem" className="mt-6">
           <Alert variant="error" title={titleFor(state.unavailable)}>
             {state.unavailable.detail}
           </Alert>
@@ -400,9 +455,24 @@ export function OnboardingView() {
     <div className="p-6">
       <Header />
 
-      <ApprovalLookup key={orgId} />
+      <ApprovalLookup key={`${orgId}:${principalId}`} />
 
-      {creating && mayOnboard ? (
+      {mayOnboard && pendingReceipt && !creating && (
+        <section className="mt-6 rounded-lg border border-yellow-300 p-4" aria-label="Unresolved workspace request">
+          <h2 className="font-semibold">An earlier workspace request is still unresolved</h2>
+          <p className="mt-2 text-sm">Original request ID: <span className="break-all">{pendingReceipt.idempotencyKey}</span></p>
+          <p className="text-sm">The outcome is {pendingReceipt.state}. Recover the original request before considering another submission.</p>
+          <Button className="mt-3" variant="secondary" onClick={() => setCreating(true)}>Review original request</Button>
+        </section>
+      )}
+
+      {receiptProblem && workspaces.length > 0 && (
+        <div className="mt-6">
+          <Alert variant="warning" title="Saved workspace request unavailable">{receiptProblem.detail}</Alert>
+        </div>
+      )}
+
+      {creating && mayOnboard && !receiptProblem ? (
         <div className="mt-6">
           <CreateWorkspaceFlow
             guard={guardRef.current}
@@ -420,7 +490,12 @@ export function OnboardingView() {
       ) : workspaces.length === 0 ? (
         <ZeroWorkspaces
           mayOnboard={mayOnboard}
-          createBlocked={createBlocked}
+          createBlocked={receiptProblem ?? (pendingReceipt ? {
+            reason: 'unknown',
+            detail: 'An earlier workspace request is still unresolved. Review the original request before starting another.',
+            endpoint: 'recoverOperation',
+            capability: 'recovering the original workspace request',
+          } : createBlocked)}
           onBegin={() => setCreating(true)}
         />
       ) : (
@@ -431,10 +506,18 @@ export function OnboardingView() {
             onSelect={setSelectedId}
           />
           <ReadinessPanel report={readiness} workspaceName={selected?.display_name} />
+          {selected && token && (
+            <WorkspaceDetails key={`details:${scope.orgId}:${principalId}:${selected.id}`} workspaceId={selected.id}
+              scope={scope} guard={guardRef.current} sessionToken={token} now={now} />
+          )}
+          {selected && mayOnboard && token && !selected.is_default && (
+            <RetirementPanel key={`retirement:${scope.orgId}:${principalId}:${selected.id}`} workspaceId={selected.id}
+              scope={scope} store={store} guard={guardRef.current} sessionToken={token} />
+          )}
           {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} />}
           {selected && <BatchPanel workspaceId={selected.id} scope={scope} store={store} />}
           {ENDPOINTS.listLifecycleProposals.served && selected && <LifecycleProposalPanel
-            key={`${scope.orgId}:${selected.id}`}
+            key={`lifecycle:${scope.orgId}:${principalId}:${selected.id}`}
             workspaceId={selected.id} scope={scope} store={store} mayManage={mayOnboard}
             onProgress={() => { void load(guardRef.current); }}
           />}
@@ -446,7 +529,7 @@ export function OnboardingView() {
               // state and its bound-connection view. Without this the connection
               // just bound to workspace A would still be on screen after
               // selecting workspace B, attributed to the wrong workspace.
-              key={selected.id}
+              key={`provider:${scope.orgId}:${principalId}:${selected.id}`}
               workspaceId={selected.id}
               providers={capabilities?.providers ?? []}
               mayManage={mayOnboard}
@@ -537,10 +620,11 @@ function ZeroWorkspaces({
                   not as our backlog position. */}
               <Alert variant="warning" title="Workspace creation is not available yet">
                 {createBlocked.detail}
-                {' '}
-                Creation stays disabled until this environment can confirm it honours a
-                submitted operation identity ({CREATE_IDEMPOTENCY_FEATURE}); without that
-                confirmation a retried request could build a second workspace and bill twice.
+                {createBlocked.endpoint !== 'recoverOperation' && createBlocked.capability !== 'creating or adopting a workspace' && (
+                  <> Creation stays disabled until this environment can confirm it honours a
+                    submitted operation identity ({CREATE_IDEMPOTENCY_FEATURE}); without that
+                    confirmation a retried request could build a second workspace and bill twice.</>
+                )}
               </Alert>
             </div>
           )}

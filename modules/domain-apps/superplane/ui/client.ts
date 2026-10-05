@@ -49,6 +49,8 @@ import {
   type OnboardingPlan,
   type OperationReceipt,
   type OperationApproval,
+  type RetirementPreviewRequest,
+  type RetirementReview,
   assertNoSecretMaterial,
   type OperationState,
   type ProviderConnection,
@@ -413,6 +415,35 @@ export function getWorkspace(
   workspaceId: string,
 ): Promise<Outcome<WorkspaceSummary>> {
   return call(guard, 'getWorkspace', { workspace_id: workspaceId }, undefined, parseWorkspace);
+}
+
+export function parseRetirementReview(raw: unknown): RetirementReview | null {
+  if (!isRecord(raw) || raw.admission_available !== false ||
+      raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null ||
+      !Array.isArray(raw.steps) || !Array.isArray(raw.preserved)) return null;
+  const fields = [
+    'request_id', 'workspace_id', 'source_operation_id', 'source_payload_digest',
+    'lifecycle_artifact_id', 'account_id', 'region', 'inventory_sha256',
+    'lifecycle_policy_sha256', 'runtime_config_sha256', 'revision',
+  ] as const;
+  if (fields.some((field) => typeof raw[field] !== 'string' || !raw[field])) return null;
+  if (!raw.steps.every((step) => isRecord(step) &&
+    ['step_id', 'provider', 'operation_kind', 'target'].every((field) =>
+      typeof step[field] === 'string' && Boolean(step[field])))) return null;
+  if (!raw.preserved.every((item) => typeof item === 'string')) return null;
+  return raw as unknown as RetirementReview;
+}
+
+export function previewRetirement(
+  guard: ScopeGuard,
+  workspaceId: string,
+  request: RetirementPreviewRequest,
+): Promise<Outcome<RetirementReview>> {
+  return call(guard, 'previewRetirement', { workspace_id: workspaceId }, request, (raw) => {
+    const review = parseRetirementReview(raw);
+    return review?.workspace_id === workspaceId && review.request_id === request.operation_id
+      ? review : null;
+  });
 }
 
 /**

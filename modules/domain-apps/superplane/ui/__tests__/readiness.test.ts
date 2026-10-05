@@ -173,6 +173,13 @@ describe('workspace readiness', () => {
     expect(reading.reason).toMatch(/never reported/i);
   });
 
+  it('does not turn a fresh heartbeat without a health reading into a failure or a pass', () => {
+    const reading = workspaceReading(workspace({ cluster_health: null }), NOW);
+    expect(reading.ready).toBeNull();
+    expect(reading.freshness).toBe('fresh');
+    expect(reading.reason).toMatch(/health has not been reported/i);
+  });
+
   it('reports an unhealthy cluster as not ready, distinct from unknown', () => {
     const reading = workspaceReading(workspace({ cluster_health: 'Degraded' }), NOW);
     expect(reading.ready).toBe(false);

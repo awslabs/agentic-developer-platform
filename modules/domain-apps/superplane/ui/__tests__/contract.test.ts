@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  C1_CONTRACT_VERSION,
   CREATE_IDEMPOTENCY_FEATURE,
   DOMAIN_BASE,
   ENDPOINTS,
@@ -107,6 +108,47 @@ describe('gateway allowlist agreement', () => {
       expect(capability, name).not.toMatch(/#\d+/);
       expect(capability, name).not.toMatch(/\b(story|ticket|issue|epic|backlog|jira)\b/i);
     }
+  });
+});
+
+describe('C1 source-derived workspace lifecycle contract', () => {
+  const apiRoot = join(process.cwd(), '..', '..', 'domain-apps', 'superplane', 'src', 'superplane-api', 'app');
+  const source = (path: string) => readFileSync(join(apiRoot, path), 'utf8');
+
+  it('pins creation and approval fields to the composed request schemas', () => {
+    const workspace = source('schemas/workspace.py');
+    const approval = source('routers/operation_approvals.py');
+    const onboarding = source('routers/onboarding.py');
+    expect(C1_CONTRACT_VERSION).toBe('2026-10-05.1');
+    expect(workspace).toMatch(/class CreateWorkspaceRequest\(BaseModel\):[\s\S]*?operation_id: uuid\.UUID/);
+    expect(workspace).toMatch(/plan_revision: str \| None/);
+    expect(workspace).toMatch(/approval_id: uuid\.UUID \| None/);
+    expect(workspace).toMatch(/model_config = ConfigDict\(extra="forbid"\)/);
+    expect(approval).toMatch(/class ApprovalRequest\(BaseModel\):[\s\S]*?idempotency_key: str/);
+    expect(approval).toMatch(/class ApprovalDecision\(BaseModel\):[\s\S]*?result: str/);
+    expect(onboarding).toMatch(/class PreviewWorkspaceRequest\(CreateWorkspaceRequest\):[\s\S]*?operation_id: uuid\.UUID/);
+    expect(onboarding).toContain('@router.get("/operations/by-idempotency/{idempotency_key}")');
+    expect(onboarding).toContain('@router.get("/operations/{operation_id}")');
+  });
+
+  it('pins retirement request and refusal to mounted routes and authorization inventory', () => {
+    const api = source('main.py');
+    const routes = source('routers/retirement.py');
+    const policy = source('endpoint_inventory.py');
+    const service = source('services/retirement.py');
+    expect(api).toContain('app.include_router(retirement_router)');
+    expect(routes).toMatch(/class RetirementPreview\(BaseModel\):[\s\S]*?operation_id: uuid\.UUID/);
+    expect(routes).toMatch(/class RetirementAdmission\(RetirementPreview\):[\s\S]*?plan_revision: str[\s\S]*?approval_id: str/);
+    expect(routes).toContain('@router.post("/workspaces/{workspace_id}/retirement/preview")');
+    expect(routes).toContain('@router.post("/workspaces/{workspace_id}/retirement")');
+    expect(policy).toMatch(/\("POST", "\/workspaces\/\{workspace_id\}\/retirement\/preview"\): \([\s\S]*?Scope\.WORKSPACE,[\s\S]*?Permission\.PROVISION/);
+    expect(policy).toMatch(/\("POST", "\/workspaces\/\{workspace_id\}\/retirement"\): \([\s\S]*?Scope\.WORKSPACE,[\s\S]*?Permission\.PROVISION/);
+    expect(ENDPOINTS.previewRetirement.path).toBe('/workspaces/{workspace_id}/retirement/preview');
+    expect(ENDPOINTS.admitRetirement.path).toBe('/workspaces/{workspace_id}/retirement');
+    expect(service).toContain('"admission_available": False');
+    expect(service).toContain('"blocked_reason": "staged_cleanup_access_required"');
+    expect(service).toContain('"approval_request": None');
+    expect(service).toContain('raise ProvisioningUnavailable(');
   });
 });
 

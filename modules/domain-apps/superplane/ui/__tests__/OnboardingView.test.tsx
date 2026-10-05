@@ -45,7 +45,7 @@ let currentUser: { id: string; orgId?: string; role?: AdminRole } | null = {
 };
 
 vi.mock('@/hooks/useAuth', () => ({
-  useAuth: () => ({ user: currentUser }),
+  useAuth: () => ({ user: currentUser, token: window.sessionStorage.getItem('cognito_access_token'), isLoading: false }),
 }));
 
 function workspaceRow(overrides: Record<string, unknown> = {}) {
@@ -127,6 +127,7 @@ const baselineCapabilitiesServed = ENDPOINTS.capabilities.served;
 beforeEach(() => {
   restoreDeployment = withoutOnboardingEndpoints();
   server.use(
+    http.get(API('/workspaces/:workspaceId'), ({ params }) => HttpResponse.json(workspaceRow({ id: params.workspaceId }))),
     http.get(API('/workspaces/:workspaceId/deployments'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, deployments: [] })),
     http.get(API('/workspaces/:workspaceId/batch-jobs'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, jobs: [], truncated: false })),
     http.get(API('/workspaces/:workspaceId/batch-profiles'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, profiles: [], can_submit: false, can_review_teardown: false })),
@@ -147,6 +148,19 @@ afterEach(() => {
 });
 
 describe('AC-01: beginning onboarding with zero workspaces', () => {
+  it('keeps the action unavailable when the server supports no onboarding modes', async () => {
+    createIsAvailable();
+    server.use(http.get(API('/capabilities'), () => HttpResponse.json({
+      features: [CREATE_IDEMPOTENCY_FEATURE], modes: [], providers: ['aws'],
+    })));
+    listReturns([]);
+    render(<OnboardingView />);
+
+    const create = await screen.findByRole('button', { name: /create a workspace/i });
+    await waitFor(() => expect(screen.getByText(/does not currently support creating or adopting/i)).toBeInTheDocument());
+    expect(create).toBeDisabled();
+  });
+
   it('presents the empty control plane as a starting point, not a fault', async () => {
     listReturns([]);
     render(<OnboardingView />);
@@ -262,10 +276,27 @@ describe('AC-04: create is disabled, with the gap named, when it cannot be submi
     render(<OnboardingView />);
 
     expect(await screen.findByRole('button', { name: /Research/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Research/ }));
+    const rows = within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem');
+    expect(within(rows[2]).getByText('Unknown')).toBeInTheDocument();
+    expect(await within(rows[2]).findByText(/reporting which workspace features and providers/i)).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Ready')).toBeInTheDocument();
   });
 });
 
 describe('AC-04: control-plane health never marks a workspace execution-ready', () => {
+  it('keeps workspace readiness independent when provider discovery is temporarily unavailable', async () => {
+    createIsAvailable();
+    server.use(http.get(API('/capabilities'), () => HttpResponse.json({ detail: 'provider configuration unavailable' }, { status: 503 })));
+    listReturns([workspaceRow()]);
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const rows = within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem');
+    expect(await within(rows[2]).findByText(/Superplane is unavailable.*temporary/i)).toBeInTheDocument();
+    expect(within(rows[2]).getByText('Unknown')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Ready')).toBeInTheDocument();
+  });
+
   it('shows no ready verdict for a provisioning workspace', async () => {
     listReturns([
       workspaceRow({ status: 'Provisioning', cluster_health: null, last_heartbeat: null }),
@@ -312,6 +343,7 @@ describe('AC-04: control-plane health never marks a workspace execution-ready', 
   });
 
   it('shows the provider reading as unvalidated, not as ready', async () => {
+    createIsAvailable();
     listReturns([workspaceRow()]);
     render(<OnboardingView />);
 
@@ -322,6 +354,32 @@ describe('AC-04: control-plane health never marks a workspace execution-ready', 
     );
     expect(within(rows[2]).getByText('Unknown')).toBeInTheDocument();
     expect(within(rows[2]).getByText(/not been validated by the service/i)).toBeInTheDocument();
+  });
+});
+
+describe('AC-04: truthful workspace details and access', () => {
+  it('reports read access only and leaves unsupported account, region and placement unknown', async () => {
+    listReturns([workspaceRow({ cluster_health: null, last_heartbeat: null })]);
+    server.use(http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(workspaceRow({ cluster_health: null, last_heartbeat: null }))));
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    expect(await within(details).findByText(/Allowed for this request. Cluster and workload access are not established/)).toBeInTheDocument();
+    expect(within(details).getByText(/Not reported by the workspace detail API. Check the original reviewed plan/)).toBeInTheDocument();
+    expect(within(details).getByText(/Isolation mode does not establish cluster ownership or access/)).toBeInTheDocument();
+    expect(within(details).getByText(/Unknown; no usable cluster observation/)).toBeInTheDocument();
+    const workspaceReading = within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem')[1];
+    expect(within(workspaceReading).getByText('Unknown')).toBeInTheDocument();
+  });
+
+  it('does not claim read access when workspace details are denied', async () => {
+    listReturns([workspaceRow()]);
+    server.use(http.get(API('/workspaces/:workspaceId'), () => new HttpResponse(null, { status: 403 })));
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    expect(await within(details).findByText(/not permitted.*workspace access/i)).toBeInTheDocument();
+    expect(within(details).queryByText(/Allowed for this request/)).toBeNull();
   });
 });
 
@@ -380,6 +438,53 @@ describe('AC-03: replies from a superseded organization scope', () => {
   });
 });
 
+describe('AC-03: replies after a session changes', () => {
+  it('discards a late list from another principal in the same organization', async () => {
+    let releaseOld!: () => void;
+    let oldRequested!: () => void;
+    const requested = new Promise<void>((resolve) => { oldRequested = resolve; });
+    let calls = 0;
+    server.use(http.get(API('/workspaces'), async () => {
+      calls += 1;
+      if (calls === 1) {
+        await new Promise<void>((resolve) => { releaseOld = resolve; oldRequested(); });
+        return HttpResponse.json({ workspaces: [workspaceRow({ id: 'ws-old', display_name: 'Old principal workspace' })], total: 1 });
+      }
+      return HttpResponse.json({ workspaces: [workspaceRow({ id: 'ws-new', display_name: 'New principal workspace' })], total: 1 });
+    }));
+    const { rerender } = render(<OnboardingView />);
+    await requested;
+    currentUser = { id: 'u-new', orgId: 'org-a', role: AdminRole.MEMBER };
+    window.sessionStorage.setItem('cognito_access_token', 'new-session');
+    rerender(<OnboardingView />);
+    expect(await screen.findByRole('button', { name: /New principal workspace/ })).toBeInTheDocument();
+    releaseOld();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText(/Old principal workspace/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /create a workspace/i })).toBeNull();
+  });
+
+  it('does not apply a late capability report from an expired session', async () => {
+    createIsAvailable();
+    listReturns([]);
+    let releaseReport!: () => void;
+    let reportRequested!: () => void;
+    const requested = new Promise<void>((resolve) => { reportRequested = resolve; });
+    server.use(http.get(API('/capabilities'), async () => {
+      await new Promise<void>((resolve) => { releaseReport = resolve; reportRequested(); });
+      return HttpResponse.json({ features: [CREATE_IDEMPOTENCY_FEATURE], modes: ['managed'], providers: ['aws'] });
+    }));
+    const { rerender } = render(<OnboardingView />);
+    await requested;
+    window.sessionStorage.removeItem('cognito_access_token');
+    rerender(<OnboardingView />);
+    expect(await screen.findByText(/sign in again before viewing workspaces/i)).toBeInTheDocument();
+    releaseReport();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole('button', { name: /create a workspace/i })).toBeNull();
+  });
+});
+
 describe('AC-04: actionable failure states', () => {
   it('tells a user without access to ask an administrator, and offers no retry', async () => {
     server.use(
@@ -423,6 +528,7 @@ describe('AC-04: actionable failure states', () => {
 
     expect(await screen.findByText(/session has expired/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'No workspaces yet' })).toBeNull();
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Workspace loading problem' })).toHaveFocus());
   });
 
   it('rejects a malformed list instead of rendering a partially-shaped screen', async () => {
@@ -560,7 +666,7 @@ describe('the create flow is reachable and scoped (AC-01/AC-03)', () => {
 
     currentUser = { id: 'u-1', orgId: 'org-a', role: AdminRole.ORG_ADMIN };
     render(<OnboardingView />);
-    await userEvent.click(await screen.findByRole('button', { name: /create a workspace/i }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Review original request' }));
 
     expect(
       await screen.findByText(/earlier submission's outcome is unknown/i),
@@ -582,8 +688,8 @@ describe('the create flow is reachable and scoped (AC-01/AC-03)', () => {
     listReturns([]);
     render(<OnboardingView />);
 
-    await screen.findByRole('heading', { name: 'No workspaces yet' });
-    await waitFor(() => expect(screen.queryByText(/loading workspaces/i)).toBeNull());
+    expect(await screen.findByText(/select an organization before viewing workspaces/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'No workspaces yet' })).toBeNull();
     // Settled, so a prune WOULD have removed it. That is what makes this test able
     // to detect the unresolved-org case rather than passing on the retention rule.
     expect(window.localStorage.getItem(mine)).not.toBeNull();
@@ -709,7 +815,7 @@ describe('AC-04: a served capability route is not by itself permission to create
         await new Promise<void>((resolve) => {
           release = resolve;
         });
-        return HttpResponse.json({ features: [CREATE_IDEMPOTENCY_FEATURE] });
+        return HttpResponse.json({ features: [CREATE_IDEMPOTENCY_FEATURE], modes: ['managed'] });
       }),
     );
     listReturns([]);
@@ -776,9 +882,9 @@ describe('readings age and are observed, not assumed (AC-04)', () => {
     // frozen clock and hangs.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    listReturns([
-      workspaceRow({ status: 'Active', cluster_health: 'Healthy', last_heartbeat: heartbeatAgo(4 * 60 * 1000) }),
-    ]);
+    const recentWorkspace = workspaceRow({ status: 'Active', cluster_health: 'Healthy', last_heartbeat: heartbeatAgo(4 * 60 * 1000) });
+    listReturns([recentWorkspace]);
+    server.use(http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(recentWorkspace)));
     render(<OnboardingView />);
 
     await user.click(await screen.findByRole('button', { name: /Research/ }));
@@ -786,6 +892,8 @@ describe('readings age and are observed, not assumed (AC-04)', () => {
     const workspaceRowOf = () =>
       within(screen.getByRole('region', { name: 'Readiness' })).getAllByRole('listitem')[1];
     expect(within(workspaceRowOf()).getByText('Ready')).toBeInTheDocument();
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    expect(await within(details).findByText('Fresh: Healthy')).toBeInTheDocument();
 
     // Two more minutes of an open dashboard. The heartbeat is now six minutes old,
     // past the server's own five-minute degradation threshold.
@@ -800,6 +908,7 @@ describe('readings age and are observed, not assumed (AC-04)', () => {
       expect(within(workspaceRowOf()).getByText('Unknown')).toBeInTheDocument(),
     );
     expect(within(workspaceRowOf()).getByText(/not reported recently/i)).toBeInTheDocument();
+    expect(within(details).getByText(/Stale; the last reported cluster health/)).toBeInTheDocument();
   });
 
   it('shows the provider reading the connection panel actually read from the server', async () => {
@@ -909,5 +1018,204 @@ describe('readings age and are observed, not assumed (AC-04)', () => {
     expect(
       within(providerRowOf()).getByText(/not been validated by the service yet/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe('AC-02: original workspace identity on re-entry', () => {
+  it.each(['empty', 'registered'])('keeps the %s workspace page readable when receipt storage cannot be read', async (mode) => {
+    createIsAvailable();
+    listReturns(mode === 'empty' ? [] : [workspaceRow()]);
+    const originalRead = Storage.prototype.getItem;
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (this === window.localStorage && key === receiptKey('org-a')) throw new Error('private-receipt-error-tripwire');
+      return originalRead.call(this, key);
+    });
+    try {
+      render(<OnboardingView />);
+      if (mode === 'empty') await screen.findByRole('heading', { name: 'No workspaces yet' });
+      else await screen.findByText('Research');
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('blocks creation while receipts are unreadable and recovers the saved identity when storage returns', async () => {
+    createIsAvailable();
+    listReturns([]);
+    const saved = storedReceipt({ orgId: 'org-a' });
+    window.localStorage.setItem(receiptKey('org-a'), saved);
+    let unreadable = true;
+    let previews = 0;
+    server.use(http.post(API('/workspaces/preview'), () => {
+      previews += 1;
+      return HttpResponse.json({});
+    }));
+    const originalRead = Storage.prototype.getItem;
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (unreadable && this === window.localStorage && key === receiptKey('org-a')) throw new Error('private-receipt-error-tripwire');
+      return originalRead.call(this, key);
+    });
+    try {
+      const view = render(<OnboardingView />);
+      expect(await screen.findByText(/Browser storage could not read your saved workspace request/)).toBeInTheDocument();
+      const create = screen.getByRole('button', { name: /create a workspace/i });
+      expect(create).toBeDisabled();
+      await userEvent.click(create);
+      expect(screen.queryByRole('region', { name: 'Create a workspace' })).toBeNull();
+      expect(screen.queryByText(/private-receipt-error-tripwire/)).toBeNull();
+      expect(previews).toBe(0);
+      unreadable = false;
+      view.rerender(<OnboardingView />);
+      expect(await screen.findByRole('region', { name: 'Unresolved workspace request' })).toHaveTextContent('key-foreign');
+      expect(window.localStorage.getItem(receiptKey('org-a'))).toBe(saved);
+      expect(screen.getByRole('button', { name: /create a workspace/i })).toBeDisabled();
+      expect(previews).toBe(0);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  const workspaceId = '6ac27035-3856-49d6-bb80-3c19b73a4511';
+  const requestId = 'f6e23c55-d5fc-4876-870a-c01279600b2a';
+  const phaseId = 'harness-phase-29';
+
+  function serveLookup(name: 'getOperation' | 'recoverOperation') {
+    const endpoint = ENDPOINTS[name] as { served: boolean };
+    const saved = endpoint.served;
+    endpoint.served = true;
+    restoreServed = () => { endpoint.served = saved; };
+  }
+
+  it('shows an unresolved request before opening a new form and recovers its original ID', async () => {
+    serveLookup('recoverOperation');
+    const receipt = JSON.parse(storedReceipt({ orgId: 'org-a' }));
+    receipt.idempotencyKey = requestId;
+    window.localStorage.setItem(receiptKey('org-a'), JSON.stringify(receipt));
+    listReturns([]);
+    let lookedUp = '';
+    server.use(http.get(API('/operations/by-idempotency/:requestId'), ({ params }) => {
+      lookedUp = String(params.requestId);
+      return HttpResponse.json({
+        request_id: requestId, provisioning_operation_id: null, workspace_id: null,
+        state: 'running', phase: 'workspace_registration', reason: null,
+        observed_at: new Date().toISOString(), retryable: false,
+      });
+    }));
+
+    render(<OnboardingView />);
+    expect(await screen.findByRole('region', { name: 'Unresolved workspace request' })).toHaveTextContent(requestId);
+    expect(screen.getByRole('button', { name: /create a workspace/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Review original request' }));
+    await waitFor(() => expect(lookedUp).toBe(requestId));
+    expect(window.localStorage.getItem(receiptKey('org-a'))).toContain(requestId);
+    expect(screen.getByRole('region', { name: 'Create a workspace' })).toBeInTheDocument();
+  });
+
+  it('recovers request and phase IDs from server records after browser storage is lost', async () => {
+    serveLookup('getOperation');
+    listReturns([workspaceRow({ id: workspaceId, status: 'Provisioning' })]);
+    server.use(
+      http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(workspaceRow({
+        id: workspaceId, status: 'Provisioning', provisioning_operation_id: phaseId,
+        operation_state: 'running',
+      }))),
+      http.get(API('/operations/:operationId'), ({ params }) => {
+        expect(params.operationId).toBe(phaseId);
+        return HttpResponse.json({
+          request_id: requestId, provisioning_operation_id: phaseId,
+          workspace_id: workspaceId, state: 'running', phase: 'execution',
+          reason: null, observed_at: new Date().toISOString(), retryable: false,
+        });
+      }),
+    );
+
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    await waitFor(() => expect(details).toHaveTextContent(requestId));
+    expect(details).toHaveTextContent(workspaceId);
+    expect(details).toHaveTextContent(phaseId);
+    expect(details).toHaveTextContent('Provisioning');
+    expect(details).toHaveTextContent('running');
+    expect(details).toHaveTextContent(/does not establish workspace readiness/i);
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it('refuses details from another organization without displaying returned credentials', async () => {
+    const secretMarker = 'tripwire-not-a-real-secret-value';
+    listReturns([workspaceRow({ id: workspaceId })]);
+    server.use(http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(workspaceRow({
+      id: workspaceId, org_id: 'org-OTHER', display_name: secretMarker,
+      credential: { secret_value: secretMarker },
+    }))));
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    expect(await within(details).findByText(/did not match the selected organization and workspace/i)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(secretMarker);
+    expect(JSON.stringify(window.localStorage)).not.toContain(secretMarker);
+  });
+
+  it('refuses an operation result for another workspace without replacing the original', async () => {
+    serveLookup('getOperation');
+    listReturns([workspaceRow({ id: workspaceId })]);
+    server.use(
+      http.get(API('/workspaces/:workspaceId'), () => HttpResponse.json(workspaceRow({
+        id: workspaceId, provisioning_operation_id: phaseId,
+      }))),
+      http.get(API('/operations/:operationId'), () => HttpResponse.json({
+        request_id: requestId, provisioning_operation_id: phaseId,
+        workspace_id: 'another-workspace', state: 'succeeded', phase: 'execution',
+        observed_at: new Date().toISOString(), retryable: false,
+      })),
+    );
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const details = await screen.findByRole('region', { name: 'Workspace details' });
+    await waitFor(() => expect(details).toHaveTextContent(/did not match the selected workspace/i));
+    expect(details).not.toHaveTextContent(requestId);
+  });
+});
+
+describe('AC-02: retirement review is a workspace action, never an implicit deletion', () => {
+  it('connects an administrator to the selected non-default workspace preview', async () => {
+    const workspaceId = '6ac27035-3856-49d6-bb80-3c19b73a4511';
+    let previews = 0;
+    let admissions = 0;
+    listReturns([workspaceRow({ id: workspaceId, is_default: false })]);
+    server.use(
+      http.post(API('/workspaces/:workspaceId/retirement/preview'), ({ params }) => {
+        expect(params.workspaceId).toBe(workspaceId);
+        previews += 1;
+        return HttpResponse.json({ detail: 'complete retirement plan unavailable' }, { status: 503 });
+      }),
+      http.post(API('/workspaces/:workspaceId/retirement'), () => {
+        admissions += 1;
+        return HttpResponse.json({ admission_available: true });
+      }),
+    );
+
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    const retirement = await screen.findByRole('region', { name: 'Workspace retirement' });
+    await userEvent.click(within(retirement).getByRole('button', { name: 'Review removal' }));
+    await waitFor(() => expect(previews).toBe(1));
+    expect(await within(retirement).findByText(/No removal was submitted/)).toBeInTheDocument();
+    expect(admissions).toBe(0);
+  });
+
+  it('never offers a retirement action to a member or for the platform default workspace', async () => {
+    currentUser = { id: 'u-1', orgId: 'org-a', role: AdminRole.MEMBER };
+    listReturns([workspaceRow({ is_default: false })]);
+    const first = render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    expect(screen.queryByRole('region', { name: 'Workspace retirement' })).toBeNull();
+    first.unmount();
+
+    currentUser = { id: 'u-1', orgId: 'org-a', role: AdminRole.ORG_ADMIN };
+    listReturns([workspaceRow({ is_default: true })]);
+    render(<OnboardingView />);
+    await userEvent.click(await screen.findByRole('button', { name: /Research/ }));
+    expect(screen.queryByRole('region', { name: 'Workspace retirement' })).toBeNull();
   });
 });

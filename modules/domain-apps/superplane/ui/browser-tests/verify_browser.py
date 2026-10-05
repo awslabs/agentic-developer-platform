@@ -2,11 +2,11 @@
 
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import subprocess
 import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
@@ -557,3 +557,6 @@ def main(kind="serving"):
 if __name__ == "__main__":
     main("serving")
     main("batch")
+    from verify_onboarding_browser import main as verify_onboarding
+
+    verify_onboarding()
