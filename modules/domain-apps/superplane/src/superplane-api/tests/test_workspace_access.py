@@ -287,3 +287,66 @@ async def test_request_id_is_bound_to_the_administrator(access):
     body = _grant_request()
     assert (await client.post(url, json=body, headers=token())).status_code == 200
     assert (await client.post(url, json=body, headers=token("co-owner"))).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_grant_audit_carries_tenant_scoped_safe_provenance(access):
+    import json
+    from sqlalchemy import select
+
+    from app.models.event import Event
+
+    client, workspace_id, _, token = access
+    body = _grant_request()
+    response = await client.post(
+        f"/workspaces/{workspace_id}/access/v1/grants", json=body, headers=token(),
+    )
+    assert response.status_code == 200, response.text
+    async with async_session_test() as db:
+        event = await db.scalar(select(Event).where(Event.event_type == "workspace_access"))
+        assert event is not None
+        assert event.org_id == (await db.get(Workspace, workspace_id)).org_id
+        assert event.principal == "owner"
+        assert event.resource_id == uuid.UUID(response.json()["grant_id"])
+        assert event.created_at is not None
+        details = json.loads(event.details_json)
+        assert details == {
+            "actor_type": "human", "target": "approver", "target_type": "human",
+            "workspace_id": str(workspace_id), "org_id": str(event.org_id),
+            "before": [], "after": ["workspace:read"],
+            "reason": "approver_setup", "request_id": body["request_id"], "revision": 1,
+        }
+        assert "authorization" not in event.details_json.lower()
+        assert "credential" not in event.details_json.lower()
+        assert "token" not in event.details_json.lower()
+
+
+@pytest.mark.asyncio
+async def test_audit_insert_failure_rolls_back_grant_and_retry_succeeds(access):
+    from sqlalchemy import event, select
+
+    from app.models.event import Event
+    from app.models.workspace_grant_change import WorkspaceGrantChange
+
+    client, workspace_id, _, token = access
+    body = _grant_request()
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+
+    def refuse_grant_event(mapper, connection, instance):
+        if instance.event_type == "workspace_access":
+            raise RuntimeError("test audit sink failure")
+
+    event.listen(Event, "before_insert", refuse_grant_event)
+    try:
+        with pytest.raises(RuntimeError, match="test audit sink failure"):
+            await client.post(url, json=body, headers=token())
+    finally:
+        event.remove(Event, "before_insert", refuse_grant_event)
+    async with async_session_test() as db:
+        assert await db.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id,
+            WorkspaceGrantRecord.principal == "approver",
+        )) is None
+        assert (await db.scalars(select(WorkspaceGrantChange))).all() == []
+    response = await client.post(url, json=body, headers=token())
+    assert response.status_code == 200, response.text

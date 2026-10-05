@@ -1,11 +1,12 @@
 """Mounted human grant transactions against the existing disposable CI PostgreSQL fixture."""
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -200,3 +201,50 @@ async def test_concurrent_target_revoke_cannot_be_overwritten_postgres(postgres_
         assert target.revoked_at is not None
         assert target.permissions == "workspace:read"
         assert len((await session.scalars(select(WorkspaceGrantChange))).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_rolls_back_update_and_retry_postgres(postgres_access):
+    client, sessions, workspace_id, _, token = postgres_access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    created = await client.post(url, json=request(), headers=token())
+    assert created.status_code == 200, created.text
+    replacement = request(expected_revision=1, permissions=["workspace:spend"])
+
+    def refuse_grant_event(mapper, connection, instance):
+        if instance.event_type == "workspace_access":
+            raise RuntimeError("test event store unavailable")
+
+    event.listen(Event, "before_insert", refuse_grant_event)
+    try:
+        with pytest.raises(RuntimeError, match="test event store unavailable"):
+            await client.post(url, json=replacement, headers=token())
+    finally:
+        event.remove(Event, "before_insert", refuse_grant_event)
+    async with sessions() as session:
+        target = await session.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id,
+            WorkspaceGrantRecord.principal == "approver",
+        ))
+        assert target.permissions == "workspace:read"
+        assert target.revision == 1
+        assert len((await session.scalars(select(WorkspaceGrantChange))).all()) == 1
+        assert len((await session.scalars(select(Event).where(Event.event_type == "workspace_access"))).all()) == 1
+    updated = await client.post(url, json=replacement, headers=token())
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["revision"] == 2
+    async with sessions() as session:
+        changes = (await session.scalars(select(WorkspaceGrantChange).order_by(WorkspaceGrantChange.revision))).all()
+        assert len(changes) == 2
+        audit = await session.get(Event, changes[-1].event_id)
+        details = json.loads(audit.details_json)
+        assert audit.org_id is not None
+        assert audit.principal == "owner"
+        assert audit.created_at is not None
+        assert audit.resource_id == uuid.UUID(updated.json()["grant_id"])
+        assert details["before"] == ["workspace:read"]
+        assert details["after"] == ["workspace:read", "workspace:spend"]
+        assert details["target"] == "approver"
+        assert details["target_type"] == details["actor_type"] == "human"
+        assert details["reason"] == "approver_setup"
+        assert details["request_id"] == replacement["request_id"]
