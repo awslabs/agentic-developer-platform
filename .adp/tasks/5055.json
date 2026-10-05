@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:53:23.287Z",
+  "updated_at": "2026-10-05T23:55:47.240Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -302,7 +302,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Family classification and inventory parity pass; commit 0541bff7.",
+      "note": "Commit 0541bff7.",
       "commits": [
         "0541bff"
       ]
@@ -319,33 +319,37 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Unknown-route 403 with absent and valid signed token; 192 combined tests passed. Commit 0541bff7."
+      "note": "Unknown-route 403 with no token and with a signed token; commit 0541bff7."
     },
     {
       "id": "R6.3-c1",
       "kind": "code",
       "criterion": "R6.3",
       "title": "Retain policy roles without inventing issuable production grants",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
       ],
-      "note": ""
+      "note": "Stored grant remains authoritative offline; no production role issuance claim."
     },
     {
       "id": "R6.3-t1",
       "kind": "test",
       "criterion": "R6.3",
       "title": "Run offline role and workspace-grant enforcement tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "R6.3-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_grants.py"
       ],
-      "note": ""
+      "note": "175 combined passed; commit 2e0cd803.",
+      "commits": [
+        "2e0cd80"
+      ]
     },
     {
       "id": "R6.3-t2",
