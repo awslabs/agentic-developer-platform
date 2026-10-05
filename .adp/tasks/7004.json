@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7004,
-  "updated_at": "2026-10-05T15:12:57.235Z",
+  "updated_at": "2026-10-05T15:16:22.797Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -90,7 +90,7 @@
       "files": [
         "modules/agent-context/images/deepwiki/Dockerfile"
       ],
-      "note": "The upstream Dockerfile copies a Poetry environment with PyJWT 2.13.0; identifying actual affected paths, advisories, and compatible fixes requires the assigned reports and candidate image."
+      "note": "Affected paths and compatible fixes require the assigned reports and candidate image."
     },
     {
       "id": "AC-02-t2",
@@ -102,31 +102,31 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "The runtime fixtures require a candidate container; this runner has no builder."
+      "note": "Runtime fixtures require a candidate container; this runner has no builder."
     },
     {
       "id": "AC-02-c3",
       "kind": "code",
       "criterion": "AC-02",
       "title": "Repair high-security overlay without losing parent fixes",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "modules/agent-context/images/deepwiki/high-security/Dockerfile"
       ],
-      "note": "Verify the overlay's pinned parent against the candidate."
+      "note": "The fixed historical parent digest cannot be replaced without coverage mapping and a validated new parent."
     },
     {
       "id": "AC-02-t3",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test high-security overlay and non-root runtime regressions",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-02-c3"
       ],
       "files": [],
-      "note": "Check security overlay and preserved runtime identity."
+      "note": "No container builder is available to test a composed image."
     },
     {
       "id": "AC-03-c1",
