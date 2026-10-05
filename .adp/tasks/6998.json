@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T16:56:53.165Z",
+  "updated_at": "2026-10-05T18:57:41.290Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Source mapping pushed; original private SARIF requires an authorized scan-reader connection. Credential discovery returned 403 insufficient_scope.",
+      "note": "Source mapping pushed; original private SARIF requires separate authorized scan-reader access; previous discovery failed, current cross-account access not yet checked.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Published selectors pass local checks; original report hash and severity remain unverified."
+      "note": "Published selectors passed local checks; original report hash and severity remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -42,7 +42,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/url-guard.ts"
       ],
-      "note": "Verified merged PR #6733."
+      "note": "Prior run verified merged PR #6733."
     },
     {
       "id": "AC-02-t1",
@@ -56,7 +56,7 @@
       "files": [
         "modules/agent-factory/agent/src/clients/gitlab_client.test.ts"
       ],
-      "note": "61 tests passed."
+      "note": "Prior run: 61 tests passed."
     },
     {
       "id": "AC-02-c2",
@@ -68,7 +68,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.ts"
       ],
-      "note": "GitHub live-status origin pinned; pushed at abb4039.",
+      "note": "Prior run pushed abb4039.",
       "commits": [
         "abb4039"
       ]
@@ -85,7 +85,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.test.ts"
       ],
-      "note": "139 focused tests and agent build passed."
+      "note": "Prior run: 139 focused tests and agent build passed."
     },
     {
       "id": "AC-02-c3",
@@ -97,7 +97,7 @@
       "files": [
         "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Vault origin bound to operator configuration; pushed at 3f2661b.",
+      "note": "Prior run pushed 3f2661b.",
       "commits": [
         "3f2661b"
       ]
@@ -114,7 +114,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts"
       ],
-      "note": "136 focused tests and agent build passed."
+      "note": "Prior run: 136 focused tests and agent build passed."
     },
     {
       "id": "AC-02-c4",
@@ -126,7 +126,7 @@
       "files": [
         "modules/agent-factory/codex-reviewer/src/github.ts"
       ],
-      "note": "Reviewer repository validated before token acquisition; pushed at 03d35c3.",
+      "note": "Prior run pushed 03d35c3.",
       "commits": [
         "03d35c3"
       ]
@@ -143,7 +143,7 @@
       "files": [
         "modules/agent-factory/codex-reviewer/src/github.test.ts"
       ],
-      "note": "45 focused reviewer GitHub tests and 156 harness tests passed."
+      "note": "Prior run: 45 reviewer tests and 156 harness tests passed."
     },
     {
       "id": "AC-02-c-wire",
@@ -155,7 +155,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "Verified live runtime constructors use guarded clients."
+      "note": "Prior run verified guarded runtime constructors."
     },
     {
       "id": "AC-02-t5",
@@ -173,7 +173,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "90 focused tests passed; redirect targets received zero requests. Pushed at f83a57d.",
+      "note": "Prior run: 90 focused tests passed; redirect targets received zero requests. Pushed f83a57d.",
       "commits": [
         "f83a57d"
       ]
@@ -188,7 +188,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Provisional evidence pushed at 7049c2e; all 18 unresolved. Original private report and durable raw-result retention unavailable.",
+      "note": "Prior run pushed provisional evidence at 7049c2e; all 18 unresolved pending original report and durable raw-result retention.",
       "commits": [
         "7049c2e"
       ]
@@ -205,7 +205,7 @@
       "files": [
         ".github/scripts/issue_6998_candidate.py"
       ],
-      "note": "Current-registry candidate maps 18; exact scan-time rule and original SARIF cannot be compared."
+      "note": "Current-registry candidate mapped 18; exact scan-time rule and original SARIF not yet compared."
     },
     {
       "id": "AC-04-c-wire",
@@ -217,7 +217,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Handoff pushed at 23dab9f and ready PR #7023 opened; remains open until its covering full-suite test passes.",
+      "note": "Handoff pushed at 23dab9f; ready PR #7023 opened. Awaiting covering full-suite test.",
       "commits": [
         "23dab9f"
       ]
@@ -234,7 +234,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Installs and builds pass; agent full suite 2856/2859, harness 156/156, reviewer full suite 196/198. Handoff catalog tests pass."
+      "note": "Prior checkpoint: installs/builds passed; agent 2856/2859, harness 156/156, reviewer 196/198; handoff catalog tests passed. Requires rerun."
     },
     {
       "id": "AC-04-c1",
@@ -256,7 +256,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Post-merge verification remains with the epic coordinator; production rollout is separate."
+      "note": "Post-merge verification owned by epic coordinator; production rollout separate."
     }
   ]
 }
