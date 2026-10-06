@@ -728,7 +728,11 @@ jobs:
           go -C "$controller" test -c -o "$RUNNER_TEMP/superplane-rpc-worker" ./execution
           python3 -m venv "$RUNNER_TEMP/superplane-rpc-venv"
           "$RUNNER_TEMP/superplane-rpc-venv/bin/pip" install './modules/harness/jobs[dev]' \
-            './modules/domain-apps/superplane/contracts' './modules/domain-apps/superplane/executor'
+            './modules/domain-apps/superplane/contracts' \
+            './modules/domain-apps/superplane/infra/account-factory' \
+            './modules/domain-apps/superplane/infra/account-provisioning' \
+            './modules/domain-apps/superplane/workspace_bootstrap' \
+            './modules/domain-apps/superplane[worker]' './modules/domain-apps/superplane/executor'
           export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
           export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
           # The repository root also has a tests package. Start in the harness
