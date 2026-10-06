@@ -113,8 +113,8 @@
       "installed_version": "1.3.1"
     }
   ],
-  "base_platform": "sha256:f05fb1c2485d0703df55a3cd82817beb608e89beaab5e14f041a9bce3033ada7",
-  "base_config": "sha256:941bcd04393d157466b0ce3a1799c54fe71f7cc4aa2b70c0dccd7d3ce55c5396",
+  "base_platform": "sha256:4a28c6bc660b879a116dcfa8aec3612a5bd9860e0554a8be9ee2ede11548898e",
+  "base_config": "sha256:abefc246f6e3c3b4016f3eb8a450be09ad3d7a06316ba7eb312306d65b034fff",
   "python_versions": {
     "PyJWT": "2.14.0",
     "ray": "2.58.0",
