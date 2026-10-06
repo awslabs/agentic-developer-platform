@@ -124,3 +124,15 @@ supplies evidence to the reviewer; it never erases findings automatically.
 Conflicts and provider-required strict-base integration still enter the repair
 path. Merge delivery continues to require the exact reviewed head and current
 base, and rechecks the target immediately before the provider mutation.
+
+## Owner recovery for protected reviewers
+
+The existing node `review-recovery/preview` and `review-recovery/accept` endpoints
+also support protected-worker plans. The authenticated policy owner may request
+another review after the current protected reviewer records a terminal failure.
+The preview binds the current plan, claim, attempt, PR head and terminal receipt;
+acceptance records an append-only `protected_review_recovery` decision. It does
+not mark delivery successful, change a failed worker receipt, reset attempts or
+increase spending authority. The normal dispatcher rechecks authorization,
+remaining allowance, ownership, head and terminal evidence before starting a
+new reviewer. A later failure needs a separate owner recovery decision.
