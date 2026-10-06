@@ -37,6 +37,8 @@ class CurrentMembers:
         if subject == "approver" and self.target_read is not None:
             self.target_read.set()
             await self.continue_read.wait()
+        if subject == "other-org-person":
+            return CurrentIdentity(subject, "human", "different-adp-org", "other-membership", True, True)
         if subject not in self.active or principal_type != "human" or adp_org_id != "adp-transaction-test":
             return None
         return CurrentIdentity(subject, "human", adp_org_id, f"membership-{subject}", True, True)
@@ -111,9 +113,12 @@ async def test_concurrent_duplicate_and_revision_conflict_postgres(postgres_acce
     client, sessions, workspace_id, _, token = postgres_access
     url = f"/workspaces/{workspace_id}/access/v1/grants"
     body = request()
-    first, second = await asyncio.gather(
-        client.post(url, json=body, headers=token()),
-        client.post(url, json=body, headers=token()),
+    first, second = await asyncio.wait_for(
+        asyncio.gather(
+            client.post(url, json=body, headers=token()),
+            client.post(url, json=body, headers=token()),
+        ),
+        timeout=15,
     )
     assert (first.status_code, second.status_code) == (200, 200), (first.text, second.text)
     assert first.json() == second.json()
@@ -248,3 +253,43 @@ async def test_audit_failure_rolls_back_update_and_retry_postgres(postgres_acces
         assert details["target_type"] == details["actor_type"] == "human"
         assert details["reason"] == "approver_setup"
         assert details["request_id"] == replacement["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_cross_tenant_and_removed_target_membership_postgres(postgres_access):
+    client, sessions, workspace_id, members, token = postgres_access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    assert (await client.post(url, json=request(target_subject="other-org-person"), headers=token())).status_code == 403
+    members.active.remove("approver")
+    assert (await client.post(url, json=request(), headers=token())).status_code == 403
+    async with sessions() as session:
+        assert (await session.scalars(select(WorkspaceGrantChange))).all() == []
+    members.active.add("approver")
+    granted = await client.post(url, json=request(), headers=token())
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["subject"] == "approver"
+
+
+@pytest.mark.asyncio
+async def test_current_viewer_service_target_and_sole_admin_self_change_denied_postgres(postgres_access):
+    client, sessions, workspace_id, members, token = postgres_access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    members.active.update({"viewer", "service-shadow"})
+    async with sessions() as session:
+        org_id = (await session.get(Workspace, workspace_id)).org_id
+        session.add(WorkspaceGrantRecord(
+            workspace_id=workspace_id, org_id=org_id,
+            principal="viewer", principal_type="human", permissions="workspace:read",
+        ))
+        session.add(WorkspaceGrantRecord(
+            workspace_id=workspace_id, org_id=org_id,
+            principal="service-shadow", principal_type="service", permissions="workspace:read",
+        ))
+        await session.commit()
+    assert (await client.post(url, json=request(target_subject="viewer"), headers=token("viewer"))).status_code == 403
+    assert (await client.post(url, json=request(principal_type="service"), headers=token())).status_code == 422
+    assert (await client.post(url, json=request(target_subject="service-shadow"), headers=token())).status_code == 409
+    assert (await client.post(url, json=request(permissions=["cluster:administer"]), headers=token())).status_code == 422
+    assert (await client.post(url, json=request(target_subject="owner", expected_revision=1), headers=token())).status_code == 403
+    async with sessions() as session:
+        assert (await session.scalars(select(WorkspaceGrantChange))).all() == []
