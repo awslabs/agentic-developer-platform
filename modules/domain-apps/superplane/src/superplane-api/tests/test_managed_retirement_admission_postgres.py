@@ -5,14 +5,13 @@ This test exercises the database boundary and dispatch, not provider deletion.
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from app.adapters.operation_dispatch import OperationDispatcher
 from app.models.workspace import Workspace
 from app.operation_activation import expected_lifecycle_binding
 from app.services import managed_retirement, retirement
-from app.services.provisioning import ProvisioningRefused
+from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
 from harness_jobs.identity import OperationRequest, payload_digest
 
 from tests.test_managed_control_registry_postgres import (
@@ -57,7 +56,6 @@ async def test_distinct_removal_approval_admits_and_recovers_one_operation(
     }
     monkeypatch.setattr(retirement, "async_session_factory", fixture.sessions)
     monkeypatch.setattr(managed_retirement, "async_session_factory", fixture.sessions)
-    monkeypatch.setattr(managed_retirement, "require_runtime", AsyncMock())
 
     async def reviewed(composition, db, org_id, workspace_id, request_id):
         workspace, principal = await retirement._workspace(db, org_id, workspace_id)
@@ -129,3 +127,60 @@ async def test_distinct_removal_approval_admits_and_recovers_one_operation(
         )
     assert report.delivered == 1
     assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "unavailable",
+    [
+        "absent-binding",
+        "not-installed",
+        "misbound-image",
+        "stale-proof",
+        "disabled",
+        "unsupported-runtime",
+    ],
+)
+async def test_native_runtime_gate_refuses_before_any_admission(
+    lifecycle,  # noqa: F811
+    monkeypatch,
+    unavailable,
+):
+    from app.config import settings
+
+    from workspace_provisioning import retirement_composer
+
+    if unavailable == "absent-binding":
+        monkeypatch.setattr(settings, "superplane_paid_worker_binding_file", "")
+    elif unavailable == "not-installed":
+        lifecycle.proof_override["installed"] = False
+    elif unavailable == "misbound-image":
+        lifecycle.proof_override["worker_image_digest"] = "sha256:" + "f" * 64
+    elif unavailable == "stale-proof":
+        lifecycle.proof_override["checked_at"] = "2000-01-01T00:00:00+00:00"
+    elif unavailable == "disabled":
+        monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", False)
+    else:
+        monkeypatch.setattr(retirement_composer, "NATIVE_RETIREMENT_VERSION", 0)
+    async with lifecycle.sessions() as db:
+        with pytest.raises(ProvisioningUnavailable):
+            await managed_retirement.admit(
+                lifecycle.composition,
+                db,
+                lifecycle.org_id,
+                uuid.uuid4(),
+                str(uuid.uuid4()),
+                "a" * 64,
+                str(uuid.uuid4()),
+            )
+    async with lifecycle.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+        assert (
+            await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 0
+        )

@@ -28,6 +28,9 @@ from .retirement_inventory import load_bootstrap_retirement_inventory
 from .retirement_runtime import RetirementRuntime, verify_retirement_inventory
 from .runtime_config import LifecycleRefused
 
+# API admission additionally requires an independently verified installed worker
+# binding. Version 1 covers original, bootstrap and temporary control accounting.
+NATIVE_RETIREMENT_VERSION = 1
 PHASE = "retire-workspace"
 
 
