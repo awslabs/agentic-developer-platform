@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T00:29:08.385Z",
+  "updated_at": "2026-10-06T00:49:44.206Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -90,7 +90,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Four tests passed in earlier Domain CI; final-head CI pending.",
+      "note": "Four tests passed in earlier Domain CI; final-head Domain CI pending.",
       "commits": [
         "e497897"
       ]
@@ -198,7 +198,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "e5cd337; covered by AC-04-t4.",
+      "note": "e5cd337; covered by AC-04-t4 and AC-04-t1.",
       "commits": [
         "e5cd337"
       ]
@@ -210,12 +210,8 @@
       "title": "Keep human/service credentials and scoped observations separate",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py"
-      ],
-      "note": "9581395; covered by AC-04-t2. Enforcement-off compatibility is preserved.",
+      "files": [],
+      "note": "9581395; covered by AC-04-t2 and AC-04-t1.",
       "commits": [
         "9581395"
       ]
@@ -225,13 +221,18 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Test requester and approver revocation before executor side effects",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c1",
         "AC-04-c2"
       ],
-      "files": [],
-      "note": "Registered-worker and side-effect evidence still required."
+      "files": [
+        "modules/gateway/tests/internal/test_paid_domain_operation_postgres.py:397"
+      ],
+      "note": "8301f5a; exact-head Gateway CI 37394429833 passed all eight test shards, lint and smoke. Local PostgreSQL cases skipped.",
+      "commits": [
+        "8301f5a"
+      ]
     },
     {
       "id": "AC-04-t2",
@@ -243,11 +244,8 @@
         "AC-04-c1",
         "AC-04-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
-      ],
-      "note": "API/worker substitution and monitor credential assertions passed; 93 isolation tests and four adjacent credential-type tests passed."
+      "files": [],
+      "note": "API/worker substitution and monitor credential assertions passed."
     },
     {
       "id": "AC-04-t3",
@@ -260,7 +258,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Broader protected integration evidence remains."
+      "note": "Protected integration evidence remains."
     },
     {
       "id": "AC-04-t4",
@@ -272,7 +270,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Gateway focused suite passed 11 tests; 10 PostgreSQL tests skipped locally."
+      "note": "Focused Gateway tests passed."
     },
     {
       "id": "AC-05-c1",
@@ -344,7 +342,7 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: supervisor/live-acceptance owner; this source-only assignment prohibits deployment and paid execution."
+      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
     }
   ]
 }
