@@ -10,7 +10,6 @@ import contextlib
 import copy
 import fcntl
 import hashlib
-import ipaddress
 import json
 import os
 import subprocess
@@ -1107,40 +1106,48 @@ class Installer:
             self.receipt.setdefault("database_observations", {})[key] = observed
 
     def resolve_database_addresses(self, endpoint):
-        # Private RDS DNS belongs to the selected VPC, not the operator laptop.
-        # The existing ADP API provides a read-only DNS lookup; no credential is read.
-        program = (
-            "import json,socket,sys; "
-            "print(json.dumps(sorted({r[4][0] for r in socket.getaddrinfo("
-            "sys.argv[1],int(sys.argv[2]),type=socket.SOCK_STREAM)})))"
-        )
-        addresses = self.json(
-            self.kube(
-                "exec",
-                "deployment/bedrockgateway",
-                "-n",
-                self.env.get("gateway_namespace", "adp"),
-                "-c",
-                "bedrockgateway",
-                "--",
-                "python",
-                "-c",
-                program,
-                endpoint["Address"],
-                str(endpoint["Port"]),
-            )
-        )
+        # Resolve in the selected management VPC without executing in a shared
+        # service. This probe has DNS egress only, no database values or identity.
+        from .database_dns_probe import normalize_addresses
+
         require(
-            isinstance(addresses, list) and 0 < len(addresses) <= 16,
-            "Selected database endpoint did not resolve in the management VPC",
+            isinstance(endpoint.get("Address"), str)
+            and 0 < len(endpoint["Address"]) <= 253
+            and not any(c.isspace() for c in endpoint["Address"])
+            and type(endpoint.get("Port")) is int
+            and 1 <= endpoint["Port"] <= 65535,
+            "Selected database endpoint is invalid",
         )
-        try:
-            addresses = sorted(
-                {str(ipaddress.ip_address(a)) for a in addresses if isinstance(a, str)}
+        with ClusterProbe(self) as probe:
+            probe.isolate(dns_only=True)
+            # Preserve the native resolver/UDP+TCP proof before using its answers.
+            probe.prove_dns(endpoint["Address"])
+            result = probe.run(
+                "superplane-api",
+                [
+                    "python",
+                    "-c",
+                    (MODULE / "installation/database_dns_probe.py").read_text(),
+                    endpoint["Address"],
+                    str(endpoint["Port"]),
+                ],
             )
-        except ValueError:
-            raise Refusal("Database DNS returned an invalid address") from None
-        require(bool(addresses), "Database DNS returned no usable address")
+            require(
+                result.returncode == 0 and len(result.stdout) <= 4096,
+                "Selected database endpoint did not resolve in the management VPC",
+            )
+            observed = self.json(result)
+            require(
+                isinstance(observed, dict)
+                and observed.get("host") == endpoint["Address"]
+                and type(observed.get("port")) is int
+                and observed["port"] == endpoint["Port"],
+                "Database DNS response differs from the selected endpoint",
+            )
+            try:
+                addresses = normalize_addresses(observed.get("addresses"))
+            except ValueError:
+                raise Refusal("Database DNS returned an invalid address set") from None
         self.receipt["database_network_target"] = {
             "host": endpoint["Address"],
             "addresses": addresses,

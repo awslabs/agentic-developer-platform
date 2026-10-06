@@ -392,16 +392,23 @@ class ClusterProbe:
         }
         self.installer.save()
 
-    def isolate(self, *, database_cidrs=(), database_port=5432):
-        egress = []
+    def isolate(self, *, database_cidrs=(), database_port=5432, dns_only=False):
+        require(
+            not (dns_only and database_cidrs),
+            "DNS discovery cannot allow database egress",
+        )
+        egress = (
+            [dns_egress(self.installer.network_environment)]
+            if database_cidrs or dns_only
+            else []
+        )
         if database_cidrs:
-            egress = [
-                dns_egress(self.installer.network_environment),
+            egress.append(
                 {
                     "to": [{"ipBlock": {"cidr": cidr}} for cidr in database_cidrs],
                     "ports": [{"protocol": "TCP", "port": database_port}],
-                },
-            ]
+                }
+            )
         self.policy(
             "isolate",
             {"podSelector": {}, "policyTypes": ["Ingress", "Egress"], "egress": egress},

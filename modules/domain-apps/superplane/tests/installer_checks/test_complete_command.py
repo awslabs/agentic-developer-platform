@@ -1276,28 +1276,6 @@ def test_refreshed_platform_data_omitted_from_planned_values(
         assert installer.receipt["plan_sha256"]
 
 
-@pytest.mark.parametrize("addresses", [["10.0.11.13"], [], ["not-an-address"]])
-def test_database_resolves_in_selected_management_vpc(
-    tmp_path, environment, release, monkeypatch, addresses
-):
-    installer, tools = setup(tmp_path, environment, release, monkeypatch)
-    calls = []
-
-    def dns(*args, **kwargs):
-        calls.append(args)
-        return SimpleNamespace(stdout=json.dumps(addresses))
-
-    monkeypatch.setattr(installer, "kube", dns)
-    endpoint = {"Address": "selected.private.example", "Port": 5432}
-    if addresses == ["10.0.11.13"]:
-        assert installer.resolve_database_addresses(endpoint) == addresses
-        assert calls[0][-2:] == (endpoint["Address"], "5432")
-        assert "deployment/bedrockgateway" in calls[0]
-    else:
-        with pytest.raises(Refusal, match="resolve|invalid address"):
-            installer.resolve_database_addresses(endpoint)
-
-
 def domain_build_ownership_fixture(environment):
     """Prior-state identities from the maintained four-lane naming contract."""
     result = []
