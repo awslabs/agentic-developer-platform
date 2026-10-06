@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'modules/domain-apps/cyber/infra/platform-integration/**'
+      - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
       - 'modules/domain-apps/superplane/infra/provider-authority/**'

@@ -15,6 +15,7 @@ build declarations and infrastructure utilities belong here as well.
 | Control-plane IAM, repositories, configuration and build declarations | `control-plane/` and `../codebuild/` |
 | Dedicated paid-worker builder and image-production infrastructure | `paid-worker-build/` and `native-image/` |
 | Operation queue and runtime worker/observer roles | `domain-runtime/` |
+| Protected operation registration and Gateway runtime IAM/RBAC | `shared-operation-authority/` composed by the shared authority root |
 | Bootstrap actors and independently retained encryption | `lifecycle-foundations/` |
 | Workspace network, EKS and node roles | `workspaces/` |
 | Scoped installation-owned provider role, policy shards and child-role boundary | `domain-provider/` |

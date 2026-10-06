@@ -22,6 +22,14 @@ locals {
 
 resource "kubernetes_cluster_role_v1" "namespaces" {
   metadata { name = local.name }
+  # EKS ViewPolicy does not cover Auto Mode custom resources. The installer
+  # reads this exact object to verify configured NetworkPolicy enforcement.
+  rule {
+    api_groups     = ["eks.amazonaws.com"]
+    resources      = ["nodeclasses"]
+    resource_names = ["default"]
+    verbs          = ["get"]
+  }
   rule {
     api_groups = [""]
     resources  = ["namespaces"]
