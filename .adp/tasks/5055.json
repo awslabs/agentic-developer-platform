@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-05T23:55:47.240Z",
+  "updated_at": "2026-10-06T00:26:20.124Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -10,10 +10,8 @@
       "title": "Preserve access-token-only admission on mounted domain routes",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
-      ],
-      "note": "Mounted behavior verified."
+      "files": [],
+      "note": "Existing behavior verified."
     },
     {
       "id": "R5.1-t1",
@@ -27,7 +25,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Commit d72fb72.",
+      "note": "d72fb72",
       "commits": [
         "d72fb72"
       ]
@@ -39,10 +37,8 @@
       "title": "Preserve fail-closed client allowlist configuration",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
-      ],
-      "note": "Mounted and startup behavior verified."
+      "files": [],
+      "note": "Existing behavior verified."
     },
     {
       "id": "R5.2-t1",
@@ -56,7 +52,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Commit efe6765.",
+      "note": "efe6765",
       "commits": [
         "efe6765"
       ]
@@ -68,10 +64,7 @@
       "title": "Preserve strict domain validation and separate internal credentials",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/auth.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/internal.py"
-      ],
+      "files": [],
       "note": "Merged validators unchanged."
     },
     {
@@ -84,10 +77,9 @@
         "R5.3-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Commit b683a2e.",
+      "note": "b683a2e",
       "commits": [
         "b683a2e"
       ]
@@ -104,7 +96,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": "Raw and UTF-8 non-ASCII return 401; commit b683a2e."
+      "note": "Raw and UTF-8 non-ASCII return 401; b683a2e."
     },
     {
       "id": "R5.4-c1",
@@ -113,10 +105,8 @@
       "title": "Preserve server-derived organization authority on domain requests",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
-      ],
-      "note": "Binding verified against spoofed headers."
+      "files": [],
+      "note": "Verified against spoofed headers."
     },
     {
       "id": "R5.4-t1",
@@ -130,7 +120,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Commit 2537952.",
+      "note": "2537952",
       "commits": [
         "2537952"
       ]
@@ -142,10 +132,8 @@
       "title": "Retain enforcement configuration without activating a target",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
-      ],
-      "note": "Local configuration verified; not deployed evidence."
+      "files": [],
+      "note": "Local configuration only; not deployed evidence."
     },
     {
       "id": "R5.5-t1",
@@ -157,7 +145,7 @@
         "R5.5-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator; named configured API and approved access are unresolved."
+      "note": "deployed-target: #5540 evaluator; named configured API and approved access unresolved."
     },
     {
       "id": "R5.5-t2",
@@ -171,7 +159,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Offline/live split; commit cdf629e.",
+      "note": "cdf629e; local-only evidence.",
       "commits": [
         "cdf629e"
       ]
@@ -183,10 +171,8 @@
       "title": "Preserve scoped service and admitted-operation authorization",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
-      ],
-      "note": "Offline service scope verified; production integration is not claimed."
+      "files": [],
+      "note": "Offline service scope verified; production integration not claimed."
     },
     {
       "id": "R5.6-t1",
@@ -200,7 +186,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Read 200, provision 403, revoked read 403; commit 2992049.",
+      "note": "2992049; injected state is not production identity.",
       "commits": [
         "2992049"
       ]
@@ -215,7 +201,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "#6127/#6485/#5535 own current identity, grant consumption and runtime composition."
+      "note": "#6127/#6485/#5535 own identity, grant consumption and runtime composition."
     },
     {
       "id": "R5.7-c1",
@@ -224,10 +210,8 @@
       "title": "Preserve sanitized proxy ingress and server-derived actor context",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
-      ],
-      "note": "Mounted guard publishes a sanitized mapping with the verified principal."
+      "files": [],
+      "note": "Mounted guard behavior verified."
     },
     {
       "id": "R5.7-t1",
@@ -239,10 +223,9 @@
         "R5.7-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_proxy.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Auth/proxy 205 passed; commit 314e66d.",
+      "note": "314e66d",
       "commits": [
         "314e66d"
       ]
@@ -254,9 +237,7 @@
       "title": "Preserve kubeconfig permission enforcement on the mounted endpoint",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
-      ],
+      "files": [],
       "note": "Mounted PROVISION guard retained; #6993 fixtures unchanged."
     },
     {
@@ -269,11 +250,9 @@
         "R6.1-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_history.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_kubeconfig_endpoint_current.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Historical/current pair and same-org peer-grant denial; 159 passed. Commit 185fd23f.",
+      "note": "185fd23",
       "commits": [
         "185fd23"
       ]
@@ -285,10 +264,8 @@
       "title": "Preserve explicit classification for all mounted routes",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
-      ],
-      "note": "Existing inventory unchanged; mounted family classes and scopes pinned."
+      "files": [],
+      "note": "Existing inventory unchanged."
     },
     {
       "id": "R6.2-t1",
@@ -302,7 +279,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Commit 0541bff7.",
+      "note": "0541bff",
       "commits": [
         "0541bff"
       ]
@@ -319,7 +296,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "Unknown-route 403 with no token and with a signed token; commit 0541bff7."
+      "note": "0541bff"
     },
     {
       "id": "R6.3-c1",
@@ -328,10 +305,8 @@
       "title": "Retain policy roles without inventing issuable production grants",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/auth.py"
-      ],
-      "note": "Stored grant remains authoritative offline; no production role issuance claim."
+      "files": [],
+      "note": "Stored grant authoritative offline; no production issuance claim."
     },
     {
       "id": "R6.3-t1",
@@ -343,10 +318,9 @@
         "R6.3-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_grants.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py"
       ],
-      "note": "175 combined passed; commit 2e0cd803.",
+      "note": "2e0cd803",
       "commits": [
         "2e0cd80"
       ]
@@ -371,7 +345,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "#6127/#6485/#5535 own this integration, outside the approved reconciliation slice."
+      "note": "#6127/#6485/#5535 own this integration outside the approved reconciliation slice."
     },
     {
       "id": "R6.4-t1",
@@ -389,27 +363,28 @@
       "id": "COV-85-c1",
       "kind": "code",
       "criterion": "COV-85",
-      "title": "Keep any bounded repair consistent with existing API behavior",
-      "status": "open",
+      "title": "Keep bounded repair consistent with existing API behavior",
+      "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app"
-      ],
-      "note": ""
+      "files": [],
+      "note": "No production change; missing-bearer response remains 401 with a Bearer challenge."
     },
     {
       "id": "COV-85-t1",
       "kind": "test",
       "criterion": "COV-85",
-      "title": "Measure changed API/service coverage and run full relevant suites",
-      "status": "open",
+      "title": "Measure coverage and run relevant API suites",
+      "status": "done",
       "covers": [
         "COV-85-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_internal_token.py"
       ],
-      "note": "Remote CI and measured coverage pending."
+      "note": "b1d59b6a; local 1,925 passed, 2 xfailed, 2 deselected; post-change focused 193 passed; final-head Domain CI 2,417 passed, 11 skipped, 2 xfailed. Existing selected modules 84% combined; changed production logic has no denominator.",
+      "commits": [
+        "b1d59b6"
+      ]
     },
     {
       "id": "U14-L1-c1",
@@ -418,10 +393,8 @@
       "title": "Preserve offline enforcement without claiming deployed activation",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app"
-      ],
-      "note": ""
+      "files": [],
+      "note": "Next task: finalize the criterion-level evidence and remaining-obligations map."
     },
     {
       "id": "U14-L1-t1",
@@ -433,7 +406,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator; named API, approved configuration and test identities are unresolved."
+      "note": "deployed-target: #5540 evaluator; named API, approved configuration and test identities unresolved."
     },
     {
       "id": "U14-L1-t2",
@@ -445,7 +418,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "Criterion-level evidence map belongs in the ready PR."
+      "note": "Criterion-level evidence map in ready PR; no live claim from fixtures."
     }
   ]
 }
