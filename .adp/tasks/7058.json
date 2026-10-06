@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7058,
-  "updated_at": "2026-10-06T00:10:15.328Z",
+  "updated_at": "2026-10-06T00:15:43.047Z",
   "tasks": [
     {
       "id": "PREP01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit a31f930; role and environment checks tightened in c82cd9a.",
+      "note": "Commit a31f930; identity checks tightened in later commits.",
       "commits": [
         "a31f930"
       ]
@@ -43,7 +43,7 @@
         "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
         ".github/workflows/superplane-infra-plan.yml"
       ],
-      "note": "Commit c82cd9a; isolated backend and pinned provider.",
+      "note": "Commit c82cd9a; exact operator-role verification added in 42df143.",
       "commits": [
         "c82cd9a"
       ]
@@ -60,7 +60,7 @@
       "files": [
         "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
       ],
-      "note": "Terraform validate and three mock-provider cases pass; CI matrix coverage passes locally."
+      "note": "Terraform validates; four mock-provider tests pass; CI coverage fixture passes."
     },
     {
       "id": "PREP03-c1",
@@ -72,7 +72,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit e58437c; proposal-only shared-owner handoff published on #7058. Owner routes remain unavailable.",
+      "note": "Commit e58437c; missing shared-owner routes documented in the #7058 integration checkpoint.",
       "commits": [
         "e58437c"
       ]
@@ -87,7 +87,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Composer calls the existing paid-worker validator and generates a paused projection in tests; no installer-owned file changed."
+      "note": "The composer calls the existing validator; actual installer wiring belongs to the foreground owner."
     },
     {
       "id": "PREP03-t1",
@@ -102,7 +102,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "Exact Gateway field and Terraform variable shape checks; paid-worker projection stays paused."
+      "note": "Gateway field shape, Terraform variables and paused worker projection checked."
     },
     {
       "id": "PREP03-t2",
@@ -116,47 +116,50 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "Offline fixtures refuse missing configured dependencies; actual shared-service availability has not been verified."
+      "note": "Offline missing-configuration refusals checked; actual service availability not verified."
     },
     {
       "id": "PREP04-c1",
       "kind": "code",
       "criterion": "PREP04",
       "title": "Save exact identity and resource receipt with same-input reconciliation",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Next: owned-only saved Terraform plan, immutable identity, lost-response reconciliation and destructive-change refusal."
+      "note": "Commit 42df143; private receipt, exact-plan approval and state/live-identity reconciliation.",
+      "commits": [
+        "42df143"
+      ]
     },
     {
       "id": "PREP04-t1",
       "kind": "test",
       "criterion": "PREP04",
       "title": "Run unit replay and lost-response recovery fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP04-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
       ],
-      "note": ""
+      "note": "Synthetic successful and ambiguous lost-response paths tested without a second apply."
     },
     {
       "id": "PREP04-t2",
       "kind": "test",
       "criterion": "PREP04",
       "title": "Run unit immutable-identity and secret-safe output refusal fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP04-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
       ],
-      "note": ""
+      "note": "Synthetic destructive-plan, role recreation, changed source and fabricated-readiness refusals tested."
     },
     {
       "id": "PREP05-c1",
@@ -168,7 +171,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md"
       ],
-      "note": "Describe private inputs, disabled readiness and independent proof."
+      "note": "Next task: private inputs, separate approver, disabled readiness and owner boundaries."
     },
     {
       "id": "PREP05-t1",
@@ -182,7 +185,7 @@
       "files": [
         "scripts/check-public-docs.py"
       ],
-      "note": "Only local tests; no cloud, database or registry mutation."
+      "note": "Local only; no cloud, database or registry mutation."
     }
   ]
 }
