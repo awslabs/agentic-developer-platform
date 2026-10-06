@@ -126,11 +126,14 @@ inventories them; nothing in this module renders or applies them.
 
 ## Environment and account
 
-Unresolved by design. No AWS account ID and no `adp-cred` label are supplied, and neither may
-be invented. `modules/domain-apps/superplane/environments/dev/superplane.tfvars` ships `account_id = "ACCOUNT_ID"`, a
-placeholder that `bootstrap.sh` and `deploy.sh` rewrite with the account the operator is
-authenticated to. The placeholder deliberately fails `var.account_id`'s 12-digit validation,
-so an unsubstituted deploy stops at validation instead of creating misnamed resources.
+The committed app environment file
+`modules/domain-apps/superplane/environments/dev/superplane.tfvars` ships
+`account_id = "ACCOUNT_ID"`. Superplane's workflows substitute their authenticated
+target account; direct Terraform operators prepare a private copy for their
+explicitly selected account. The app installer prepares its own private inputs.
+Core platform deployment does not prepare this app configuration. The placeholder
+fails `var.account_id`'s 12-digit validation, so an unsubstituted plan stops instead
+of creating misnamed resources.
 
 ## Tests
 
