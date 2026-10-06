@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "issue": 7056,
+  "updated_at": "2026-10-06T00:19:18.822Z",
+  "tasks": [
+    {
+      "id": "AUTH01-c1",
+      "kind": "code",
+      "criterion": "AUTH01",
+      "title": "Gate and audit the repair route",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Router mount and handler both require platform admin; refusal and success receipts are audited.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "8cf60c2"
+      ]
+    },
+    {
+      "id": "AUTH01-t1",
+      "kind": "test",
+      "criterion": "AUTH01",
+      "title": "Run route authorization, audit and inventory tests",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1"
+      ],
+      "files": [],
+      "note": "Nonadmin denial and durable success/refusal receipts passed.",
+      "commits": [
+        "0db2fbf",
+        "498a7a8",
+        "cf12129",
+        "bd1d123"
+      ]
+    },
+    {
+      "id": "OWN02-c1",
+      "kind": "code",
+      "criterion": "OWN02",
+      "title": "Attest canonical installation ownership before repair",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Existing resolver checks current revocation and fresh GitHub account identity.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "OWN02-t1",
+      "kind": "test",
+      "criterion": "OWN02",
+      "title": "Run attested-owner integration and refusal tests",
+      "status": "done",
+      "covers": [
+        "OWN02-c1"
+      ],
+      "files": [],
+      "note": "Covers verified owner, different tenant, unavailable or denied attestation, and revocation.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "18427f4"
+      ]
+    },
+    {
+      "id": "ROUTE03-c1",
+      "kind": "code",
+      "criterion": "ROUTE03",
+      "title": "Conditionally repair one forward routing projection",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Transaction checks exact existing owner and absent revocation marker; updates only org_id and updated_at.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "d9a4bfd"
+      ]
+    },
+    {
+      "id": "ROUTE03-t1",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Run transaction, race, preservation and replay tests",
+      "status": "done",
+      "covers": [
+        "ROUTE03-c1"
+      ],
+      "files": [],
+      "note": "Covers missing and unreadable rows, stale expectation, concurrent owner change, racing revocation, replay and unrelated policy fields.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "READ04-c1",
+      "kind": "code",
+      "criterion": "READ04",
+      "title": "Compare forward projection with canonical owner in verification",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Preserves the existing tri-state response and tenant-scoped cache.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "READ04-t1",
+      "kind": "test",
+      "criterion": "READ04",
+      "title": "Run verification and webhook-denial regressions",
+      "status": "done",
+      "covers": [
+        "READ04-c1"
+      ],
+      "files": [],
+      "note": "Mismatch verification passed; unchanged webhook resolver suite passed 32 tests.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    }
+  ]
+}
