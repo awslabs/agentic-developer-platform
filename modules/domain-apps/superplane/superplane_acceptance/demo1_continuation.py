@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from uuid import UUID, uuid5
 
-from .demo1_browser import PREFIX, _approval, _response
+from .demo1_browser import PREFIX, RequestNotSent, _approval, _response
 from .demo1_evidence import EvidenceError, digest, identifier
 from .demo1_live import PrivateCheckpoint
 from .demo1_report import reference
@@ -365,6 +365,13 @@ def advance_continuation(
             )
             != source
         )
+    except RequestNotSent:
+        store.restore_unsent(saved)
+        return {
+            "status": "BLOCKED",
+            "phase": phase,
+            "reason": "continuation not sent; retry after pre-send checks succeed",
+        }
     except (EvidenceError, OSError, RuntimeError, ValueError):
         if attempted and not saved.submitted:
             raise EvidenceError(

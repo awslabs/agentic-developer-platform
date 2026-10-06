@@ -446,6 +446,11 @@ No requester impersonation or exported approver session is supported.
 After approval, the driver checks the current plan, ticket, source workspace and
 release binding and saves `submitted: true` before the admission request can leave
 the browser. A definite pre-send refusal remains retryable under the same identities.
+If the transport exhausts its runtime after saving submission but before browser
+evaluation, it can prove that no admission request left the browser. Only that
+current locked invocation may atomically restore its prior unsent checkpoint, so
+a later authorized invocation can retry the same request and approval. A failed
+restoration preserves the files for reconciliation; never manually reset them.
 An uncertain reply does not reset submission. Reruns first read the original shared
 admission by its saved request identity; only a matching existing admission permits
 the exact reconciliation POST to repair lost control registration. Missing or denied
@@ -454,7 +459,30 @@ expired historical ticket is not renewed. The original creation checkpoint never
 changes during this phase; preserve both checkpoints after any persistence failure.
 
 `browser.cleanup_preparation` reports the preparation admission and execution state,
-not an immutable cleanup grant, observed fencing, verified inventory or retirement.
+not current cleanup authority, observed fencing, verified inventory or retirement.
+When that original operation reports `succeeded`, the same command also reads its
+immutable preparation artifact through the selected, pinned API runtime. A
+read-only database snapshot checks the original creation/apply/bootstrap lineage,
+the saved preparation request and approval, retained admission, original allocation
+seal and the maintained grant/fence/destroy metadata contract. Missing, changed,
+ambiguous or out-of-window evidence refuses the observation without replacing the
+request or checkpoints.
+
+`browser.cleanup_preparation.artifact` contains sanitized references for the stored
+grant identities, fence readback, inventory digest, destroy-plan file/JSON/backend
+hashes and producer attempt/fence token. These are **historical preparation records**:
+the reader does not fetch the plan bytes, re-observe live grant or fence state,
+establish complete current resource coverage, or authorize deletion. The original
+private target and operation bindings are checked but not copied into the report.
+After that read, the command requests the maintained public retirement preview.
+`browser.retirement_review` matches its exact request inputs to the immutable
+preparation record, including the source lineage, allocations, artifact, policy,
+credential references and destroy-plan hashes. It also checks the reviewed destroy
+descriptor and that the displayed steps equal the encoded approval request. A
+changed workspace or mismatched review refuses without rewriting either checkpoint.
+This is a review read only: it neither requests deletion approval nor submits
+retirement. Matching recorded inputs and the destroy descriptor does not verify
+the complete deletion set against current canonical ownership or provider state.
 Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
 and provider-verified cleanup remain unfinished harness work. Do not remove the
 fence, grant or checkpoints to force another attempt; retain cleanup ownership for

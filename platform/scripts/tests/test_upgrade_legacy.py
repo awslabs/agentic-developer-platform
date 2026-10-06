@@ -180,6 +180,15 @@ class EngineBootstrapTests(unittest.TestCase):
 
 
 class UpgradeProtectionTests(unittest.TestCase):
+    def test_destructive_confirmation_cannot_implicitly_pause_workers(self):
+        row = {'address': 'terraform_data.worker_security_rollout', 'type': 'terraform_data',
+               'change': {'before': {'input': {'active': False, 'paused': False}},
+                          'after': {'input': {'active': False, 'paused': True}}, 'actions': ['update']}}
+        result, calls = self.run_gate('webhook-ingress', [row])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('worker admission', result.stderr)
+        self.assertNotIn('applied', calls)
+
     def test_saved_plan_gate_blocks_cluster_replacement_even_when_confirmed(self):
         row = {'address': 'module.eks.aws_eks_cluster.main', 'type': 'aws_eks_cluster',
                'change': {'before': {'id': CLUSTER}, 'after': {'id': CLUSTER}, 'actions': ['delete', 'create']}}

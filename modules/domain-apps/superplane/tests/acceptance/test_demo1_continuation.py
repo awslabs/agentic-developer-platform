@@ -278,6 +278,30 @@ def continuation(driver, monkeypatch, request):
     return state
 
 
+def test_continuation_timeout_after_persistence_retries_same_unsent_phase(
+    continuation, monkeypatch
+):
+    continuation.run()
+    original = continuation.path.read_bytes()
+    continuation.approved = True
+    clock = journey_fixtures.expire_after_submission(
+        monkeypatch, continuation.driver, PrivateContinuation
+    )
+    before = len(continuation.calls)
+    continuation.run()
+    assert continuation.admitted == 0
+    assert not any(
+        method == "POST" and path.endswith("/continue")
+        for method, path, _ in continuation.calls[before:]
+    )
+    assert continuation.path.read_bytes() == original
+    clock.enabled = False
+    assert continuation.run()["browser"]["continuation"]["submission_observed"]
+    assert continuation.admitted == 1
+    saved = json.loads(continuation.path.read_text())["checkpoint"]
+    assert saved == {**json.loads(original)["checkpoint"], "submitted": True}
+
+
 @pytest.mark.parametrize("lost", [False, True])
 def test_approved_phase_submits_once_and_recovers_without_preview_or_approval(
     continuation, lost

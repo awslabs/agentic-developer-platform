@@ -164,12 +164,23 @@ class RuntimeReader:
         )
 
     def observe(
-        self, max_runtime_seconds: int, *, ownership_scope=None, lineage_scope=None
+        self,
+        max_runtime_seconds: int,
+        *,
+        ownership_scope=None,
+        lineage_scope=None,
+        cleanup_scope=None,
     ) -> dict:
         self.expires = self.monotonic() + max_runtime_seconds
         try:
-            _require(ownership_scope is None or lineage_scope is None)
-            return self._observe(ownership_scope, lineage_scope)
+            _require(
+                sum(
+                    scope is not None
+                    for scope in (ownership_scope, lineage_scope, cleanup_scope)
+                )
+                <= 1
+            )
+            return self._observe(ownership_scope, lineage_scope, cleanup_scope)
         except (
             OSError,
             subprocess.SubprocessError,
@@ -182,7 +193,9 @@ class RuntimeReader:
                 "runtime: denied, incomplete or mismatched observation; no lifecycle effects"
             ) from None
 
-    def _observe(self, ownership_scope=None, lineage_scope=None) -> dict:
+    def _observe(
+        self, ownership_scope=None, lineage_scope=None, cleanup_scope=None
+    ) -> dict:
         _require(self.aws._identity())
         code, response, _ = self.aws._execute(
             "eks",
@@ -345,7 +358,11 @@ class RuntimeReader:
                 )
                 _require(database.get("revision") == self.selected.schema_revision)
                 scope = (
-                    ownership_scope if ownership_scope is not None else lineage_scope
+                    ownership_scope
+                    if ownership_scope is not None
+                    else lineage_scope
+                    if lineage_scope is not None
+                    else cleanup_scope
                 )
                 if scope is not None and ownership is None:
                     probe = (
@@ -354,6 +371,8 @@ class RuntimeReader:
                             "_demo1_ownership_probe.py"
                             if ownership_scope is not None
                             else "_demo1_lineage_probe.py"
+                            if lineage_scope is not None
+                            else "_demo1_cleanup_probe.py"
                         )
                         .read_text()
                     )
@@ -393,4 +412,5 @@ class RuntimeReader:
             "scope": "API artifact/source/schema only; public route, other components and lifecycle admission unverified",
             **({"ownership": ownership} if ownership_scope is not None else {}),
             **({"lineage": ownership} if lineage_scope is not None else {}),
+            **({"cleanup": ownership} if cleanup_scope is not None else {}),
         }

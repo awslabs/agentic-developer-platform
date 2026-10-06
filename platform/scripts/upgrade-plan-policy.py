@@ -16,6 +16,46 @@ WORKER_ROLLOUT_TIMEOUT_MIGRATION = (
     "c77563053075fc3ef8487094a1b99e12aba81d006eb37e5c281d7a5c5fb5165d",
     "a7445dc5de28a2001adb32c29d98e93cbf0dc97bbffa044aeb96bf86551bc5a6",
 )
+# The #6880 change removes the retired Door key from the readiness check.
+# This exact script-only transition has no destroy provisioner.
+WORKER_ROLLOUT_IDENTITY_MIGRATION = (
+    WORKER_ROLLOUT_TIMEOUT_MIGRATION[1],
+    "4a9163e763cf07e984b2e7f39c64dbf77c969a2c1f85e589b5857dd49357aba3",
+)
+
+
+def retired_internal_key_mirror(resource, plan, account):
+    """Delete only #6880's obsolete SSM mirror, never the source secret.
+
+    Match the resource identity, provenance and target without reading/logging
+    its sensitive value. Admission must be paused or fully protected in the
+    saved plan. This does not authorize a worker cutover.
+    """
+    change = resource['change']
+    before = change.get('before') or {}
+    variables = plan.get('variables', {})
+    value = lambda name: variables.get(name, {}).get('value')
+    environment, region = value('environment'), value('aws_region')
+    if (environment not in ('dev', 'staging', 'prod')
+            or not re.fullmatch(r'[0-9]{12}', account or '')
+            or not re.fullmatch(r'[a-z]{2}-[a-z]+-[0-9]', region or '')):
+        return False
+    name = f'/adp/{environment}/gateway/internal-api-key'
+    safe_admission = value('agent_worker_admission_paused') is True or all(
+        value(key) is True for key in (
+            'agent_authority_enabled', 'agent_authority_runtime_ready',
+            'agent_authority_legacy_workers_drained', 'agent_legacy_worker_admin_retired',
+            'agent_task_source_isolation_confirmed'))
+    return (resource.get('address') == 'aws_ssm_parameter.gateway_internal_api_key[0]'
+            and resource.get('type') == 'aws_ssm_parameter'
+            and resource.get('deposed') is None
+            and change['actions'] == ['delete'] and change.get('after') is None
+            and before.get('name') == before.get('id') == name
+            and before.get('arn') == f'arn:aws:ssm:{region}:{account}:parameter{name}'
+            and before.get('type') == 'SecureString'
+            and before.get('tags') == {'Purpose': 'adversarial-e2e', 'Source': 'secrets-manager-mirror',
+                                       'Issue': '3377', 'Component': 'credential-binding'}
+            and safe_admission)
 
 
 def agent_factory_retirement(resource, plan, account):
@@ -201,6 +241,8 @@ def routine(resource, module, account, plan):
     before, after = change.get("before") or {}, change.get("after") or {}
     order = change["actions"]
     address = resource["address"]
+    if module == "webhook-ingress" and retired_internal_key_mirror(resource, plan, account):
+        return True
     if module == "agent-factory" and agent_factory_retirement(resource, plan, account):
         return True
     if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
@@ -337,7 +379,7 @@ def routine(resource, module, account, plan):
             and (
                 old["rollout_script"] == new["rollout_script"]
                 or (old["rollout_script"], new["rollout_script"])
-                == WORKER_ROLLOUT_TIMEOUT_MIGRATION
+                in (WORKER_ROLLOUT_TIMEOUT_MIGRATION, WORKER_ROLLOUT_IDENTITY_MIGRATION)
             )
             and bool(re.fullmatch(r"[0-9a-f]{64}", new["configuration"]))
             and (
@@ -348,6 +390,11 @@ def routine(resource, module, account, plan):
                 or (
                     resource.get("action_reason") == "replace_because_tainted"
                     and old["configuration"] == new["configuration"]
+                )
+                or (
+                    (old['rollout_script'], new['rollout_script']) == WORKER_ROLLOUT_IDENTITY_MIGRATION
+                    and old['configuration'] == new['configuration']
+                    and resource.get('action_reason') == 'replace_because_cannot_update'
                 )
             )
         )
@@ -432,6 +479,15 @@ def evaluate(plan, module, account):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
     for resource in plan["resource_changes"]:
+        if module == 'webhook-ingress' and resource['address'] == 'terraform_data.worker_security_rollout':
+            change = resource['change']
+            before = (change.get('before') or {}).get('input') or {}
+            after = (change.get('after') or {}).get('input') or {}
+            # No destructive override can silently pause a serving deployment
+            # or downgrade active protected identities as part of a code update.
+            if (before.get('paused') is False and after.get('paused') is not False
+                    or before.get('active') is True and after.get('active') is not True):
+                protected.append(resource['address'])
         retained_version = retained_operator_version(resource, plan, module, account)
         if protected_change(resource) and not retained_version:
             protected.append(resource["address"])
@@ -444,7 +500,7 @@ if __name__ == "__main__":
     try:
         result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
         if result["protected"]:
-            sys.exit("Upgrade would change protected infrastructure, account settings, credentials or installation mappings: " + ", ".join(result["protected"]))
+            sys.exit("Upgrade would change protected infrastructure, account settings, credentials, worker admission or installation mappings: " + ", ".join(result["protected"]))
         for address in result["routine"]:
             print("Routine deployment replacement: " + address, file=sys.stderr)
         print("\n".join(result["blocked"]))

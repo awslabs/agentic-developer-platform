@@ -191,6 +191,7 @@ def test_all_tables_registered():
         "controller_network_effects",
         "organizations",
         "organization_grants",
+        "organization_grant_changes",
         "organization_grant_cluster_scopes",
         "workspaces",
         "clusters",

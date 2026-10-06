@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import test_demo1_retirement as retirement_fixtures
 from test_demo1_browser import identity
+from test_demo1_journey import expire_after_submission
 
 from superplane_acceptance import demo1_cli
 from superplane_acceptance.demo1_cleanup import PrivateCleanup
@@ -477,3 +478,55 @@ def test_approval_expiry_during_final_workspace_read_prevents_admission(
         ]
         is False
     )
+
+
+def test_cleanup_timeout_after_persistence_retries_original_unsent_preparation(
+    cleanup, monkeypatch
+):
+    cleanup.run()
+    checkpoint = cleanup.driver.path / "cleanup.json"
+    original = checkpoint.read_bytes()
+    cleanup.approved = True
+    clock = expire_after_submission(monkeypatch, cleanup.driver, PrivateCleanup)
+    before = len(cleanup.calls)
+    cleanup.run()
+    assert cleanup.admissions == 0
+    assert not any(
+        method == "POST" and path.endswith("/retirement/access")
+        for method, path, _ in cleanup.calls[before:]
+    )
+    assert checkpoint.read_bytes() == original
+    clock.enabled = False
+    report = cleanup.run()
+    assert report["browser"]["cleanup_preparation"]["submission_observed"]
+    assert cleanup.admissions == 1
+    saved = json.loads(checkpoint.read_text())["checkpoint"]
+    assert saved == {**json.loads(original)["checkpoint"], "submitted": True}
+
+
+def test_failed_unsent_restoration_preserves_checkpoint_without_replay(
+    cleanup, monkeypatch
+):
+    cleanup.run()
+    cleanup.approved = True
+    clock = expire_after_submission(monkeypatch, cleanup.driver, PrivateCleanup)
+    write = PrivateCleanup._write
+
+    def refuse_restore(store, checkpoint):
+        previous = store.load()
+        if previous and previous.submitted and not checkpoint.submitted:
+            raise EvidenceError("fixture: unsent restoration write refused")
+        return write(store, checkpoint)
+
+    monkeypatch.setattr(PrivateCleanup, "_write", refuse_restore)
+    report = cleanup.run()
+    assert "restoration write refused" in report["reason"]
+    checkpoint = cleanup.driver.path / "cleanup.json"
+    saved = checkpoint.read_bytes()
+    assert json.loads(saved)["checkpoint"]["submitted"] is True
+    assert cleanup.admissions == 0
+    clock.enabled = False
+    before = len(cleanup.calls)
+    cleanup.run()
+    assert checkpoint.read_bytes() == saved and cleanup.admissions == 0
+    assert all(method == "GET" for method, _, _ in cleanup.calls[before:])

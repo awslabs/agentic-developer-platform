@@ -117,6 +117,7 @@ def advance_browser(
                     origin=envelope.origin,
                     checkpoint=saved,
                     persist=store.save,
+                    restore_unsent=store.restore_unsent,
                     verify_lineage=verify_lineage,
                     preview_retirement=continuation_store is None
                     and cleanup_store is None
@@ -152,6 +153,29 @@ def advance_browser(
                         result,
                         clock=clock,
                     )
+                    if result["cleanup_preparation"].get("state") == "succeeded":
+                        from .demo1_cleanup_evidence import observe_cleanup
+                        from .demo1_teardown import read_teardown_review
+
+                        result["cleanup_preparation"]["artifact"] = observe_cleanup(
+                            reader,
+                            cleanup_store,
+                            result["cleanup_preparation"],
+                            remaining_ms() / 1000,
+                            now=clock(),
+                        )
+                        result["cleanup_preparation"]["reason"] = (
+                            "immutable preparation record verified; current grants, fence, inventory and deletion remain unverified"
+                        )
+                        _, result["retirement_review"] = read_teardown_review(
+                            selected,
+                            envelope,
+                            transport,
+                            cleanup_store,
+                            result,
+                            result["cleanup_preparation"]["artifact"],
+                            clock=clock,
+                        )
                 remaining_ms()
             finally:
                 browser.close()

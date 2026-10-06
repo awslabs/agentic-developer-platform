@@ -274,6 +274,7 @@ if [ "$UPDATE_MODE" = true ]; then
   fi
   COMPATIBILITY_ARGS=()
   [ "$DEPLOY_GATEWAY" = true ] || COMPATIBILITY_ARGS+=(--skip-gateway)
+  [ "$DEPLOY_WEBHOOK" = true ] || COMPATIBILITY_ARGS+=(--skip-webhook)
   python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
     --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
     "${COMPATIBILITY_ARGS[@]}" || fail "Resolve upgrade compatibility findings before changing this account"

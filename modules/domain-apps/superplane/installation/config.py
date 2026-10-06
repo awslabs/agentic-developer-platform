@@ -435,7 +435,7 @@ def validate(
         # #6048 advances it to 038 for explicit cluster grant scopes.
         # #6127 advances it to 043 for current workspace grant-change evidence.
         require(
-            head == "043_workspace_grant_changes",
+            head == "044_organization_grant_changes",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

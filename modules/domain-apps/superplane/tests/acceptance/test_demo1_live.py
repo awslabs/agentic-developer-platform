@@ -219,6 +219,50 @@ def test_expired_missing_authority_and_unsafe_browser_state_refuse(tmp_path, mut
         assert report.read_text() == "existing"
 
 
+@pytest.mark.parametrize("change", ["identity", "reopen", "resave", "lock", "disk"])
+def test_unsent_restoration_requires_current_locked_submission(tmp_path, change):
+    selected, authority, _ = inputs()
+    parsed = DemoInput.parse(selected)
+    path = tmp_path / "checkpoint.json"
+    original = CreationCheckpoint(
+        parsed.request_id,
+        identifier(6),
+        parsed.plan_revision,
+        identifier(8),
+        identifier(9),
+    )
+    submitted = replace(original, submitted=True)
+    with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
+        store.save(original)
+        previous = path.read_bytes()
+        store.save(submitted)
+        assert store.restore_unsent(submitted) == original
+        assert path.read_bytes() == previous
+        with pytest.raises(EvidenceError, match="current unsent submission"):
+            store.restore_unsent(submitted)
+        store.save(submitted)
+        candidate = submitted
+        if change == "identity":
+            candidate = replace(submitted, approval_id=identifier(50))
+        elif change == "reopen":
+            store.__exit__()
+            store.__enter__()
+        elif change == "resave":
+            store.save(submitted)
+        elif change == "lock":
+            lock = path.with_name(path.name + ".lock")
+            lock.rename(lock.with_suffix(".retained"))
+            lock.touch(mode=0o600)
+        elif change == "disk":
+            content = json.loads(path.read_text())
+            content["checkpoint"]["approval_id"] = identifier(50)
+            path.write_text(json.dumps(content))
+        before = path.read_bytes()
+        with pytest.raises(EvidenceError):
+            store.restore_unsent(candidate)
+        assert path.read_bytes() == before
+
+
 def test_checkpoint_is_private_durable_and_rejects_replay_and_swapped_scope(tmp_path):
     selected, authority, _ = inputs()
     parsed = DemoInput.parse(selected)

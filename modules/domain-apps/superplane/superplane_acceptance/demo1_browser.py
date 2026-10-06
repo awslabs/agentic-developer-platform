@@ -17,6 +17,10 @@ from .demo1_report import lifecycle_report, reference, validate_operations
 PREFIX = "/api/superplane/v1"
 
 
+class RequestNotSent(EvidenceError):
+    """The transport refused after persistence but before browser evaluation."""
+
+
 class BrowserTransport(Protocol):
     origin: str
 
@@ -102,9 +106,14 @@ class PlaywrightBrowserTransport:
             raise EvidenceError("browser: authorized runtime exhausted")
         if before_send is not None:
             before_send()
-            timeout = min(30_000, self.remaining_ms())
-            if timeout <= 0:
-                raise EvidenceError("browser: authorized runtime exhausted")
+            try:
+                timeout = min(30_000, self.remaining_ms())
+                if timeout <= 0:
+                    raise EvidenceError("browser: authorized runtime exhausted")
+            except (OSError, RuntimeError, ValueError):
+                raise RequestNotSent(
+                    "browser: runtime exhausted or unavailable before transmission; request not sent"
+                ) from None
         try:
             result = self.page.evaluate(
                 """async ({method, path, body, timeout}) => {
@@ -172,6 +181,8 @@ def _response(
             status, value = transport.request(method, path, body)
         else:
             status, value = transport.create_workspace(body, before_send)
+    except RequestNotSent:
+        raise
     except (OSError, RuntimeError, ValueError):
         raise EvidenceError(
             "browser: response unavailable; retain original request"
@@ -325,6 +336,7 @@ def advance_creation(
     origin: str,
     checkpoint: CreationCheckpoint | None = None,
     persist: Callable[[CreationCheckpoint], None] | None = None,
+    restore_unsent: Callable[[CreationCheckpoint], CreationCheckpoint] | None = None,
     verify_lineage: Callable[[CreationCheckpoint, str, str], dict] | None = None,
     preview_retirement: bool = True,
     effects_authorized: bool = False,
@@ -464,6 +476,16 @@ def advance_creation(
                 body,
                 before_send=mark_submitted,
             )
+        except RequestNotSent:
+            if restore_unsent is None:
+                raise EvidenceError(
+                    "browser: unsent checkpoint reconciliation unavailable; retain original request"
+                ) from None
+            checkpoint = restore_unsent(checkpoint)
+            return checkpoint, {
+                "status": "BLOCKED",
+                "reason": "creation not sent; retry original request after pre-send checks succeed",
+            }
         except EvidenceError:
             if not preflight_completed:
                 return checkpoint, {

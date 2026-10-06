@@ -7,7 +7,7 @@ from hashlib import sha256
 from workspace_provisioning.retirement_access_plan import PHASE, access_identity
 from workspace_provisioning.runtime_config import LifecycleRefused
 
-from .demo1_browser import PREFIX, _approval, _response
+from .demo1_browser import PREFIX, RequestNotSent, _approval, _response
 from .demo1_evidence import EvidenceError, digest, identifier, text
 from .demo1_live import PrivateCheckpoint
 from .demo1_report import reference
@@ -254,6 +254,13 @@ def advance_cleanup(selected, envelope, transport, store, browser, *, clock):
         )
         require(status in (200, 201))
         return receipt(response, saved)
+    except RequestNotSent:
+        store.restore_unsent(saved)
+        return {
+            "status": "BLOCKED",
+            "phase": PHASE,
+            "reason": "preparation not sent; retry original request after pre-send checks succeed",
+        }
     except (EvidenceError, OSError, RuntimeError, ValueError):
         if attempted and not saved.submitted:
             raise EvidenceError(

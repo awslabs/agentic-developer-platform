@@ -1,5 +1,8 @@
 """Source-bound browser journey tests with no live requests."""
 
+import json
+import shutil
+import subprocess
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -965,3 +968,73 @@ def test_native_creation_keeps_guarded_retirement_preview(selected, monkeypatch)
     assert "retirement preview denied" in report["reason"]
     assert transport.calls[-1][1].endswith("/retirement/preview")
     assert not any(path.endswith("/retirement") for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize("session_token", ["current-workspace-token", None])
+def test_browser_adapter_executes_javascript_with_current_session_token(
+    monkeypatch, session_token
+):
+    """Execute the shipped JS: a stale persistent token must never authorize."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the browser transport JavaScript")
+    monkeypatch.setitem(sys.modules, "playwright", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "playwright.sync_api", SimpleNamespace(Error=RuntimeError)
+    )
+    calls = []
+
+    def evaluate(script, arguments):
+        program = """
+const {runInNewContext} = require('node:vm');
+const {script, arguments: args, token} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const calls = [];
+const storage = value => ({getItem: key => key === 'cognito_access_token' ? value : null});
+const request = runInNewContext('(' + script + ')', {
+  sessionStorage: storage(token),
+  localStorage: storage('stale-other-workspace-token'),
+  AbortSignal: {timeout: milliseconds => ({fixtureTimeout: milliseconds})},
+  fetch: async (path, options) => {
+    calls.push({path, ...options});
+    return {status: 200, json: async () => ({version: 1}), headers: {get: () => null}};
+  },
+});
+request(args).then(result => process.stdout.write(JSON.stringify({result, calls})));
+"""
+        completed = subprocess.run(
+            [node, "-e", program],
+            input=json.dumps(
+                {"script": script, "arguments": arguments, "token": session_token}
+            ),
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        observed = json.loads(completed.stdout)
+        calls.extend(observed["calls"])
+        return observed["result"]
+
+    page = SimpleNamespace(url="https://example.invalid/workspaces", evaluate=evaluate)
+    transport = demo1_browser.PlaywrightBrowserTransport(
+        page, "https://example.invalid"
+    )
+    result = transport.request("GET", "/api/superplane/v1/capabilities")
+    if session_token is None:
+        assert result == (401, None)
+        assert calls == []
+    else:
+        assert result == (200, {"version": 1})
+        assert calls == [
+            {
+                "path": "/api/superplane/v1/capabilities",
+                "method": "GET",
+                "credentials": "same-origin",
+                "redirect": "error",
+                "signal": {"fixtureTimeout": 30_000},
+                "headers": {
+                    "Authorization": "Bearer current-workspace-token",
+                    "Content-Type": "application/json",
+                },
+            }
+        ]

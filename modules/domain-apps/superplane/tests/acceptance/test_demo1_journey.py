@@ -238,6 +238,51 @@ def driver(tmp_path, monkeypatch):
     )
 
 
+def expire_after_submission(monkeypatch, driver, checkpoint_type):
+    clock = SimpleNamespace(elapsed=0, enabled=True)
+    advance = demo1_journey.advance_browser
+    save = checkpoint_type.save
+
+    def advancing(*args, **kwargs):
+        return advance(*args, **kwargs, monotonic=lambda: clock.elapsed)
+
+    def saving(store, checkpoint):
+        result = save(store, checkpoint)
+        if checkpoint.submitted and clock.enabled:
+            clock.elapsed += driver.envelope.max_runtime_seconds + 1
+        return result
+
+    monkeypatch.setattr(demo1_journey, "advance_browser", advancing)
+    monkeypatch.setattr(checkpoint_type, "save", saving)
+    return clock
+
+
+def test_creation_timeout_after_persistence_retries_same_unsent_request(
+    driver, monkeypatch
+):
+    driver.run()
+    checkpoint = driver.path / "checkpoint.json"
+    original = checkpoint.read_bytes()
+    driver.page.service.approved = True
+    clock = expire_after_submission(monkeypatch, driver, PrivateCheckpoint)
+    driver.page.service.calls.clear()
+    driver.run()
+    assert not any(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls
+    )
+    assert checkpoint.read_bytes() == original
+    clock.enabled = False
+    assert driver.run()["browser"]["creation_observed"]
+    assert (
+        sum(
+            method == "POST" and path.endswith("/workspaces")
+            for method, path, _ in driver.page.service.calls
+        )
+        == 1
+    )
+
+
 @pytest.mark.parametrize("lost_reply", [False, True])
 def test_cli_waits_for_independent_approval_and_recovers_lost_reply(driver, lost_reply):
     result = driver.run()

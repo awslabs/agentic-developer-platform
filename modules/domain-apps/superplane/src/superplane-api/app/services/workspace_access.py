@@ -3,9 +3,10 @@
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from superplane_auth.policy import Permission, expand_permissions
 
@@ -14,17 +15,25 @@ from app.models.event import Event
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.models.workspace_grant_change import WorkspaceGrantChange
-from app.schemas.workspace_access import GrantHumanAccessRequest, WorkspaceAccessResponse
+from app.schemas.workspace_access import (
+    GrantHumanAccessRequest, RevokeHumanAccessRequest, WorkspaceAccessResponse,
+    WorkspaceAssignmentResponse, WorkspaceAssignmentsResponse,
+    WorkspaceRevocationResponse,
+)
 
 
-def _effective(row: WorkspaceGrantRecord) -> list[Permission]:
+def _assigned(row: WorkspaceGrantRecord) -> set[Permission]:
     known = set()
     for value in row.permission_values():
         try:
             known.add(Permission(value))
         except ValueError:
             pass
-    return sorted(expand_permissions(known), key=str)
+    return known
+
+
+def _effective(row: WorkspaceGrantRecord) -> list[Permission]:
+    return sorted(expand_permissions(_assigned(row)), key=str)
 
 
 def _response(row: WorkspaceGrantRecord, event: Event | None = None) -> WorkspaceAccessResponse:
@@ -54,7 +63,7 @@ async def _require_current_pair(reader, caller, target_subject: str) -> None:
         raise HTTPException(403, "current human membership required") from None
 
 
-async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, reader) -> WorkspaceAccessResponse:
+async def _require_current_human(caller, reader) -> None:
     if caller.principal.account_type != "human" or not caller.source_org_id:
         raise HTTPException(403, "human workspace identity required")
     if reader is None:
@@ -66,6 +75,10 @@ async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, read
         )
     except IdentityUnavailable:
         raise HTTPException(403, "current human membership required") from None
+
+
+async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, reader) -> WorkspaceAccessResponse:
+    await _require_current_human(caller, reader)
     row = await db.scalar(select(WorkspaceGrantRecord).where(
         WorkspaceGrantRecord.workspace_id == workspace_id,
         WorkspaceGrantRecord.org_id == uuid.UUID(caller.principal.org_id),
@@ -81,6 +94,71 @@ async def read_my_access(db: AsyncSession, workspace_id: uuid.UUID, caller, read
     ))
     event = await db.get(Event, change.event_id) if change else None
     return _response(row, event)
+
+
+async def list_workspace_assignments(
+    db: AsyncSession, workspace_id: uuid.UUID, caller, reader,
+    *, limit: int = 50, after: uuid.UUID | None = None,
+) -> WorkspaceAssignmentsResponse:
+    await _require_current_human(caller, reader)
+    org_id = uuid.UUID(caller.principal.org_id)
+    workspace = await db.scalar(select(Workspace).where(
+        Workspace.id == workspace_id, Workspace.org_id == org_id,
+    ))
+    if workspace is None or workspace.status in ("Teardown", "Deleted"):
+        raise HTTPException(403, "active workspace binding required")
+    actor = await db.scalar(select(WorkspaceGrantRecord).where(
+        WorkspaceGrantRecord.workspace_id == workspace_id,
+        WorkspaceGrantRecord.org_id == org_id,
+        WorkspaceGrantRecord.principal == caller.principal.subject,
+        WorkspaceGrantRecord.principal_type == "human",
+        WorkspaceGrantRecord.revoked_at.is_(None),
+    ).with_for_update(read=True).execution_options(populate_existing=True))
+    if actor is None or Permission.ADMINISTER not in _effective(actor):
+        raise HTTPException(403, "explicit live workspace administrator grant required")
+    query = select(WorkspaceGrantRecord).where(
+        WorkspaceGrantRecord.workspace_id == workspace_id,
+        WorkspaceGrantRecord.org_id == org_id,
+    ).order_by(WorkspaceGrantRecord.id)
+    if after is not None:
+        query = query.where(WorkspaceGrantRecord.id > after)
+    rows = list((await db.scalars(query.limit(limit + 1))).all())
+    page = rows[:limit]
+    evidence = await db.execute(select(WorkspaceGrantChange, Event).join(
+        Event, Event.id == WorkspaceGrantChange.event_id,
+    ).where(
+        WorkspaceGrantChange.workspace_id == workspace_id,
+        tuple_(WorkspaceGrantChange.grant_id, WorkspaceGrantChange.revision).in_(
+            [(row.id, row.revision) for row in page],
+        ),
+        Event.org_id == org_id,
+        Event.resource_type == "workspace_grant",
+        Event.resource_id == WorkspaceGrantChange.grant_id,
+        Event.event_type == "workspace_access",
+    ))
+    provenance = {(change.grant_id, change.revision): (change, event) for change, event in evidence}
+    assignments = []
+    for row in page:
+        change, event = provenance.get((row.id, row.revision), (None, None))
+        try:
+            details = json.loads(event.details_json) if event and event.details_json else {}
+        except (TypeError, ValueError):
+            details = {}
+        if not isinstance(details, dict):
+            details = {}
+        assignments.append(WorkspaceAssignmentResponse(
+            workspace_id=workspace_id, grant_id=row.id, revision=row.revision,
+            principal_type=row.principal_type, subject=row.principal,
+            assigned_permissions=sorted(_assigned(row), key=str), revoked_at=row.revoked_at,
+            source=("explicit_revocation" if event.action == "revoked" else "explicit_assignment") if event else "preexisting_grant",
+            changed_by=event.principal if event else None,
+            reason=details.get("reason") if details.get("reason") in ("approver_setup", "access_revocation") else None,
+            request_id=change.request_id if change else None,
+        ))
+    return WorkspaceAssignmentsResponse(
+        workspace_id=workspace_id, assignments=assignments,
+        next_after=page[-1].id if len(rows) > limit else None,
+    )
 
 
 async def grant_human_access(
@@ -168,3 +246,94 @@ async def grant_human_access(
     ))
     await db.commit()
     return _response(target, event)
+
+
+def _revocation_response(target: WorkspaceGrantRecord, event: Event, request_id: uuid.UUID) -> WorkspaceRevocationResponse:
+    return WorkspaceRevocationResponse(
+        workspace_id=target.workspace_id, grant_id=target.id, revision=target.revision,
+        principal_type="human", subject=target.principal, effective_permissions=[],
+        revoked_at=target.revoked_at, revoked_by=event.principal,
+        reason="access_revocation", request_id=request_id,
+    )
+
+
+async def revoke_human_access(
+    db: AsyncSession, workspace_id: uuid.UUID, grant_id: uuid.UUID,
+    caller, body: RevokeHumanAccessRequest, reader,
+) -> WorkspaceRevocationResponse:
+    await _require_current_human(caller, reader)
+    if body.target_subject == caller.principal.subject:
+        raise HTTPException(409, "self-revocation is gated pending last-administrator and recovery policy")
+    org_id = uuid.UUID(caller.principal.org_id)
+    workspace = await db.scalar(select(Workspace).where(
+        Workspace.id == workspace_id, Workspace.org_id == org_id,
+    ).with_for_update().execution_options(populate_existing=True))
+    if workspace is None or workspace.status in ("Teardown", "Deleted"):
+        raise HTTPException(403, "active workspace binding required")
+    await _require_current_pair(reader, caller, body.target_subject)
+    actor = await db.scalar(select(WorkspaceGrantRecord).where(
+        WorkspaceGrantRecord.workspace_id == workspace_id,
+        WorkspaceGrantRecord.org_id == org_id,
+        WorkspaceGrantRecord.principal == caller.principal.subject,
+        WorkspaceGrantRecord.principal_type == "human",
+        WorkspaceGrantRecord.revoked_at.is_(None),
+    ).with_for_update().execution_options(populate_existing=True))
+    if actor is None or Permission.ADMINISTER not in _effective(actor):
+        raise HTTPException(403, "explicit live workspace administrator grant required")
+    target = await db.scalar(select(WorkspaceGrantRecord).where(
+        WorkspaceGrantRecord.id == grant_id,
+        WorkspaceGrantRecord.workspace_id == workspace_id,
+        WorkspaceGrantRecord.org_id == org_id,
+        WorkspaceGrantRecord.principal == body.target_subject,
+        WorkspaceGrantRecord.principal_type == "human",
+    ).with_for_update().execution_options(populate_existing=True))
+    if target is None:
+        raise HTTPException(404, "workspace grant not found for target identity")
+    fingerprint = hashlib.sha256(json.dumps({
+        "operation": "revoke", "actor": caller.principal.subject,
+        "org_id": str(org_id), "grant_id": str(grant_id),
+        "request": body.model_dump(mode="json", exclude={"request_id"}),
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    previous = await db.scalar(select(WorkspaceGrantChange).where(
+        WorkspaceGrantChange.workspace_id == workspace_id,
+        WorkspaceGrantChange.request_id == body.request_id,
+    ))
+    if previous is not None:
+        if (previous.fingerprint != fingerprint or previous.grant_id != target.id
+                or previous.revision != target.revision or target.revoked_at is None):
+            raise HTTPException(409, "request identity conflicts with current grant")
+        event = await db.scalar(select(Event).where(
+            Event.id == previous.event_id, Event.org_id == org_id,
+            Event.resource_type == "workspace_grant", Event.resource_id == target.id,
+            Event.event_type == "workspace_access", Event.action == "revoked",
+        ))
+        if event is None:
+            raise HTTPException(409, "revocation audit evidence unavailable")
+        return _revocation_response(target, event, body.request_id)
+    if target.revoked_at is not None or target.revision != body.expected_revision:
+        raise HTTPException(409, "stale or revoked workspace grant")
+    await _require_current_pair(reader, caller, body.target_subject)
+    before = [str(permission) for permission in _effective(target)]
+    target.revoked_at = datetime.now(UTC)
+    target.revision += 1
+    event = Event(
+        org_id=org_id, principal=caller.principal.subject, outcome="allowed",
+        action="revoked", resource_type="workspace_grant", resource_id=target.id,
+        request_path=f"/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke",
+        event_type="workspace_access", details_json=json.dumps({
+            "actor_type": "human", "target": body.target_subject, "target_type": "human",
+            "scope": "workspace", "workspace_id": str(workspace_id), "org_id": str(org_id),
+            "before": before, "after": [], "reason": body.reason,
+            "request_id": str(body.request_id), "before_revision": body.expected_revision,
+            "revision": target.revision, "revoked_at": target.revoked_at.isoformat(),
+            "revocation_effect": "future_authority_only",
+        }, sort_keys=True),
+    )
+    db.add(event)
+    await db.flush()
+    db.add(WorkspaceGrantChange(
+        workspace_id=workspace_id, request_id=body.request_id, grant_id=target.id,
+        event_id=event.id, fingerprint=fingerprint, revision=target.revision,
+    ))
+    await db.commit()
+    return _revocation_response(target, event, body.request_id)

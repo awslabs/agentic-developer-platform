@@ -485,7 +485,8 @@ async def list_eligible_clusters(
 
     try:
         eligible = await resolve_eligible_clusters(
-            db, org_id, caller=getattr(request.state, "caller", None)
+            db, org_id, caller=getattr(request.state, "caller", None),
+            identity_reader=getattr(request.app.state, "current_identity_reader", None),
         )
     except ProvisioningRefused as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

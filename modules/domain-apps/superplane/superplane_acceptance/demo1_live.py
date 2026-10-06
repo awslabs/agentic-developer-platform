@@ -179,6 +179,7 @@ class PrivateCheckpoint:
         ).hexdigest()
         self.lock_fd: int | None = None
         self.directory_fd: int | None = None
+        self._pending_submission = None
 
     def __enter__(self) -> Self:
         if self.lock_fd is not None or self.directory_fd is not None:
@@ -203,6 +204,7 @@ class PrivateCheckpoint:
         return self
 
     def __exit__(self, *_unused) -> None:
+        self._pending_submission = None
         if self.lock_fd is not None:
             os.close(self.lock_fd)
             self.lock_fd = None
@@ -312,6 +314,7 @@ class PrivateCheckpoint:
         return state
 
     def save(self, checkpoint: CreationCheckpoint) -> None:
+        self._pending_submission = None
         self._assert_held()
         previous = self.load()
         if previous and (
@@ -320,6 +323,23 @@ class PrivateCheckpoint:
             or (previous.submitted and not checkpoint.submitted)
         ):
             raise EvidenceError("checkpoint: request replay or identity change refused")
+        self._write(checkpoint)
+        if previous and not previous.submitted and checkpoint.submitted:
+            self._pending_submission = (previous, checkpoint)
+
+    def restore_unsent(self, checkpoint: CreationCheckpoint) -> CreationCheckpoint:
+        pending = self._pending_submission
+        self._pending_submission = None
+        self._assert_held()
+        if pending is None or pending[1] != checkpoint or self.load() != checkpoint:
+            raise EvidenceError(
+                "checkpoint: current unsent submission required; retain original request"
+            )
+        self._write(pending[0])
+        return pending[0]
+
+    def _write(self, checkpoint: CreationCheckpoint) -> None:
+        self._assert_held()
         self._validate(checkpoint)
         temporary = None
         try:
