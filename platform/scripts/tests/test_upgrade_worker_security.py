@@ -42,7 +42,69 @@ def change(address, kind, before, after, actions):
             'change': {'before': before, 'after': after, 'actions': actions}}
 
 
+def installed_legacy():
+    arn = f'arn:aws:iam::{ACCOUNT}:role/adp-dev-agent-scaledjob-role'
+    installed = state()
+    installed['outputs']['worker_security_rollout']['value'].update(
+        service_account='agent-scaledjob-sa', worker_role_arn=arn)
+    installed['outputs']['release_configuration']['value'].update(
+        agent_authority_enabled=False, agent_worker_admission_paused=False,
+        agent_legacy_worker_admin_retired=False)
+    installed['resources'] = [
+        {'type': 'aws_iam_role', 'name': 'agent_scaledjob', 'mode': 'managed',
+         'instances': [{'attributes': {'arn': arn, 'permissions_boundary': ''}}]},
+        {'type': 'kubernetes_service_account', 'name': 'agent_scaledjob_sa', 'mode': 'managed',
+         'instances': [{'attributes': {'metadata': [{'name': 'agent-scaledjob-sa', 'namespace': 'adp-agents',
+             'annotations': {'eks.amazonaws.com/role-arn': arn}}]}}]},
+    ]
+    return installed
+
+
 class WorkerPreflightTests(unittest.TestCase):
+    def test_older_state_requires_recorded_gateway_flags_when_inputs_are_absent(self):
+        installed = installed_legacy()
+        del installed['outputs']['release_configuration']
+        with self.assertRaises(ValueError):
+            preflight.check_worker_security(installed, release=True)
+        installed['resources'].append({'type': 'kubernetes_config_map', 'mode': 'managed', 'name': 'worker_gateway',
+            'instances': [{'attributes': {'data': {'AGENT_AUTHORITY_ENABLED': 'false',
+                                                  'AGENT_TASK_SOURCE_ISOLATION_CONFIRMED': 'false'}}}]})
+        preflight.check_worker_security(installed, release=True)
+        installed['resources'][-1]['instances'][0]['attributes']['data']['AGENT_AUTHORITY_ENABLED'] = 'true'
+        with self.assertRaises(ValueError):
+            preflight.check_worker_security(installed, release=True)
+
+    def test_serving_legacy_upgrade_requires_matching_installed_identity(self):
+        installed = installed_legacy()
+        preflight.check_worker_security(installed, release=True)
+        for mutate in (
+            lambda s: s.pop('resources'),
+            lambda s: s['resources'][0]['instances'][0]['attributes'].update(permissions_boundary='existing-boundary'),
+            lambda s: s['outputs']['worker_security_rollout']['value'].update(active=True),
+            lambda s: s['outputs']['worker_security_rollout']['value'].update(admission_paused=True),
+            lambda s: s['outputs']['worker_security_rollout']['value'].update(service_account='protected-worker'),
+            lambda s: s['outputs']['release_configuration']['value'].update(agent_task_source_isolation_confirmed=True),
+        ):
+            bad = copy.deepcopy(installed)
+            mutate(bad)
+            with self.assertRaises(ValueError):
+                preflight.check_worker_security(bad, release=True)
+
+    def test_live_operator_pause_and_changed_identity_refuse_before_apply(self):
+        settings = preflight.state_tools.legacy_worker_settings(installed_legacy())
+        with tempfile.TemporaryDirectory() as temporary:
+            Path(temporary, 'webhook-ingress.tfvars.json').write_text(json.dumps(settings))
+            job = {'metadata': {}, 'spec': {'jobTargetRef': {'template': {'spec': {'serviceAccountName': 'agent-scaledjob-sa'}}}}}
+            sa = {'metadata': {'annotations': {'eks.amazonaws.com/role-arn': settings['agent_legacy_upgrade_role_arn']}}}
+            config = {'data': {'AGENT_AUTHORITY_ENABLED': 'false'}}
+            with patch.object(preflight.subprocess, 'check_output', side_effect=map(json.dumps, [job, sa, config])):
+                preflight.verify_live_workers(temporary)
+            for mutated in (
+                dict(job, metadata={'annotations': {'autoscaling.keda.sh/paused': 'false'}}),
+                dict(job, spec={'jobTargetRef': {'template': {'spec': {'serviceAccountName': 'protected-worker'}}}}),
+            ):
+                with patch.object(preflight.subprocess, 'check_output', return_value=json.dumps(mutated)), self.assertRaises(ValueError):
+                    preflight.verify_live_workers(temporary)
     def test_legacy_and_unknown_deployments_require_migration(self):
         for installed in (state(), {}, state(active=True), state(active=True, retired=True)):
             with self.subTest(installed=installed), self.assertRaisesRegex(ValueError, 'migration required'):
@@ -89,6 +151,27 @@ class WorkerPreflightTests(unittest.TestCase):
 
 
 class WorkerPlanTests(unittest.TestCase):
+    def test_legacy_retention_cannot_create_identity_or_remove_boundary(self):
+        plan = self.mirror_plan()
+        settings = preflight.state_tools.legacy_worker_settings(installed_legacy())
+        plan['variables'].update({k: {'value': v} for k, v in settings.items()})
+        role = {'arn': settings['agent_legacy_upgrade_role_arn'], 'permissions_boundary': None}
+        rollout = {'input': {'active': False, 'paused': False}}
+        plan['resource_changes'] += [
+            change('aws_iam_role.agent_scaledjob', 'aws_iam_role', role, role, ['no-op']),
+            change('terraform_data.worker_security_rollout', 'terraform_data', rollout, rollout, ['no-op']),
+        ]
+        self.assertFalse(self.evaluate(plan)['blocked'])
+        self.assertFalse(self.evaluate(plan)['protected'])
+        for mutate in (
+            lambda p: p['resource_changes'][1]['change'].update(before=None, actions=['create']),
+            lambda p: p['resource_changes'][1]['change'].update(before=dict(role, permissions_boundary='protected-boundary')),
+            lambda p: p['resource_changes'][2]['change'].update(before={'input': {'active': True, 'paused': False}}),
+            lambda p: p['variables']['agent_legacy_upgrade_role_arn'].update(value='foreign-role'),
+        ):
+            bad = copy.deepcopy(plan)
+            mutate(bad)
+            self.assertTrue(self.evaluate(bad)['protected'])
     def mirror_plan(self):
         name = '/adp/dev/gateway/internal-api-key'
         row = change('aws_ssm_parameter.gateway_internal_api_key[0]', 'aws_ssm_parameter', {

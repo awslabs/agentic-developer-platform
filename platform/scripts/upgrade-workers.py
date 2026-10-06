@@ -228,6 +228,7 @@ def pause(directory):
     record['phase'] = 'drained'
     save(directory, record)
     configure(directory, 'webhook-ingress', {
+        'agent_legacy_upgrade_role_arn': '',
         'agent_authority_prepared': True, 'agent_authority_enabled': True,
         'agent_authority_runtime_ready': True, 'agent_authority_legacy_workers_drained': True,
         'agent_task_source_isolation_confirmed': True, 'agent_legacy_worker_admin_retired': True,
