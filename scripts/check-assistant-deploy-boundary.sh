@@ -16,9 +16,9 @@
 #   ADP_ASSISTANT_DISPATCH_APPROVED_REVISION
 #                                    workflow_dispatch input `adp_approved_revision`;
 #                                    one-off approval for this run only
-#   ADP_DEPLOYED_BASELINE            head_sha of the last successful run of this same
-#                                    workflow file on the target branch (resolved by
-#                                    the workflow via the GitHub API); consulted only
+#   ADP_DEPLOYED_BASELINE            actual source of the last successful deployment
+#                                    of this workflow on the target (resolved by the
+#                                    workflow via the GitHub API); consulted only
 #                                    when no approval applies to this target
 #
 # Decision:
