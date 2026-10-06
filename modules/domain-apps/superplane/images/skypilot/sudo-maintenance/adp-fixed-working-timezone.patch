@@ -5,25 +5,13 @@ Forwarded: not-needed
 
 --- a/src/sudo.c
 +++ b/src/sudo.c
-@@ -163,6 +163,8 @@
-     bindtextdomain(PACKAGE_NAME, LOCALEDIR);
-     textdomain(PACKAGE_NAME);
- 
+@@ -165,0 +166,2 @@
 +    /* Use the system timezone for sudoers time restrictions. */
 +    unsetenv("TZ");
-     (void) tzset();
- 
-     /* Must be done before we do any password lookups */
-@@ -344,10 +346,27 @@
- int
- os_init_common(int argc, char *argv[], char *envp[])
- {
+@@ -346,0 +349,2 @@
 +    extern char **environ;
 +    int envc;
- #ifdef STATIC_SUDOERS_PLUGIN
-     preload_static_symbols();
- #endif
-     gc_init();
+@@ -350,0 +355,15 @@
 +
 +    /* Keep the original envp available to plugins while changing environ. */
 +    for (envc = 0; envp[envc] != NULL; envc++)
@@ -39,6 +27,3 @@ Forwarded: not-needed
 +        new_env[envc] = NULL;
 +        environ = new_env;
 +    }
-     return 0;
- }
- 

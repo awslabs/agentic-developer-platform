@@ -4,4 +4,5 @@ COPY artifacts/source /build/source
 WORKDIR /build/source
 RUN DEB_BUILD_OPTIONS="nocheck parallel=2" dpkg-buildpackage -b -us -uc
 FROM scratch AS artifacts
+USER 65532:65532
 COPY --from=0 /build/*.deb /build/*.buildinfo /build/*.changes /

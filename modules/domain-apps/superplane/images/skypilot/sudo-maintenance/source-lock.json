@@ -36,7 +36,7 @@
     "production_file": "src/sudo.c",
     "before_sha256": "34a6bbc0cd41829afca26bed3e6fe37865a7a7e09d90d2242cfa3dc9d89cb748",
     "after_sha256": "f616f11f59f6b077289442da75d9a42d110e3f8d3152648078ac9a30686ea7ce",
-    "patch_sha256": "495298b9b35fa6fb546e1d2239699ccc905b52e2e3a7b03cec156496c8a9ddd3",
+    "patch_sha256": "62d0eba818321f2897d80f7c97e9c3347875669dd76fcd0617ce9f3f7e21190e",
     "scope": "Same upstream environment-array isolation; adapted to1.9.16p2 direct main tzset call because set_time_zone helper was introduced later. No policy/configuration changes and no test payloads.",
     "tests": "Build skips upstream test suites; selected ordinary installed compatibility checks are separate."
   },
