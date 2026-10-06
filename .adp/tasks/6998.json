@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-06T05:56:16Z",
+  "updated_at": "2026-10-06T05:57:06.132Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Source mapping exists; frozen-report HeadObject returned 403 Forbidden under the selected role.",
+      "note": "Source mapping exists; frozen-report HeadObject returned 403 Forbidden.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Four catalog tests pass; original report hash, severity, and records remain unverified."
+      "note": "Catalog checks pass; original report hash, severity, and records remain unverified."
     },
     {
       "id": "AC-02-c1",
@@ -56,7 +56,7 @@
       "files": [
         "modules/agent-factory/agent/src/clients/gitlab_client.test.ts"
       ],
-      "note": "Previously passed 61 tests; GitLab is included in this run’s passing HTTP fixtures."
+      "note": "Previously passed 61 tests; GitLab fixtures passed in the prior turn."
     },
     {
       "id": "AC-02-c2",
@@ -68,7 +68,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.ts"
       ],
-      "note": "Previously pushed at abb4039.",
+      "note": "Pushed at abb4039.",
       "commits": [
         "abb4039"
       ]
@@ -85,7 +85,7 @@
       "files": [
         "modules/agent-factory/agent/src/github-comments.test.ts"
       ],
-      "note": "Previously passed 139 focused tests; current HTTP fixtures pass."
+      "note": "Prior focused caller and HTTP fixtures passed."
     },
     {
       "id": "AC-02-c3",
@@ -97,7 +97,7 @@
       "files": [
         "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
       ],
-      "note": "Previously pushed at 3f2661b.",
+      "note": "Pushed at 3f2661b.",
       "commits": [
         "3f2661b"
       ]
@@ -114,7 +114,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts"
       ],
-      "note": "Previously passed 136 focused tests; current HTTP fixtures pass."
+      "note": "Prior focused gateway and provider fixtures passed."
     },
     {
       "id": "AC-02-c4",
@@ -126,7 +126,7 @@
       "files": [
         "modules/agent-factory/codex-reviewer/src/github.ts"
       ],
-      "note": "Previously pushed at 03d35c3.",
+      "note": "Pushed at 03d35c3.",
       "commits": [
         "03d35c3"
       ]
@@ -143,7 +143,7 @@
       "files": [
         "modules/agent-factory/codex-reviewer/src/github.test.ts"
       ],
-      "note": "This run: reviewer GitHub 45/45 and harness 156/156 passed."
+      "note": "Prior turn: reviewer GitHub 45/45 and harness 156/156 passed."
     },
     {
       "id": "AC-02-c-wire",
@@ -155,7 +155,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "Previously verified guarded runtime constructors."
+      "note": "Guarded runtime constructors previously verified."
     },
     {
       "id": "AC-02-t5",
@@ -173,7 +173,7 @@
       "files": [
         "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
       ],
-      "note": "Previously passed 90 focused tests with zero redirect-target requests; this run’s 68 HTTP fixtures passed.",
+      "note": "Prior HTTP run passed 68/68; earlier redirect fixtures recorded zero target requests.",
       "commits": [
         "f83a57d"
       ]
@@ -188,7 +188,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "All 18 remain unresolved; original report denied and previous worker-local candidate SARIF not recovered.",
+      "note": "All 18 unresolved; original report denied and prior raw candidate SARIF not recovered.",
       "commits": [
         "7049c2e"
       ]
@@ -205,7 +205,7 @@
       "files": [
         ".github/scripts/issue_6998_candidate.py"
       ],
-      "note": "Previous current-registry scan mapped 18; original SARIF and scan-time ruleset remain unavailable for comparison."
+      "note": "Original SARIF and scan-time ruleset unavailable for exact comparison."
     },
     {
       "id": "AC-04-c-wire",
@@ -217,11 +217,12 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Ready PR #7023 includes tested handoff and pinned-main comparison at a64938d; covering test cannot pass until unrelated baseline suite failures are reconciled by their owners.",
+      "note": "Handoff and pinned-main comparison published; covering full suites require baseline-owner repairs.",
       "commits": [
         "23dab9f",
         "0925728",
-        "1847414"
+        "1847414",
+        "b9f693a"
       ]
     },
     {
@@ -236,7 +237,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Installs/builds pass; agent 2859/2862, harness 156/156, reviewer 196/198; focused and four catalog checks pass. Three agent assertions and two reviewer skill fixtures fail in source/tests identical to pinned main; fixture tree absent in both trees. Baseline owners must repair the required full-suite checks.",
+      "note": "Builds pass, but agent 2859/2862 and reviewer 196/198; failing source/tests match pinned main, and reviewer fixture is absent in both trees.",
       "commits": [
         "ccea177",
         "a64938d"
@@ -250,7 +251,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Post-merge work owned by the epic coordinator; PR #7023 is unmerged."
+      "note": "Epic coordinator owns this post-merge step; PR remains unmerged."
     },
     {
       "id": "AC-04-t2",
@@ -262,7 +263,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Post-merge composed-artifact checks remain with the epic coordinator; rollout is separate."
+      "note": "Requires the epic coordinator’s final composed artifact."
     }
   ]
 }
