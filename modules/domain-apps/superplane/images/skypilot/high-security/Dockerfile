@@ -80,4 +80,11 @@ RUN javac -cp ray.jar HttpCoreRegression.java \
 FROM patched-runtime
 COPY --from=java-test /test/httpcore-regression.txt /opt/adp-security/high-dependencies/httpcore-regression.txt
 # Match the existing authenticated deployment's enforced runtime identity.
+# Maintain the runtime's JWT verifier even when this recipe inherits an older pin.
+ADD --checksum=sha256:ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc https://files.pythonhosted.org/packages/9c/97/672cb32ce0dfea44b740cb7b4f97038463b9cf7c0ead1aacf595572851d6/pyjwt-2.14.0-py3-none-any.whl /tmp/pyjwt-2.14.0-py3-none-any.whl
+RUN --network=none python -m pip list --format=json > /tmp/jwt-before.json \
+    && python -m pip install --no-index --no-deps --no-cache-dir /tmp/pyjwt-2.14.0-py3-none-any.whl \
+    && python -m pip check \
+    && python -c "import json,importlib.metadata as m; from pathlib import Path; before={d['name'].lower():d['version'] for d in json.loads(Path('/tmp/jwt-before.json').read_text())}; after={d.metadata['Name'].lower():d.version for d in m.distributions()}; assert after['pyjwt']=='2.14.0'; assert {k:v for k,v in before.items() if k!='pyjwt'}=={k:v for k,v in after.items() if k!='pyjwt'}; p=Path('/opt/adp-security/requirements-security.txt'); s=p.read_text(); assert 'PyJWT==2.13.0' in s or 'PyJWT==2.14.0' in s; p.write_text(s.replace('PyJWT==2.13.0','PyJWT==2.14.0'))" \
+    && rm /tmp/jwt-before.json /tmp/pyjwt-2.14.0-py3-none-any.whl
 USER 1000:1000

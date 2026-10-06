@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "issue": 6997,
+  "updated_at": "2026-10-05T19:04:09.292Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Classify seven failed builds",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "codebuild/security_image_targets.py",
+        "codebuild/scan_security_images.py"
+      ],
+      "note": "Seven original identities retained; private baseline logs not independently rechecked.",
+      "commits": [
+        "3943c86"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test seven-target reconciliation",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Passed locally."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Reject undocumented fixture exclusion",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Passed locally."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair common stdlib build path",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/codegraph-context/Dockerfile",
+        "modules/agent-context/images/context-mcp/Dockerfile",
+        "modules/agent-context/images/litellm-proxy/Dockerfile"
+      ],
+      "note": "Committed at b7d60f5; three authorized, no-push builds succeeded.",
+      "commits": [
+        "b7d60f5"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run stdlib checks and three recipe builds",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Each build logged five in-image regressions; local CodeBuild suite: 99 passed, 1 expected skip."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Resolve pinned ingestion input",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/ingestion/Dockerfile",
+        "modules/agent-context/images/parser/Dockerfile"
+      ],
+      "note": "Platform ingestion repository denies exact-manifest BatchGetImage and DescribeImages to selected role; digest unchanged.",
+      "commits": [
+        "467acf4"
+      ]
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Build ingestion family and reject invalid inputs",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "34 focused local tests passed; actual builds await verified donor access."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Require six executable recipes in scanner inventory",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "codebuild/security_image_targets.py"
+      ],
+      "note": "Committed at e590b19.",
+      "commits": [
+        "e590b19"
+      ]
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Reject omitted required recipes",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "codebuild/tests/test_security_image_scan.py"
+      ],
+      "note": "Passed locally."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Preserve revision, pins and paired provenance",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "codebuild/scan_security_images.py",
+        ".github/scripts/reconcile_security_scan.py"
+      ],
+      "note": "Local guard committed; platform registry and frozen baseline evidence remain inaccessible to selected role.",
+      "commits": [
+        "d67a512"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Verify paired Grype/Syft scan coverage",
+      "status": "blocked",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        ".github/scripts/tests/test_security_scan_tool_invocations.py"
+      ],
+      "note": "deployed-target: executor and coordinator after integration; authenticated scan and paired artifacts pending."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Preserve cleanup and finding-assignment contract",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "codebuild/scan_security_images.py"
+      ],
+      "note": "Local guard committed; no completed scan from which to verify cleanup or recovered findings.",
+      "commits": [
+        "271d3bb"
+      ]
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Verify terminal children, cleanup and dated owners",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [
+        ".github/scripts/tests/test_security_scan_tool_invocations.py"
+      ],
+      "note": "deployed-target: executor and final verification owner; requires completed authenticated run."
+    }
+  ]
+}

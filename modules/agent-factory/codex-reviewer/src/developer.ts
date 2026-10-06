@@ -23,7 +23,7 @@ export interface DeveloperTask {
   apiKey?: string;
   /** Model execution allowance for the whole run, across retained turns. */
   timeoutMs?: number;
-  /** Upper bound on continuation turns; the budget is the real limit. */
+  /** Optional explicit turn limit; otherwise the execution budget bounds the run. */
   maxTurns?: number;
 }
 
@@ -152,7 +152,7 @@ export type DeveloperTurnRunner = (prompt: string, signal: AbortSignal) => Promi
 
 export interface DeveloperLoopOptions {
   budget: ModelExecutionBudget;
-  maxTurns: number;
+  maxTurns?: number;
   /** Do not start a continuation with less model time than this. */
   minTurnMs?: number;
   onOutcome?(outcome: DeveloperOutcome, turn: number, warnings: string[]): Promise<void>;
@@ -184,9 +184,10 @@ export async function runDeveloperTurns(prompt: string, runTurn: DeveloperTurnRu
   for (;;) {
     const result = await options.budget.run(signal => runTurn(prompt, signal));
     turns++;
+    const turnLimitReached = options.maxTurns !== undefined && turns >= options.maxTurns;
     usage = result.usage ?? usage;
     const interpreted = interpretDeveloperOutcome(result.finalResponse, previous);
-    if (interpreted.malformed && !nudged && turns < options.maxTurns && options.budget.remainingMs >= minTurnMs) {
+    if (interpreted.malformed && !nudged && !turnLimitReached && options.budget.remainingMs >= minTurnMs) {
       nudged = true;
       prompt = "Your last message was not the structured outcome. Make no further changes in this turn; return the structured outcome for the current working tree now, with the full task board.";
       continue;
@@ -197,7 +198,7 @@ export async function runDeveloperTurns(prompt: string, runTurn: DeveloperTurnRu
     previous = outcome.tasks.length ? outcome.tasks : previous;
     await options.onOutcome?.(outcome, turns, warnings);
     if (outcome.outcome !== "checkpoint") return { outcome, turns, exhausted: false, usage };
-    if (turns >= options.maxTurns || options.budget.remainingMs < minTurnMs) return { outcome, turns, exhausted: true, usage };
+    if (turnLimitReached || options.budget.remainingMs < minTurnMs) return { outcome, turns, exhausted: true, usage };
     const notes = await options.beforeContinue?.(outcome) ?? "";
     prompt = continuationPrompt(outcome, notes, warnings);
   }
@@ -314,7 +315,7 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
   };
   const loop = await runDeveloperTurns(initialPrompt, (turnPrompt, signal) => runDeveloperStream(thread, turnPrompt,
     { outputSchema: developerOutcomeSchema, signal: AbortSignal.any([signal, ...control]) }, sink, persona.verify, true), {
-    budget, maxTurns: task.maxTurns ?? 24, previousTasks: existing.tasks,
+    budget, maxTurns: task.maxTurns, previousTasks: existing.tasks,
     checkBoard: tasks => breakdownWarnings(tasks, criteria),
     onOutcome: async (outcome, turn, warnings) => {
       for (const warning of warnings) sink.activity(`Task board check: ${warning}.`);

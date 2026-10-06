@@ -4,24 +4,24 @@
   "normalization": "codex-report-probe-v1",
   "personas": {
     "agent-codex-architect": {
-      "openai.gpt-6-astra": "5f9ec6fd1ef5e82aa71ae4e4d8d4e027e5550a644745ae7ead14d6a4c0f2bf15",
-      "openai.gpt-6-sol": "f1acf132c820c2b8e29b702d3dfbb75a8bbfb3d5367f3eb22d2fc5974b393b0a",
-      "openai.gpt-6-luna": "005b71c05a8b5c522d9f161c8f75069079be48481b49dea59fa4c7911cf27661"
+      "openai.gpt-6-astra": "ce40a0e1a575ac02e2f35b1d6347623ae0d11188d4046bc93d58e4f1fdb4e8db",
+      "openai.gpt-6-sol": "4640348f8c11fdd778bd53c5f00f495286489ab5721f934dec99723f902bca85",
+      "openai.gpt-6-luna": "a8fdd8ac8eae571fda06542e2bd3ed5d8ae7921b657a849b0918238ae98f47ba"
     },
     "agent-codex-product": {
-      "openai.gpt-6-astra": "1f2a997000524b5df204e21642566178c59f71fd7722b088f0f28332a8cde17d",
-      "openai.gpt-6-sol": "7c785958929a72479488e92cfe514845828c1d4818e2a011febca2bc44eda38a",
-      "openai.gpt-6-luna": "670b2fb4541816dc3f2f5f1ee3962dde0febbccc05119111bedb010c34e2d91c"
+      "openai.gpt-6-astra": "abc53cbe84f0082fd4901e85a7311868b36dfc835c0346c7b62d83933a38907e",
+      "openai.gpt-6-sol": "4b438f2448936553b17f7407870ea0a78a0f3c607d04b9d507fd8f8e9e066165",
+      "openai.gpt-6-luna": "471175f3a2930c6a926edf69662382b2d01081166ef03602ed9f7ce10df2a540"
     },
     "agent-codex-pm": {
-      "openai.gpt-6-astra": "3566c94e5e010ec1acffd66f49301cd62736b895b7d21c310174df6cb64b8e55",
-      "openai.gpt-6-sol": "92525e5ca4f846459fc9bd079420e9ac3dba757836e0e68a864a02eb0a6c7a01",
-      "openai.gpt-6-luna": "aa24e4865af7bec1cc55d89620235fea618663c80792c717d7c2e1e54e165593"
+      "openai.gpt-6-astra": "385dbd98e9df3e0987344e6b5872ddfb832af0122214dd6f9fdf48ca49a0d638",
+      "openai.gpt-6-sol": "bd5be8bc85da4e1bef78c68e2284b427a9fd1689fc4553a678ffae8b606b9447",
+      "openai.gpt-6-luna": "660f0eb7bbdfe5b88cdfde19923ef6e4257f4dedd57bd295f026bcd5650f2d2d"
     },
     "agent-codex-intent-refinement": {
-      "openai.gpt-6-astra": "63291c6238340c72b5e4612d1d8189e825a6b6fba4ef408d79d97b9c214900f0",
-      "openai.gpt-6-sol": "87fc2f77695c59d6922f4a55ad1cc1de1d9fad2a8d191c2d82c5d4ee3c18f3c3",
-      "openai.gpt-6-luna": "abab6a91d1dd97037203b4086e1f7e95d527d91b32c6a270f2bdbc937232479f"
+      "openai.gpt-6-astra": "f74be193105bd3e624058cc94b23a44e9018fa483d3aa7c66cae8249d9a593be",
+      "openai.gpt-6-sol": "4abdf6f226137f5a940b2b2e3ad8d6782b5af9e0a191bf89dfddaaf7487f012b",
+      "openai.gpt-6-luna": "3cdf678e0969469f2b2a4dceb550485e75c0f3bfee29e6bcad6113150bc49a4b"
     }
   }
 }

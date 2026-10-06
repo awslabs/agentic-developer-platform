@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "issue": 7002,
+  "updated_at": "2026-10-05T18:59:29.078Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Map assigned findings to shipped paths and runner-image lineage",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "platform/arc-runner/Dockerfile",
+        "platform/automation-infra/Dockerfile",
+        "platform/arc-runner/security/scan/reconcile.py"
+      ],
+      "note": "Partial commit c6b43a7 exists. Named-role identity verified; original ARC report HeadObject returned 403 Forbidden.",
+      "commits": [
+        "c6b43a7"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify complete occurrence inventory against private SARIF fixture",
+      "status": "blocked",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "platform/arc-runner/security/scan/test_reconcile.py"
+      ],
+      "note": "Five synthetic tests pass; original hashes and occurrences remain unverified."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Refresh shipped ARC runner toolchain from reviewed upstream releases",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "platform/arc-runner/Dockerfile"
+      ],
+      "note": "Original finding paths are inaccessible; no evidence-backed version selection or candidate build has occurred."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Pin automation derivative to the reviewed ARC base image",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "platform/automation-infra/Dockerfile"
+      ],
+      "note": "No newly reviewed ARC digest exists."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run image build and runner registration/job fixture with CLI smoke checks",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "CodeBuild is reachable, but no candidate was built; local Docker is unavailable."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Check runner identity and toolchain regression paths in disposable fixture",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "Next task cannot be completed without a candidate image. The proposed fixture was not created because apply_patch is unavailable; no fixture test ran."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record per-occurrence fixed or narrowly supported dispositions",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Original reports and candidate scans needed; all assigned occurrences remain unresolved."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rescan both immutable candidate images and compare assigned occurrences",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Await immutable candidates and scanner execution."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject unresolved findings and new critical/high regressions",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Await original and candidate reports."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Document reviewed image inputs, consumer, and rollback handoff",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Exact tested digests and rollback handoff pending."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate derivative build against exact reviewed base digest",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "platform/automation-infra/Dockerfile"
+      ],
+      "note": "Await reviewed ARC candidate."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Repeat affected checks on final composed artifact",
+      "status": "open",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c-wire"
+      ],
+      "files": [],
+      "note": "Await composed candidate."
+    }
+  ]
+}

@@ -31,6 +31,8 @@ name: Agent Control CI
 on:
   pull_request:
     paths:
+      - '.github/actions/upload-ci-evidence-s3/**'
+      - '.github/scripts/upload_ci_evidence_s3.py'
       # Gateway control proxy: the authorization, status-ordering and SSRF surface
       - 'modules/gateway/src/activity/control_service.py'
       - 'modules/gateway/src/activity/control_schemas.py'
@@ -385,11 +387,18 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: checked-out-revision-agent-control-tests
-          path: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
-          if-no-files-found: error
+      - name: Retain checkout evidence in S3
+        env:
+          CI_EVIDENCE_NAME: checked-out-revision-agent-control-tests
+          CI_EVIDENCE_PATH: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
+        run: |
+          set -euo pipefail
+          # Manual evaluation may check out a revision predating the uploader.
+          # Load tooling from the exact workflow revision without changing HEAD.
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git show "$GITHUB_WORKFLOW_SHA:.github/scripts/upload_ci_evidence_s3.py" > "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+          python3 "$RUNNER_TEMP/upload_ci_evidence_s3.py"
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -731,11 +740,18 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: checked-out-revision-worker-control-tests
-          path: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
-          if-no-files-found: error
+      - name: Retain checkout evidence in S3
+        env:
+          CI_EVIDENCE_NAME: checked-out-revision-worker-control-tests
+          CI_EVIDENCE_PATH: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
+        run: |
+          set -euo pipefail
+          # Manual evaluation may check out a revision predating the uploader.
+          # Load tooling from the exact workflow revision without changing HEAD.
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git show "$GITHUB_WORKFLOW_SHA:.github/scripts/upload_ci_evidence_s3.py" > "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+          python3 "$RUNNER_TEMP/upload_ci_evidence_s3.py"
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -1202,11 +1218,18 @@ jobs:
           JSON
           echo "Verified: working tree is at $ACTUAL."
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: checked-out-revision-control-evaluation-harness-tests
-          path: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json
-          if-no-files-found: error
+      - name: Retain checkout evidence in S3
+        env:
+          CI_EVIDENCE_NAME: checked-out-revision-control-evaluation-harness-tests
+          CI_EVIDENCE_PATH: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json
+        run: |
+          set -euo pipefail
+          # Manual evaluation may check out a revision predating the uploader.
+          # Load tooling from the exact workflow revision without changing HEAD.
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+          git show "$GITHUB_WORKFLOW_SHA:.github/scripts/upload_ci_evidence_s3.py" > "$RUNNER_TEMP/upload_ci_evidence_s3.py"
+          python3 "$RUNNER_TEMP/upload_ci_evidence_s3.py"
 
       - name: Setup Python
         uses: actions/setup-python@v7

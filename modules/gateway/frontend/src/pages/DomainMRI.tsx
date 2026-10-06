@@ -30,6 +30,7 @@ export default function DomainMRI() {
             : lifetime.signal,
           headers: { ...init.headers, Authorization: `Bearer ${token}` },
           cache: "no-store",
+          redirect: "error",
         },
       );
       if (response.status === 401) {

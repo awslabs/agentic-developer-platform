@@ -1,7 +1,8 @@
 name: Superplane UI Browser CI
 
 # Isolated rendering and interaction checks against fixture HTTP responses.
-# No deployed environment, product login, AWS credentials or provider operations.
+# Tests use no deployed environment, product login or provider operations.
+# The final evidence upload uses the runner identity for the private CI bucket.
 on:
   workflow_call:
   workflow_dispatch:
@@ -49,9 +50,8 @@ jobs:
         run: python modules/domain-apps/superplane/ui/browser-tests/verify_demo1_browser.py
       - name: Retain browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: serving-browser-evidence
           path: test-results/superplane-browser/
-          if-no-files-found: error
           retention-days: 14

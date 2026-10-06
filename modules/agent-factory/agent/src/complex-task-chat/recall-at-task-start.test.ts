@@ -5,7 +5,7 @@
  * 1. When enabled + recall returns learnings → they appear in the formatted prompt section
  * 2. When disabled (default) → no recall call made, prompt section is empty (regression)
  * 3. Recall error/timeout → task proceeds normally, warning logged (graceful degradation)
- * 4. Recall uses trusted identity headers, not anything from task/agent input (anti-spoof)
+ * 4. Recall never forwards caller identity headers to the context service
  * 5. Recalled content respects the token cap
  * 6. Empty task query → skips recall with warning
  * 7. No identity → skips recall with warning
@@ -29,6 +29,7 @@ beforeEach(() => {
   delete process.env.PERSONAL_CONTEXT_RECALL_TOKEN_CAP;
   delete process.env.PERSONAL_CONTEXT_RECALL_TIMEOUT_MS;
   delete process.env.CONTEXT_MCP_SERVER_URL;
+  delete process.env.ADP_AGENT_AUTHORITY_ENABLED;
 });
 
 afterEach(() => {
@@ -178,7 +179,7 @@ describe('callRecall', () => {
     'X-Tenant-Id': 'org-acme-123',
   };
 
-  it('sends correct headers and body to Context MCP Server', async () => {
+  it('sends the recall body without caller identity headers', async () => {
     const mockResponse = {
       ok: true,
       status: 200,
@@ -199,11 +200,7 @@ describe('callRecall', () => {
     expect(options.method).toBe('POST');
     expect(options.redirect).toBe('error');
     const reqHeaders = options.headers as Record<string, string>;
-    expect(reqHeaders).toMatchObject({
-      'Content-Type': 'application/json',
-      'X-Owner-Sub': '44086498-2091-70e1-bd3a-12c6104c3ebb',
-      'X-Tenant-Id': 'org-acme-123',
-    });
+    expect(reqHeaders).toEqual({ 'Content-Type': 'application/json' });
 
     const body = JSON.parse(options.body as string);
     expect(body.name).toBe('experience');
@@ -261,14 +258,13 @@ describe('callRecall', () => {
     await expect(callRecall(headers, 'test query', 'developer')).rejects.toThrow('ECONNREFUSED');
   });
 
-  it('uses identity headers from dispatch metadata (anti-spoof)', async () => {
+  it('does not forward dispatch identity headers to the context service', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ status: 'ok', results: [], total: 0 }),
     } as Response);
 
-    // The headers are the trusted ones derived from dispatch metadata
     const trustedHeaders = {
       'X-Owner-Sub': 'real-user-sub-from-jwt',
       'X-Tenant-Id': 'real-tenant-from-jwt',
@@ -278,9 +274,7 @@ describe('callRecall', () => {
 
     const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
     const reqHeaders = options.headers as Record<string, string>;
-    // Verify the EXACT trusted headers are sent (not any agent-supplied ones)
-    expect(reqHeaders['X-Owner-Sub']).toBe('real-user-sub-from-jwt');
-    expect(reqHeaders['X-Tenant-Id']).toBe('real-tenant-from-jwt');
+    expect(reqHeaders).toEqual({ 'Content-Type': 'application/json' });
   });
 });
 

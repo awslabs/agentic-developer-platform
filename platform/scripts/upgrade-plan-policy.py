@@ -25,6 +25,31 @@ WORKER_ROLLOUT_IDENTITY_MIGRATION = (
 )
 
 
+def legacy_worker_upgrade(plan, account):
+    """Retain an existing identity; never use this input for a fresh launch/downgrade."""
+    values = {k: v.get('value') for k, v in plan.get('variables', {}).items()}
+    environment = values.get('environment')
+    if environment not in ('dev', 'staging', 'prod') or not re.fullmatch('[0-9]{12}', account or ''):
+        return False
+    arn = f'arn:aws:iam::{account}:role/adp-{environment}-agent-scaledjob-role'
+    if values.get('agent_legacy_upgrade_role_arn') != arn or any(values.get(k) is not False for k in (
+            'agent_authority_enabled', 'agent_legacy_worker_admin_retired',
+            'agent_task_source_isolation_confirmed', 'agent_worker_admission_paused')):
+        return False
+    role = next((r['change'] for r in plan['resource_changes'] if r['address'] == 'aws_iam_role.agent_scaledjob'), {})
+    before, after = role.get('before') or {}, role.get('after') or {}
+    if (role.get('actions') not in (['no-op'], ['update']) or before.get('arn') != arn or after.get('arn') != arn
+            or before.get('permissions_boundary') or after.get('permissions_boundary')):
+        return False
+    rollout = next((r['change'] for r in plan['resource_changes']
+                    if r['address'] == 'terraform_data.worker_security_rollout'), {})
+    old = (rollout.get('before') or {}).get('input') or {}
+    new = (rollout.get('after') or {}).get('input') or {}
+    return (rollout.get('actions') in (['no-op'], ['update'])
+            and old.get('active') is new.get('active') is False
+            and old.get('paused') is new.get('paused') is False)
+
+
 def retired_internal_key_mirror(resource, plan, account):
     """Delete only #6880's obsolete SSM mirror, never the source secret.
 
@@ -42,7 +67,7 @@ def retired_internal_key_mirror(resource, plan, account):
             or not re.fullmatch(r'[a-z]{2}-[a-z]+-[0-9]', region or '')):
         return False
     name = f'/adp/{environment}/gateway/internal-api-key'
-    safe_admission = value('agent_worker_admission_paused') is True or all(
+    safe_admission = legacy_worker_upgrade(plan, account) or value('agent_worker_admission_paused') is True or all(
         value(key) is True for key in (
             'agent_authority_enabled', 'agent_authority_runtime_ready',
             'agent_authority_legacy_workers_drained', 'agent_legacy_worker_admin_retired',
@@ -517,6 +542,9 @@ def evaluate(plan, module, account, migration=None):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
     cutover = worker_migration_plan(plan, module, account, migration)
+    if (module == 'webhook-ingress' and plan.get('variables', {}).get('agent_legacy_upgrade_role_arn', {}).get('value')
+            and not legacy_worker_upgrade(plan, account)):
+        protected.append('legacy worker identity preservation')
     for resource in plan["resource_changes"]:
         if module == 'webhook-ingress' and resource['address'] == 'terraform_data.worker_security_rollout':
             change = resource['change']

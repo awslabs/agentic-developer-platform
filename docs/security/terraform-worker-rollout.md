@@ -125,6 +125,19 @@ the full IAM/Kubernetes inventory, including other clusters and legacy mappings.
 
 ## Stages
 
+An ordinary `deploy.sh --update` preserves a serving deployment's installed
+worker identity. It does not require or assert completion of the protected-worker
+cutover. For a legacy deployment, the script must match the current Terraform
+rollout, role and service account, then confirm live KEDA admission, service
+account and gateway mode before applying. It supplies a transient
+`agent_legacy_upgrade_role_arn` input bound to that existing role. The saved-plan
+gate refuses a fresh identity, a removed permissions boundary, an admission
+change or a protected-to-legacy downgrade. Fresh installs do not receive this
+compatibility input and keep their paused preparation defaults. Release evidence
+records the retained worker identity mode; a software release in legacy mode is
+not protected-worker security acceptance. The explicit migration below retains
+all qualification requirements.
+
 Use reviewed environment configuration and Terraform plans. Follow the
 [canonical deployment guide](../adp-platform-deployment/deploy-with-agent.md)
 for target confirmation and verification. No direct IAM attachment, SSM flag or

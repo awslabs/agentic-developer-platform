@@ -193,3 +193,14 @@ run "skypilot_tagged_rollback_images_do_not_expire" {
     error_message = "The SkyPilot exception must not remove other repositories' retention limits."
   }
 }
+
+run "executor_python_build_inputs_survive_new_publications" {
+  command = plan
+  assert {
+    condition = alltrue([
+      for rule in jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-executor"].policy).rules :
+      rule.selection.tagStatus == "untagged"
+    ]) && length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-executor"].policy).rules) == 1
+    error_message = "Pinned Python build inputs must not expire as new executor application tags are published."
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "issue": 6998,
+  "updated_at": "2026-10-06T05:57:06.132Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Map all 18 findings to current inputs, call sites, and artifact consumers",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "data/security/issue-6998-http-destinations.json"
+      ],
+      "note": "Source mapping exists; frozen-report HeadObject returned 403 Forbidden.",
+      "commits": [
+        "19c9252"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify record-by-record mapping against the original report and source revision",
+      "status": "blocked",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        ".github/scripts/tests/test_issue_6998_http_destinations.py"
+      ],
+      "note": "Catalog checks pass; original report hash, severity, and records remain unverified."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Verify or repair configured GitLab origin and shared URL-guard behavior",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/lib/url-guard.ts"
+      ],
+      "note": "Merged PR #6733 protection retained."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run GitLab and URL-guard unit fixtures for allowed requests",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/clients/gitlab_client.test.ts"
+      ],
+      "note": "Previously passed 61 tests; GitLab fixtures passed in the prior turn."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain GitHub-bound calls and credentials to independently trusted origins",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/github-comments.ts"
+      ],
+      "note": "Pushed at abb4039.",
+      "commits": [
+        "abb4039"
+      ]
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run GitHub caller unit fixtures for trusted requests",
+      "status": "done",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/github-comments.test.ts"
+      ],
+      "note": "Prior focused caller and HTTP fixtures passed."
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain gateway, Door, Bedrock, and artifact calls without breaking configured services",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts"
+      ],
+      "note": "Pushed at 3f2661b.",
+      "commits": [
+        "3f2661b"
+      ]
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run signed-gateway and provider unit fixtures for trusted requests",
+      "status": "done",
+      "covers": [
+        "AC-02-c3"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/lib/suppressed-outbound-redirects.test.ts"
+      ],
+      "note": "Prior focused gateway and provider fixtures passed."
+    },
+    {
+      "id": "AC-02-c4",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Constrain Codex harness and reviewer GitHub call sites",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/github.ts"
+      ],
+      "note": "Pushed at 03d35c3.",
+      "commits": [
+        "03d35c3"
+      ]
+    },
+    {
+      "id": "AC-02-t4",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run harness and reviewer unit fixtures for trusted requests",
+      "status": "done",
+      "covers": [
+        "AC-02-c4"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/github.test.ts"
+      ],
+      "note": "Prior turn: reviewer GitHub 45/45 and harness 156/156 passed."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire shared destination checks into the affected runtime paths",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
+      ],
+      "note": "Guarded runtime constructors previously verified."
+    },
+    {
+      "id": "AC-02-t5",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run local HTTP negative fixtures for hostile origins, redirects, and malformed identifiers",
+      "status": "done",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c2",
+        "AC-02-c3",
+        "AC-02-c4",
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/lib/http-destination-boundary.test.ts"
+      ],
+      "note": "Prior HTTP run passed 68/68; earlier redirect fixtures recorded zero target requests.",
+      "commits": [
+        "f83a57d"
+      ]
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record individual candidate dispositions and reproducible scanner evidence",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "data/security/issue-6998-http-destinations.json"
+      ],
+      "note": "All 18 unresolved; original report denied and prior raw candidate SARIF not recovered.",
+      "commits": [
+        "7049c2e"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rerun exact Semgrep rule with reviewed suppressions and compare all 18 records",
+      "status": "blocked",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        ".github/scripts/issue_6998_candidate.py"
+      ],
+      "note": "Original SARIF and scan-time ruleset unavailable for exact comparison."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate affected packages and publish candidate revision, rollback, and AC handoff",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "data/security/issue-6998-http-destinations.json"
+      ],
+      "note": "Handoff and pinned-main comparison published; covering full suites require baseline-owner repairs.",
+      "commits": [
+        "23dab9f",
+        "0925728",
+        "1847414",
+        "b9f693a"
+      ]
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run npm ci, agent tests and build, plus harness and reviewer tests and builds",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c-wire"
+      ],
+      "files": [
+        ".github/scripts/tests/test_issue_6998_http_destinations.py"
+      ],
+      "note": "Builds pass, but agent 2859/2862 and reviewer 196/198; failing source/tests match pinned main, and reviewer fixture is absent in both trees.",
+      "commits": [
+        "ccea177",
+        "a64938d"
+      ]
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Confirm merged composition and transfer verification to the epic coordinator",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Epic coordinator owns this post-merge step; PR remains unmerged."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Repeat affected checks on the final composed artifact",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Requires the epic coordinator’s final composed artifact."
+    }
+  ]
+}

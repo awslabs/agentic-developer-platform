@@ -1,0 +1,7 @@
+{
+  "version": "2.14",
+  "commit": "beec94e308d1a1e03ca17b05fe089d93c6303e90",
+  "archive_sha256": "1cd8ad26c9ed34e5b96d0a0bef0309437e5e71227a67560da03c33797371ccbd",
+  "advisory": "CVE-2025-70888",
+  "upstream_fix": "https://github.com/mtrojnar/osslsigncode/pull/477"
+}

@@ -1,0 +1,19 @@
+{
+  "review_date": "2026-10-06",
+  "donor_digest": "sha256:46c383b2c236e48d58734e26a44da734a0ef6b7baf6cdb867430bfdbf4d92a86",
+  "package": "rsync",
+  "version": "3.5.1-0+adp1",
+  "package_sha256": "a216c57ce614e07105150235a9eee2612e7799856486e2917fc92c65f73d46d1",
+  "binary_sha256": "42adbf68a9378565cc291111beaa2d8cd57bb021e6231e60b458b6d68c2e3af1",
+  "source": "Existing retained build stage of platform/security/rsync-3.5.1/Dockerfile; source lock and installed binary verified against this directory\u2019s reviewed receipts",
+  "contents": [
+    "/out/rsync.deb",
+    "/provenance/source-lock.json",
+    "/provenance/release-key.asc",
+    "/provenance/rsync-3.5.1.tar.gz.asc",
+    "/provenance/signature-status.txt",
+    "/provenance/COPYING",
+    "/provenance/NEWS.md"
+  ],
+  "scope": "tagged immutable package donor only; no running workload or release lock change"
+}

@@ -56,6 +56,35 @@ describe('LiveStatusComment', () => {
     jest.useRealTimers();
   });
 
+  it.each([
+    'https://attacker.example',
+    'https://api.github.com.attacker.example',
+    'https://api.github.com:8443',
+    'https://api.github.com@attacker.example',
+    'http://api.github.com',
+  ])('refuses an untrusted GitHub API origin before sending a token: %s', apiBaseUrl => {
+    expect(() => new LiveStatusComment(makeStages(), makeOptions({ apiBaseUrl }))).toThrow();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { owner: '../other' }, { owner: 'user@other' }, { repo: '../other' },
+    { repo: '..' }, { issueNumber: 0 }, { issueNumber: Number.NaN },
+  ])('refuses malformed GitHub identifiers before sending a token: %j', overrides => {
+    expect(() => new LiveStatusComment(makeStages(), makeOptions(overrides))).toThrow();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('accepts the canonical GitHub origin with an optional trailing slash', async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 999 }));
+    const comment = new LiveStatusComment(makeStages(), makeOptions({ apiBaseUrl: 'https://api.github.com/' }));
+    await comment.post();
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.github.com/repos/test-org/test-repo/issues/42/comments',
+      expect.objectContaining({ redirect: 'error' }),
+    );
+  });
+
   describe('post()', () => {
     it('creates a comment and stores the comment ID', async () => {
       mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 999 }));
