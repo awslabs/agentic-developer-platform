@@ -130,7 +130,9 @@ def validated_request(operation, context):
             ),
             "max_cost_micros": int(parameters["lifecycle_allocation_max_cost_micros"]),
             "request": public_request,
-            "allocation_id": parameters["allocation_id"],
+            "allocation_id": parameters.get(
+                "lifecycle_root_allocation_id", parameters["allocation_id"]
+            ),
             "policy_revision": policy_digest(policy),
         },
         cost_estimate=None,

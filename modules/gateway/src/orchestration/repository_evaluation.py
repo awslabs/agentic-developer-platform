@@ -109,6 +109,15 @@ async def sources_for(session, node, plan, spec, *, lock=False, preview_gate_id=
         require(
             binding.repo == spec.runner.repository and binding.provider_repository_id == spec.runner.repository_id, "predecessor_repository_changed"
         )
+        if expected.accepted_merge_decision_id is not None:
+            from .accepted_merge_evidence import accepted_merge_source
+
+            source = await accepted_merge_source(session, parent=parent, plan=plan, binding=binding, decision_id=expected.accepted_merge_decision_id)
+            source.update(address=expected.address, required_checks=[item.model_dump() for item in expected.required_checks])
+            if getattr(spec, "qualification", None) is not None and str(parent.issue_ref).isdigit():
+                source["issue_number"] = int(parent.issue_ref)
+            sources.append(source)
+            continue
         # A later evaluation-only amendment may consume earlier delivered code.
         # Its exact original plan/execution stays on the source receipt; the
         # currently accepted node scope must still match the immutable binding.

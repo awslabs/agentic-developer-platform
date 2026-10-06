@@ -24,6 +24,15 @@ reviewer for repair. There is no developer handoff or extra approval stage.
 It stops for a genuine blocker, a changed PR, or an existing repository merge
 requirement. Source repairs are not restricted to “mechanical” findings.
 
+PR mentions and engine review assignments prepare full base history and the
+authorized repository's sibling branch histories before model execution. This
+makes pinned release baselines and cross-story contract commits available to the
+network-disabled reviewer without changing its assigned head.
+For a PR mention, the triggering human comment is preserved as contextual review
+scope; automatic PR events without a comment retain their existing behavior.
+That context is not design approval and does not waive code findings, authorization,
+current-head/base checks, required CI, or repository merge rules.
+
 Issue-only mentions remain read-only issue-readiness reviews. The shared worker
 owns authentication, checkout and queue delivery. Both PR mentions and engine
 assignments reuse one review/repair loop; their existing publication transports

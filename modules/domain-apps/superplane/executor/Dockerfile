@@ -42,6 +42,9 @@ RUN ./configure --with-install-type=portable-exe --with-download-deps --prefix=/
     cp -r build/exe/aws/THIRD_PARTY_LICENSES /opt/awscli-adp/THIRD_PARTY_LICENSES
 RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
 COPY modules/domain-apps/superplane/executor/awscli-build/source-build.json /opt/awscli-adp/source-build.json
+COPY modules/domain-apps/superplane/executor/awscli-build/verify_uuid_consumer.c /tmp/verify_uuid_consumer.c
+RUN --network=none cc -O2 -Wall -Wextra -Werror /tmp/verify_uuid_consumer.c \
+    -ldl -o /tmp/adp-awscli-uuid-check
 
 FROM ${PYTHON_IMAGE} AS build
 WORKDIR /build
@@ -70,6 +73,9 @@ COPY --from=kubectl-builder /out/kubectl /usr/local/bin/kubectl
 COPY --from=kubectl-builder /src/LICENSES /usr/share/licenses/superplane-kubectl/upstream
 COPY --from=kubectl-builder /build-tools /usr/share/licenses/superplane-kubectl/build
 COPY --from=tools /opt/awscli-adp /opt/awscli-adp
+RUN --network=none \
+    --mount=type=bind,source=modules/domain-apps/superplane/executor/awscli-build,target=/awscli-maintenance,readonly \
+    python /awscli-maintenance/maintain_libuuid.py
 RUN ln -s /opt/awscli-adp/bin/aws /usr/local/bin/aws && \
     mkdir -p /var/lib/superplane-lifecycle && \
     chown 65531:65532 /var/lib/superplane-lifecycle && \
@@ -78,6 +84,14 @@ USER 65531:65532
 ENV PATH="/opt/executor/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     AWS_MAX_ATTEMPTS=1 AWS_RETRY_MODE=standard \
     SUPERPLANE_LIFECYCLE_STATE_DIR=/var/lib/superplane-lifecycle
+# The tools-stage check cannot establish compatibility with the selected Python
+# base. Exercise the copied binaries under the final non-root runtime as well;
+# incompatible libc/Python combinations must fail the build, not the first task.
+RUN --network=none \
+    --mount=from=tools,source=/tmp/adp-awscli-uuid-check,target=/tmp/adp-awscli-uuid-check,readonly \
+    python -c 'import sys; assert sys.version_info[:2] == (3, 12)' && \
+    terraform version && kubectl version --client && aws --version && \
+    LD_LIBRARY_PATH=/opt/awscli-adp/lib/aws-cli /tmp/adp-awscli-uuid-check
 
 FROM runtime AS controller-service
 ENTRYPOINT ["superplane-execution-service"]

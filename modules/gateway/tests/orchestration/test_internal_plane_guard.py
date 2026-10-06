@@ -60,6 +60,7 @@ INTERNAL_ROUTE_MODULES = (
     # admission, approval mutation or release-promotion state is reachable.
     "src.internal.controller_execution_routes",
     "src.internal.domain_operation_routes",
+    "src.internal.domain_operation_binding_proof_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -90,7 +91,12 @@ EXPECTED_INTERNAL_ROUTES = {
     # access to release-promotion state.
     ("/internal/v1/credential-delivery/preflight", "POST"),
     ("/internal/v1/controller-execution/authority", "POST"),
+    ("/internal/v1/controller-execution/current-identity", "POST"),
+    ("/internal/v1/controller-execution/current-identity/readiness", "POST"),
+    ("/internal/v1/controller-execution/provider-session", "POST"),
+    ("/internal/v1/controller-execution/provider-preflight", "POST"),
     ("/internal/v1/controller-execution/producer-readiness", "POST"),
+    ("/internal/v1/controller-execution/binding-proof", "POST"),
     ("/internal/v1/controller-execution/dispatch", "POST"),
     ("/internal/v1/controller-execution/task/acquire", "POST"),
     ("/internal/v1/controller-execution/bootstrap", "POST"),

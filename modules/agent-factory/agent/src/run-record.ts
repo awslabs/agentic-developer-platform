@@ -7,6 +7,10 @@ import { truncateUtf8 } from './reporting-text';
 
 export interface RecordedTask { id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }
 export interface ChecklistSnapshot { at: string; tasks: RecordedTask[] }
+export interface ClosureReport {
+  summary: string; completed: string[]; remaining: string[]; delivery: string;
+  reviewed_revision?: string; reporting_notes: string[];
+}
 export interface RunRecord {
   version: 1; invocation_id: string; persona: string; model: string; repository: string; issue: number;
   started_at: string; captured_at: string; capture_closed_at?: string;
@@ -15,6 +19,7 @@ export interface RunRecord {
   task_transitions: Array<{ at: string; id: string; from: string; to: string }>;
   history_truncated: boolean;
   evidence: Array<{ at: string; text: string }>;
+  closure_report?: ClosureReport;
 }
 export function recordText(value: string, limit = 4096): string {
   let text = value;
@@ -29,7 +34,7 @@ export function recordText(value: string, limit = 4096): string {
 export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
   const tasks: RecordedTask[] = [];
   for (const line of text.split('\n')) {
-    const match = /^- ([☑☐]) (.+)$/.exec(line.trim());
+    const match = /^- ([☑☐▶⛔]) (.+)$/.exec(line.trim());
     if (!match) continue;
     const inProgress = match[2].endsWith(' (in progress)');
     const label = (inProgress ? match[2].slice(0, -14) : match[2]).trim();
@@ -38,7 +43,7 @@ export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
     if (safe !== label) return; // Redaction must not fabricate a different task identity.
     const id = createHash('sha256').update(label).digest('hex').slice(0, 24);
     if (tasks.some(task => task.id === id)) return;
-    tasks.push({ id, text: label, status: match[1] === '☑' ? 'completed' : inProgress ? 'in_progress' : 'pending' });
+    tasks.push({ id, text: label, status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : 'pending' });
   }
   return tasks.length ? tasks : undefined;
 }
@@ -102,9 +107,34 @@ export class RunRecordCapture {
   }
   close(): void {
     if (this.record.capture_closed_at) return;
+    this.closeReport('The run ended without a closing summary.');
     this.record.capture_closed_at = this.now();
     this.record.saved_revision = revision();
     this.persist();
+  }
+  closure(report: ClosureReport): void {
+    if (this.record.capture_closed_at) return;
+    const lines = (items: string[]) => items.slice(0, 32).map(item => recordText(item, 1024));
+    this.record.closure_report = {
+      summary: recordText(report.summary, 8192), delivery: recordText(report.delivery, 1024),
+      completed: lines(report.completed), remaining: lines(report.remaining),
+      reporting_notes: [...lines(report.reporting_notes),
+        ...([report.completed, report.remaining].some(items => items.length > 32)
+          ? ['The closure report was shortened; see the saved checklist for additional items.'] : [])],
+      ...(report.reviewed_revision && /^[a-f0-9]{40}$/.test(report.reviewed_revision)
+        ? { reviewed_revision: report.reviewed_revision } : {}),
+    };
+    this.persist();
+  }
+  /** All personas get a truthful fallback; a final review can supply richer prose. */
+  closeReport(summary: string): void {
+    if (this.record.closure_report || this.record.capture_closed_at) return;
+    const tasks = this.record.latest_checklist?.tasks ?? [];
+    this.closure({ summary, delivery: 'See the run outcome for delivery status.',
+      completed: tasks.filter(t => t.status === 'completed').map(t => t.text),
+      remaining: tasks.filter(t => t.status !== 'completed').map(t => t.text),
+      reporting_notes: ['Based on the saved checklist; completion is agent-reported.'],
+    });
   }
   private persist(): void {
     this.record.captured_at = this.now();
@@ -119,6 +149,10 @@ export class RunRecordCapture {
     const first = r.first_checklist?.tasks;
     const lines = [
       '<!-- adp-run-record:v1 ' + Buffer.from(JSON.stringify(r), 'utf8').toString('base64') + ' -->',
+      ...(r.closure_report ? ['## Closure report', r.closure_report.summary, r.closure_report.delivery,
+        '### Completed', ...(r.closure_report.completed.length ? r.closure_report.completed.map(t => '- ' + t) : ['No completed work was recorded.']),
+        '### Remaining', ...(r.closure_report.remaining.length ? r.closure_report.remaining.map(t => '- ' + t) : ['No remaining work was reported for this assignment.']),
+        ...r.closure_report.reporting_notes.map(t => 'Reporting note: ' + t)] : []),
       '## Run record',
       'Run ID: ' + (r.invocation_id || 'Unavailable'),
       'Persona: ' + r.persona + ' · Model: ' + r.model,

@@ -15,7 +15,8 @@ from pathlib import Path
 import assistant_client
 import common
 
-PROTOCOL = "webchat-response-v1"
+PROTOCOL = "webchat-worker-response-v2"
+PERSONA = "intent-refinement"
 SESSION = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 PROMPT = "Reply briefly with the word ready. Do not use tools or take any actions."
 
@@ -65,10 +66,12 @@ def owned(document, fixture, session_id=None):
     )
 
 
-def collect(client):
+def collect(client, session_id):
     """Accept only one correlated, complete response using the current envelope."""
     task_id = None
     chunks = []
+    worker_started = False
+    worker_finished = False
     chunk_total = None
     deadline = time.monotonic() + 120
     for _ in range(128):
@@ -90,6 +93,32 @@ def collect(client):
         common.require(
             identifier == task_id, "Assistant response crossed task identities"
         )
+        if event.get("type") == "ag_ui":
+            lifecycle = event.get("event")
+            common.require(
+                isinstance(lifecycle, dict), "Assistant worker event is malformed"
+            )
+            kind = lifecycle.get("event_type")
+            common.require(
+                kind != "RUN_ERROR", "Assistant worker reported a failed run"
+            )
+            if kind in {"RUN_STARTED", "RUN_FINISHED"}:
+                common.require(
+                    lifecycle.get("threadId") == session_id
+                    and lifecycle.get("runId") == task_id,
+                    "Assistant worker lifecycle crossed session or task identities",
+                )
+                if kind == "RUN_STARTED":
+                    common.require(
+                        not worker_started, "Assistant worker started more than once"
+                    )
+                    worker_started = True
+                else:
+                    common.require(
+                        worker_started and not worker_finished,
+                        "Assistant worker completion is out of order",
+                    )
+                    worker_finished = True
         if (
             event.get("type") in {"progress", "notification", "ag_ui"}
             or event.get("status") == "notification"
@@ -124,6 +153,10 @@ def collect(client):
             "Assistant response exceeds evidence limit",
         )
         if len(chunks) == chunk_total:
+            common.require(
+                worker_started and worker_finished,
+                "Assistant final response lacks correlated worker completion",
+            )
             return task_id, "".join(chunks), len(chunks)
     raise common.RemoteError("Assistant response did not complete within event limit")
 
@@ -225,12 +258,23 @@ def execute(config, evidence):
             owned(shown, fixture, sid)
             record["phase"] = "submit_attempted"
             persist(path, record)
-            client.send({"action": "message", "session_id": sid, "text": PROMPT})
-            task, answer, count = collect(client)
+            # This existing pinned persona is always routed to the chat worker;
+            # classifier-only replies cannot qualify as a worker baseline.
+            client.send(
+                {
+                    "action": "message",
+                    "session_id": sid,
+                    "text": PROMPT,
+                    "persona": PERSONA,
+                }
+            )
+            task, answer, count = collect(client, sid)
             record.update(
                 task_id=task,
                 response_sha256=digest(answer),
                 response_chunks=count,
+                worker_completion_verified=True,
+                persona=PERSONA,
                 phase="response_received",
             )
             persist(path, record)
@@ -245,7 +289,9 @@ def execute(config, evidence):
                     for row in messages
                 )
                 and any(
-                    row.get("role") == "assistant" and row.get("content") == answer
+                    row.get("role") == "assistant"
+                    and row.get("content") == answer
+                    and row.get("task_id") == task
                     for row in messages
                 ),
                 "Assistant owned history does not contain the submitted turn and observed answer",

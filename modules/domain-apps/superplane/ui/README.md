@@ -83,17 +83,72 @@ no frontend check at all, which is worse than no coverage because the check name
 
 ## AC-to-test matrix
 
+This matrix locates checks; it is not final-revision execution evidence. The
+bounded Demo 1 submission adds registered-workspace receipt re-entry, separate
+readiness/access observations and a guarded retirement inventory review. It does
+not complete the wider onboarding story. Component fixtures cannot prove real
+provider binding, create/adopt readiness, or deployed authorization denials.
+
 | AC | Required result | Covering tests | Status |
 |----|-----------------|----------------|--------|
 | AC-01 | Feature off leaves navigation unchanged; on with zero workspaces an authorized admin can begin onboarding; other roles see only permitted actions | `OnboardingView.test.tsx`: `AC-01: beginning onboarding with zero workspaces`, `the create flow is reachable and scoped (AC-01/AC-03)`; `ProviderConnectionPanel.test.tsx`: `AC-01: what a read-only user sees` | Source complete |
 | AC-02 | Connection/binding and create/adopt journeys reach durable progress and verified readiness; refresh, timeout and repeated submit preserve one operation identity | `operations.test.ts`: `repeated submit`, `refresh`, `timeout and lost replies`, `changed payload`, `payload fingerprinting`; `CreateWorkspaceFlow.test.tsx`: `AC-02: the reviewed plan revision binds the submission`, `AC-02: one operation identity across repeated submit, refresh and timeout` | Source complete; **live acceptance blocked** (see below) |
 | AC-03 | Cross-org/workspace access, credential substitution, revoked credentials and late responses after org switching denied or discarded; secrets absent from persistence and diagnostics | `client.test.ts`: `late responses after an organization switch`, `provider connections`; `operations.test.ts`: `organization and deployment scoping`, `secret absence in persistence`; `ProviderConnectionPanel.test.tsx`: `AC-03: binding a vault credential`, `AC-03: validation is the service's answer, never the client's`, `AC-03: revoking a connection`, `the secret-material tripwire itself` | Source complete |
 | AC-04 | Partial bootstrap failure, missing capabilities and provider unavailability produce actionable states; control-plane health alone never marks a workspace execution-ready | `readiness.test.ts`: `the AC-04 prohibition`, `freshness`, `workspace readiness`, `provider readiness`, `partial failure produces actionable states`; `OnboardingView.test.tsx`: `AC-04: create is disabled, with the gap named…`, `AC-04: control-plane health never marks a workspace execution-ready`, `AC-04: actionable failure states`, `AC-04: a served capability route is not by itself permission to create`; `CreateWorkspaceFlow.test.tsx`: `AC-04: refusing to submit what cannot be submitted safely` | Source complete |
-| AC-05 | Keyboard navigation, accessible labels/focus, narrow-screen layout, session expiry across successful and failed onboarding | `OnboardingView.test.tsx`: `AC-05: keyboard and accessible structure`; `CreateWorkspaceFlow.test.tsx`: `AC-05: the plan is reviewable and accessible` | **Partial** — narrow-screen layout is CSS-only and unverified; jsdom has no layout engine |
-| AC-06 | Affected CI and browser integration tests pass at the final revision; record a real demonstration with exact release, workspace and operation IDs | `gateway-ci.yml` (vitest + typecheck + lint), `superplane-domain-ci.yml` | **CI complete; live demonstration not done** |
+| AC-05 | Keyboard navigation, accessible labels/focus, narrow-screen layout, session expiry across successful and failed onboarding | `OnboardingView.test.tsx`, `CreateWorkspaceFlow.test.tsx`, `ApprovalPanel.test.tsx`, `RetirementPanel.test.tsx`; `browser-tests/verify_onboarding_browser.py` | Component and browser scenarios are separate; only an executed browser check establishes layout evidence, and wider supported modes still require coverage |
+| AC-06 | Affected CI and browser integration tests pass at the final revision; record a real demonstration with exact release, workspace and operation IDs | `gateway-ci.yml` (vitest + typecheck + lint), `superplane-domain-ci.yml`, `superplane-ui-browser-ci.yml` | Requires final-head check results plus separately authorized live evidence; CI wiring alone is not a pass |
 
 The equivalent CLI surface is `adp superplane onboarding`, covered by
 `modules/gateway/tests/cli/test_superplane_onboarding.py`.
+
+### Isolated onboarding browser checks
+
+The maintained browser lane runs `browser-tests/test_onboarding_fixture.py` before
+`browser-tests/verify_browser.py`, which also runs the onboarding scenarios. The
+fixture serves the lifecycle-plan list requested after creation, even when no
+next plan exists. Unexpected API requests, retirement admission, and non-fixture
+origins fail the check rather than reaching a real service. The CLI endpoint table
+mirrors the same source-owned contract; declaring a retirement route does not add
+a CLI removal command or make backend admission available.
+
+Install the locked Gateway frontend dependencies first (`npm ci` from
+`modules/gateway/frontend`). With pytest and Playwright 1.55.0 installed in the
+active Python environment, run the fixture unit tests from the repository root:
+
+```bash
+python -m pytest -q -o addopts= modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py
+```
+
+Actual keyboard and layout validation additionally requires Chromium and its
+native libraries (`python -m playwright install chromium --with-deps` on a
+supported test host). From the repository root, run the maintained browser lane:
+
+```bash
+python modules/domain-apps/superplane/ui/browser-tests/verify_browser.py
+```
+
+The fixture tests should pass without a browser; they check transport behavior,
+not rendering. The browser runner records fixture-only screenshots and results
+under `test-results/superplane-browser/`. Neither result proves live onboarding.
+
+### Bounded delivery and remaining acceptance
+
+Retirement review displays owned deletions, preserved resources and unknown cost
+exposure. The current backend contract refuses admission until staged cleanup
+access exists. No approval or deletion is synthesized by the UI. Registered
+workspaces expose the original request and phase history; recovery of a lost
+request ID before registration still needs backend discovery support.
+
+AC-02 retains real create/adopt and provider create/bind/rotate/revoke journeys;
+AC-03 retains real API denials across all supported provider variants; AC-05
+retains browser checks across successful and failed supported modes. AC-06 needs
+results bound to the final code revision, not historical CI claims. Live AC-02
+and AC-06 evidence belongs to the separately authorized #5540 evaluation owner,
+after compatible backend/release integration, approval and identity handoffs,
+staged cleanup access, and a bounded live target/browser driver are available.
+That private evaluation must record exact release, workspace and operation IDs.
+Merging this source submission does not close those criteria or the wider story.
+Rolling back the UI does not delete workspaces or provider connections.
 
 ## Route availability and live acceptance
 

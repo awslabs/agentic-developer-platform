@@ -1,0 +1,531 @@
+{
+  "version": 1,
+  "issue": 6934,
+  "updated_at": "2026-10-06T06:54:17.188Z",
+  "tasks": [
+    {
+      "id": "EXT01-c1",
+      "kind": "code",
+      "criterion": "EXT01",
+      "title": "Classify provider events by human action and source identity",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_events.py"
+      ],
+      "note": "Classification implementation verified; covering fixtures pass in the final relevant gateway suite.",
+      "commits": [
+        "aa9a3b3"
+      ]
+    },
+    {
+      "id": "EXT01-t1",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run human, assignment-only, bot and duplicate event fixtures",
+      "status": "done",
+      "covers": [
+        "EXT01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_events.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT01-c2",
+      "kind": "code",
+      "criterion": "EXT01",
+      "title": "Read GitHub and GitLab events across linked aliases and organizations",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_provider.py",
+        "docs/architecture/assistant-external-activity.md"
+      ],
+      "note": "Provider collection, including the GitLab Note repair, verified by final provider and delegated fixtures.",
+      "commits": [
+        "69488cf"
+      ]
+    },
+    {
+      "id": "EXT01-t2",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run provider fixtures for commits, PRs, reviews, comments and aliases",
+      "status": "done",
+      "covers": [
+        "EXT01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT01-c-wire",
+      "kind": "code",
+      "criterion": "EXT01",
+      "title": "Merge provider provenance into the scoped ADP work summary",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/work_summary.py",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/answer.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/tools.ts"
+      ],
+      "note": "Gateway provenance and worker rendering/deduplication verified; worker tests and TypeScript build pass.",
+      "commits": [
+        "e8438e6"
+      ]
+    },
+    {
+      "id": "EXT01-t3",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run delegated response fixtures for provenance and deduplication",
+      "status": "done",
+      "covers": [
+        "EXT01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_external_work.py",
+        "modules/gateway/tests/agentauth/test_chat_external_authorized.py",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/answer.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/tools.test.ts"
+      ],
+      "note": "Final gateway fixtures and all 15 worker activity tests pass."
+    },
+    {
+      "id": "EXT01-c3",
+      "kind": "code",
+      "criterion": "EXT01",
+      "title": "Preserve historical GitHub reviews and PR discussion comments",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_provider.py"
+      ],
+      "note": "Repair retained and verified in the final gateway run."
+    },
+    {
+      "id": "EXT01-t4",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run unit fixtures for later PR updates and historical review boundaries",
+      "status": "done",
+      "covers": [
+        "EXT01-c3"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "All update variants and historical-window assertions pass."
+    },
+    {
+      "id": "EXT01-t5",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run unit fixtures for valid and unsafe GitHub discussion links",
+      "status": "done",
+      "covers": [
+        "EXT01-c3"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "All seven valid/rejected link cases pass."
+    },
+    {
+      "id": "EXT01-t6",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run native GitLab Note fixtures through collection and the delegated summary",
+      "status": "done",
+      "covers": [
+        "EXT01-c2",
+        "EXT01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py",
+        "modules/gateway/tests/agentauth/test_chat_external_authorized.py"
+      ],
+      "note": "Synthetic Note payload, attribution, deduplication and source-link fixtures pass in final validation."
+    },
+    {
+      "id": "EXT01-t7",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Run malformed-reference and non-work GitLab Note fixtures",
+      "status": "done",
+      "covers": [
+        "EXT01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "Malformed-reference coverage and system-note/assignment exclusions pass."
+    },
+    {
+      "id": "EXT01-t-live",
+      "kind": "test",
+      "criterion": "EXT01",
+      "title": "Verify known human and bot events in controlled live provider fixtures",
+      "status": "blocked",
+      "covers": [
+        "EXT01-c1",
+        "EXT01-c2",
+        "EXT01-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evaluation owner; authorized target, deployed source, controlled GitHub and GitLab fixtures, and cleanup evidence required."
+    },
+    {
+      "id": "EXT02-c1",
+      "kind": "code",
+      "criterion": "EXT02",
+      "title": "Resolve verified linked provider identities for the delegated user",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_identity.py"
+      ],
+      "note": "Server-side identity binding inspected; covering fixtures pass in final validation.",
+      "commits": [
+        "b0b1aab"
+      ]
+    },
+    {
+      "id": "EXT02-t1",
+      "kind": "test",
+      "criterion": "EXT02",
+      "title": "Run disconnected-provider and changed-alias identity fixtures",
+      "status": "done",
+      "covers": [
+        "EXT02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_identity.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT02-c2",
+      "kind": "code",
+      "criterion": "EXT02",
+      "title": "Intersect provider visibility with current user repository rights",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_authorization.py"
+      ],
+      "note": "Current per-repository permission checks inspected; private-repository and revocation fixtures pass.",
+      "commits": [
+        "365e40a"
+      ]
+    },
+    {
+      "id": "EXT02-t2",
+      "kind": "test",
+      "criterion": "EXT02",
+      "title": "Run private-repository authorization denial fixtures",
+      "status": "done",
+      "covers": [
+        "EXT02-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_authorization.py"
+      ],
+      "note": "Provider denial and delegated denied-project fixtures pass in final validation."
+    },
+    {
+      "id": "EXT02-t3",
+      "kind": "test",
+      "criterion": "EXT02",
+      "title": "Run revoked-membership and repeated-read fixtures",
+      "status": "done",
+      "covers": [
+        "EXT02-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_authorization.py"
+      ],
+      "note": "Provider revocation, repeated-read and delegated disconnection fixtures pass."
+    },
+    {
+      "id": "EXT02-c-wire",
+      "kind": "code",
+      "criterion": "EXT02",
+      "title": "Enforce current identity and repository scope on each external request",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_scope.py"
+      ],
+      "note": "Delegated identity, no-store responses and uncached repository checks inspected; authorization fixtures pass.",
+      "commits": [
+        "25badbd"
+      ]
+    },
+    {
+      "id": "EXT02-t4",
+      "kind": "test",
+      "criterion": "EXT02",
+      "title": "Run delegated fixtures for forged scope and missing integration data",
+      "status": "done",
+      "covers": [
+        "EXT02-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_external_authorized.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT02-t-live",
+      "kind": "test",
+      "criterion": "EXT02",
+      "title": "Verify denied and revoked repositories in live provider fixtures",
+      "status": "blocked",
+      "covers": [
+        "EXT02-c1",
+        "EXT02-c2",
+        "EXT02-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evaluation owner; authorized target and denied/revoked repository fixtures required."
+    },
+    {
+      "id": "EXT03-c1",
+      "kind": "code",
+      "criterion": "EXT03",
+      "title": "Bound provider queries while exhausting pages and tracking incomplete history",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_provider.py",
+        "modules/gateway/src/activity/external_scope.py",
+        "docs/architecture/assistant-external-activity.md"
+      ],
+      "note": "EXT03-R1 repaired locally and verified in final validation. GitHub 403 rate-limit indicators preserve accumulated rows; ordinary denial handling and query bounds remain unchanged.",
+      "commits": [
+        "6e4d84f"
+      ]
+    },
+    {
+      "id": "EXT03-t1",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run paginated provider fixtures including empty continuations",
+      "status": "done",
+      "covers": [
+        "EXT03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT03-t2",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run provider fixtures for 429 and partial-page recovery",
+      "status": "done",
+      "covers": [
+        "EXT03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "HTTP 429 and GitHub 403 primary/secondary rate-limit recovery fixtures pass; collected activity survives."
+    },
+    {
+      "id": "EXT03-t5",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run GitHub 403 permission-denial and provider-boundary unit fixtures",
+      "status": "done",
+      "covers": [
+        "EXT03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider.py"
+      ],
+      "note": "All four negative cases pass: ordinary GitHub denials still raise, and GitLab does not adopt GitHub-specific 403 interpretation."
+    },
+    {
+      "id": "EXT03-c2",
+      "kind": "code",
+      "criterion": "EXT03",
+      "title": "Restrict provider destinations and redirects carrying credentials",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_provider.py",
+        "modules/gateway/src/activity/external_scope.py",
+        "docs/architecture/assistant-external-activity.md"
+      ],
+      "note": "Manual security inspection completed for destination construction, redirects, source links and credential handling; covering fixtures pass.",
+      "commits": [
+        "6ea9d27"
+      ]
+    },
+    {
+      "id": "EXT03-t3",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run security fixtures for malicious URLs, redirects and secret redaction",
+      "status": "done",
+      "covers": [
+        "EXT03-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_external_provider_security.py"
+      ],
+      "note": "Passed within the final 1,111-test gateway run."
+    },
+    {
+      "id": "EXT03-c-wire",
+      "kind": "code",
+      "criterion": "EXT03",
+      "title": "Expose per-provider coverage and preserve authorized partial results",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/external_scope.py",
+        "modules/gateway/src/activity/chat_work.py"
+      ],
+      "note": "Delegated fixtures verify retained GitHub activity, unaffected GitLab results and exact rate-limit coverage.",
+      "commits": [
+        "c4d5663"
+      ]
+    },
+    {
+      "id": "EXT03-t4",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run gateway fixtures for outage, missing history and mixed availability",
+      "status": "done",
+      "covers": [
+        "EXT03-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_external_authorized.py"
+      ],
+      "note": "Final gateway run passes, including the new primary/secondary GitHub 403 cases and ordinary-denial comparison."
+    },
+    {
+      "id": "EXT03-c-harness",
+      "kind": "code",
+      "criterion": "EXT03",
+      "title": "Connect E44 driver and oracles to provider-source evidence",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "tests/e2e/cli_uplift/assistant_provider_sources.py",
+        "tests/e2e/cli_uplift/stages.py",
+        "tests/e2e/cli_uplift/live.py",
+        "tests/e2e/cli_uplift/remote/common.py",
+        "docs/regression-testing/cli-uplift-evaluation.md"
+      ],
+      "note": "Provider-evidence contract inspected; offline evidence retained. Generic live capture remains #6933's dependency.",
+      "commits": [
+        "b41d0e6"
+      ]
+    },
+    {
+      "id": "EXT03-t-harness",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run offline E44 provider-evidence oracle and driver fixtures",
+      "status": "done",
+      "covers": [
+        "EXT03-c-harness"
+      ],
+      "files": [
+        "tests/unit/test_cli_assistant_harness.py",
+        "tests/unit/test_cli_uplift.py"
+      ],
+      "note": "Unchanged 249-test assistant-harness evidence retained; remaining CLI-uplift suite passed all 869 tests this milestone."
+    },
+    {
+      "id": "EXT03-t-live",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Verify live provider coverage and failure evidence at deployed revision",
+      "status": "blocked",
+      "covers": [
+        "EXT03-c1",
+        "EXT03-c2",
+        "EXT03-c-wire",
+        "EXT03-c-harness"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evaluation owner; authorized deployed source and provider fixtures required. Generic E44 capture driver remains a #6933 prerequisite."
+    },
+    {
+      "id": "EXT03-c-merge",
+      "kind": "code",
+      "criterion": "EXT03",
+      "title": "Preserve provider evidence and current-base worker checks in the prepared merge",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "tests/e2e/cli_uplift/stages.py",
+        "tests/e2e/cli_uplift/remote/assistant_baseline.py"
+      ],
+      "note": "Integration evidence retained. Prepared base merge has no unresolved conflicts; publication remains controller-owned."
+    },
+    {
+      "id": "EXT03-t-merge",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Run offline combined provider-evidence and worker-completion regression fixtures",
+      "status": "done",
+      "covers": [
+        "EXT03-c-merge"
+      ],
+      "files": [
+        "tests/unit/test_cli_assistant_harness.py"
+      ],
+      "note": "Unchanged evidence retained: all four combined cases passed within the 249-test harness run."
+    },
+    {
+      "id": "EXT03-t-final",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Validate final provider integration, worker and CLI harness suites",
+      "status": "done",
+      "covers": [
+        "EXT03-c1",
+        "EXT03-c2",
+        "EXT03-c-wire",
+        "EXT03-c-harness"
+      ],
+      "files": [
+        "modules/gateway/tests/activity",
+        "modules/gateway/tests/agentauth/test_chat_external_authorized.py",
+        "modules/agent-factory/agent/src/complex-task-chat/activity",
+        "tests/unit/test_cli_uplift.py"
+      ],
+      "note": "Functional/manual security inspection complete. From /work/repo, pinned uv/python pytest runs passed 1,111 relevant gateway tests and 869 CLI tests. In modules/agent-factory/agent, `npm test -- --runInBand src/complex-task-chat/activity` passed 15 tests and `npm run build` passed. Ruff and diff checks passed. No dedicated /security-review tool was exposed; no tool-based security-review execution is claimed."
+    },
+    {
+      "id": "EXT03-t-ci",
+      "kind": "test",
+      "criterion": "EXT03",
+      "title": "Verify required CI at the published repaired head",
+      "status": "open",
+      "covers": [
+        "EXT03-c1",
+        "EXT03-c2",
+        "EXT03-c-wire",
+        "EXT03-c-harness",
+        "EXT03-c-merge"
+      ],
+      "files": [],
+      "note": "Controller-owned publication and exact-head check evidence remain pending. Supplied CI covers 3833af9 before the local HTTP 403 repair; it cannot approve the repaired revision."
+    }
+  ]
+}

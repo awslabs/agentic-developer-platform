@@ -71,8 +71,11 @@ run "producer_exact_api_identity_and_routes" {
     condition = jsondecode(one(aws_iam_role.api_producer[0].inline_policy).policy).Statement[0].Action == "execute-api:Invoke" && toset(jsondecode(one(aws_iam_role.api_producer[0].inline_policy).policy).Statement[0].Resource) == toset([
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/producer-readiness",
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/verify-run",
-      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/dispatch"
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/dispatch",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/binding-proof",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity/readiness"
     ])
-    error_message = "Invoke authority must be exactly the three selected POST routes."
+    error_message = "Invoke authority must be exactly the six selected POST routes."
   }
 }

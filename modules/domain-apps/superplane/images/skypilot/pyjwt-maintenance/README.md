@@ -1,0 +1,7 @@
+# Narrow SkyPilot PyJWT maintenance
+
+This recipe replaces PyJWT 2.13.0 with the hash-pinned 2.14.0 wheel selected by the maintained parent `requirements-security.txt` and GHSA-ffc3-869f-jxw9. It starts from the exact existing SkyPilot 0.12.3 platform behind release index 2c996459, retaining the reviewed provider, OpenSSH, crypto, XML, HTTP and tool maintenance. Rebuilding the parent Dockerfile would instead start from an older artifact and does not preserve those later layers.
+
+From `images/skypilot`, run `python3 pyjwt-maintenance/prepare.py`, then build with `docker build -f pyjwt-maintenance/Dockerfile -t skypilot-pyjwt:candidate .`. The install step has no network, uses no dependency resolution, checks all other installed distribution versions remain unchanged, and runs `pip check`. Only PyJWT files/distribution metadata and the PyJWT line in `/opt/adp-security/requirements-security.txt` are intended to change. Runtime configuration and UID 1000:1000 are retained.
+
+Qualification must compare the complete resulting filesystem against the exact base, run ordinary vendor JWT tests against the installed package, exercise `verify_container.py` and retain a fresh raw SBOM/native+SARIF scan. Existing security dispositions do not automatically transfer; they need exact-byte rebinding and independent review. This recipe contains no vulnerability demonstrations, scanner ignores, release-lock change or publishing step. Publication and a real verified replacement pin remain separate reviewed release actions.

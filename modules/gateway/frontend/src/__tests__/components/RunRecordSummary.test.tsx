@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { RunRecordSummary } from '@/components/RunRecordSummary';
+import { RunRecordSummary, RunClosureReport } from '@/components/RunRecordSummary';
 import { checklistContribution, parseRunRecord, type RunRecord } from '@/utils/runRecord';
 const at = '2026-10-05T05:00:00Z';
 const id = (n: number) => String(n).padStart(24, '0');
@@ -18,6 +18,23 @@ const record: RunRecord = {
 };
 const envelope = (r: unknown) => '<!-- adp-run-record:v1 ' + btoa(JSON.stringify(r)) + ' -->\n\n# Transcript';
 describe('retained run records', () => {
+  it('renders the closure as plain text with completed and remaining work', () => {
+    const withClosure = { ...record, closure_report: { summary: 'Workspace onboarding is ready for integration.',
+      completed: ['Browser checks passed.'], remaining: ['Live AWS demo is owned by the evaluator.'],
+      delivery: 'Pull request merged.', reporting_notes: ['PR checklist update failed; merge is unaffected.'] } };
+    const parsed = parseRunRecord(envelope(withClosure), 'run-42');
+    render(<RunClosureReport record={parsed} />);
+    expect(screen.getByRole('region', { name: 'Closure report' })).toHaveTextContent('Workspace onboarding is ready');
+    expect(screen.getByText('Browser checks passed.')).toBeInTheDocument();
+    expect(screen.getByText('Live AWS demo is owned by the evaluator.')).toBeInTheDocument();
+    expect(screen.getByText('Pull request merged.')).toBeInTheDocument();
+  });
+  it('ignores malformed closure data without hiding the saved checklist', () => {
+    const parsed = parseRunRecord(envelope({ ...record, closure_report: { summary: 'x', completed: 'all' } }), 'run-42');
+    expect(parsed).toEqual(record);
+    render(<RunClosureReport record={parsed} />);
+    expect(screen.getByText(/No closure report was saved/)).toBeInTheDocument();
+  });
   it('decodes only bounded, supported records belonging to the requested invocation', () => {
     expect(parseRunRecord(envelope(record), 'run-42')).toEqual(record);
     expect(parseRunRecord(envelope(record), 'other')).toBeUndefined();

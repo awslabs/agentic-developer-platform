@@ -183,6 +183,10 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 # absent from the public Gateway projection. INTERNAL_ROUTES means machine auth,
 # so putting a private user-authenticated route there would weaken its boundary.
 PRIVATE_DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    ("GET", "/internal/installation/organization-bootstrap"): (
+        Scope.ORGANIZATION,
+        Permission.ADMINISTER,
+    ),
     (
         "GET",
         "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
@@ -210,6 +214,16 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # shared-placement eligibility across the caller's whole organization, not
     # one workspace, so it takes the same scope for the same reason.
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
+    ("GET", "/workspaces/{workspace_id}/access/v1/me"): (Scope.WORKSPACE, Permission.READ),
+    ("GET", "/workspaces/{workspace_id}/access/v1/grants"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
+    ("POST", "/workspaces/{workspace_id}/access/v1/grants"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
+    ("POST", "/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
         Permission.PROVISION,
@@ -313,6 +327,12 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/events/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
+    ("POST", "/workspaces/{workspace_id}/retirement/access/preview"): (
+        Scope.WORKSPACE, Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/retirement/access"): (
+        Scope.WORKSPACE, Permission.PROVISION,
+    ),
     ("POST", "/workspaces/{workspace_id}/retirement/preview"): (
         Scope.WORKSPACE,
         Permission.PROVISION,
@@ -352,6 +372,10 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/events/{event_id}"): (Scope.ORGANIZATION, Permission.READ),
     # -- Organization records ------------------------------------------------
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/orgs/current/access/v1/me"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
+    ("POST", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
+    ("POST", "/orgs/current/access/v1/grants/{grant_id}/revoke"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("GET", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),

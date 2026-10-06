@@ -1,6 +1,10 @@
 /** Versioned, untrusted metadata embedded in the existing authorized transcript. */
 export interface RecordedTask { id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }
 interface Snapshot { at: string; tasks: RecordedTask[] }
+export interface ClosureReport {
+  summary: string; completed: string[]; remaining: string[]; delivery: string;
+  reviewed_revision?: string; reporting_notes: string[];
+}
 export interface RunRecord {
   version: 1; invocation_id: string; persona: string; model: string; repository: string; issue: number;
   started_at: string; captured_at: string; capture_closed_at?: string;
@@ -8,6 +12,7 @@ export interface RunRecord {
   session_ids: string[]; first_checklist?: Snapshot; latest_checklist?: Snapshot;
   task_transitions: { at: string; id: string; from: string; to: string }[];
   history_truncated: boolean; evidence: { at: string; text: string }[];
+  closure_report?: ClosureReport;
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v: unknown, max = 4096): v is string => typeof v === 'string' && v.length <= max;
@@ -33,6 +38,15 @@ export function parseRunRecord(markdown: string, invocationId: string): RunRecor
     if (!Array.isArray(value.session_ids) || value.session_ids.length > 32 || !value.session_ids.every(s => text(s, 256))) return;
     if (!Array.isArray(value.task_transitions) || value.task_transitions.length > 1000 || !value.task_transitions.every(t => object(t) && date(t.at) && text(t.id, 24) && [...states, 'not_listed'].includes(String(t.from)) && [...states, 'not_listed'].includes(String(t.to)))) return;
     if (typeof value.history_truncated !== 'boolean' || !Array.isArray(value.evidence) || value.evidence.length > 32 || !value.evidence.every(e => object(e) && date(e.at) && text(e.text, 8192))) return;
+    if (value.closure_report !== undefined) {
+      const c = value.closure_report;
+      const list = (a: unknown) => Array.isArray(a) && a.length <= 100 && a.every(s => text(s, 4096));
+      if (!object(c) || !text(c.summary, 8192) || !text(c.delivery, 1024)
+          || !list(c.completed) || !list(c.remaining) || !list(c.reporting_notes)
+          || (c.reviewed_revision !== undefined && !(text(c.reviewed_revision, 40) && /^[a-f0-9]{40}$/.test(c.reviewed_revision)))) {
+        delete value.closure_report; // A bad optional report must not hide the transcript/checklist.
+      }
+    }
     return value as unknown as RunRecord;
   } catch { return; }
 }

@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LiveExplanations } from '@/components/LiveExplanations';
 import { readExplanations, type StreamUpdate } from '@/services/agentExplanations';
@@ -21,15 +21,15 @@ beforeEach(() => {
   });
 });
 describe('live explanations', () => {
-  it('shows explanations with controls off, deduplicates and never autoscrolls', () => {
+  it('shows explanations with controls off, deduplicates and never autoscrolls', async () => {
     const scroll = vi.fn(); Element.prototype.scrollIntoView = scroll;
     render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
     act(() => { send(explanation(1, 'Mechanism: bounded replay.')); send(explanation(1, 'duplicate')); send(explanation(2, 'Evidence: source tests.')); });
     expect(screen.getByText('Mechanism: bounded replay.')).toBeInTheDocument();
     expect(screen.queryByText('duplicate')).not.toBeInTheDocument();
     expect(scroll).not.toHaveBeenCalled();
-    screen.getByRole('button', { name: /Jump to latest/ }).click();
-    expect(scroll).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: /Jump to latest/ }));
+    await waitFor(() => expect(scroll).toHaveBeenCalledOnce());
   });
   it('keeps heartbeat freshness separate and safely renders hostile text', () => {
     const { container } = render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
@@ -103,19 +103,18 @@ it('pins the latest checklist across tool history eviction and clears it on a di
   expect(screen.queryByRole('region', { name: 'Task checklist' })).not.toBeInTheDocument();
 });
 
-it('animates the in-progress task marker and highlights its row without touching other rows', () => {
+it('shows plain task states and stops claiming current work after the run ends', () => {
   render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
-  const update = explanation(1, 'code 1/2 · test 0/1 · infra 0/0 · ▶ now working: DATA02-c2 (code, DATA02): ACL write (since 14:05 UTC)\n\n**DATA02**\n- ☑ `code` DATA02-c1 — authorize reads\n- ▶ `code` DATA02-c2 — ACL write\n- ☐ `test` DATA02-t2 — revoked member (covers DATA02-c2)');
-  update.event!.payload.progress = { id: 'adp-task-board', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
+  const update = explanation(1, '**Workspace**\n- ☑ `code` WS-c1 — Create workspace\n- ▶ `test` WS-t1 — Check readiness\n- ⛔ `infra` WS-i1 — Live check — Waiting for an account');
+  update.event!.payload.progress = { id: 'board', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
   act(() => send(update));
-  const markers = screen.getAllByRole('img', { name: 'in progress' });
-  expect(markers).toHaveLength(2); // summary line + the task row
-  for (const marker of markers) expect(marker.className).toMatch(/animate-pulse/);
-  const row = screen.getByText(/ACL write$/, { selector: 'li' });
-  expect(row.getAttribute('aria-current')).toBe('step');
-  expect(row.className).toMatch(/bg-blue-50/);
-  expect(screen.getByText(/authorize reads/, { selector: 'li' }).getAttribute('aria-current')).toBeNull();
-  expect(screen.getByText(/revoked member/, { selector: 'li' }).className).toBe('');
+  expect(screen.getByText('1 of 3 tasks completed')).toBeInTheDocument();
+  expect(screen.getByText('Working on')).toBeInTheDocument();
+  expect(screen.getByRole('progressbar')).toHaveAttribute('max', '3');
+  expect(screen.getByText('Blocked / deferred', { selector: 'span' })).toBeInTheDocument();
+  act(() => send({ kind: 'finished' }));
+  expect(screen.queryByText('Working on')).not.toBeInTheDocument();
+  expect(screen.getAllByText('Last reported in progress').length).toBeGreaterThan(0);
 });
 
 it('filters tool activity while retaining the checklist and a single stream connection', () => {
@@ -134,4 +133,57 @@ it('filters tool activity while retaining the checklist and a single stream conn
   expect(screen.queryByText('Repair explanation')).not.toBeInTheDocument();
   expect(screen.getByText('☐ Finish assignment')).toBeInTheDocument();
   expect(readExplanations).toHaveBeenCalledTimes(1);
+});
+
+it('renders live tables and task checkboxes, with keyboard access to wide output', () => {
+  render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
+  act(() => send(explanation(1, '| Check | Result |\n| --- | --- |\n| Browser | Passed |\n\n- [x] Browser checked\n- [ ] CI pending\n\n```text\nnpm test\n```')));
+  expect(screen.getByRole('table')).toBeInTheDocument();
+  expect(screen.getByRole('cell', { name: 'Passed' })).toBeInTheDocument();
+  const boxes = screen.getAllByRole('checkbox');
+  expect(boxes[0]).toBeChecked();
+  expect(boxes[1]).not.toBeChecked();
+  for (const box of boxes) expect(box).toBeDisabled();
+  expect(screen.getByRole('region', { name: 'Activity table' })).toHaveAttribute('tabindex', '0');
+  expect(screen.getByLabelText('Code or command output')).toHaveAttribute('tabindex', '0');
+});
+
+it('connects explicit task references without inventing tool ownership or reopening the stream', async () => {
+  const view = render(<LiveExplanations invocationId="run" isOpen terminal={false} workspace />);
+  const plan = explanation(1, '**Workspace**\n- ☑ `code` WS-c1 — Create workspace\n- ▶ `test` WS-t1 — Check readiness\n- ⛔ `infra` WS-i1 — Live check — Waiting for an account');
+  plan.event!.payload.progress = { id: 'board', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
+  act(() => { send(plan); send(explanation(2, 'WS-c1 passed review.')); send(explanation(3, 'WS-c10 is unrelated.')); send(explanation(4, 'Running general tests.')); });
+  fireEvent.click(screen.getByRole('button', { name: 'View activity mentioning WS-c1' }));
+  const history = screen.getByLabelText('Explanation history');
+  expect(within(history).getByText('WS-c1 passed review.')).toBeInTheDocument();
+  expect(within(history).queryByText('WS-c10 is unrelated.')).not.toBeInTheDocument();
+  expect(within(history).queryByText('Running general tests.')).not.toBeInTheDocument();
+  expect(history).toHaveFocus();
+  fireEvent.click(screen.getByRole('button', { name: 'View activity mentioning WS-i1' }));
+  expect(screen.getByText(/No retained updates mention this task ID/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show all activity' }));
+  expect(within(history).getByText('Running general tests.')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'View task WS-c1' }));
+  expect(screen.getByRole('button', { name: 'View activity mentioning WS-c1' })).toHaveAttribute('aria-pressed', 'true');
+  await waitFor(() => expect(screen.getByRole('button', { name: 'View activity mentioning WS-c1' }).closest('li')).toHaveFocus());
+  expect(readExplanations).toHaveBeenCalledTimes(1);
+  view.rerender(<LiveExplanations invocationId="another" isOpen terminal={false} workspace />);
+  expect(screen.queryByText('Activity mentioning')).not.toBeInTheDocument();
+  expect(screen.queryByText('WS-c1 passed review.')).not.toBeInTheDocument();
+});
+
+it('keeps blockers in remaining tasks and unreferenced updates outside a task filter', () => {
+  render(<LiveExplanations invocationId="run" isOpen terminal={false} workspace />);
+  const plan = explanation(1, '- ☑ `code` A-c1 — Completed task\n- ⛔ `infra` A-i1 — Waiting for access');
+  plan.event!.payload.progress = { id: 'board', category: 'plan', state: 'running', started_at: '2026-09-24T10:00:00Z' };
+  act(() => send(plan));
+  fireEvent.change(screen.getByLabelText('Show tasks'), { target: { value: 'remaining' } });
+  expect(screen.queryByRole('button', { name: 'View activity mentioning A-c1' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'View activity mentioning A-i1' }));
+  act(() => { send(explanation(2, 'General update')); send(explanation(3, 'A-i1 still needs access')); });
+  const history = screen.getByLabelText('Explanation history');
+  expect(within(history).queryByText('General update')).not.toBeInTheDocument();
+  expect(within(history).getByText('A-i1 still needs access')).toBeInTheDocument();
+  act(() => send({ kind: 'reset' }));
+  expect(screen.queryByRole('button', { name: 'Show all activity' })).not.toBeInTheDocument();
 });

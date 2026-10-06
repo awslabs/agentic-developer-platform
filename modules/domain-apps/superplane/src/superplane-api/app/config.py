@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
     # by this driver). Empty preserves the existing database-owned search_path.
     superplane_db_schema: str = ""
+    # Shared Harness credentials never inherit the domain ORM connection.
+    superplane_operation_database_url: str = ""
+    superplane_operation_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
     # Deployment-owned tenant/target policy; never accepted from HTTP input.
@@ -34,7 +37,10 @@ class Settings(BaseSettings):
     # Omission preserves existing operation hosts; staged installs set false.
     superplane_operation_dispatch_enabled: bool = True
     # Deployment selection, never supplied by an admission request.
-    superplane_paid_worker_mode: Literal["legacy", "native-controller"] = "legacy"
+    superplane_paid_worker_mode: Literal[
+        "legacy", "native-controller", "native-lifecycle"
+    ] = "legacy"
+    superplane_paid_worker_binding_file: str = ""
 
     @field_validator("superplane_operation_dispatch_enabled", mode="before")
     @classmethod

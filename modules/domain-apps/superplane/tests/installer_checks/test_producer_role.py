@@ -293,3 +293,47 @@ def test_failed_applied_role_verification_precedes_any_foundations(
     foundations.assert_not_called()
     assert any("apply" in args for args, _ in tools.calls)
     assert tools.route["enabled"] is False
+
+
+def test_known_legacy_route_upgrade_keeps_role_identity_and_exact_new_policy(planned):
+    installer, plan = planned
+    evidence = installer.receipt["api_producer_role_preflight"]
+    evidence.pop("role_missing")
+    evidence.update(role_id="AROATEST", legacy_routes=True)
+    change = plan["resource_changes"][0]["change"]
+    change["actions"] = ["update"]
+    change["after_unknown"] = {}
+    change["after"].update(
+        arn=producer_role.expected_arn(installer.env), unique_id="AROATEST"
+    )
+    producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "REPLACED"
+    with pytest.raises(Refusal, match="identity differs"):
+        producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "AROATEST"
+    change["after"]["inline_policy"][0]["policy"] = json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+    )
+    with pytest.raises(Refusal, match="inline policy differs"):
+        producer_role.inspect_plan(installer, plan)
+
+
+def test_identity_preflight_has_exact_readiness_invoke_route(managed):
+    _, policy = producer_role.documents(
+        managed, "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    )
+    resources = policy["Statement"][0]["Resource"]
+    assert {
+        resource.split("/controller-execution/", 1)[1] for resource in resources
+    } == {
+        "producer-readiness",
+        "verify-run",
+        "dispatch",
+        "binding-proof",
+        "current-identity",
+        "current-identity/readiness",
+    }
+    assert all("*" not in resource for resource in resources)

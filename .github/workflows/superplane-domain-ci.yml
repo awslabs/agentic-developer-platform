@@ -159,6 +159,11 @@ jobs:
         # dependency set, also used by the domain integration suites.
         run: pip install -e ".[dev]" "setuptools>=75.0" wheel
 
+      - name: Install acceptance bootstrap dependency
+        if: ${{ matrix.component == 'domain' }}
+        # Acceptance imports the maintained retirement/grant contracts directly.
+        run: python3 -m pip install -e modules/domain-apps/superplane/workspace_bootstrap
+
       - name: Report selected coverage
         env:
           COMPONENT: ${{ matrix.component }}
@@ -170,7 +175,9 @@ jobs:
       - name: Install classifier test dependency
         run: python3 -m pip install pytest pyyaml boto3 ruff
       - name: Test CI scope selection
-        run: python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
+        run: |
+          python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py \
+            .github/scripts/tests/test_superplane_postgres_gate.py -q
       - name: Verify shared lifecycle integration offline
         if: ${{ matrix.component == 'lifecycle' }}
         run: |
@@ -258,6 +265,7 @@ jobs:
         env:
           # Account-create fencing and recovery require the real PostgreSQL fixture.
           ACCOUNT_PROVISIONING_REQUIRE_POSTGRES: '1'
+          WORKSPACE_PROVISIONING_REQUIRE_POSTGRES: '1'
         run: |
           set -euo pipefail
           # Scoped to the module ROOT, not modules/domain-apps/superplane/tests/ alone.
@@ -268,10 +276,15 @@ jobs:
           # since "no tests ran" and "tests passed" share an exit code.
           if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
             # Real-environment acceptance runs separately with explicit target/evidence inputs.
-            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short
+            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short \
+              --junitxml="$RUNNER_TEMP/superplane-domain.xml"
           else
             echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
           fi
+
+      - name: Require retirement PostgreSQL evidence
+        if: ${{ matrix.component == 'domain' }}
+        run: python3 .github/scripts/superplane_postgres_gate.py "$RUNNER_TEMP/superplane-domain.xml"
 
       - name: Run migration, placement and handover tests with coverage
         if: ${{ matrix.component == 'domain' }}
@@ -347,6 +360,8 @@ jobs:
         # No AWS: the suite uses aiosqlite in-memory and fakes its clients, which is what
         # keeps it runnable on this credential-free hosted runner.
         working-directory: modules/domain-apps/superplane/src/superplane-api
+        env:
+          WORKSPACE_PROVISIONING_REQUIRE_POSTGRES: '1'
         run: |
           set -euo pipefail
           # The domain authorization policy (#5044, U9) that `app/auth.py` imports to
@@ -493,6 +508,13 @@ jobs:
           cat > /tmp/superplane-handles-cov.ini <<'INI'
           [run]
           concurrency = greenlet,thread
+          [report]
+          include =
+              app/services/provider_handles.py
+              app/services/provider_authority.py
+              app/services/provider_inventory.py
+              app/routers/provider_handles.py
+              app/models/provider_handle.py
           INI
           # The transferred tree is excluded from the general module lint pass.
           # Explicitly lint these maintained provider modules and regressions.
@@ -501,12 +523,12 @@ jobs:
             app/models/provider_handle.py tests/test_provider_handles.py \
             tests/test_provider_handles_postgres.py \
             alembic/versions/013_add_provider_operations.py
+          # Measure the app directory without coverage's dotted-module discovery
+          # importing ORM models before pytest. SQLAlchemy's C-extension state can
+          # retain those provisional imports and fail on the first session flush.
+          # The report keeps the same five modules and unchanged coverage floor.
           python3 -m pytest tests/test_provider_handles.py -v --tb=short \
-            --cov=app.services.provider_handles \
-            --cov=app.services.provider_authority \
-            --cov=app.services.provider_inventory \
-            --cov=app.routers.provider_handles \
-            --cov=app.models.provider_handle \
+            --cov=app \
             --cov-config=/tmp/superplane-handles-cov.ini \
             --cov-report=term-missing --cov-fail-under=85
 
@@ -721,7 +743,11 @@ jobs:
           go -C "$controller" test -c -o "$RUNNER_TEMP/superplane-rpc-worker" ./execution
           python3 -m venv "$RUNNER_TEMP/superplane-rpc-venv"
           "$RUNNER_TEMP/superplane-rpc-venv/bin/pip" install './modules/harness/jobs[dev]' \
-            './modules/domain-apps/superplane/contracts' './modules/domain-apps/superplane/executor'
+            './modules/domain-apps/superplane/contracts' \
+            './modules/domain-apps/superplane/infra/account-factory' \
+            './modules/domain-apps/superplane/infra/account-provisioning' \
+            './modules/domain-apps/superplane/workspace_bootstrap' \
+            './modules/domain-apps/superplane[worker]' './modules/domain-apps/superplane/executor'
           export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
           export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
           # The repository root also has a tests package. Start in the harness

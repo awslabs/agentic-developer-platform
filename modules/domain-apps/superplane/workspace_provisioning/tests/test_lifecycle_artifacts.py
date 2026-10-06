@@ -22,6 +22,7 @@ from workspace_provisioning.runtime_config import LifecycleRefused
 def artifact(phase="apply-infrastructure"):
     parameters = {
         "plan_revision": "b" * 64,
+        "allocation_id": "original-preview-allocation",
         "lifecycle_request": canonical({"mode": "existing-account-managed"}),
         "lifecycle_inputs": canonical({"isolation_mode": "namespace"}),
         "lifecycle_allocation_max_resource_units": "2",
@@ -128,11 +129,14 @@ def test_cross_workspace_and_expired_proposal_are_refused():
         ("prepare-infrastructure", "0", "0"),
     ],
 )
-def test_continuations_bind_exact_artifact_and_only_apply_reuses_allocation(
+def test_continuations_bind_distinct_phase_allocations_and_only_apply_has_paid_envelope(
     phase, units, cost
 ):
     row = artifact(phase)
     parameters = continuation_parameters(row)
+    assert parameters["lifecycle_root_allocation_id"] == "original-preview-allocation"
+    assert parameters["allocation_id"] != parameters["lifecycle_root_allocation_id"]
+    assert continuation_parameters(row) == parameters
     assert parameters["max_resource_units"] == units
     assert parameters["max_cost_micros"] == cost
     assert parameters["max_runtime_seconds"] == "900"

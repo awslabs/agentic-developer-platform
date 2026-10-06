@@ -1,0 +1,11 @@
+# Narrow sudo timezone backport
+
+This recipe backports the upstream working-environment fix for CVE-2026-96512 to authenticated Debian `sudo 1.9.16p2-3+deb13u2`. It retains the original plugin environment while removing `TZ` from sudo's own environment before time-based policy evaluation. The production change touches only `src/sudo.c`; existing sudoers and PAM policy are preserved.
+
+The upstream fix is commit `1820a349687522f51023d1ae5925125f59679a8c`. Its semantics are adapted to the older source's direct `tzset()` call because the later `set_time_zone()` helper is absent. Source tarballs and descriptor are authenticated through the signed Debian archive Sources index. `source-lock.json` records that chain's hashes, exact input artifacts, patch and before/after source hashes. It does not claim the upstream Git commit or local binary package is signed.
+
+Run `python3 prepare_source.py --source-artifacts RETAINED_SOURCE_DIRECTORY` for offline source staging, or omit that argument to download the hash-pinned files. Build the Debian package using `Dockerfile.builder` and export its `artifacts` target to a local directory. The builder base is digest-pinned; installed build dependencies are recorded in the resulting buildinfo. `DEB_BUILD_OPTIONS=nocheck` deliberately skips upstream test suites; selected ordinary installed compatibility checks are separate. No vulnerability demonstration is included.
+
+The runtime overlay accepts only the reviewed binary hash in `artifact-lock.json`. Copy that exact deb into `artifacts/`, then run `python3 build.py OCI_LAYOUT --tag LOCAL_TAG --metadata-file OUTPUT_JSON`. A rebuilt package with different bytes needs independent review and an explicit lock update. The wrapper enforces the pinned base platform/config. Installation is offline, changes only the sudo distribution version, preserves all sudo/PAM policy bytes and modes, checks package consistency, and restores UID 1000:1000.
+
+Before release, bind every installed sudo payload to the reviewed deb, check the complete filesystem and inherited configuration/layers, exercise ordinary sudo/visudo and SkyPilot compatibility, and retain fresh raw scans of the final composed image. This source does not publish artifacts, change release pins, apply scanner dispositions or claim whole-image clearance.

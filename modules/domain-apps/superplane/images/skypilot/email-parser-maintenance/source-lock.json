@@ -1,0 +1,13 @@
+{
+  "schema": "adp-skypilot-email-parser/v1",
+  "python_version": "3.10.21",
+  "source_url": "https://www.python.org/ftp/python/3.10.21/Python-3.10.21.tar.xz",
+  "source_archive_sha256": "a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04",
+  "source_member": "Python-3.10.21/Lib/email/_parseaddr.py",
+  "relative_path": "email/_parseaddr.py",
+  "before_sha256": "4308932872acbf4a674312a45a49b870e48026e3dfedc878ee2f512ddf2f30ba",
+  "after_sha256": "c2b09471aa53533ffab98b47bffcaca606a2cfe8014e28424264aa6c08a84e59",
+  "patch": "iterative-address-parser.patch",
+  "patch_sha256": "91e20ceb344da291e7ddf36a376bde5da8a0da6ae39706102cf95638a0a6ca98",
+  "license_sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+}

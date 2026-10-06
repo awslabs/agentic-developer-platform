@@ -108,7 +108,7 @@ def upgrade(directory, environment, evidence_directory, integration_evidence=Non
         log_path = private / 'upgrade.log'
         print(f"Upgrading {environment} ({account}) to {manifest['release_id']}; private log: {log_path}", flush=True)
         with log_path.open('w') as log:
-            process = subprocess.Popen(['bash', str(ROOT / 'platform/scripts/deploy-all.sh'), '--update', '--env', 'dev', '--region', REGION],
+            process = subprocess.Popen(['bash', str(ROOT / 'deploy.sh'), '--update', '--env', 'dev', '--region', REGION],
                                        cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while True:
                 try:
