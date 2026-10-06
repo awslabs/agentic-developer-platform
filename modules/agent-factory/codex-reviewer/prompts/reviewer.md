@@ -50,6 +50,12 @@ An unavailable design document alone does not establish that every repair is
 blocked. Continue independent repairs before reporting an external blocker.
 Do not invent protocol semantics or waive an explicit acceptance requirement.
 
+For a standalone PR mention, the human triggering comment in acceptedScope is
+review context, not an approved design or authorization to change the story.
+Honor an explicit deferral of work outside the bounded PR without turning it
+into a code-stage blocker; still report genuine in-scope defects, security
+findings, failed or missing required CI, and current-head/base conflicts.
+
 Keep the review bounded to this story's owned changes and acceptance criteria.
 Follow cross-component contracts where the change depends on them, but do not
 implement another story or require an entire epic rollout to approve a component

@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "issue": 7061,
+  "updated_at": "2026-10-06T01:20:25.323Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Preserve optional PR triggering comment in parsed envelope",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/contracts.ts"
+      ],
+      "note": "Existing implementation preserved unchanged by the prepared merge; parser regressions passed.",
+      "commits": [
+        "c7665cc"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run parser unit test with exact multiline PR mention",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/contracts.test.ts"
+      ],
+      "note": "Exact multiline preservation passed in the 82-test focused run."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run parser unit test with comment-free automatic PR event",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/contracts.test.ts"
+      ],
+      "note": "Comment-free compatibility passed in the focused run."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire optional human scope into standalone engine cycle as context",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/standalone-review.ts",
+        "modules/agent-factory/codex-reviewer/prompts/reviewer.md",
+        "modules/agent-factory/codex-reviewer/README.md"
+      ],
+      "note": "Existing contextual scope transport and delivery gates remain unchanged; focused integration tests passed.",
+      "commits": [
+        "3934214"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run standalone integration test observing scope in engine review story",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/engine-review.test.ts"
+      ],
+      "note": "Exact multiline scope reached engine story data in the passing integration test."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run standalone integration test for deferred out-of-PR work",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/engine-review.test.ts"
+      ],
+      "note": "Passing controller integration test confirms deferred scope does not independently block a bounded approval; live model behavior remains unverified."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run standalone integration test for real code blockers and repair",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/engine-review.test.ts"
+      ],
+      "note": "Semantic blocker repair tests passed with contextual scope present."
+    },
+    {
+      "id": "AC-02-t4",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Verify CI failure refusal and required final-head PR checks",
+      "status": "open",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/engine-review.test.ts"
+      ],
+      "note": "Local CI repair/refusal tests passed. Reopened because the prepared base merge requires fresh published-head CI; prior checks on 09bb157 do not cover this revision."
+    }
+  ]
+}
