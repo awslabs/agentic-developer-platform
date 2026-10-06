@@ -58,6 +58,13 @@ if [[ "$component" == "superplane-executor" || "$component" == "superplane-paid-
   build_options=(--file "$context/Dockerfile" --target "$target" --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
 fi
 
+# A reviewed maintenance base can be selected for the API without layering over
+# an older application image. Both Dockerfile stages consume the same base.
+if [[ "$component" == "superplane-api" && -n "${PYTHON_IMAGE:-}" ]]; then
+  [[ "$PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "API Python base must be digest-pinned" >&2; exit 1; }
+  build_options+=(--build-arg "PYTHON_IMAGE=$PYTHON_IMAGE" --label "org.opencontainers.image.base.name=$PYTHON_IMAGE")
+fi
+
 # Sibling packages are generated build inputs and absent from a clean checkout.
 # Stage before touching AWS or Docker so missing maintained source fails locally.
 if [[ "$component" == "superplane-api" ]]; then

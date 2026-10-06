@@ -58,3 +58,11 @@ subsequent builds. An image cannot be both pending and resolved; removing its
 source metadata makes rebuilding fail closed.
 
 The separately released native paid worker uses the app-owned project-manifest and exact-commit dispatcher described in [PAID-WORKER-RELEASE.md](PAID-WORKER-RELEASE.md). Its pending lock entry is source enrollment, not evidence of a provisioned project or completed build.
+
+The API build workflow accepts an optional `python_image` input for an independently
+reviewed, digest-pinned Python 3.12 base. The maintained application is rebuilt from
+the selected ADP source with that base in both stages; the image records the exact
+base reference in `org.opencontainers.image.base.name`. Selection is not a security
+approval: qualify the final image, its migration head and its dependencies before
+installation. An empty input retains the Dockerfile default. Local release-script
+callers use the equivalent `PYTHON_IMAGE` environment variable.
