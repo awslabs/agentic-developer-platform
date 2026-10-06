@@ -22,6 +22,7 @@ def validate(env, lock):
     if "paid_worker" not in env:
         return
     config = env["paid_worker"]
+    lifecycle = config.get("mode") == "native-lifecycle"
     closed(
         config,
         {
@@ -41,12 +42,21 @@ def validate(env, lock):
             "egress",
             "max_replica_count",
             "active_deadline_seconds",
-        },
+        }
+        | (
+            {
+                "lifecycle_policy_configmap",
+                "lifecycle_state_claim",
+                "lifecycle_policy_sha256",
+            }
+            if lifecycle
+            else set()
+        ),
         "paid_worker",
     )
     require(
-        config["mode"] == "native-controller",
-        "paid_worker supports native-controller only",
+        config["mode"] in {"native-controller", "native-lifecycle"},
+        "paid_worker requires an explicit supported native mode",
     )
     require(
         config["namespace"] == env.get("namespace"),
@@ -121,9 +131,21 @@ def validate(env, lock):
         isinstance(schema, str)
         and SCHEMA.fullmatch(schema)
         and schema != "public"
-        and schema == env.get("database", {}).get("schema"),
-        "paid_worker operation schema must match the dedicated domain schema",
+        and (
+            (schema != env.get("database", {}).get("schema"))
+            if lifecycle
+            else (schema == env.get("database", {}).get("schema"))
+        ),
+        "paid_worker native lifecycle requires separate domain and operation schemas",
     )
+    if lifecycle:
+        require(
+            name(config["lifecycle_policy_configmap"])
+            and name(config["lifecycle_state_claim"])
+            and isinstance(config["lifecycle_policy_sha256"], str)
+            and re.fullmatch(r"[a-f0-9]{64}", config["lifecycle_policy_sha256"]),
+            "native lifecycle requires exact policy, persistent state and policy digest",
+        )
     require(
         config["skypilot_url"]
         == f"http://skypilot-api.{env.get('skypilot_namespace')}.svc.cluster.local:46580",
@@ -204,6 +226,7 @@ def project(env, lock, docs):
     if not env.get("paid_worker"):
         return
     config = env["paid_worker"]
+    lifecycle = config["mode"] == "native-lifecycle"
     labels = copy.deepcopy(docs[0]["metadata"]["labels"])
     labels["app.kubernetes.io/name"] = WORKER
 
@@ -238,12 +261,12 @@ def project(env, lock, docs):
     worker["env"] = [
         value
         for value in worker["env"]
-        if not value["name"].startswith("SUPERPLANE_LIFECYCLE_")
+        if lifecycle or not value["name"].startswith("SUPERPLANE_LIFECYCLE_")
     ]
     worker["env"].extend(
         {"name": key, "value": value}
         for key, value in {
-            "SUPERPLANE_PAID_WORKER_MODE": "native-controller",
+            "SUPERPLANE_PAID_WORKER_MODE": config["mode"],
             "AWS_EC2_METADATA_DISABLED": "true",
             "AWS_STS_REGIONAL_ENDPOINTS": "regional",
         }.items()
@@ -251,12 +274,20 @@ def project(env, lock, docs):
     worker["volumeMounts"] = [
         value
         for value in worker["volumeMounts"]
-        if value["name"] not in {"state", "policy"}
+        if lifecycle or value["name"] not in {"state", "policy"}
     ]
     pod["volumes"] = [
-        value for value in pod["volumes"] if value["name"] not in {"state", "policy"}
+        value
+        for value in pod["volumes"]
+        if lifecycle or value["name"] not in {"state", "policy"}
     ]
     for volume in pod["volumes"]:
+        if lifecycle and volume["name"] == "state":
+            volume["persistentVolumeClaim"]["claimName"] = config[
+                "lifecycle_state_claim"
+            ]
+        if lifecycle and volume["name"] == "policy":
+            volume["configMap"]["name"] = config["lifecycle_policy_configmap"]
         key = {
             "database": "database_secret",
             "workspaces": "workspace_credentials_secret",
@@ -303,6 +334,7 @@ def project(env, lock, docs):
                 "endpoint"
             ],
             "SUPERPLANE_OPERATION_SCHEMA": config["operation_schema"],
+            "SUPERPLANE_DOMAIN_SCHEMA": env["database"]["schema"],
             "SKYPILOT_URL": config["skypilot_url"],
             "SUPERPLANE_MANAGEMENT_API_SERVER": config["management_api_server"],
         },
@@ -325,7 +357,7 @@ def project(env, lock, docs):
 def preparation_report(env, lock):
     return {
         "version": 1,
-        "mode": "native-controller",
+        "mode": env["paid_worker"]["mode"],
         "state": "source-preparation-only",
         "configuration_sha256": digest(env["paid_worker"]),
         "paid_worker_image": image(lock, COMPONENT),

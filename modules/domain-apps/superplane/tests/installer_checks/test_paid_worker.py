@@ -196,3 +196,58 @@ def test_verified_caller_receipt_cannot_bypass_worker_activation_gate(native):
         adapter_staging.activate(installer)
     installer.apply.assert_not_called()
     installer.save.assert_not_called()
+
+
+def lifecycle_config(env):
+    env["paid_worker"].update(
+        mode="native-lifecycle",
+        operation_schema="superplane_operations",
+        lifecycle_policy_configmap="reviewed-lifecycle-policy",
+        lifecycle_state_claim="reviewed-lifecycle-state",
+        lifecycle_policy_sha256="a" * 64,
+    )
+
+
+def test_lifecycle_projection_preserves_reviewed_mounts_and_separates_schemas(native):
+    env, lock = native
+    lifecycle_config(env)
+    paid_worker.validate(env, lock)
+    docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
+    paid_worker.project(env, lock, docs)
+    by_kind = {doc["kind"]: doc for doc in docs[1:]}
+    job = by_kind["ScaledJob"]
+    assert job["spec"]["maxReplicaCount"] == 0
+    assert job["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
+    pod = job["spec"]["jobTargetRef"]["template"]["spec"]
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["policy"]["configMap"]["name"] == "reviewed-lifecycle-policy"
+    assert (
+        volumes["state"]["persistentVolumeClaim"]["claimName"]
+        == "reviewed-lifecycle-state"
+    )
+    assert {v["key"] for v in volumes["database"]["secret"]["items"]} == {
+        "domain-dsn",
+        "execution-dsn",
+        "ca.pem",
+    }
+    data = by_kind["ConfigMap"]["data"]
+    assert data["SUPERPLANE_DOMAIN_SCHEMA"] == "superplane"
+    assert data["SUPERPLANE_OPERATION_SCHEMA"] == "superplane_operations"
+    assert by_kind["NetworkPolicy"]["spec"]["egress"] == []
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("operation_schema", "superplane"),
+        ("lifecycle_policy_configmap", "../policy"),
+        ("lifecycle_state_claim", ""),
+        ("lifecycle_policy_sha256", "approved"),
+    ],
+)
+def test_lifecycle_requires_separated_schemas_and_pinned_policy(native, key, value):
+    env, lock = native
+    lifecycle_config(env)
+    env["paid_worker"][key] = value
+    with pytest.raises(Refusal):
+        paid_worker.validate(env, lock)

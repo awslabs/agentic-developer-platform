@@ -102,12 +102,21 @@ async def bootstrap(transport):
 
 
 async def pools(stack):
-    schema = required("SUPERPLANE_OPERATION_SCHEMA")
-    if not schema.replace("_", "a").isalnum() or schema == "public":
-        raise OperationRefused("dedicated operation schema required")
+    import re
+
+    operation_schema = required("SUPERPLANE_OPERATION_SCHEMA")
+    domain_schema = required("SUPERPLANE_DOMAIN_SCHEMA")
+    for schema in (operation_schema, domain_schema):
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema) or schema == "public":
+            raise OperationRefused("dedicated database schemas required")
+    if operation_schema == domain_schema:
+        raise OperationRefused("domain and operation schemas must be separate")
     tls = ssl.create_default_context(cafile=required("SUPERPLANE_DATABASE_CA_FILE"))
     result = []
-    for name in ("SUPERPLANE_DOMAIN_DSN_FILE", "SUPERPLANE_EXECUTION_DSN_FILE"):
+    for name, schema in (
+        ("SUPERPLANE_DOMAIN_DSN_FILE", domain_schema),
+        ("SUPERPLANE_EXECUTION_DSN_FILE", operation_schema),
+    ):
         pool = await stack.enter_async_context(
             await asyncpg.create_pool(
                 read_token(Path(required(name))),
@@ -120,7 +129,16 @@ async def pools(stack):
             )
         )
         async with pool.acquire() as connection:
-            await check_schema_version(connection)
+            if await connection.fetchval("SELECT current_schema()") != schema:
+                raise OperationRefused("database schema selection differs")
+            if name == "SUPERPLANE_EXECUTION_DSN_FILE":
+                await check_schema_version(connection)
+            else:
+                heads = await connection.fetch(
+                    "SELECT version_num FROM alembic_version"
+                )
+                if len(heads) != 1:
+                    raise OperationRefused("domain migration head unavailable")
         result.append(pool)
     return result
 
