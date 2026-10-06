@@ -11,8 +11,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
+from types import SimpleNamespace
 
 from app.auth import VerifiedCaller
+from app.current_identity import CurrentIdentity
 from superplane_auth.policy import DomainPrincipal
 from app.models.organization_grant import OrganizationGrantRecord
 from app.models.cluster_grant_scope import OrganizationGrantClusterScope
@@ -23,9 +26,9 @@ from app.models.cluster_membership import ClusterMembership
 from app.models.organization import Organization
 from app.models.workspace import Workspace
 from app.services.cluster_sharing import (
-    list_eligible_clusters,
+    list_eligible_clusters as resolve_eligible_clusters,
     namespace_conflicts,
-    resolve_shared_target,
+    resolve_shared_target as select_shared_target,
 )
 from app.services.provisioning import ProvisioningRefused
 
@@ -37,6 +40,18 @@ SHARED_CLUSTER = uuid.UUID("cccccccc-0000-0000-0000-00000000000c")
 DEDICATED_CLUSTER = uuid.UUID("dddddddd-0000-0000-0000-00000000000d")
 NOT_READY_CLUSTER = uuid.UUID("eeeeeeee-0000-0000-0000-00000000000e")
 GEN = "a" * 64
+
+
+class ClusterMembers:
+    async def read(self, *, subject, principal_type, adp_org_id):
+        return CurrentIdentity(
+            subject, principal_type, adp_org_id, f"membership-{subject}", True, True,
+            delegation_id="test-delegation" if principal_type == "service" else None,
+        )
+
+
+list_eligible_clusters = partial(resolve_eligible_clusters, identity_reader=ClusterMembers())
+resolve_shared_target = partial(select_shared_target, identity_reader=ClusterMembers())
 
 
 def _caller(org=ORG_A, subject="alice", account_type="human"):
@@ -484,7 +499,10 @@ async def test_handler_uses_only_strict_request_caller():
     from app.routers.workspaces import list_eligible_clusters as handler
 
     await _seed()
-    request = Request({"type": "http", "headers": []})
+    request = Request({
+        "type": "http", "headers": [],
+        "app": SimpleNamespace(state=SimpleNamespace(current_identity_reader=ClusterMembers())),
+    })
     async with async_session_test() as session:
         with pytest.raises(HTTPException) as denied:
             await handler(request=request, org_id=ORG_A, db=session)

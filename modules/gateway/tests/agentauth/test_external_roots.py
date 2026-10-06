@@ -3,8 +3,10 @@
 import json
 from datetime import UTC, datetime
 
+import boto3
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from httpx import AsyncClient
 
@@ -12,6 +14,7 @@ from src.agentauth import external_roots
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.external_roots import RootAdmission
 from src.agentauth.model_policy import _resolve_principal
+from src.orchestration import intake_wiring
 from src.shared.database import get_db
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import UserIdentity
@@ -25,6 +28,14 @@ sts = sts_fixture
 
 @pytest.fixture
 async def root_client(store, sts, db_session, monkeypatch):
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="root-context",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+    )
+    monkeypatch.setenv("BG_INTAKE_CONTEXT_TABLE", table.name)
+    monkeypatch.setattr(intake_wiring, "_context_table", table)
     db_session.add_all(
         [
             Organization(id="tenant", name="Tenant"),
@@ -86,6 +97,7 @@ def body(source="chat", **changes):
             project_id=0 if source == "chat" else 7,
             envelope={
                 "message_id": "root-a",
+                "message": "Authenticated user input",
                 "session_id": "session-a",
                 "tenant_id": "tenant",
                 "persona": "developer",
@@ -122,6 +134,55 @@ async def test_root_is_canonical_protected_and_immutable_before_publication(root
     assert (await post(root_client, changed)).status_code == 403
 
 
+@pytest.mark.parametrize("enabled", [None, "false", "true"])
+@pytest.mark.parametrize("context_access", ["unconfigured", "read-only", "writable"])
+async def test_chat_input_staging_requires_explicit_enablement(root_client, store, monkeypatch, enabled, context_access):
+    if enabled is None:
+        monkeypatch.delenv("ADP_CHAT_DATA_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", enabled)
+    table = intake_wiring._context_table
+    if context_access == "unconfigured":
+        monkeypatch.delenv("BG_INTAKE_CONTEXT_TABLE")
+    context_writes = []
+    transact_write = store.client.transact_write_items
+
+    def guarded_transaction(**kwargs):
+        writes = [operation for operation in kwargs["TransactItems"] if any(item["TableName"] == table.name for item in operation.values())]
+        context_writes.extend(writes)
+        if writes and context_access == "read-only":
+            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "Context writes denied"}}, "TransactWriteItems")
+        return transact_write(**kwargs)
+
+    monkeypatch.setattr(store.client, "transact_write_items", guarded_transaction)
+    document = body()
+    response = await post(root_client, document)
+    staging_enabled = enabled == "true"
+    admitted = not staging_enabled or context_access == "writable"
+    assert response.status_code == (200 if admitted else 403), response.text
+    assert len(context_writes) == int(staging_enabled and context_access != "unconfigured")
+    execution = store._read("TENANT#tenant", "EXEC#root-a")
+    if admitted:
+        assert store._read("INVOCATION#root-a", "DISPATCH") is not None
+        assert ("chat_user_turn" in execution) == staging_enabled
+        assert (await post(root_client, document)).json()["envelope"] == response.json()["envelope"]
+    else:
+        assert execution is None
+        assert store._read("INVOCATION#root-a", "DISPATCH") is None
+    retained = table.scan()["Items"]
+    if staging_enabled and admitted:
+        assert len(retained) == 1
+        assert retained[0]["PK"] == "chat-input#root-a"
+        assert retained[0]["ownerUserId"] == "human"
+        assert retained[0]["tenantId"] == "tenant"
+        assert retained[0]["payload"]["input"]["message"] == document["envelope"]["message"]
+    else:
+        assert retained == []
+        assert "chat_user_turn" not in (execution or {})
+        if not staging_enabled:
+            assert context_writes == []
+
+
 @pytest.mark.parametrize("subject", ["other-sub", "bot-sub", "unknown"])
 async def test_cross_tenant_bot_or_unknown_subject_never_gets_authority(root_client, store, subject):
     response = await post(root_client, body(subject=subject))
@@ -139,6 +200,16 @@ async def test_gitlab_never_resolves_a_username_other_instance_or_other_project(
 async def test_worker_role_cannot_use_this_ingress_surface(root_client, store, sts):
     sts["role"] = "worker"
     assert (await post(root_client, body())).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+@pytest.mark.parametrize(
+    "changes", [{"message": None}, {"message": ""}, {"attachments": ["https://object.test/private"]}, {"attachments": ["art_a", "art_a"]}]
+)
+async def test_chat_root_requires_bounded_user_input_and_artifact_references(root_client, store, changes):
+    document = body()
+    document["envelope"].update(changes)
+    assert (await post(root_client, document)).status_code == 403
     assert store._read("INVOCATION#root-a", "DISPATCH") is None
 
 

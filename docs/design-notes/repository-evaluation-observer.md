@@ -73,6 +73,17 @@ limits at settlement. A plan amendment invalidates the attachment. An existing
 live deployment contract or explicit human gate cannot be replaced through this
 repository-only API.
 
+A predecessor completed by an explicit owner acceptance of an existing merge
+can name `accepted_merge_decision_id` in its specification. The observer requires
+that exact immutable decision to belong to the same tenant, flow and story, name
+the current bound PR/head, and have been recorded by the policy owner with human
+platform-admin authority after the current execution started. That execution
+must be concluded. The receipt carries the owner decision ID instead of
+inventing an engine merge action or review receipt. GitHub still independently
+verifies the exact merged commit, approved current-head review and every required
+check. A passed node alone, worker report, stale decision or another principal's
+acceptance cannot supply this provenance.
+
 Workflow artifacts are selected from the exact latest run/attempt. Artifact
 creation must follow that attempt's start. The GitHub archive digest, bounded ZIP
 contents, file SHA-256, job identities, workflow blob, source commit, repository

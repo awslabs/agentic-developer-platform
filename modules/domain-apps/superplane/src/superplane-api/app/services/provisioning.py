@@ -347,7 +347,10 @@ async def _start(
     """Open an authorized operation, or raise. Shared by both verbs."""
     from app.operation_activation import require_admission_enabled
 
-    require_admission_enabled(lifecycle="runtime_config_sha256" in parameters)
+    require_admission_enabled(
+        lifecycle="runtime_config_sha256" in parameters
+        or "lifecycle_phase" in parameters
+    )
     if action not in PROVISIONING_ACTIONS:
         raise ProvisioningRefused(f"unknown provisioning action: {action!r}")
     _check_parameters(parameters)
@@ -426,6 +429,10 @@ async def start_teardown(
     *, operation_id: str, workspace_id: str, org_id: str, workspace_name: str
 ) -> OperationProgress:
     """Begin tearing down a workspace under an authorized operation."""
+    from app.config import settings
+
+    if settings.superplane_paid_worker_mode != "legacy":
+        raise ProvisioningUnavailable("native worker has no approved teardown phase")
     return await _start(
         operation_id=operation_id,
         action=TEARDOWN,

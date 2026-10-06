@@ -875,9 +875,9 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     if claim.active_run_id != expected_run_id:
         raise WorkClaimError("continuation_owner_changed", "Another run owns the mutating lane.")
     prior = completed_execution
-    from src.agentauth.bootstrap_failure import is_bootstrap_failure
+    from .startup_recovery import is_retryable_bootstrap_failure
 
-    bootstrap_retry = action.detail.get("bootstrap_retry_of") == expected_run_id and is_bootstrap_failure(prior)
+    bootstrap_retry = action.detail.get("bootstrap_retry_of") == expected_run_id and is_retryable_bootstrap_failure(prior)
     from .review_cycle_dispatch import failed_review
 
     review_retry = action.detail.get("review_retry_of") == expected_run_id and action.detail.get("action") == "review" and failed_review(prior)
@@ -903,7 +903,7 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     elif (
         not prior
         or prior.get("tenant_id") != {"S": identity.org_id}
-        or prior.get("status") != {"S": "completed"}
+        or (prior.get("status") != {"S": "completed"} and not bootstrap_retry)
         or (prior.get("terminal_outcome") != {"S": "complete"} and not bootstrap_retry and not review_retry)
         or prior.get("orchestration_node_id") != {"S": identity.node_id}
     ):

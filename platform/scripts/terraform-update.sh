@@ -45,7 +45,7 @@ PY
   # the desired schedule setting independently so retries don't enable a schedule
   # the operator had intentionally disabled before this upgrade.
   if [ "$CONTEXT_MODULE" = gateway ]; then
-    if [ "$MODULE_NAME" = gateway-final ]; then
+    if [ "$MODULE_NAME" = gateway-final ] && [ -z "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ]; then
       PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=false)
     else
       PLAN_ARGS+=(-var orchestration_tick_upgrade_hold=true)

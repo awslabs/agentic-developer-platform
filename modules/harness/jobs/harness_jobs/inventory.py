@@ -613,6 +613,35 @@ class InventoryAuthority:
     authenticate: Callable[[str], Awaitable[ExecutionGrant | RecoveryGrant]] = None  # type: ignore[assignment]
     store: OperationStore = None  # type: ignore[assignment]
     query_provider: Callable | None = None
+    # Trusted composition may reconcile a related allocation only when the exact
+    # identifier was explicitly included in this teardown's immutable approval.
+    related_allocation_id: str | None = None
+
+    def approved_allocation(self, record):
+        primary = allocation_id_for(record)
+        if self.related_allocation_id is None:
+            return primary
+        request = record.admitted_request()
+        try:
+            related = json.loads(request.parameters.get("cleanup_allocation_ids", "[]"))
+        except (TypeError, ValueError) as error:
+            raise ContractViolation("invalid approved cleanup allocations") from error
+        if (
+            request.action != "teardown"
+            or not isinstance(related, list)
+            or not 0 < len(related) <= 16
+            or any(
+                not isinstance(value, str) or not value or len(value) > 200
+                for value in related
+            )
+            or len(set(related)) != len(related)
+            or primary in related
+            or self.related_allocation_id not in related
+        ):
+            raise ContractViolation(
+                "related allocation is outside the approved cleanup scope"
+            )
+        return self.related_allocation_id
 
     def __post_init__(self) -> None:
         if self.connect is None or self.authenticate is None:
@@ -647,7 +676,7 @@ class InventoryAuthority:
         record = await self.store.get(connection, _principal(lease), lease.operation_id)
         if record is None:
             raise _Refused("no operation record under the resolved tenant", "unknown")
-        allocation_id = allocation_id_for(record)
+        allocation_id = self.approved_allocation(record)
         await _lock_allocation(
             connection,
             org_id=lease.org_id,
@@ -1659,7 +1688,7 @@ class InventoryAuthority:
                 )
                 if record is None:
                     return None
-                approved = allocation_id_for(record)
+                approved = self.approved_allocation(record)
                 if approved != allocation_id:
                     return None
                 # The seal is read ONCE and both the attestation check and the

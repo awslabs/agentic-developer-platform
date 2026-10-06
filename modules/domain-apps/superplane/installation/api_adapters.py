@@ -23,6 +23,7 @@ def validate(env):
     if "api_adapters" not in env:
         return
     adapters = env["api_adapters"]
+    lifecycle = env.get("paid_worker", {}).get("mode") == "native-lifecycle"
     closed(adapters, {"vault", "dispatcher", "verification"}, "api_adapters")
     vault, dispatcher, control = (
         adapters[k] for k in ("vault", "dispatcher", "verification")
@@ -78,7 +79,8 @@ def validate(env):
     )
     closed(
         dispatcher,
-        {"endpoint", "region", "role_arn", "api_id", "stage"},
+        {"endpoint", "region", "role_arn", "api_id", "stage"}
+        | ({"operation_database_secret_ref"} if lifecycle else set()),
         "api_adapters.dispatcher",
     )
     require(
@@ -100,6 +102,15 @@ def validate(env):
         dispatcher["endpoint"] == expected,
         "dispatcher endpoint must match the exact invoke API, region and stage",
     )
+    if lifecycle:
+        ref = dispatcher["operation_database_secret_ref"]
+        closed(ref, {"name", "key"}, "dispatcher.operation_database_secret_ref")
+        require(
+            name(ref["name"])
+            and ref["key"] == "dsn"
+            and ref["name"] != env["paid_worker"]["database_secret"],
+            "API requires a separate shared-store service Secret",
+        )
     # No query, credentials, fragment, alternate port, suffix or normalization.
     require(urlsplit(expected).scheme == "https", "dispatcher endpoint must use TLS")
     require(
@@ -112,6 +123,11 @@ def validate(env):
         ),
         "dispatcher requires an existing role in the target account",
     )
+    if control == {"mode": "organization-bootstrap"}:
+        require(
+            lifecycle, "organization bootstrap control requires native lifecycle mode"
+        )
+        return
     closed(
         control,
         {"workspace_id", "connection_id", "credential_id", "service", "label"},
@@ -155,6 +171,11 @@ def project(env, docs, *, active=False):
         "AWS_EC2_METADATA_DISABLED": "true",
         "AWS_STS_REGIONAL_ENDPOINTS": "regional",
     }
+    if env.get("paid_worker", {}).get("mode") == "native-lifecycle":
+        values["SUPERPLANE_OPERATION_DB_SCHEMA"] = env["paid_worker"][
+            "operation_schema"
+        ]
+        values["CURRENT_IDENTITY_ENFORCED"] = "true"
     for doc in docs:
         if (
             doc["metadata"]["name"] != "superplane-api"
@@ -170,9 +191,26 @@ def project(env, docs, *, active=False):
             container["env"] = [
                 v
                 for v in container["env"]
-                if v["name"] not in {*values, "ADP_GATEWAY_INTERNAL_API_KEY"}
+                if v["name"]
+                not in {
+                    *values,
+                    "ADP_GATEWAY_INTERNAL_API_KEY",
+                    "SUPERPLANE_OPERATION_DATABASE_URL",
+                }
             ]
             container["env"].extend({"name": k, "value": v} for k, v in values.items())
+            if "operation_database_secret_ref" in producer:
+                container["env"].append(
+                    {
+                        "name": "SUPERPLANE_OPERATION_DATABASE_URL",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                **producer["operation_database_secret_ref"],
+                                "optional": False,
+                            }
+                        },
+                    }
+                )
             container["env"].append(
                 {
                     "name": "ADP_GATEWAY_INTERNAL_API_KEY",
@@ -203,7 +241,7 @@ def project(env, docs, *, active=False):
                 doc["spec"]["egress"].append(rule)
 
 
-def verify_role(env, role, documents, oidc):
+def verify_role(env, role, documents, oidc, *, legacy_routes=False):
     """Closed dedicated API producer role; effective access still needs live proof."""
     producer = env["api_adapters"]["dispatcher"]
     require(
@@ -233,8 +271,22 @@ def verify_role(env, role, documents, oidc):
     )
     prefix = f"arn:aws:execute-api:{producer['region']}:{env['account_id']}:{producer['api_id']}/{producer['stage']}/POST/internal/v1/controller-execution/"
     allowed = {
-        prefix + route for route in ("producer-readiness", "verify-run", "dispatch")
+        prefix + route
+        for route in (
+            "producer-readiness",
+            "verify-run",
+            "dispatch",
+            "binding-proof",
+            "current-identity",
+            "current-identity/readiness",
+        )
     }
+    if legacy_routes:
+        allowed -= {
+            prefix + "binding-proof",
+            prefix + "current-identity",
+            prefix + "current-identity/readiness",
+        }
     observed = set()
     for document in documents:
         statements = document.get("Statement", [])

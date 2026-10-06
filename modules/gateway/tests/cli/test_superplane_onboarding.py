@@ -426,6 +426,15 @@ class TestTheCliAndTheBrowserAgreeOnTheApi:
         }
         assert not disagreements, f"CLI vs contract.ts served flags disagree: {disagreements}"
 
+    def test_retirement_access_claims_follow_the_mounted_proxy(self) -> None:
+        proxy = {(method, normalise(path)) for method, path in served_by_proxy()}
+        contract, helper = endpoints_of_contract(), endpoints_of_helper()
+        for name in ("previewRetirementAccess", "admitRetirementAccess"):
+            endpoint = helper[name]
+            mounted = (endpoint["method"], normalise(endpoint["path"])) in proxy
+            assert endpoint["served"] is mounted
+            assert contract[name]["served"] is mounted
+
     def test_every_served_endpoint_is_one_the_gateway_proxy_forwards(self) -> None:
         """`served: True` is a claim about the deployed proxy, checked against it.
 

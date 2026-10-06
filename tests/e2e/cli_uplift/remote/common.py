@@ -779,7 +779,7 @@ def emit(evidence):
         if isinstance(canary, str) and canary and canary != REDACTED:
             leaked = any(
                 contains_canary(evidence.get(field), canary)
-                for field in ("events", "pages")
+                for field in ("events", "pages", "provider_response")
             )
             evidence["canary_check"] = "failed" if leaked else "passed"
             error = (

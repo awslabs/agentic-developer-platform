@@ -3,12 +3,16 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from superplane_contracts import Submitter
 
 from app.config import settings
 from app.database import get_session
-from app.installation import capabilities_async
+from app.installation import (
+    capabilities_async,
+    prepared_lifecycle_binding,
+    runtime_dependencies,
+)
 from app.management import management_only
 from app.middleware.auth import get_current_org
 from app.routers.heartbeat import _authenticated_submitter
@@ -18,14 +22,46 @@ router = APIRouter(prefix="/internal")
 
 @router.get("/installation")
 async def installation_readiness(
-    request: Request, submitter: Submitter = Depends(_authenticated_submitter)
+    request: Request,
+    submitter: Submitter = Depends(_authenticated_submitter),
+    org_id: uuid.UUID | None = None,
 ):
+    """Distinguish locally prepared from installed proof for an authorized org."""
+    if org_id is not None and not (
+        "budget_monitor/global" in getattr(submitter, "lease_scopes", ())
+        or f"controller_management/{org_id}" in getattr(submitter, "lease_scopes", ())
+    ):
+        raise HTTPException(403, "installation organization scope required")
+    composition = getattr(request.app.state, "trust_composition", None)
+    dependencies = await runtime_dependencies(composition)
+    prepared = await prepared_lifecycle_binding(composition, dependencies)
+    executable = False
+    if prepared and org_id is not None:
+        from app.operation_activation import expected_lifecycle_binding
+
+        try:
+            executable = await composition.dispatcher.binding_ready(
+                str(org_id), expected_lifecycle_binding()
+            ) and await prepared_lifecycle_binding(composition)
+        except Exception:
+            executable = False
+    capabilities = await capabilities_async()
+    for port, dependency in (
+        ("provider_authority", "operation_store"),
+        ("allocation_inventory", "operation_store"),
+    ):
+        capabilities[port] = capabilities[port] and dependencies[dependency]
+    capabilities["operation_facade"] = capabilities["operation_facade"] and all(
+        dependencies.values()
+    )
+    executable = executable and all(capabilities.values())
     return {
         "release_id": os.environ.get("SUPERPLANE_RELEASE_ID"),
         "source_revision": os.environ.get("SUPERPLANE_SOURCE_REVISION"),
         "mode": "management" if management_only() else "full",
         "operation_dispatch_enabled": settings.superplane_operation_dispatch_enabled,
-        "paid_admission_enabled": settings.superplane_operation_dispatch_enabled,
+        "paid_admission_enabled": executable,
+        "paid_worker_binding": {"prepared": prepared, "executable": executable},
         "domain_auth_enforced": getattr(request.app.state, "domain_policy", None)
         is not None,
         # Exactly the four booleans, unchanged: the post-rollout recheck asserts
@@ -34,7 +70,8 @@ async def installation_readiness(
         # response, and an adapter's refusal message is the one place a provider
         # error or another tenant's identifier could have been interpolated. The
         # image-local CLI is where that detail belongs.
-        "capabilities": await capabilities_async(),
+        "capabilities": capabilities,
+        "dependencies": dependencies,
         "observations": {
             key: value
             for key, value in getattr(
@@ -139,5 +176,69 @@ async def installation_credential_evidence(
         "evidence_expires_at": evidence.expires_at.isoformat(),
         "connection_state": state.status.value,
         "credential_version_verified": False,
+        "raw_material_returned": False,
+    }
+
+
+@router.get("/installation/organization-bootstrap")
+async def installation_organization_bootstrap(
+    request: Request,
+    org_id=Depends(get_current_org),
+    db=Depends(get_session),
+):
+    """Current human organization authority before the first native workspace.
+
+    This is a control-plane installation check, not credential delegation or a
+    workspace grant. Normal create admission still verifies its exact credential.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi import HTTPException
+    from superplane_auth.policy import Permission
+
+    from app.auth import authorize_organization_operation
+    from app.current_identity import IdentityUnavailable, require_current_identity
+    from app.operation_activation import dispatch_enabled
+
+    if not management_only() or dispatch_enabled():
+        raise HTTPException(
+            409, "organization control requires the disabled adapter stage"
+        )
+    caller = getattr(request.state, "caller", None)
+    if (
+        caller is None
+        or caller.principal.org_id != str(org_id)
+        or caller.principal.account_type != "human"
+        or not caller.source_org_id
+        or not caller.identity_evidence
+    ):
+        raise HTTPException(403, "verified organization identity is required")
+    await authorize_organization_operation(db, caller, Permission.ADMINISTER)
+    # Drop the first read transaction and repeat current authority after the
+    # adapter probe; no cached grant or membership can authorize activation.
+    ports = await capabilities_async()
+    await db.rollback()
+    try:
+        await require_current_identity(
+            getattr(request.app.state, "current_identity_reader", None),
+            subject=caller.principal.subject,
+            principal_type="human",
+            adp_org_id=caller.source_org_id,
+            membership_id=caller.identity_evidence,
+        )
+    except IdentityUnavailable:
+        raise HTTPException(
+            403, "current ADP organization authority required"
+        ) from None
+    await authorize_organization_operation(db, caller, Permission.ADMINISTER)
+    if len(ports) != 4 or not all(value is True for value in ports.values()):
+        raise HTTPException(503, "organization adapter capabilities unavailable")
+    return {
+        "control_version": 1,
+        "mode": "organization-bootstrap",
+        "org_id": str(org_id),
+        "evidence_expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        "organization_authority_verified": True,
+        "credential_metadata_verified": False,
         "raw_material_returned": False,
     }

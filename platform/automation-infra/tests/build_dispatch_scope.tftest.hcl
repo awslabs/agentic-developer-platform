@@ -119,3 +119,124 @@ run "layer_checks_read_only_the_selected_artifact" {
     error_message = "Artifact existence checks must not gain bucket listing authority."
   }
 }
+
+run "superplane_disabled_adds_no_authority" {
+  command = plan
+  assert {
+    condition     = !can(regex("Superplane|superplane/releases|superplane-paid-worker", aws_iam_role_policy.build_dispatch.policy))
+    error_message = "Existing dispatchers must receive no new Superplane capability by default."
+  }
+}
+
+run "source_export_has_only_exact_transport_and_bucket_checks" {
+  command = plan
+  variables {
+    enable_superplane_operator_source = true
+    build_ecr_repository_names        = ["adp-superplane-executor"]
+    build_publish_worker_image_tag    = false
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplaneReviewedSource"
+      ]).Resource) == toset([
+      "arn:aws:s3:::adp-terraform-state-123456789012/superplane/releases/operator-source/test/*/bundles/*",
+      "arn:aws:s3:::adp-terraform-state-123456789012/superplane/releases/operator-source/test/*/consumers/*",
+      "arn:aws:s3:::adp-terraform-state-123456789012/superplane/releases/operator-source/test/*/manifests/*",
+    ])
+    error_message = "Source publication must be limited to its environment's three transport paths."
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplaneReviewedSource"
+    ]).Action) == toset(["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"])
+    error_message = "Source delivery requires conditional upload and versioned readback only."
+  }
+  assert {
+    condition = one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplaneSourceBucketChecks"
+      ]).Resource == "arn:aws:s3:::adp-terraform-state-123456789012" && toset(one([
+        for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplaneSourceBucketChecks"
+    ]).Action) == toset(["s3:GetBucketVersioning", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetBucketLocation"])
+    error_message = "Bucket inspection must name one account-owned bucket and only transport safety reads."
+  }
+  assert {
+    condition     = !can(regex("s3:Delete|s3:List|s3:PutBucket|s3:PutObjectAcl|iam:|kms:|lambda:|eks:|secretsmanager:|superplane-paid-worker|paid-worker/dispatch", aws_iam_role_policy.build_dispatch.policy))
+    error_message = "Source delivery must not gain paid dispatch, deletion, bucket mutation or deployment authority."
+  }
+}
+
+run "paid_release_has_exact_builder_and_durable_claim_scope" {
+  command = plan
+  variables {
+    enable_superplane_paid_release = true
+    build_ecr_repository_names     = ["adp-superplane-executor"]
+    build_publish_worker_image_tag = false
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "DispatchKnownProjects"
+      ]).Resource) == toset([
+      "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-superplane-executor",
+      "arn:aws:codebuild:us-east-1:123456789012:build/adp-test-superplane-executor:*",
+      "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-superplane-paid-worker",
+      "arn:aws:codebuild:us-east-1:123456789012:build/adp-test-superplane-paid-worker:*",
+    ])
+    error_message = "Paid enrollment may add exactly the prepared environment project."
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "StageReviewedSource"
+      ]).Resource) == toset([
+      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-superplane-executor/*",
+      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-superplane-paid-worker/*",
+      ]) && toset(one([
+        for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "ReadPublishedImages"
+      ]).Resource) == toset([
+      "arn:aws:ecr:us-east-1:123456789012:repository/adp-superplane-executor",
+      "arn:aws:ecr:us-east-1:123456789012:repository/adp-superplane-paid-worker",
+    ])
+    error_message = "Paid source staging and image reads must retain exact existing inventories."
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplanePaidDispatchEvidence"
+      ]).Resource) == toset([
+      "arn:aws:s3:::adp-terraform-state-123456789012/superplane/releases/paid-worker/dispatch/*/claim.json",
+      "arn:aws:s3:::adp-terraform-state-123456789012/superplane/releases/paid-worker/dispatch/*/child.json",
+      ]) && one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplanePaidDispatchEvidence"
+    ]).Action == ["s3:PutObject"]
+    error_message = "Durable claims need only conditional writes to the two evidence files."
+  }
+  assert {
+    condition = toset(one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplanePaidRetentionChecks"
+      ]).Action) == toset(["s3:GetBucketVersioning", "s3:GetLifecycleConfiguration"]) && one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "SuperplanePaidRetentionChecks"
+    ]).Resource == "arn:aws:s3:::adp-terraform-state-123456789012"
+    error_message = "Paid evidence retention requires only the one bucket's versioning and lifecycle reads."
+  }
+  assert {
+    condition     = !can(regex("s3:Delete|s3:List|s3:PutBucket|s3:GetObject|iam:|kms:|lambda:|eks:|secretsmanager:|operator-source|codebuild:UpdateProject|ecr:PutImage", aws_iam_role_policy.build_dispatch.policy))
+    error_message = "Paid dispatch cannot grant source export, claim reset, role/project mutation or deployment."
+  }
+}
+
+run "source_wrong_repository_is_refused" {
+  command = plan
+  variables {
+    enable_superplane_operator_source = true
+    repository                        = "another/repo"
+  }
+  expect_failures = [aws_iam_role_policy.build_dispatch]
+}
+
+run "source_noncanonical_environment_is_refused" {
+  command = plan
+  variables {
+    enable_superplane_operator_source = true
+    environment                       = "test--bad"
+    name_prefix                       = "adp-test--bad"
+  }
+  expect_failures = [aws_iam_role_policy.build_dispatch]
+}

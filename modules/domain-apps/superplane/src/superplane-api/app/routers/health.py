@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.current_identity import composed_identity_reader_ready
 from app.database import get_session
 from app.management import management_only
 from app.schemas.health import HealthResponse
@@ -16,10 +17,13 @@ router = APIRouter()
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:
         await db.execute(text("SELECT 1"))
-        if settings.current_identity_enforced and (
-            getattr(request.app.state, "current_identity_reader", None) is None
-        ):
-            raise ValueError("current ADP identity reader unavailable")
+        if settings.current_identity_enforced:
+            reader = getattr(request.app.state, "current_identity_reader", None)
+            if (
+                not await composed_identity_reader_ready(reader)
+                or not await reader.upstream_ready()
+            ):
+                raise ValueError("current ADP identity reader unavailable")
         if (
             management_only()
             and getattr(request.app.state, "domain_policy", None) is None
@@ -49,8 +53,8 @@ async def health_check(request: Request) -> HealthResponse:
     return HealthResponse(
         status="healthy",
         current_identity_required=settings.current_identity_enforced,
-        current_identity_reader_configured=(
-            getattr(request.app.state, "current_identity_reader", None) is not None
+        current_identity_reader_configured=await composed_identity_reader_ready(
+            getattr(request.app.state, "current_identity_reader", None)
         ),
         version=settings.app_version,
         cognito_enabled=settings.cognito_enabled,

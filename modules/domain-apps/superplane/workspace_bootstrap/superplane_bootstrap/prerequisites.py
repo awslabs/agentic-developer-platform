@@ -104,12 +104,21 @@ ACCESS_ENTRY = "EksAccessEntry"
 # different sources and a refusal should name which one is wrong.
 ENDPOINT_RULE = "SecurityGroupRule/cluster-endpoint"
 MANAGEMENT_RULE = "SecurityGroupRule/private-sts"
+PUBLIC_ENDPOINT = "EksPublicEndpoint"
 
 REQUIRED_PREREQUISITE_KINDS: tuple[str, ...] = (
     ACCESS_ENTRY,
     ENDPOINT_RULE,
     MANAGEMENT_RULE,
 )
+
+
+def valid_prerequisite_kinds(kinds):
+    return set(kinds) in (
+        set(REQUIRED_PREREQUISITE_KINDS),
+        {ACCESS_ENTRY, PUBLIC_ENDPOINT, MANAGEMENT_RULE},
+    )
+
 
 # The EKS access policy the workspace access entry must be scoped to, and the
 # namespace scope it must be confined to. An access entry scoped to the CLUSTER rather
@@ -151,8 +160,34 @@ class ExpectedPrerequisites:
     api_server_port: int = 443
     protocol: str = "tcp"
     retained_sts_rule_id: str | None = None
+    public_access_cidrs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.public_access_cidrs:
+            from ipaddress import ip_network
+
+            try:
+                networks = [
+                    ip_network(value, strict=True) for value in self.public_access_cidrs
+                ]
+            except (ValueError, TypeError):
+                raise BootstrapRefused(
+                    "public endpoint requires exact NAT /32s"
+                ) from None
+            if (
+                not isinstance(self.public_access_cidrs, tuple)
+                or not 1 <= len(networks) <= 8
+                or len(set(networks)) != len(networks)
+                or any(
+                    value.version != 4
+                    or value.prefixlen != 32
+                    or not value.network_address.is_global
+                    for value in networks
+                )
+            ):
+                raise BootstrapRefused(
+                    "public endpoint requires bounded global NAT /32s"
+                )
         if self.retained_sts_rule_id is not None and (
             not isinstance(self.retained_sts_rule_id, str)
             or not self.retained_sts_rule_id.startswith("sgr-")
@@ -458,8 +493,33 @@ def verify_network_prerequisites(*, access, target, expected, provider_account_i
         raise BootstrapRefused(
             "network prerequisites belong to a different provider account"
         )
-    return [
-        _verify_rule(
+    if expected.public_access_cidrs:
+        observed = access.public_endpoint(target)
+        if (
+            not isinstance(observed, Mapping)
+            or observed.get("cluster_arn") != target.cluster_arn
+            or observed.get("endpoint") != target.endpoint
+            or observed.get("public_access_cidrs")
+            != sorted(expected.public_access_cidrs)
+            or observed.get("source_address", "") + "/32"
+            not in expected.public_access_cidrs
+            or observed.get("tls_verified") is not True
+            or observed.get("created") is not False
+            or not observed.get("management_vpc_id")
+            or not observed.get("nat_gateway_ids")
+        ):
+            raise BootstrapRefused(
+                "public workspace endpoint lacks current NAT/TLS/allowlist proof"
+            )
+        api = OwnedPrerequisite(
+            kind=PUBLIC_ENDPOINT,
+            identifier=target.cluster_arn,
+            workspace_id=target.workspace_id,
+            ownership=ADOPTED,
+            reason="Verified public EKS endpoint restricted to management NATs; endpoint lifecycle belongs to the Terraform-managed cluster",
+        )
+    else:
+        api = _verify_rule(
             access,
             target,
             expected,
@@ -471,7 +531,9 @@ def verify_network_prerequisites(*, access, target, expected, provider_account_i
                 "the private endpoint path the management plane reaches the workspace "
                 "API server through"
             ),
-        ),
+        )
+    return [
+        api,
         _verify_rule(
             access,
             target,
@@ -560,13 +622,9 @@ def verify_prerequisites(
     ]
 
     recorded_kinds = {item.kind for item in prerequisites}
-    missing_kinds = [
-        kind for kind in REQUIRED_PREREQUISITE_KINDS if kind not in recorded_kinds
-    ]
-    if missing_kinds:  # pragma: no cover - structural guard on the list above
+    if not valid_prerequisite_kinds(recorded_kinds):  # pragma: no cover
         raise BootstrapRefused(
-            "the prerequisite inventory is missing required kind(s): "
-            + ", ".join(sorted(missing_kinds))
+            "the prerequisite inventory has incomplete or conflicting network paths"
         )
 
     inventory = PrerequisiteInventory(

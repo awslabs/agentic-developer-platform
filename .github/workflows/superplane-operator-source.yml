@@ -1,0 +1,73 @@
+name: Superplane Operator Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Selected AWS account owning the existing private source bucket
+        required: true
+      region:
+        description: Selected source bucket region
+        required: true
+      environment:
+        description: Selected environment; scopes the operator-source prefix
+        required: true
+
+concurrency:
+  group: superplane-operator-source-${{ github.sha }}-${{ inputs.account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    environment: adp-build-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = aws-e/adp
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish reviewed source publisher identity
+        uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Publish exact source history and pinned retrieval receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ACCOUNT: ${{ inputs.account_id }}
+          SOURCE_REGION: ${{ inputs.region }}
+          SOURCE_ENVIRONMENT: ${{ inputs.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 modules/domain-apps/superplane/releases/operator_source.py publish \
+            --account "$SOURCE_ACCOUNT" --region "$SOURCE_REGION" \
+            --environment "$SOURCE_ENVIRONMENT" --source-sha "$GITHUB_SHA" \
+            --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/operator-source-publication" \
+            > "$RUNNER_TEMP/operator-source-receipt.json"
+          cat "$RUNNER_TEMP/operator-source-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain metadata receipt only
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: superplane-operator-source-receipt
+          path: ${{ runner.temp }}/operator-source-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30

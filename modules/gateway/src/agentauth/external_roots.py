@@ -133,7 +133,24 @@ def provision_root(store: BootstrapStore, envelope: dict, *, source: str, human_
         flow_id=invocation,
         expires_at=expiry,
     )
-    store.provision_pending(envelope=envelope, grant=grant, now=now)
+    metadata = {}
+    retained_chat_input = None
+    if source == "chat" and "message" in envelope and os.environ.get("ADP_CHAT_DATA_ENABLED") == "true":
+        from src.agentauth.chat_admission import retention_seconds
+        from src.agentauth.chat_capability import ChatAuthorizationUnavailableError
+        from src.agentauth.chat_user_turn import protected_user_turn
+        from src.orchestration.intake_wiring import _get_context_table
+
+        input_table = _get_context_table()
+        try:
+            input_expiry = min(int(expiry.timestamp()), int(created.timestamp()) + retention_seconds())
+        except ChatAuthorizationUnavailableError:
+            raise BootstrapRefusedError("retained chat input unavailable") from None
+        if input_table is None or (input_expiry <= int(now.timestamp()) and store._read(f"INVOCATION#{invocation}", "DISPATCH") is None):
+            raise BootstrapRefusedError("retained chat input unavailable")
+        metadata["chat_user_turn"], input_item = protected_user_turn(envelope, human_id=human_id, expires_at=input_expiry)
+        retained_chat_input = (input_table.name, input_item)
+    store.provision_pending(envelope=envelope, grant=grant, now=now, execution_metadata=metadata, retained_chat_input=retained_chat_input)
 
 
 router = APIRouter(prefix="/internal/v1/agent/roots", tags=["agent-authority"])
@@ -182,6 +199,9 @@ async def admit_root(
         if not isinstance(invocation, str) or not 1 <= len(invocation) <= 128:
             raise ValueError()
         if body.source == "chat":
+            from src.agentauth.chat_user_turn import UserTurn
+
+            UserTurn.model_validate({"message": envelope["message"], "attachments": envelope.get("attachments", [])})
             session_id = envelope["session_id"]
             if not isinstance(session_id, str) or not 1 <= len(session_id) <= 128:
                 raise ValueError()
