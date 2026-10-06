@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:28:19.312Z",
+  "updated_at": "2026-10-06T01:35:51.545Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,10 +11,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_adapters.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_control.py",
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py"
       ],
-      "note": "ed2882e adds guarded admitted revocation; trusted producer composition remains.",
+      "note": "340e296 derives stored control lineage; trusted production composition remains.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -30,7 +30,8 @@
         "aac4f18",
         "a3ea318",
         "b277612",
-        "ed2882e"
+        "ed2882e",
+        "340e296"
       ]
     },
     {
@@ -43,9 +44,10 @@
         "AC-01-c1"
       ],
       "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_control.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "84 changed-package tests pass; the new RPC test uses a digested inserted receipt and stubbed live callbacks, not full production composition.",
+      "note": "90 focused tests pass; production management-mode activation and revocation are not proved.",
       "commits": [
         "b92e027"
       ]
@@ -100,7 +102,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Admitted revoke rejects stale approval and missing receipt; remaining production denial paths need coverage."
+      "note": "Legacy management-recipe denial passes; remaining production denial paths need coverage."
     },
     {
       "id": "AC-02-c1",
@@ -140,7 +142,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Producer composition remains; coordinate native worker registration with #5535.",
+      "note": "No run_retirement producer or native worker registration exists; coordinate with #5535.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -160,7 +162,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "No admitted managed API-to-producer test yet."
+      "note": "No admitted managed API-to-producer test."
     },
     {
       "id": "AC-02-t2",
@@ -195,7 +197,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Changed-package tests pass; full relevant suites and required CI remain."
+      "note": "Focused local tests pass; final-head CI is pending and full suites remain."
     },
     {
       "id": "AC-04-c1",
@@ -205,7 +207,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Evaluator handoff remains."
+      "note": "PR handoff records source limits; evaluator documentation remains."
     },
     {
       "id": "AC-04-t1",
@@ -229,7 +231,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Foreground owns review and merge; neither is claimed."
+      "note": "Reviewer/foreground owns review and merge; CI is pending."
     }
   ]
 }
