@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T01:58:21.032Z",
+  "updated_at": "2026-10-06T02:20:12.337Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -3807,7 +3807,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed; the Go-backed restart test also passed in final-head CI.",
+      "note": "Previously passed; Go-backed restart also passed in CI.",
       "commits": [
         "14f7ccf"
       ]
@@ -3866,7 +3866,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; installer projection remains paused.",
+      "note": "Previously completed; installer activation remains refused.",
       "commits": [
         "b154e68"
       ]
@@ -3882,7 +3882,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "391 offline and 9 PostgreSQL installer checks passed at the final application-code revision; not live-binding evidence.",
+      "note": "Previously passed offline and with PostgreSQL fixtures; not live-binding evidence.",
       "commits": [
         "851851d"
       ]
@@ -3910,7 +3910,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Previously passed in test fixtures; not a deployed-target check."
+      "note": "Previously passed in test fixtures, not a deployed target."
     },
     {
       "id": "AC-03-c1",
@@ -3919,11 +3919,8 @@
       "title": "Keep changed API, worker, installer, and Gateway packages buildable",
       "status": "done",
       "covers": [],
-      "files": [
-        ".github/workflows/superplane-domain-ci.yml",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspaces.py"
-      ],
-      "note": "Four wheels built; PostgreSQL fixture and route regressions corrected; the isolated Go CI environment now installs worker-image dependencies. Pushed through dfc2add14.",
+      "files": [],
+      "note": "Previously completed; four wheels built.",
       "commits": [
         "ad9b739",
         "dfc2add",
@@ -3941,12 +3938,8 @@
       "covers": [
         "AC-03-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_deployment_replay_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspaces.py"
-      ],
-      "note": "Local API: 2,429 passed, 11 skipped, 2 xfailed; worker: 586 passed; installer: 391 plus 9 PostgreSQL passed; affected Gateway: 737 passed, 98 skipped. Final-head API/domain/worker checks, all eight repository-wide Gateway shards, and Go-backed restart passed in CI.",
+      "files": [],
+      "note": "Previously passed locally and in CI; the documentation-only final head also has 30 passing CI checks.",
       "commits": [
         "33b64c6",
         "851d83f"
@@ -3957,22 +3950,28 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Publish ready PR and exact operator verification and rollback prerequisites",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Ready PR #7047 is current at dfc2add14; exact evaluator handoff remains."
+      "files": [
+        "modules/domain-apps/superplane/installation/NATIVE-LIFECYCLE-HANDOFF.md",
+        "modules/domain-apps/superplane/installation/README.md"
+      ],
+      "note": "Committed and pushed a7b3b4e45; ready PR #7047 links the handoff.",
+      "commits": [
+        "a7b3b4e"
+      ]
     },
     {
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify published PR head, required checks, and acceptance-to-evidence handoff",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Remote head verified and all 30 reported checks pass; acceptance-to-evidence and operator handoff remain."
+      "note": "Remote and PR heads match a7b3b4e45; all 30 reported checks pass. Focused package tests and public-docs check pass locally."
     },
     {
       "id": "AC-04-c2",
@@ -3994,7 +3993,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "deployed-target: foreground/#5540 owns release and live verification; no deployment is authorized."
+      "note": "deployed-target: foreground/#5540 owns authorized release and live verification; no deployment was authorized or performed."
     }
   ]
 }
