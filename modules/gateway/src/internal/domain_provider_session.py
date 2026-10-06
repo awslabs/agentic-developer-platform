@@ -105,6 +105,33 @@ def snapshot(state):
     )
 
 
+async def verify_cleanup_session(result, entry_identity, entry_arn, region):
+    if entry_identity is not None:
+        import boto3
+        from botocore.config import Config
+
+        session = boto3.Session(
+            aws_access_key_id=result.access_key_id,
+            aws_secret_access_key=result.secret_access_key,
+            aws_session_token=result.session_token,
+            region_name=region,
+        )
+        eks = session.client("eks", config=Config(connect_timeout=5, read_timeout=15, retries={"total_max_attempts": 1}))
+        generation, cluster, principal_arn, owned = entry_identity
+        actual = await asyncio.to_thread(eks.describe_access_entry, clusterName=cluster.rsplit("/", 1)[1], principalArn=principal_arn)
+        entry = actual.get("accessEntry", {})
+        if (
+            entry.get("accessEntryArn") != entry_arn
+            or entry.get("principalArn") != principal_arn
+            or entry.get("clusterName") != cluster.rsplit("/", 1)[1]
+            or entry.get("type") != "STANDARD"
+            or entry.get("tags", {}).get("superplane-generation") != generation
+            or sorted(entry.get("kubernetesGroups", [])) != owned.get("groups")
+            or entry.get("username") != owned.get("username")
+        ):
+            raise HTTPException(403, REFUSED)
+
+
 async def provider_session(request, body, db, sm, *, preflight_only=False):
     initial = await current(request, body.operation_id)
     binding, principal, _, grant, operation, lease = initial
@@ -116,16 +143,44 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
     entry_arn = getattr(body, "access_entry_arn", None)
     policy, entry_identity = await cleanup_policy(binding, operation, entry_arn)
 
-    async def refresh():
+    session_expiry = None
+
+    async def refresh(*, issued_expiry=None):
         latest = await current(request, body.operation_id)
         if snapshot(latest) != authority:
             raise HTTPException(403, REFUSED)
         if await cleanup_policy(binding, operation, entry_arn) != (policy, entry_identity):
             raise HTTPException(403, REFUSED)
         # A shortened approval or runtime deadline must also constrain the answer.
-        if session_deadline(latest[3], latest[4], latest[5], require_session=not preflight_only) < deadline:
+        actual_expiry = issued_expiry or session_expiry
+        current_deadline = session_deadline(latest[3], latest[4], latest[5], require_session=not preflight_only and actual_expiry is None)
+        if actual_expiry is not None and not datetime.now(UTC) < actual_expiry <= current_deadline:
+            raise HTTPException(403, REFUSED)
+        if current_deadline < deadline:
             raise HTTPException(403, REFUSED)
         return frozenset({DELIVERY_PERMISSION})
+
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(credential_id):
+        return await governed_session(
+            body,
+            db,
+            sm,
+            binding=binding,
+            principal=principal,
+            operation=operation,
+            credential_id=credential_id,
+            service=service,
+            label=label,
+            account=account,
+            deadline=deadline,
+            refresh=refresh,
+            policy=policy,
+            entry_identity=entry_identity,
+            entry_arn=entry_arn,
+            preflight_only=preflight_only,
+        )
 
     operation_binding = OperationBinding(
         body.operation_id, lease["attempt_id"], operation["job_id"], binding.org_id, operation["workspace_id"], "aws", account
@@ -209,30 +264,8 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
             session_policy=policy,
         )
         expiry = verify_session(result, role, deadline, issued_at=issued_at)
-        if entry_identity is not None:
-            import boto3
-            from botocore.config import Config
-
-            session = boto3.Session(
-                aws_access_key_id=result.access_key_id,
-                aws_secret_access_key=result.secret_access_key,
-                aws_session_token=result.session_token,
-                region_name=body.region,
-            )
-            eks = session.client("eks", config=Config(connect_timeout=5, read_timeout=15, retries={"total_max_attempts": 1}))
-            generation, cluster, principal_arn, owned = entry_identity
-            actual = await asyncio.to_thread(eks.describe_access_entry, clusterName=cluster.rsplit("/", 1)[1], principalArn=principal_arn)
-            entry = actual.get("accessEntry", {})
-            if (
-                entry.get("accessEntryArn") != entry_arn
-                or entry.get("principalArn") != principal_arn
-                or entry.get("clusterName") != cluster.rsplit("/", 1)[1]
-                or entry.get("type") != "STANDARD"
-                or entry.get("tags", {}).get("superplane-generation") != generation
-                or sorted(entry.get("kubernetesGroups", [])) != owned.get("groups")
-                or entry.get("username") != owned.get("username")
-            ):
-                raise HTTPException(403, REFUSED)
+        session_expiry = expiry
+        await verify_cleanup_session(result, entry_identity, entry_arn, body.region)
         latest, _ = await deliver(preflight=True)
         await db.refresh(latest)
         if await owner(latest) != user_id or verified_connection_evidence(latest) != evidence:
@@ -269,3 +302,109 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
             "authority_expires_at": deadline.isoformat(),
             "access_entry_arn": entry_arn,
         }
+
+
+async def governed_session(
+    body,
+    db,
+    sm,
+    *,
+    binding,
+    principal,
+    operation,
+    credential_id,
+    service,
+    label,
+    account,
+    deadline,
+    refresh,
+    policy,
+    entry_identity,
+    entry_arn,
+    preflight_only,
+):
+    from src.internal.domain_provider_authority import material, read_report, require, resolve
+
+    args = dict(
+        subject=operation["requester"],
+        adp_org_id=binding.adp_org_id,
+        org_id=binding.org_id,
+        workspace_id=operation["workspace_id"],
+        service=service,
+        label=label,
+    )
+    await refresh()
+    record = await resolve(db, sm, credential_id, **args)
+    require(record["account_id"] == account and record["region"] == body.region)
+    deadline = min(deadline, datetime.fromisoformat(record["expires_at"]))
+    require(datetime.now(UTC) + timedelta(seconds=0 if preflight_only else 900) < deadline)
+
+    expiry = None
+
+    async def revalidate():
+        await refresh(issued_expiry=expiry)
+        require(await resolve(db, sm, credential_id, **args) == record)
+        await asyncio.to_thread(read_report, record, None)
+        require(await resolve(db, sm, credential_id, **args) == record)
+        await refresh(issued_expiry=expiry)
+        if expiry is None:
+            require(datetime.now(UTC) + timedelta(seconds=0 if preflight_only else 900) < deadline)
+        else:
+            require(datetime.now(UTC) < expiry <= deadline)
+
+    if preflight_only:
+        await revalidate()
+        return {"admits_work": True, "operation_id": body.operation_id, "authority_expires_at": deadline.isoformat()}
+    secret = await material(sm, record)
+    await revalidate()
+    issued_at = datetime.now(UTC)
+    result = await asyncio.to_thread(
+        assume_role,
+        role_arn=record["role_arn"],
+        external_id=secret["external_id"],
+        session_duration_seconds=900,
+        default_region=body.region,
+        user_id=record["user_id"],
+        agent_id="superplane-operation",
+        task_id=body.operation_id,
+        label=label,
+        aws_region=body.region,
+        session_policy=policy,
+    )
+    expiry = verify_session(result, record["role_arn"], deadline, issued_at=issued_at)
+    require(result.assumed_role_id.split(":", 1)[0] == record["role_id"])
+    await verify_cleanup_session(result, entry_identity, entry_arn, body.region)
+    await revalidate()
+    from src.internal.credential_routes import _write_audit
+
+    await _write_audit(
+        db,
+        event_type="paid_domain_provider_session_issued",
+        org_id=binding.adp_org_id,
+        actor_id=principal,
+        details={
+            "operation_id": body.operation_id,
+            "credential_id": credential_id,
+            "generation": record["generation"],
+            "requester": record["user_id"],
+            "expires_at": expiry.isoformat(),
+        },
+    )
+    await db.commit()
+    await revalidate()
+    return {
+        "version": 1,
+        "operation_id": body.operation_id,
+        "credential_id": credential_id,
+        "role_arn": record["role_arn"],
+        "account_id": account,
+        "region": body.region,
+        "assumed_role_arn": result.assumed_role_arn,
+        "assumed_role_id": result.assumed_role_id,
+        "access_key_id": result.access_key_id,
+        "secret_access_key": result.secret_access_key,
+        "session_token": result.session_token,
+        "expiration": expiry.isoformat(),
+        "authority_expires_at": deadline.isoformat(),
+        "access_entry_arn": entry_arn,
+    }

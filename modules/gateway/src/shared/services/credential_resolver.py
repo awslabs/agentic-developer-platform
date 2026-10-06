@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.vault import UserCredential
@@ -205,6 +205,7 @@ class CredentialResolver:
         stmt = select(UserCredential).where(
             UserCredential.org_id == org_id,
             UserCredential.service == service,
+            ~func.lower(UserCredential.id).like("spda1:%"),
         )
 
         if label is not None:

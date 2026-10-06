@@ -222,7 +222,13 @@ resource "aws_route_table_association" "private" {
 # workloads may depend on. The zero-count keeps it out of state entirely.
 
 resource "aws_default_security_group" "workspace" {
-  count = local.owns_network ? 1 : 0
+  # Governed provider IAM cannot safely tag an untagged AWS-created default SG:
+  # CreateTags has no VPC condition for SG resources. Broad first-tag permission
+  # would let a provider claim a management SG. Leave the unused default with AWS
+  # in this mode; all actual groups are explicit workspace/EKS-owned groups.
+  # Legacy addresses remain [0]. Enabling a boundary on an existing workspace is
+  # a separately reviewed migration, never a silent state adoption/removal.
+  count = local.owns_network && var.workspace_role_permissions_boundary_arn == "" ? 1 : 0
 
   vpc_id = aws_vpc.workspace[0].id
 

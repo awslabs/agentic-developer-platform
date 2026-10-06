@@ -66,6 +66,15 @@ in a day” has not been resolved into a provisioning-time objective or implemen
 deadline and is not an accepted SLA. Establish prerequisites, timing boundaries and
 provider-specific evidence before adding such a target.
 
+Issue #7135 adds a distinct installation-owned provider authority for a reviewed
+same-account native workspace. Personal platform-account connections remain
+forbidden. Protected owner enrollment pins exact installation, human selectors,
+org/workspace, role/policy and secret generations; Gateway re-establishes live
+identity and releases only operation-bound short-lived sessions. See
+[provider authority](installation/PROVIDER-AUTHORITY.md) for the storage, evidence,
+revocation and delivery contract. Provider policies, mandatory child-role
+boundaries, qualified API/worker images and live acceptance remain separate gates.
+
 ## 2. Logical design
 
 ### 2.1 Terminology and ownership invariants
@@ -821,6 +830,18 @@ Runtime must refuse missing or incompatible pins; it must not substitute a callb
 that asserts readiness or hash current provider state to manufacture an expectation.
 
 ### 7.2 Infrastructure source and lifecycle ownership
+
+Installation-owned platform-account provider execution is a separate protected
+capability; it does not relax personal AWS connection restrictions. Governed
+workspace roles receive an explicit owner-reviewed boundary, bound into the
+approved runtime policy. CNI and primary node interfaces receive immutable
+ownership tags at creation. The unused AWS default security group remains
+unmanaged in this mode, avoiding permission to claim arbitrary untagged groups.
+AWS CreateCluster cannot be constrained to a VPC/subnet by IAM: the protected
+worker, exact source and saved-plan approval enforce the owned network graph.
+See the [provider permission matrix](infra/domain-provider/README.md) for this
+residual service-linked authority, phased preparation and required live proof.
+
 
 All Superplane-specific infrastructure definitions, environment inputs and
 provisioning logic live under `modules/domain-apps/superplane/`. Persistent AWS

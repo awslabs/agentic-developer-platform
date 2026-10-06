@@ -789,6 +789,21 @@ variable "workspace_id" {
   }
 }
 
+variable "workspace_role_permissions_boundary_arn" {
+  description = "Explicit owner-reviewed maximum-permissions policy for every IAM role created by this workspace. The provisioning role must enforce this exact boundary on CreateRole and deny replacing/removing it or changing its policy. Empty preserves existing external-account configurations; it does not authorize platform-account provisioning."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition = var.workspace_role_permissions_boundary_arn == "" || can(regex(
+      "^arn:aws[a-z-]*:iam::${var.account_id}:policy/([A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]+$",
+      var.workspace_role_permissions_boundary_arn
+    ))
+    error_message = "Workspace role boundary must be an exact customer-managed policy ARN in the selected account, without wildcards."
+  }
+}
+
 variable "node_image_repository_arns" {
   description = "Exact ECR repository ARNs that this workspace may pull. AWS EKS system repositories are separately pinned. No account-wide read/list permissions are granted."
   type        = list(string)

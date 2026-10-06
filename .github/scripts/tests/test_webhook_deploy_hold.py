@@ -76,6 +76,8 @@ def detect(repo, event="push"):
     "paths",
     [
         (INFRA,),
+        ("modules/domain-apps/superplane/infra/provider-authority/main.tf",),
+        ("modules/domain-apps/superplane/infra/provider-authority/main.tf", CODE),
         ("modules/domain-apps/superplane/infra/shared-operation-authority/main.tf",),
         ("modules/domain-apps/superplane/infra/shared-operation-authority/scripts/register-domain-operation.py", CODE),
         (INFRA, CODE),

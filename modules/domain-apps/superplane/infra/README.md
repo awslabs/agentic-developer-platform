@@ -18,6 +18,8 @@ build declarations and infrastructure utilities belong here as well.
 | Protected operation registration and Gateway runtime IAM/RBAC | `shared-operation-authority/` composed by the shared authority root |
 | Bootstrap actors and independently retained encryption | `lifecycle-foundations/` |
 | Workspace network, EKS and node roles | `workspaces/` |
+| Scoped installation-owned provider role, policy shards and child-role boundary | `domain-provider/` |
+| Protected provider authority/evidence storage and Gateway grants | `provider-authority/`, composed by the existing webhook state owner |
 | Installer role and installation access | `installer-access/` |
 | Superplane permissions used by shared automation | App-owned Terraform modules composed by the shared automation root |
 | Kubernetes resources, database preparation and installation checks | `../k8s/` and `../installation/` |

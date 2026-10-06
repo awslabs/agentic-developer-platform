@@ -40,6 +40,7 @@ class AgentRegistryEntry(TypedDict):
     iam_role_id: str
     agent_name: str
     org_id: str
+    domain_org_id: str
     team_id: str
     owner: str
     scope: str
@@ -115,6 +116,7 @@ class AgentRegistryService:
             iam_role_id=item.get("iam_role_id", {}).get("S", ""),
             agent_name=item.get("agent_name", {}).get("S", ""),
             org_id=item.get("org_id", {}).get("S", ""),
+            domain_org_id=item.get("domain_org_id", {}).get("S", ""),
             team_id=item.get("team_id", {}).get("S", ""),
             owner=item.get("owner", {}).get("S", ""),
             scope=item.get("scope", {}).get("S", ""),

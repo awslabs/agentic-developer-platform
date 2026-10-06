@@ -8,6 +8,7 @@ on:
       - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'environments/*/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-ci.yml'
       - '.github/workflows/webhook-ingress-deploy.yml'
