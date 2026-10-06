@@ -40,6 +40,8 @@ variable "domain_operation_bindings" {
       can(regex("^[0-9a-f-]{36}$", value.binding.producer_registry_id)) &&
       can(regex("^[0-9a-f-]{36}$", value.binding.worker_registry_id)) &&
       value.binding.producer_registry_id != value.binding.worker_registry_id &&
+      value.binding.producer_registry_id == uuidv5("url", "adp:domain-operation-registration:v1:${value.producer_role_arn}") &&
+      value.binding.worker_registry_id == uuidv5("url", "adp:domain-operation-registration:v1:${value.worker_role_arn}") &&
       value.binding.database_schema != value.binding.domain_database_schema &&
       alltrue([for schema in [value.binding.database_schema, value.binding.domain_database_schema] : can(regex("^[a-z_][a-z0-9_]{0,62}$", schema)) && schema != "public"]) &&
       value.binding.worker_service_account == "superplane-paid-worker" &&
@@ -83,7 +85,8 @@ locals {
     Version = "2012-10-17"
     Statement = concat([
       { Sid = "GovernedDomainQueue", Effect = "Allow", Action = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes"], Resource = local.domain_operation_queue_arns },
-      { Sid = "ExactDomainServiceSecrets", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.domain_operation_secrets }
+      { Sid = "ExactDomainServiceSecrets", Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.domain_operation_secrets },
+      { Sid = "VerifyDomainRoleIdentity", Effect = "Allow", Action = ["iam:GetRole"], Resource = flatten([for value in values(var.domain_operation_bindings) : [value.producer_role_arn, value.worker_role_arn]]) }
       ], length(local.domain_operation_kms_keys) > 0 ? [{
         Sid       = "DecryptExactDomainSecrets", Effect = "Allow", Action = ["kms:Decrypt"], Resource = local.domain_operation_kms_keys,
         Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com", "kms:EncryptionContext:SecretARN" = local.domain_operation_secrets } }

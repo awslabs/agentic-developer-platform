@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 spec = importlib.util.spec_from_file_location(
@@ -49,16 +50,16 @@ def scenario(monkeypatch):
             "domain_org_id": "00000000-0000-4000-8000-000000000001",
             "adp_org_id": "test-organization",
         }
-        for kind, suffix, identifier in (
-            ("producer", "api-producer", "2"),
-            ("worker", "domain-worker", "3"),
+        for kind, suffix in (
+            ("producer", "api-producer"),
+            ("worker", "domain-worker"),
         ):
             role = iam.create_role(
                 RoleName=f"adp-dev-superplane-{suffix}",
                 AssumeRolePolicyDocument='{"Version":"2012-10-17","Statement":[]}',
             )["Role"]
             document[kind] = {
-                "agent_id": "00000000-0000-4000-8000-00000000000" + identifier,
+                "agent_id": registration.registry_id(role["Arn"]),
                 "role_arn": role["Arn"],
                 "role_id": role["RoleId"],
             }
@@ -184,3 +185,54 @@ def test_set_order_does_not_break_consistent_readback(scenario):
     worker["credential_scopes"]["SS"].reverse()
     ddb.put_item(TableName=document["registry_table"], Item=worker)
     assert registration.register(document, session)["state"] == "verified"
+
+
+def test_changed_registry_ids_refused_even_with_stale_role_index(scenario):
+    document, session, ddb, _, _, clients = scenario
+    registration.register(document, session)
+
+    class StaleIndex:
+        def __getattr__(self, name):
+            return getattr(ddb, name)
+
+        def query(self, **kwargs):
+            return {"Items": []}
+
+    clients["dynamodb"] = StaleIndex()
+    changed = copy.deepcopy(document)
+    changed["producer"]["agent_id"] = "00000000-0000-4000-8000-000000000004"
+    changed["worker"]["agent_id"] = "00000000-0000-4000-8000-000000000005"
+    with pytest.raises(registration.Refused, match="derived from the exact role"):
+        registration.register(changed, session)
+    assert ddb.scan(TableName=document["registry_table"])["Count"] == 2
+    assert registration.register(document, session)["state"] == "verified"
+
+
+def test_competing_org_pair_is_atomic_despite_both_preflight_reads_being_absent(scenario):
+    document, session, ddb, _, _, clients = scenario
+    competing = copy.deepcopy(document)
+    competing["domain_org_id"] = "00000000-0000-4000-8000-000000000006"
+
+    class ConcurrentWinner:
+        def __getattr__(self, name):
+            return getattr(ddb, name)
+
+        def query(self, **kwargs):
+            return {"Items": []}
+
+        def transact_write_items(self, **kwargs):
+            # Interleave the second full writer after the first writer's reads.
+            # Both observe absent primary keys and an empty GSI before writing.
+            clients["dynamodb"] = ddb
+            assert registration.register(competing, session)["state"] == "verified"
+            return ddb.transact_write_items(**kwargs)
+
+    clients["dynamodb"] = ConcurrentWinner()
+    with pytest.raises(ClientError, match="TransactionCanceledException"):
+        registration.register(document, session)
+    rows = ddb.scan(TableName=document["registry_table"])["Items"]
+    assert len(rows) == 2
+    assert all(row["domain_org_id"]["S"] == competing["domain_org_id"] for row in rows)
+    with pytest.raises(registration.Refused, match="different owner"):
+        registration.register(document, session)
+    assert registration.register(competing, session)["state"] == "verified"

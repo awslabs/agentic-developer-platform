@@ -204,8 +204,8 @@ run "explicit_binding_uses_exact_resources_and_separate_schemas" {
           domain                           = "superplane"
           org_id                           = "00000000-0000-4000-8000-000000000001"
           adp_org_id                       = "test-org"
-          producer_registry_id             = "00000000-0000-4000-8000-000000000002"
-          worker_registry_id               = "00000000-0000-4000-8000-000000000003"
+          producer_registry_id             = "cc73893b-35a5-53c8-bdd9-7e5f0b3f6312"
+          worker_registry_id               = "bcda60a1-7ab6-5261-9412-40b5ecced082"
           database_secret_id               = "arn:aws:secretsmanager:us-east-1:123456789012:secret:operations-AbCdEf"
           database_schema                  = "superplane_operations"
           domain_database_secret_id        = "arn:aws:secretsmanager:us-east-1:123456789012:secret:domain-AbCdEf"
@@ -231,6 +231,10 @@ run "explicit_binding_uses_exact_resources_and_separate_schemas" {
     condition     = jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[0].Resource == ["arn:aws:sqs:us-east-1:123456789012:adp-dev-superplane-domain-operations"] && !strcontains(aws_iam_role_policy.gateway_domain_operations[0].policy, "*") && alltrue([for rule in kubernetes_role.gateway_domain_operation_read["superplane"].rule : toset(rule.verbs) == toset(["get"]) && !contains(rule.resources, "secrets")])
     error_message = "Shared owner permissions must be exact, read-only Kubernetes metadata and no worker grants."
   }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[2].Action == ["iam:GetRole"] && jsondecode(aws_iam_role_policy.gateway_domain_operations[0].policy).Statement[2].Resource == ["arn:aws:iam::123456789012:role/adp-dev-superplane-api-producer", "arn:aws:iam::123456789012:role/adp-dev-superplane-domain-worker"]
+    error_message = "Runtime immutable identity verification may read only the exact producer and worker IAM roles."
+  }
 }
 
 run "shared_schema_is_refused" {
@@ -248,8 +252,8 @@ run "shared_schema_is_refused" {
           domain                           = "superplane"
           org_id                           = "00000000-0000-4000-8000-000000000001"
           adp_org_id                       = "test-org"
-          producer_registry_id             = "00000000-0000-4000-8000-000000000002"
-          worker_registry_id               = "00000000-0000-4000-8000-000000000003"
+          producer_registry_id             = "cc73893b-35a5-53c8-bdd9-7e5f0b3f6312"
+          worker_registry_id               = "bcda60a1-7ab6-5261-9412-40b5ecced082"
           database_secret_id               = "arn:aws:secretsmanager:us-east-1:123456789012:secret:operations-AbCdEf"
           database_schema                  = "superplane_operations"
           domain_database_secret_id        = "arn:aws:secretsmanager:us-east-1:123456789012:secret:domain-AbCdEf"
@@ -285,8 +289,8 @@ run "recreated_role_identity_is_refused" {
           domain                           = "superplane"
           org_id                           = "00000000-0000-4000-8000-000000000001"
           adp_org_id                       = "test-org"
-          producer_registry_id             = "00000000-0000-4000-8000-000000000002"
-          worker_registry_id               = "00000000-0000-4000-8000-000000000003"
+          producer_registry_id             = "cc73893b-35a5-53c8-bdd9-7e5f0b3f6312"
+          worker_registry_id               = "bcda60a1-7ab6-5261-9412-40b5ecced082"
           database_secret_id               = "arn:aws:secretsmanager:us-east-1:123456789012:secret:operations-AbCdEf"
           database_schema                  = "superplane_operations"
           domain_database_secret_id        = "arn:aws:secretsmanager:us-east-1:123456789012:secret:domain-AbCdEf"

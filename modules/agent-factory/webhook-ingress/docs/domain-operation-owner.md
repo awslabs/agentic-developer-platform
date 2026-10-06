@@ -16,9 +16,18 @@ for deployment authorization and account selection.
 Complete app-owned runtime preparation and separate shared operation-database
 preparation first. Collect the selected account, region, environment and operator
 role; the app-owned standard queue URL; both exact IAM role ARNs and immutable
-`RoleId` values; and two new, stable registry UUIDs. The maintained role names are
+`RoleId` values; and the two deterministic registry UUIDs. The maintained role names are
 `adp-<environment>-superplane-api-producer` and
 `adp-<environment>-superplane-domain-worker`.
+
+Each registry ID is UUIDv5 with the standard URL namespace and the name
+`adp:domain-operation-registration:v1:<exact-role-ARN>`:
+`uuid.uuid5(uuid.NAMESPACE_URL, "adp:domain-operation-registration:v1:" + role_arn)`
+in Python, or `uuidv5("url", "adp:domain-operation-registration:v1:${role_arn}")`
+in Terraform. Arbitrary UUIDs are refused. Organization, operator and immutable
+RoleId deliberately do not participate in this derivation: competing recipes
+for the same role must condition on the same primary key, including while its
+eventually consistent role index is stale.
 
 Keep a private Terraform variable file containing the typed
 `domain_operation_bindings.superplane` object defined in
@@ -69,6 +78,12 @@ exactly two protected registry records: producer scope
 `domain:operation-producer`, and worker scopes `domain:operation-executor` and
 `domain:operation-recovery`. Worker requests still require delegated run identity
 and independent pod proof. No model grants are added.
+
+Gateway checks each protected domain role against its stored immutable IAM
+RoleId on initial authentication, cached identity reuse and current-authority
+reads. Missing/recreated roles, absent RoleIds and denied/unavailable IAM lookups
+are refused. This owner grants Gateway `iam:GetRole` on only the two exact roles;
+ordinary agent authentication adds no IAM lookup dependency.
 
 An existing exact pair is a verified no-op. Changed ownership, revoked status,
 scope drift, extra fields, partial pairs, another role mapping or a recreated IAM

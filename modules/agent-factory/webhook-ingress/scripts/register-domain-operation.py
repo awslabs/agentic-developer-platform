@@ -25,6 +25,13 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def registry_id(role_arn):
+    # Role ARN survives IAM recreation and changes of organization/operator.
+    # Every writer therefore conditions on the SAME primary key for this role;
+    # the eventually consistent role index is only an extra collision check.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "adp:domain-operation-registration:v1:" + role_arn))
+
+
 def role(arn, account):
     require(
         isinstance(arn, str)
@@ -103,6 +110,10 @@ def records(document):
         require(
             role(entry["role_arn"], account) == expected_name,
             "role is outside maintained domain runtime recipe",
+        )
+        require(
+            entry["agent_id"] == registry_id(entry["role_arn"]),
+            "registry UUID must be derived from the exact role ARN",
         )
         require(
             re.fullmatch(r"AROA[A-Z0-9]{16,32}", entry["role_id"] or ""),
