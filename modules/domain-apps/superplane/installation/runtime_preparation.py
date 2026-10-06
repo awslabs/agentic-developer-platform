@@ -462,6 +462,7 @@ def compose(request, reviewed, env, lock, operator):
         "worker_namespace": request["namespace"],
         "worker_service_account": paid_worker.WORKER,
         "worker_container": "paid-worker",
+        "worker_scaled_job": paid_worker.WORKER,
         "worker_image_digests": [lock["images"][paid_worker.COMPONENT]],
         "repo": operator["repo"],
         "observation_url": operator["observation_url"],
@@ -497,6 +498,7 @@ def compose(request, reviewed, env, lock, operator):
             "operator_role_id": selected_identity["expected_role_id"],
         },
         "paid_worker": selected,
+        "api_adapters": prepared_env["api_adapters"],
         "gateway_binding_proposal": binding,
         "registry_proposals": [
             {
@@ -521,6 +523,7 @@ def compose(request, reviewed, env, lock, operator):
         "runtime_database_role": f"superplane_{request['environment']}_runtime",
         "secret_projection_names": {
             "database": selected["database_secret"],
+            "operation_api": "superplane-operation-api-db",
             "workspace": selected["workspace_credentials_secret"],
             "provider": selected["provider_secret"],
         },
@@ -1165,8 +1168,14 @@ def prepare(
             atomic(receipt_file, receipt)
             return receipt
         if receipt is None:
-            call(
-                "plan", "-input=false", "-lock-timeout=60s", "-out=installation.tfplan"
+            create_saved_plan(
+                saved_plan,
+                lambda: call(
+                    "plan",
+                    "-input=false",
+                    "-lock-timeout=60s",
+                    "-out=installation.tfplan",
+                ),
             )
         binary_hash = binary_plan_digest(saved_plan)
         plan = structured("show", "-json", "installation.tfplan")

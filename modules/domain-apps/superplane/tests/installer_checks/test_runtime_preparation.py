@@ -215,7 +215,13 @@ def test_contract_reuses_actual_worker_validator_and_fixed_gateway_binding(
         "domain:operation-executor",
         "domain:operation-recovery",
     ]
-    projected = dict(env, paid_worker=result["paid_worker"])
+    assert result["api_adapters"]["dispatcher"]["operation_database_secret_ref"] == {
+        "name": "superplane-operation-api-db",
+        "key": "dsn",
+    }
+    projected = dict(
+        env, paid_worker=result["paid_worker"], api_adapters=result["api_adapters"]
+    )
     paid_worker.validate(projected, lock)
     documents = [{"metadata": {"labels": {LABEL: "owned"}}}]
     paid_worker.project(projected, lock, documents)
