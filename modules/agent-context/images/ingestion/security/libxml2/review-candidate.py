@@ -42,10 +42,22 @@ observed = json.loads(
         text=True,
     )
 )
+# The later adp3 build retains the same upstream critical fix and adds the
+# separately reviewed September backports. Bind it to the retained exact bytes;
+# package-version equality alone must never transfer a disposition.
+reviewed_hashes = {
+    "2.13.9-0+adp1": "b38d226e6b1126549ea9c3e7a903b23c0be88a42cc5eb16f807811197f3fb337",
+    "2.13.9-0+adp3": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6",
+}
+if observed["version"] == "2.13.9-0+adp3":
+    maintenance = Path(__file__).resolve().parents[2] / "high-security"
+    proof = json.loads((maintenance / "validation/patched-source-review.json").read_text())
+    assert proof["exact_patched_files"]["/usr/lib/x86_64-linux-gnu/libxml2.so.2"] == reviewed_hashes[observed["version"]]
+    assert hashlib.sha256((maintenance / "libxml2/security.patch").read_bytes()).hexdigest() == proof["libxml_patch_sha256"]
 assert observed == {
-    "version": "2.13.9-0+adp1",
+    "version": observed["version"],
     "runtime_version": "21309",
-    "sha256": "b38d226e6b1126549ea9c3e7a903b23c0be88a42cc5eb16f807811197f3fb337",
+    "sha256": reviewed_hashes[observed["version"]],
 }
 raw = json.loads(raw_bytes)
 dispositions = []
