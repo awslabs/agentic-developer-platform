@@ -130,3 +130,34 @@ def test_foreign_or_incomplete_artifacts_are_refused(jars, failure):
     with pytest.raises(ValueError):
         merge.merge(original, shaded, root / "result.jar")
     assert not (root / "result.jar").exists()
+
+
+def test_record_update_preserves_other_rows_and_exact_line_endings():
+    import base64
+
+    installer_spec = importlib.util.spec_from_file_location(
+        "jackson_installer", SOURCE.with_name("install.py")
+    )
+    installer = importlib.util.module_from_spec(installer_spec)
+    installer_spec.loader.exec_module(installer)
+    old = "ray/jars/ray_dist.jar,sha256=old,123"
+    prefix = b"ray/unchanged.py,sha256=preserved,12\r\n"
+    suffix = b"\r\nray-2.58.0.dist-info/RECORD,,\r\n"
+    new_jar = b"synthetic replacement jar"
+    record = prefix + old.encode() + suffix
+    updated = installer.update_record(record, old, new_jar)
+    digest = (
+        base64.urlsafe_b64encode(hashlib.sha256(new_jar).digest()).decode().rstrip("=")
+    )
+    assert (
+        updated
+        == prefix
+        + f"ray/jars/ray_dist.jar,sha256={digest},{len(new_jar)}".encode()
+        + suffix
+    )
+    for invalid in (
+        record.replace(old.encode(), b"ray/jars/ray_dist.jar,sha256=foreign,123"),
+        record + old.encode(),
+    ):
+        with pytest.raises(ValueError):
+            installer.update_record(invalid, old, new_jar)
