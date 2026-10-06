@@ -26,6 +26,7 @@ def validate_request(request):
         and re.fullmatch(r"[a-z]{2}-[a-z]+-[1-9][0-9]*", request["region"])
         and isinstance(request["environment"], str)
         and IDENTIFIER.fullmatch(request["environment"])
+        and len(request["environment"]) <= 31
         and isinstance(request["cluster"], str)
         and EKS_NAME.fullmatch(request["cluster"])
         and isinstance(request["namespace"], str)
@@ -34,7 +35,7 @@ def validate_request(request):
     )
     require(
         isinstance(request["operator_role_arn"], str)
-        and re.fullmatch(rf"arn:aws:iam::{request['account_id']}:role/[A-Za-z0-9+=,.@_/-]{{1,128}}", request["operator_role_arn"]),
+        and re.fullmatch(rf"arn:aws:iam::{request['account_id']}:role/[A-Za-z0-9+=,.@_-]{{1,64}}", request["operator_role_arn"]),
         "Runtime preparation requires an explicit same-account operator role",
     )
 
@@ -54,7 +55,7 @@ def review(request, inspector):
     require(
         cluster.get("arn") == f"arn:aws:eks:{region}:{account}:cluster/{request['cluster']}"
         and cluster.get("status") == "ACTIVE"
-        and cluster.get("identity", {}).get("oidc", {}).get("issuer", "").startswith("https://"),
+        and re.fullmatch(rf"https://oidc\.eks\.{re.escape(region)}\.amazonaws\.com/id/[A-Za-z0-9]+", cluster.get("identity", {}).get("oidc", {}).get("issuer", "")),
         "Runtime preparation requires the selected active cluster and OIDC identity",
     )
     resource_names = names(request)
