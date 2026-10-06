@@ -74,6 +74,17 @@ def _reverse_row(installation_id: int) -> dict:
     }
 
 
+@pytest.mark.asyncio
+async def test_forward_verification_requires_matching_owner_and_keeps_cache_scoped(db_session: AsyncSession):
+    from src.admin.connections.service import _check_identity_rows
+
+    client = _identity_client(forward={"org_id": {"S": "other"}}, reverse=None)
+    with patch("src.admin.identity_index.IdentityIndexClient", return_value=client):
+        assert await _check_identity_rows(42, "canonical") == (False, False)
+        assert await _check_identity_rows(42, "other") == (True, False)
+    assert client.get_installation_identity.await_count == 2
+
+
 # ---------------------------------------------------------------------------
 # (b) A tenant with no Postgres rows still surfaces verification
 # ---------------------------------------------------------------------------

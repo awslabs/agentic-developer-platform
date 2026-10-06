@@ -634,6 +634,10 @@ class TestRouteContract:
         assert client.get("/admin/organizations/org-001/connections/github").status_code == 403
         assert client.post("/admin/organizations/org-001/connections/github", json={"installation_id": FREE_INSTALL}).status_code == 403
         assert client.delete(f"/admin/organizations/org-001/connections/github/{FREE_INSTALL}").status_code == 403
+        assert client.post(
+            f"/admin/organizations/org-001/connections/github/{FREE_INSTALL}/reconcile-routing",
+            json={"expected_projection_org_id": "historical"},
+        ).status_code == 403
 
     async def test_attach_returns_409_for_a_cross_tenant_claim(self, db_session: AsyncSession, platform_admin_context: TokenContext):
         """The refusal reaches the client as a 409, not a 500.

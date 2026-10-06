@@ -52,6 +52,58 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 
+class RoutingReconciliationRefusedError(Exception):
+    def __init__(self, reason: str, status_code: int = 409, observed_org_id: str | None = None, authoritative_org_id: str | None = None):
+        self.reason = reason
+        self.status_code = status_code
+        self.observed_org_id = observed_org_id
+        self.authoritative_org_id = authoritative_org_id
+        super().__init__(reason)
+
+
+async def reconcile_routing(org_id: str, installation_id: int, expected_org_id: str, db: AsyncSession) -> tuple[str, str]:
+    """Attest canonical ownership before touching a single forward projection."""
+    from src.admin.audit_operation import mark_admin_effects
+    from src.admin.connections.github_client import GitHubAppClient
+    from src.admin.connections.service import _get_github_app_credentials
+    from src.admin.identity_index import IdentityIndexClient
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+
+    if installation_id <= 0:
+        raise RoutingReconciliationRefusedError("invalid_installation_id", 422)
+    try:
+        app_id, private_key = _get_github_app_credentials()
+        if not app_id or not private_key:
+            raise RoutingReconciliationRefusedError("github_app_credentials_unavailable", 503)
+        client = GitHubAppClient(app_id, private_key)
+        try:
+            owner, state = await resolve_installation_owner(installation_id, db=db, attest=True, github_client=client)
+        finally:
+            await client.aclose()
+    except RoutingReconciliationRefusedError:
+        raise
+    except Exception as exc:
+        logger.warning("Routing reconciliation attestation unavailable for installation=%s: %s", installation_id, type(exc).__name__)
+        raise RoutingReconciliationRefusedError("github_attestation_unavailable", 503) from exc
+
+    if state == OwnerState.REVOKED:
+        raise RoutingReconciliationRefusedError("installation_revoked")
+    if state != OwnerState.RESOLVED or owner is None or not owner.attested:
+        raise RoutingReconciliationRefusedError(f"ownership_{state.value}", 403)
+    if owner.tenant_id != org_id:
+        raise RoutingReconciliationRefusedError("canonical_owner_differs_from_target", authoritative_org_id=owner.tenant_id)
+
+    mark_admin_effects()
+    try:
+        outcome, observed = await IdentityIndexClient().reconcile_installation_routing(installation_id, expected_org_id, org_id)
+    except Exception as exc:
+        logger.warning("Routing reconciliation projection unavailable for installation=%s: %s", installation_id, type(exc).__name__)
+        raise RoutingReconciliationRefusedError("projection_unavailable", 503) from exc
+    if outcome not in {"repaired", "already_consistent"}:
+        raise RoutingReconciliationRefusedError(outcome, observed_org_id=observed, authoritative_org_id=org_id)
+    return outcome, observed or org_id
+
+
 class OrganizationNotFoundError(Exception):
     """The target organization does not exist."""
 

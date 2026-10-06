@@ -1385,7 +1385,7 @@ async def _check_identity_rows(installation_id: int, org_id: str | None) -> tupl
     """
     from src.admin.identity_index import IdentityIndexClient
 
-    fwd_key = ("forward", str(installation_id))
+    fwd_key = ("forward", str(installation_id), org_id or "")
     rev_key = ("reverse", org_id or "")
 
     fwd_hit, fwd_cached = _verification_cache_get(_identity_row_cache, fwd_key)
@@ -1416,6 +1416,8 @@ async def _check_identity_rows(installation_id: int, org_id: str | None) -> tupl
         return result is not None
 
     forward = _present(results[0])
+    if forward is True and org_id is not None:
+        forward = results[0].get("org_id", {}).get("S") == org_id
     _verification_cache_set(_identity_row_cache, fwd_key, forward)
 
     reverse: bool | None = None

@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.audit import write_admin_audit
-from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
+from src.admin.audit_operation import AuditedAdminRoute, current_operation, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
@@ -44,11 +44,15 @@ from .schemas import (
     GitHubConnectionDetachResponse,
     GitHubConnectionListResponse,
     GitHubConnectionResponse,
+    ReconcileRoutingRequest,
+    ReconcileRoutingResponse,
 )
 from .service import (
     ConnectionNotFoundError,
     OrganizationNotFoundError,
     OrgConnectionsService,
+    RoutingReconciliationRefusedError,
+    reconcile_routing,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,3 +170,49 @@ async def detach_github_connection(
         return result
     except (OrganizationNotFoundError, ConnectionNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/{org_id}/connections/github/{installation_id}/reconcile-routing", response_model=ReconcileRoutingResponse)
+async def reconcile_github_routing(
+    org_id: str,
+    installation_id: int,
+    req: ReconcileRoutingRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenContext = Depends(get_current_user),
+) -> ReconcileRoutingResponse:
+    _require_platform_admin(db, current_user, org_id, "reconcile_routing")
+    try:
+        outcome, observed = await reconcile_routing(org_id, installation_id, req.expected_projection_org_id, db)
+    except RoutingReconciliationRefusedError as exc:
+        operation = current_operation.get()
+        if operation is not None:
+            operation.refusal = {
+                "installation_id": installation_id,
+                "expected_projection_org_id": req.expected_projection_org_id,
+                "observed_projection_org_id": exc.observed_org_id,
+                "authoritative_org_id": exc.authoritative_org_id,
+                "reason": exc.reason,
+            }
+            if exc.status_code == 409:
+                operation.effects_started = False
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="org_connection_reconcile_routing",
+        target_type="github_connection",
+        target_id=str(installation_id),
+        org_id=org_id,
+        outcome=outcome,
+        extra={
+            "expected_projection_org_id": req.expected_projection_org_id,
+            "observed_projection_org_id": observed,
+            "authoritative_org_id": org_id,
+        },
+    )
+    return ReconcileRoutingResponse(
+        installation_id=installation_id,
+        observed_projection_org_id=observed,
+        authoritative_org_id=org_id,
+        outcome=outcome,
+    )
