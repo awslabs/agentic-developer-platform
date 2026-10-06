@@ -26,7 +26,9 @@ class RetirementFinalizer(Finalizer):
         observations,
         authenticate,
         token_for,
+        settle_related=None,
     ):
+        self.settle_related = settle_related
         self.provider = SimpleNamespace(
             execution_pool=execution_pool, domain_pool=domain_pool
         )
@@ -113,7 +115,12 @@ class RetirementFinalizer(Finalizer):
     async def accounting_with_costs(self, operation, target, calls, assessment=None):
         # Controller Plan.read is a different domain protocol. Retirement uses
         # original allocation/provider evidence and never invents a zero cost.
-        return self.accounting(operation, calls, assessment)
+        payload = self.accounting(operation, calls, assessment)
+        if assessment and assessment.may_mark_released and self.settle_related:
+            payload["related_allocations"] = await self.settle_related(
+                operation, target
+            )
+        return payload
 
     async def capture_cleanup(self, operation, target, plan, assessment):
         # The canonical lifecycle ownership rows and shared allocation report
@@ -156,23 +163,25 @@ class RetirementFinalizer(Finalizer):
         return CallOutcome.SUCCEEDED, "fresh retirement provider absence observed", None
 
     async def _persist_observation(self, operation, target, payload, assessment):
-        async with self.provider.domain_pool.acquire() as connection:
-            async with connection.transaction():
+        async with (
+            self.provider.domain_pool.acquire() as connection,
+            connection.transaction(),
+        ):
+            await connection.execute(
+                "INSERT INTO controller_execution_accounting(operation_id,org_id,workspace_id,observation) "
+                "VALUES ($1,$2::text::uuid,$3::text::uuid,$4::json) "
+                "ON CONFLICT(operation_id) DO UPDATE SET observation=EXCLUDED.observation",
+                operation.grant.lease.operation_id,
+                target["domain_org_id"],
+                operation.grant.lease.workspace_id,
+                json.dumps(payload),
+            )
+            if assessment and assessment.may_mark_released:
+                # Keep the ownership rows and recorded immutable handles. Only
+                # withdraw the active projection after fresh complete absence.
                 await connection.execute(
-                    "INSERT INTO controller_execution_accounting(operation_id,org_id,workspace_id,observation) "
-                    "VALUES ($1,$2::text::uuid,$3::text::uuid,$4::json) "
-                    "ON CONFLICT(operation_id) DO UPDATE SET observation=EXCLUDED.observation",
-                    operation.grant.lease.operation_id,
-                    target["domain_org_id"],
+                    "UPDATE workspaces SET status='Deleted' WHERE id::text=$1 AND org_id::text=$2 "
+                    "AND status IN ('Teardown','retired') AND is_default=false",
                     operation.grant.lease.workspace_id,
-                    json.dumps(payload),
+                    target["domain_org_id"],
                 )
-                if assessment and assessment.may_mark_released:
-                    # Keep the ownership rows and recorded immutable handles. Only
-                    # withdraw the active projection after fresh complete absence.
-                    await connection.execute(
-                        "UPDATE workspaces SET status='Deleted' WHERE id::text=$1 AND org_id::text=$2 "
-                        "AND status IN ('Teardown','retired') AND is_default=false",
-                        operation.grant.lease.workspace_id,
-                        target["domain_org_id"],
-                    )

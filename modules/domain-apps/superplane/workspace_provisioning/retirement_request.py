@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from harness_jobs.identity import OperationRequest, payload_digest
 
-from .artifacts import digest
+from .artifacts import canonical, digest
 from .lifecycle_policy import policy_digest, policy_document
 from .retirement_access_artifact import validate_access_artifact
 from .retirement_destroy_producer import destroy_reference
@@ -75,6 +75,9 @@ def retirement_request(inventory, access_plan, access_row, source, policy):
         "retirement_inventory_sha256": digest(asdict(inventory)),
         "retirement_access_artifact_id": access_row["artifact_id"],
         "control_allocation_id": access_plan.allocation_id,
+        "cleanup_allocation_ids": canonical(
+            [access_plan.allocation_id, previous["allocation_id"]]
+        ),
         "allocation_id": access_plan.original_allocation_id,
         "original_allocation_id": access_plan.original_allocation_id,
         "terraform_plan_file_sha256": reference.plan_file_sha256,

@@ -387,13 +387,51 @@ async def build(runtime, server, tmp_path):
         {
             **parameters,
             "allocation_id": "bootstrap-allocation",
+            "execution_steps": encode_execution_steps(
+                [
+                    ExecutionStep(
+                        "bootstrap-workspace",
+                        "superplane-lifecycle",
+                        "bootstrap-workspace",
+                        "fixture-target",
+                    )
+                ]
+            ),
             "lifecycle_phase": "bootstrap-workspace",
             "lifecycle_source_operation_id": paid.operation_id,
             "lifecycle_artifact_id": apply_row["artifact_id"],
         },
         "bootstrap",
-        succeeded=True,
     )
+    bootstrap_lease = await harness.lease(
+        bootstrap.operation_id, holder="bootstrap-worker"
+    )
+    bootstrap_grant = ExecutionGrant(
+        replace(principal, subject=bootstrap_lease.holder), bootstrap_lease
+    )
+
+    async def bootstrap_provider(_call):
+        return (
+            CallOutcome.SUCCEEDED,
+            "fixture bootstrap provider result",
+            ids.CLUSTER_ARN,
+        )
+
+    bootstrap_executor = OperationExecutor(
+        bootstrap_lease, connect=harness.connect, provider_call=bootstrap_provider
+    )
+    bootstrap_execution = ExecutionRPCServer(
+        connect=harness.connect,
+        provider_call=bootstrap_provider,
+        authenticate=lambda _: None,
+    )
+    await bootstrap_execution.execute_step(
+        bootstrap_grant, bootstrap_executor, "bootstrap-workspace"
+    )
+    async with harness.connect() as connection:
+        bootstrap = await OperationStore().get(
+            connection, principal, bootstrap.operation_id
+        )
     inventory = await asyncio.to_thread(management_journal, runtime)
     async with harness.connect() as connection:
         await connection.execute(
@@ -413,9 +451,24 @@ async def build(runtime, server, tmp_path):
     preparation = access_request(
         plan, bootstrap, policy_doc, allocation_source=paid, prepare_destroy=True
     )
-    control = await admit(
-        dict(preparation.parameters), preparation.idempotency_key, succeeded=True
+    control = await admit(dict(preparation.parameters), preparation.idempotency_key)
+    control_lease = await harness.lease(control.operation_id, holder="control-worker")
+    control_grant = ExecutionGrant(
+        replace(principal, subject=control_lease.holder), control_lease
     )
+    control_executor = OperationExecutor(
+        control_lease, connect=harness.connect, provider_call=provider
+    )
+    control_execution = ExecutionRPCServer(
+        connect=harness.connect, provider_call=provider, authenticate=lambda _: None
+    )
+    await control_execution.execute_step(
+        control_grant, control_executor, "prepare-retirement-access"
+    )
+    async with harness.connect() as connection:
+        control = await OperationStore().get(
+            connection, principal, control.operation_id
+        )
     from superplane_bootstrap.eks_grants import EksGrants
 
     eks = EksGrants(

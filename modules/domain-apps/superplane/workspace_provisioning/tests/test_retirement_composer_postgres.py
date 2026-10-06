@@ -8,6 +8,8 @@ unmodified. Only cloud and subprocess transports are doubled.
 import json
 
 import pytest
+from harness_jobs.identity import ContractViolation
+from harness_jobs.inventory import AllocationResource, InventoryAuthority
 
 from workspace_provisioning.retirement_composer import run_retirement
 
@@ -40,16 +42,43 @@ async def durable_result(case):
         return operation, workspace, json.loads(accounting), calls, reports
 
 
-@pytest.mark.parametrize("retain_vpc", [False, True])
+@pytest.mark.parametrize("remaining", [None, "retain_vpc", "uncertain_control"])
 def test_native_retirement_source_chain(
-    runtime, server, tmp_path, monkeypatch, retain_vpc
+    runtime, server, tmp_path, monkeypatch, remaining
 ):
     loop = runtime.store.store._loop
     try:
         case = loop.run(build(runtime, server, tmp_path))
+        if remaining is None:
+
+            async def reject_foreign_allocation():
+                authority = InventoryAuthority(
+                    connect=case.harness.connect,
+                    authenticate=lambda _: None,
+                    related_allocation_id="unapproved-foreign-allocation",
+                )
+                async with case.harness.connect() as connection:
+                    with pytest.raises(ContractViolation, match="outside the approved"):
+                        await authority.enumerate_resources(
+                            connection,
+                            case.operation.grant.lease,
+                            resources=(
+                                AllocationResource(
+                                    "foreign", "aws", "foreign", "test", frozenset()
+                                ),
+                            ),
+                        )
+                    assert (
+                        await connection.fetchval(
+                            "SELECT count(*) FROM harness_allocation_resource WHERE allocation_id='unapproved-foreign-allocation'"
+                        )
+                        == 0
+                    )
+
+            loop.run(reject_foreign_allocation())
         context, state = transport(case, monkeypatch)
-        state["retain_vpc"] = retain_vpc
-        if retain_vpc:
+        state[remaining] = True
+        if remaining:
             with pytest.raises(ExceptionGroup):
                 loop.run(run_retirement(case.operation, context))
         else:
@@ -62,11 +91,11 @@ def test_native_retirement_source_chain(
         )
         assert all(call["provider_ref"] is None for call in calls)
         assert accounting["allocation_id"] == "original-allocation"
-        if retain_vpc:
+        if remaining:
             assert operation != "succeeded"
             assert workspace != "Deleted"
             assert accounting["may_mark_released"] is False
-            assert reports == 0
+            assert reports == (1 if remaining == "uncertain_control" else 0)
         else:
             assert operation == "succeeded"
             assert workspace == "Deleted"
@@ -75,7 +104,14 @@ def test_native_retirement_source_chain(
             assert accounting["exposure"] == "none"
             assert len(accounting["resource_dispositions"]) == 2
             assert not accounting["unresolved_resources"]
-            assert reports == 1
+            assert reports == 2
+            related = accounting["related_allocations"]
+            assert len(related) == 1
+            assert related[0]["allocation_id"] == case.plan.allocation_id
+            assert related[0]["inventory_complete"] is True
+            assert related[0]["may_mark_released"] is True
+            assert related[0]["exposure"] == "none"
+            assert len(related[0]["resource_dispositions"]) == 1
     finally:
         if hasattr(runtime, "retirement_pool"):
             loop.run(runtime.retirement_pool.close())

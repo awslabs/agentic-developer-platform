@@ -155,7 +155,7 @@ async def run_retirement_access(operation, context):
         return (
             CallOutcome.SUCCEEDED,
             "temporary cleanup grants recorded; retirement and both allocations remain outstanding",
-            result["retirement_access_artifact_id"],
+            None,
         )
 
     async def authenticate(_token):

@@ -404,6 +404,23 @@ async def run_retirement(operation, context):
         observations = RetirementObservations(
             session=session, kubernetes=grants, eks=eks
         )
+
+        async def settle_related(current, _target):
+            from .retirement_control_settlement import settle_control_allocation
+
+            return [
+                await settle_control_allocation(
+                    current,
+                    context,
+                    inventory,
+                    eks=eks,
+                    cluster_absent=cluster_absent,
+                    authorize=authorize,
+                    authenticate=authenticate,
+                    token=token,
+                )
+            ]
+
         finalizer = RetirementFinalizer(
             execution_pool=execution_pool,
             domain_pool=domain_pool,
@@ -411,6 +428,7 @@ async def run_retirement(operation, context):
             observations=observations,
             authenticate=authenticate,
             token_for=lambda _op: token,
+            settle_related=settle_related,
         )
         lifecycle = RetirementLifecycle(
             domain_pool=domain_pool,
