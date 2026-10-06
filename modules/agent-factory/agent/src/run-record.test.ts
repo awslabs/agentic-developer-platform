@@ -30,11 +30,49 @@ test('rejects duplicate/secret/oversized tasks and redacts reported evidence', (
   try {
     expect(parseTaskChecklist('- ☐ a-private-api-key')).toBeUndefined();
     expect(parseTaskChecklist('- ☐ Duplicate\n- ☑ Duplicate')).toBeUndefined();
-    expect(parseTaskChecklist('- ☐ ' + 'x'.repeat(1025))).toBeUndefined();
+    expect(parseTaskChecklist('- ☐ ' + 'x'.repeat(16385))).toBeUndefined();
     expect(parseTaskChecklist('I did all of the work')).toBeUndefined();
     const c = capture(); c.evidence('Used a-private-api-key');
     expect(c.markdown()).not.toContain('a-private-api-key');
     expect(c.record.evidence[0].text).toContain('[redacted]');
+  } finally { delete process.env.TEST_API_KEY; }
+});
+
+test('saves the complete updated board when a task has a long evidence note', () => {
+  const c = capture();
+  c.checklist('- ☐ Earlier checkpoint');
+  const rows = Array.from({ length: 77 }, (_, i) =>
+    `- ${i < 67 ? '☑' : '☐'} \`test\` SEC03-t${i} — Verify behavior ${i}`);
+  rows[48] += ' — ' + 'Integration evidence. '.repeat(60);
+  c.checklist(rows.join('\n'));
+  const saved = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'));
+  expect(saved.latest_checklist.tasks).toHaveLength(77);
+  expect(saved.latest_checklist.tasks.filter((t: any) => t.status === 'completed')).toHaveLength(67);
+  expect(saved.latest_checklist.tasks[48].text).toContain('[Task text shortened; see task board.]');
+  expect(Buffer.byteLength(saved.latest_checklist.tasks[48].text, 'utf8')).toBeLessThanOrEqual(1024);
+  expect(saved.first_checklist.tasks[0].text).toBe('Earlier checkpoint');
+});
+
+test('shortens only the display without merging distinct tasks or splitting unicode', () => {
+  const prefix = 'Run checks — ' + '😀'.repeat(600);
+  const tasks = parseTaskChecklist(`- ☐ ${prefix} first\n- ☑ ${prefix} second`)!;
+  expect(tasks).toHaveLength(2);
+  expect(tasks[0].id).not.toBe(tasks[1].id);
+  expect(tasks[0].text).toBe(tasks[1].text);
+  expect(tasks[0].text).not.toContain('�');
+  expect(tasks[0].text.length).toBeLessThanOrEqual(1024);
+  expect(tasks[1].status).toBe('completed');
+  expect(parseTaskChecklist(`- ☐ ${prefix}\n- ☑ ${prefix}`)).toBeUndefined();
+});
+
+test('rejects secrets beyond the shortened display and preserves the previous snapshot', () => {
+  process.env.TEST_API_KEY = 'a-private-api-key';
+  try {
+    const c = capture();
+    c.checklist('- ☐ Existing task');
+    c.checklist('- ☑ ' + 'Safe evidence. '.repeat(100) + 'a-private-api-key');
+    expect(c.record.latest_checklist?.tasks.map(t => t.text)).toEqual(['Existing task']);
+    expect(c.markdown()).not.toContain('a-private-api-key');
   } finally { delete process.env.TEST_API_KEY; }
 });
 test('bounds long runs while preserving the original baseline', () => {

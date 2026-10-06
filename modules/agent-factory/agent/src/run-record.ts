@@ -38,12 +38,16 @@ export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
     if (!match) continue;
     const inProgress = match[2].endsWith(' (in progress)');
     const label = (inProgress ? match[2].slice(0, -14) : match[2]).trim();
-    if (!label || tasks.length >= 100 || label.length > 1024) return;
-    const safe = recordText(label, 4096);
+    if (!label || tasks.length >= 100 || label.length > 16384) return;
+    // Evidence notes can make a valid task row longer than its saved display.
+    // Check the entire row for secrets and derive identity before shortening it;
+    // otherwise a long note freezes the whole checklist or collides with another.
+    const safe = recordText(label, Buffer.byteLength(label, 'utf8'));
     if (safe !== label) return; // Redaction must not fabricate a different task identity.
     const id = createHash('sha256').update(label).digest('hex').slice(0, 24);
     if (tasks.some(task => task.id === id)) return;
-    tasks.push({ id, text: label, status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : 'pending' });
+    tasks.push({ id, text: truncateUtf8(label, 1024, '… [Task text shortened; see task board.]'),
+      status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : 'pending' });
   }
   return tasks.length ? tasks : undefined;
 }
