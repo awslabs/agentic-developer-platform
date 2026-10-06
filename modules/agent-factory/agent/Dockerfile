@@ -89,6 +89,7 @@ COPY --from=builder --chown=agent:agent /app/package*.json ./
 COPY --chown=agent:agent rules/personas/ ./personas/
 # Canonical issue contract is readable even in customer repos without ADP docs.
 COPY --chown=agent:agent rules/agents/issue-authoring.md ./rules/agents/issue-authoring.md
+COPY --chown=agent:agent rules/coding-guidelines.md ./rules/coding-guidelines.md
 COPY --chown=agent:agent rules/templates/developer-issue.md ./rules/templates/developer-issue.md
 
 # Copy startup script

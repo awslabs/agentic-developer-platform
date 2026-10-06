@@ -366,6 +366,7 @@ COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
 # Ship the same issue contract for hosted workers outside the ADP repository.
 COPY --chown=agent:agent modules/agent-factory/rules/agents/issue-authoring.md /app/rules/agents/issue-authoring.md
+COPY --chown=agent:agent modules/agent-factory/rules/coding-guidelines.md /app/rules/coding-guidelines.md
 COPY --chown=agent:agent modules/agent-factory/rules/templates/developer-issue.md /app/rules/templates/developer-issue.md
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 

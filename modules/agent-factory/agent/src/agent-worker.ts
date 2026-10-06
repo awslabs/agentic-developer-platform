@@ -21,6 +21,7 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
  */
 
 import { loadHumanCommunication } from './human-communication';
+import { loadCodingGuidelines } from './coding-guidelines';
 import { assistantText } from './reporting-text';
 import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
 import { ClaudeProgress, claudeTaskChecklist } from './claude-progress';
@@ -823,6 +824,7 @@ function loadRules(): string {
   }
 
   rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
+  rules.push(loadCodingGuidelines());
 
   return rules.join('\n\n---\n\n');
 }
@@ -1120,19 +1122,6 @@ matches \`agent/issue-*\`. A branch with any other name will:
 If you need to push multiple branches for a single issue (rare), still prefix
 with \`agent/issue-${ISSUE_NUMBER}-\` followed by a short suffix
 (e.g. \`agent/issue-${ISSUE_NUMBER}-followup\`). The prefix match is what the trigger needs.
-
-## Coding Guidelines (MANDATORY for all code changes)
-
-Before editing or creating any code file, read and internalize \`docs/agent-coding-guidelines.md\`. Four principles:
-
-1. **Think before coding** — state assumptions, surface tradeoffs, ask when unclear
-2. **Simplicity first** — minimum code that solves the stated problem; no speculative features
-3. **Surgical changes** — every changed line must trace directly to the user's request
-4. **Goal-driven execution** — transform tasks into verifiable goals; state plans with per-step verification
-
-**Hard rule**: if a file or line in your diff doesn't trace to an acceptance criterion in the issue, delete it before opening the PR.
-
-Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
 ${AGENT_TYPE === 'developer' ? `## Developer delivery and review handoff
 

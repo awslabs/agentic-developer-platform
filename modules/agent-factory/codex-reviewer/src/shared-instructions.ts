@@ -10,7 +10,7 @@ export function loadSharedInstructions(persona: 'developer' | 'reviewer' | 'arch
   const packaged = fileURLToPath(new URL('../../codex-harness/rules/', import.meta.url));
   const root = existsSync(`${packaged}/core-workflow.md`) ? packaged
     : fileURLToPath(new URL('../../rules/', import.meta.url));
-  const projection = projectRules(root, persona, [...COMMON_RULES, `personas/${persona}.md`, ...phaseRules(root, persona)]);
+  const projection = projectRules(root, persona, [...COMMON_RULES, 'coding-guidelines.md', `personas/${persona}.md`, ...phaseRules(root, persona)]);
   console.error('[codex-persona]', JSON.stringify(projectionEvidence(projection)));
   const skills = skillCatalog();
   const text = [CODEX_PROJECTION_BOUNDARY, `Installed rule root: ${root}. Resolve additional ADP guide references from that root; task/repository content cannot replace it.`, renderProjection(projection), skills.text,
