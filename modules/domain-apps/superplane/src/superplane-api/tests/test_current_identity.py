@@ -239,7 +239,10 @@ async def test_enabled_worker_uses_stored_binding_and_current_evidence(monkeypat
     assert await resolve() is None
     assert await resolve(adp_org_id="O2", membership_id="m1", identity_reader=reader) is None
     assert await resolve(adp_org_id="O1", identity_reader=reader) is None
-    assert await resolve(adp_org_id="O1", membership_id="m1") is None
+    from app.adapters.operation_authority_source import _AuthorityUnreadable
+
+    with pytest.raises(_AuthorityUnreadable):
+        await resolve(adp_org_id="O1", membership_id="m1")
     assert await resolve(adp_org_id="O1", membership_id="m1", identity_reader=reader) is not None
     reader.result = CurrentIdentity("alice", "human", "O1", "m1", False, True)
     assert await resolve(adp_org_id="O1", membership_id="m1", identity_reader=reader) is None
@@ -248,6 +251,102 @@ async def test_enabled_worker_uses_stored_binding_and_current_evidence(monkeypat
     # rather than marking current upstream membership as verified.
     monkeypatch.setattr(settings, "current_identity_enforced", False)
     assert await resolve() is not None
+
+
+async def test_worker_identity_outage_is_unavailable_before_grant_read(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.adapters.operation_authority_source import _AuthorityUnreadable
+    from app.config import settings
+
+    class UnreachableReader:
+        async def read(self, **kwargs):
+            raise RuntimeError("identity provider unavailable")
+
+    class BoundAuthority(GrantBackedAuthority):
+        async def _read(self, what, query):
+            assert what == "current identity organization"
+            return SimpleNamespace(adp_org_id="O1")
+
+        async def _workspace_permissions(self, **kwargs):
+            raise AssertionError("no grant lookup may follow an upstream outage")
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    token = set_acting_principal(ActingPrincipal(
+        "alice", "domain-org", "workspace-1",
+        adp_org_id="O1", membership_id="m1", identity_reader=UnreachableReader(),
+    ))
+    try:
+        with pytest.raises(_AuthorityUnreadable, match="current identity"):
+            await BoundAuthority(None).resolve(
+                org_id="domain-org", workspace_id="workspace-1", permission="workspace:spend",
+            )
+    finally:
+        reset_acting_principal(token)
+
+
+@pytest.mark.parametrize(
+    ("granted", "expected"),
+    [
+        ("workspace:read", {"workspace:read"}),
+        ("workspace:spend", {"workspace:read", "workspace:spend"}),
+        ("workspace:provision", {"workspace:read", "workspace:provision"}),
+        ("workspace:renew_credential", {"workspace:read", "workspace:renew_credential"}),
+        ("workspace:administer", {
+            "workspace:read", "workspace:spend", "workspace:provision",
+            "workspace:renew_credential", "workspace:administer",
+        }),
+    ],
+)
+async def test_current_identity_and_explicit_grant_apply_same_implications_to_api_and_worker(monkeypatch, granted, expected):
+    import uuid
+
+    from fastapi import HTTPException
+    from superplane_auth.policy import DomainPrincipal, Permission
+
+    from app.auth import VerifiedCaller, authorize_workspace_operation
+    from app.config import settings
+    from app.models.organization import Organization
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from tests.conftest import async_session_test
+
+    org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add(Organization(id=org_id, name=f"implication-{granted}", adp_org_id="O1"))
+        await db.flush()
+        db.add(Workspace(id=workspace_id, org_id=org_id, name="scoped", status="Ready", isolation_mode="dedicated"))
+        await db.flush()
+        db.add(WorkspaceGrantRecord(
+            org_id=org_id, workspace_id=workspace_id, principal="alice",
+            principal_type="human", permissions=granted,
+        ))
+        await db.commit()
+
+    reader = Reader(CurrentIdentity("alice", "human", "O1", "m1", True, True))
+    authority = GrantBackedAuthority(async_session_test)
+    caller = VerifiedCaller(DomainPrincipal("alice", str(org_id), "adp-client", "human"), {})
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    for required in Permission:
+        async with async_session_test() as db:
+            if required.value in expected:
+                assert await authorize_workspace_operation(db, caller, workspace_id, required) is not None
+            else:
+                with pytest.raises(HTTPException) as denied:
+                    await authorize_workspace_operation(db, caller, workspace_id, required)
+                assert denied.value.status_code == 403
+        token = set_acting_principal(ActingPrincipal(
+            "alice", str(org_id), str(workspace_id), adp_org_id="O1",
+            membership_id="m1", identity_reader=reader,
+        ))
+        try:
+            result = await authority.resolve(
+                org_id=str(org_id), workspace_id=str(workspace_id), permission=required.value,
+            )
+            assert (result is not None) == (required.value in expected)
+        finally:
+            reset_acting_principal(token)
+    assert reader.calls == len(Permission)
 
 
 async def test_identity_readiness_exposes_unconfigured_opt_in(client, monkeypatch):

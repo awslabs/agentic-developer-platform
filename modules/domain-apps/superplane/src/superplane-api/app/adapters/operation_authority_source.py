@@ -93,6 +93,7 @@ from sqlalchemy import select
 
 from app.current_identity import (
     CurrentIdentityReader,
+    IdentityDenied,
     IdentityUnavailable,
     identity_checks_enabled,
     require_current_identity,
@@ -242,8 +243,10 @@ class GrantBackedAuthority:
                         adp_org_id=organization.adp_org_id,
                         membership_id=caller.membership_id,
                     )
-                except IdentityUnavailable:
+                except IdentityDenied:
                     return None
+                except IdentityUnavailable:
+                    raise _AuthorityUnreadable("current identity") from None
 
         if org_id and org_id != caller.org_id:
             # Never "corrected" to the real tenant. A caller naming another
