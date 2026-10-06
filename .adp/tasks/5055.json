@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-06T02:06:18.616Z",
+  "updated_at": "2026-10-06T02:10:03.160Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Verified behavior retained; Superplane content is unchanged by the prepared base merge."
+      "note": "Production validators and mounted token tests retained; focused compatibility run passed."
     },
     {
       "id": "R5.1-t1",
@@ -23,7 +23,7 @@
         "R5.1-c1"
       ],
       "files": [],
-      "note": "Prior 201-test authorization run remains applicable; supplied API CI passed on 6dacbca3.",
+      "note": "Revalidated in the prepared-merge run: 290 passed and 2 separately deferred expected failures across four API test modules.",
       "commits": [
         "d72fb72"
       ]
@@ -48,7 +48,7 @@
         "R5.2-c1"
       ],
       "files": [],
-      "note": "Prior passing authorization evidence retained for unchanged content.",
+      "note": "Authorization cases pass in the prepared-merge compatibility run.",
       "commits": [
         "efe6765"
       ]
@@ -73,7 +73,7 @@
         "R5.3-c1"
       ],
       "files": [],
-      "note": "Prior passing authorization evidence retained for unchanged content.",
+      "note": "Domain and internal credential-boundary cases pass in the prepared-merge run.",
       "commits": [
         "b683a2e"
       ]
@@ -88,7 +88,7 @@
         "R5.3-c1"
       ],
       "files": [],
-      "note": "Previously verified raw and UTF-8 non-ASCII cases return 401 without invoking protected handlers; content unchanged."
+      "note": "Raw and UTF-8 non-ASCII regressions pass, denying access before protected handlers."
     },
     {
       "id": "R5.4-c1",
@@ -110,7 +110,7 @@
         "R5.4-c1"
       ],
       "files": [],
-      "note": "Prior passing authorization evidence retained for unchanged content.",
+      "note": "Spoofed-organization cases pass in the prepared-merge compatibility run.",
       "commits": [
         "2537952"
       ]
@@ -123,7 +123,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Local configuration only; no target activation or deployment configuration changes."
+      "note": "Local configuration only; this review performed no target activation or deployment."
     },
     {
       "id": "R5.5-t1",
@@ -147,7 +147,7 @@
         "R5.5-c1"
       ],
       "files": [],
-      "note": "Prior passing tests cover both local flag settings; not deployed evidence.",
+      "note": "Both local flag settings pass in the prepared-merge run; not deployed evidence.",
       "commits": [
         "cdf629e"
       ]
@@ -172,7 +172,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "Prior passing service-grant read, provision-denial and revoked-read tests remain applicable.",
+      "note": "Service-grant read, provision-denial and revoked-read regressions pass in the prepared-merge run.",
       "commits": [
         "2992049"
       ]
@@ -209,7 +209,7 @@
         "R5.7-c1"
       ],
       "files": [],
-      "note": "Prior passing authorization evidence retained for unchanged content.",
+      "note": "These authorization cases pass in the prepared-merge compatibility run.",
       "commits": [
         "314e66d"
       ]
@@ -234,7 +234,7 @@
         "R6.1-c1"
       ],
       "files": [],
-      "note": "Historical evidence carried forward from the supplied board; previously passing current mounted kubeconfig cases remain unchanged.",
+      "note": "Historical evidence retained from the supplied board; current mounted kubeconfig authorization cases pass in the prepared-merge run.",
       "commits": [
         "185fd23"
       ]
@@ -247,7 +247,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Existing inventory unchanged."
+      "note": "Production inventory unchanged; updated permission-contract parity tests pass."
     },
     {
       "id": "R6.2-t1",
@@ -259,7 +259,7 @@
         "R6.2-c1"
       ],
       "files": [],
-      "note": "Prior passing authorization evidence retained for unchanged content.",
+      "note": "Mounted inventory and updated contract parity cases pass in the prepared-merge run.",
       "commits": [
         "0541bff"
       ]
@@ -274,7 +274,7 @@
         "R6.2-c1"
       ],
       "files": [],
-      "note": "Previously verified denial with and without a valid signed token remains unchanged."
+      "note": "Unclassified-route denial passes with and without a valid signed token."
     },
     {
       "id": "R6.3-c1",
@@ -284,7 +284,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Stored grants remain authoritative in offline fixtures."
+      "note": "Stored grants remain authoritative in offline fixtures; updated base contract does not change the production validators."
     },
     {
       "id": "R6.3-t1",
@@ -296,7 +296,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "Prior synthetic role-claim and stored-grant test evidence retained; production issuance remains unverified.",
+      "note": "Offline role-label, stored-grant and permission-contract cases pass; production identity issuance is not established.",
       "commits": [
         "2e0cd80"
       ]
@@ -311,7 +311,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "#6127/#6484/#6485 own production identity and grant contracts outside this reconciliation slice."
+      "note": "#6127/#6484/#6485 own production identity and grant contracts outside this reconciliation slice. Offline contract evidence does not establish a real identity handoff."
     },
     {
       "id": "R6.4-c1",
@@ -333,7 +333,7 @@
         "R6.4-c1"
       ],
       "files": [],
-      "note": "Requires the other owners' composed current-identity runtime; deferred outside this PR's merge scope."
+      "note": "Requires the other owners' composed current-identity runtime. Two existing permission-contract expected failures for #6127 remain visible and were not converted to passes."
     },
     {
       "id": "COV-85-c1",
@@ -343,7 +343,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "No production API/service changes in this PR. Prior 461 passing focused tests and supplied API CI on 6dacbca3 support unchanged behavior."
+      "note": "The PR still changes only its task board and two security test files relative to base 62306dcf. No production API/service changes or additional reviewer edits. Focused compatibility run: 290 passed, 2 xfailed."
     },
     {
       "id": "COV-85-t1",
@@ -355,7 +355,7 @@
         "COV-85-c1"
       ],
       "files": [],
-      "note": "Verified controller-supplied successful API and stable Domain checks on 6dacbca3255f22ca87045dd041f66365410c1b46, run 37400272592. Inspected workflow runs the full API tests directory. API evidence: https://github.com/aws-e/adp/actions/runs/37400272592/job/112066611497 ; Domain evidence: https://github.com/aws-e/adp/actions/runs/37400272592/job/112071666295 . Prior local 201 authorization and 260 account/migration/model tests remain applicable. No changed production-logic coverage denominator; prior 84% existing-module measurement is not a changed-line pass. Skipped browser, controller and persona jobs are not reported as passes.",
+      "note": "Completed evidence remains bound to published 6dacbca3255f22ca87045dd041f66365410c1b46: controller-supplied API and stable Domain checks passed in run 37400272592. API: https://github.com/aws-e/adp/actions/runs/37400272592/job/112066611497 ; Domain: https://github.com/aws-e/adp/actions/runs/37400272592/job/112071666295 . No changed production-logic coverage denominator; prior 84% existing-module measurement is not a changed-line pass. This evidence is not relabelled as final-head CI.",
       "commits": [
         "b1d59b6"
       ]
@@ -370,7 +370,7 @@
         "COV-85-c1"
       ],
       "files": [],
-      "note": "Added to distinguish completed validation on published 6dacbca3 from required validation after the newly prepared b01cebc6 base merge. The merge is conflict-free and Superplane tree 695e0cb2d04ea15042ac4c1f4b31a9dd09634dea is unchanged. Controller publication, exact-head checks and final inspection remain pending."
+      "note": "Prepared base 62306dcf into HEAD 4aaf5070 is conflict-free and passes whitespace checks. From modules/domain-apps/superplane/src/superplane-api, /tmp/u14-review-venv/bin/python -m pytest tests/test_permission_contract.py tests/test_auth.py tests/test_internal_token.py tests/test_organization_grants.py -q produced 290 passed, 2 xfailed in 24.22s. The base's existing #6127 expected-failure guard is preserved. Controller publication, exact-head API/Domain checks and final inspection remain pending; checks=[] supplies no passing-check evidence."
     },
     {
       "id": "U14-L1-c1",
@@ -406,7 +406,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py:2755"
       ],
-      "note": "Offline results remain separate from live and identity-integration obligations owned by #5540 and #6127/#6484/#6485/#5535. Those deferred tasks are not pre-merge validation gaps; the wider story remains open.",
+      "note": "Offline results remain separate from live and identity-integration obligations owned by #5540 and #6127/#6484/#6485/#5535. Deferred work is not a pre-merge validation gap for this bounded PR; the wider story remains open.",
       "commits": [
         "f0e8c6e"
       ]
