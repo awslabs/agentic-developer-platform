@@ -2,8 +2,8 @@
 
 from datetime import UTC, datetime
 
-from .demo1_evidence import EvidenceError, digest, identifier
-from .demo1_report import reference, validate_operations
+from .demo1_evidence import EvidenceError, identifier
+from .demo1_report import reference
 
 
 def observe_lineage(
@@ -13,6 +13,7 @@ def observe_lineage(
     current_operation,
     max_runtime_seconds,
     *,
+    transport,
     now=None,
 ):
     selected = reader.selected
@@ -39,48 +40,92 @@ def observe_lineage(
         "original_operation_id": identifier(original_operation, "original operation"),
         "current_operation_id": identifier(current_operation, "current operation"),
     }
-    runtime = reader.observe(max_runtime_seconds, lineage_scope=scope)
-    observed = runtime.get("lineage")
+    # The API performs the immutable ancestry validation. Runtime observation
+    # binds its deployed release; it never injects a database probe into a pod.
+    from .demo1_browser import PREFIX, _native_reentry, _response
+
+    reader.observe(max_runtime_seconds)
+    operation = _response(
+        transport, "GET", PREFIX + f"/operations/by-idempotency/{selected.request_id}"
+    )
+    workspace = _response(
+        transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
+    )
     if (
-        not isinstance(observed, dict)
-        or set(observed)
-        != set(scope)
-        | {
-            "status",
-            "current_request_id",
-            "current_phase",
-            "artifact_ids",
-            "operations",
-        }
-        or observed["status"] != "OBSERVED"
-        or any(observed[key] != value for key, value in scope.items())
-        or observed["current_phase"]
-        not in ("apply-infrastructure", "bootstrap-workspace")
-        or observed["current_request_id"] == selected.request_id
+        operation.get("request_id"),
+        operation.get("workspace_id"),
+        operation.get("provisioning_operation_id"),
+        workspace.get("id"),
+        workspace.get("org_id"),
+        workspace.get("provisioning_operation_id"),
+    ) != (
+        selected.request_id,
+        checkpoint.workspace_id,
+        original_operation,
+        checkpoint.workspace_id,
+        selected.org_id,
+        current_operation,
     ):
-        raise EvidenceError(
-            "lineage: immutable continuation ancestry unavailable or mismatched"
+        raise EvidenceError("lineage: original or current operation scope differs")
+    proof = operation.get("lifecycle_lineage")
+    if not isinstance(proof, dict) or set(proof) != {
+        "version",
+        "org_id",
+        "workspace_id",
+        "root_request_id",
+        "root_operation_id",
+        "current_operation_id",
+        "plan_revision",
+        "phases",
+    }:
+        raise EvidenceError("lineage: authenticated native proof unavailable")
+    phases = proof["phases"]
+    if (
+        not isinstance(phases, list)
+        or not 2 <= len(phases) <= 3
+        or any(
+            not isinstance(phase, dict)
+            or set(phase)
+            != {
+                "phase",
+                "request_id",
+                "operation_id",
+                "state",
+                "payload_digest",
+                "source_artifact_id",
+            }
+            for phase in phases
         )
-    identifier(observed["current_request_id"], "continuation request")
-    artifacts = observed["artifact_ids"]
-    depth = 1 if observed["current_phase"] == "apply-infrastructure" else 2
-    if not isinstance(artifacts, list) or len(artifacts) != depth:
+    ):
         raise EvidenceError("lineage: incomplete continuation ancestry")
-    for artifact in artifacts:
-        digest(artifact, "lineage artifact")
-    operations = observed["operations"]
-    validate_operations(operations)
+    operation_id, request_id, _, operations = _native_reentry(
+        operation, workspace, selected, checkpoint
+    )
+    if operation_id != current_operation or request_id == selected.request_id:
+        raise EvidenceError("lineage: current request differs from native ancestry")
+    current = _response(transport, "GET", PREFIX + f"/operations/{current_operation}")
     if (
-        len(operations) != depth + 1
-        or operations[0]["request_id"] != selected.request_id
-        or operations[0]["operation_id"] != original_operation
-        or operations[-1]["request_id"] != observed["current_request_id"]
-        or operations[-1]["operation_id"] != current_operation
-        or operations[-1]["phase"] != observed["current_phase"]
+        current.get("provisioning_operation_id"),
+        current.get("request_id"),
+        current.get("workspace_id"),
+    ) != (current_operation, request_id, checkpoint.workspace_id):
+        raise EvidenceError("lineage: current operation differs from native ancestry")
+    refreshed = _response(
+        transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
+    )
+    if any(
+        refreshed.get(key) != workspace.get(key)
+        for key in ("id", "org_id", "provisioning_operation_id")
     ):
-        raise EvidenceError(
-            "lineage: operation snapshot differs from admitted ancestry"
-        )
+        raise EvidenceError("lineage: workspace changed during observation")
+    observed = {
+        **scope,
+        "status": "OBSERVED",
+        "current_request_id": request_id,
+        "current_phase": phases[-1]["phase"],
+        "artifact_ids": [phase["source_artifact_id"] for phase in reversed(phases[1:])],
+        "operations": operations,
+    }
     return observed
 
 

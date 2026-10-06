@@ -393,7 +393,11 @@ def reader_checkpoint(records):
 def test_selected_runtime_protects_private_read_and_report_is_sanitized():
     records = Records()
     reader, checkpoint, producer = reader_checkpoint(records)
-    runtime, observation = observe_ownership(reader, checkpoint, 900)
+    from test_demo1_current import ownership_transport
+
+    runtime, observation = observe_ownership(
+        reader, checkpoint, 900, transport=ownership_transport(records, producer)
+    )
     assert runtime["status"] == "OBSERVED" and "ownership" not in runtime
     report = json.dumps(ownership_report(observation))
     for private in (
@@ -404,7 +408,7 @@ def test_selected_runtime_protects_private_read_and_report_is_sanitized():
         "example-workspace",
     ):
         assert private not in report
-    assert any(
+    assert not any(
         "python" in call and "app.installation" not in call for call in producer.calls
     )
 
@@ -441,9 +445,13 @@ def test_runtime_and_checkpoint_refusals(failure):
     elif failure == "foreign":
         producer.observation["workspace_id"] = identifier(99)
     else:
-        producer.observation = []
+        producer.observation = {"owned_resources": []}
     with pytest.raises(EvidenceError) as failure_result:
-        observe_ownership(reader, checkpoint, 900)
+        from test_demo1_current import ownership_transport
+
+        observe_ownership(
+            reader, checkpoint, 900, transport=ownership_transport(records, producer)
+        )
     assert "private failure" not in str(failure_result.value)
     if failure in {"unsubmitted", "request", "plan", "runtime"}:
         assert not any(
@@ -452,10 +460,20 @@ def test_runtime_and_checkpoint_refusals(failure):
         )
 
 
-def test_cli_executes_private_read_without_browser_or_mutation(tmp_path, monkeypatch):
+def test_cli_reads_authenticated_projection_without_mutation(tmp_path, monkeypatch):
     records = Records()
     reader, checkpoint, producer = reader_checkpoint(records)
+    from test_demo1_current import ownership_transport
+    from superplane_acceptance import demo1_session
+
     monkeypatch.setattr(demo1_runtime, "RuntimeReader", lambda *unused: reader)
+    monkeypatch.setattr(
+        demo1_session,
+        "observe_in_browser",
+        lambda selected, envelope, session, callback, **kwargs: callback(
+            ownership_transport(records, producer)
+        ),
+    )
     tmp_path.chmod(0o700)
     for name, document in (
         ("selection.json", records.selected),

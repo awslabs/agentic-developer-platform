@@ -56,11 +56,10 @@ above; supply a new report path in an existing private directory. Do not use
 this fixture path as a shortcut to a live authorization or a real cleanup
 receipt. The separately gated live-selection **preflight** below is runnable, but is
 not a lifecycle invocation: it does not create, approve, observe or remove a
-workspace. There is no supported live *journey* invocation until #5534/#5535,
-#5730 and #5538 provide compatible reviewed interfaces and the Wave 6
-operations owner authorizes an exact target, identity, release, budget,
-deadline and cleanup continuation. Do not invoke it against a real target in
-this source-only assignment.
+workspace. The opt-in commands below implement the live dedicated-workspace
+journey. They require an operations-authorized exact target, independent requester
+and approver, installed release, bounded budget, deadline and cleanup owner.
+Source and synthetic test verification do not establish live acceptance.
 
 ### Guarded browser creation and recovery
 
@@ -68,8 +67,7 @@ This opt-in command advances **one creation/recovery phase**, not a complete
 create/Ready/remove acceptance run. It can request an approval and, on a later
 invocation after the independently signed-in approver allows that exact plan,
 submit workspace creation. It never decides approvals or submits retirement.
-The prepared source now includes managed retirement producer contracts, but this
-driver has not integrated or verified positive retirement and cleanup against them.
+Separately approved cleanup preparation and removal use their own commands below.
 Operations must separately authorize the creation phase and retain a named cleanup
 owner and deadline; this command is not permission to spend or a removal driver.
 
@@ -157,24 +155,16 @@ be silently substituted for earlier v1/v2 checkpoints or opened by the legacy
 no-effects preflight. Preserve incompatible files and original request identities
 for cleanup-owner reconciliation; never delete or rewrite them to force a new
 request. A runtime/authority change requires reconciliation, not an automatic
-rebind. Provider inventory/cleanup integration and positive removal remain
-unfinished; this command cannot close AC-02 or any live acceptance row.
+rebind. This creation-only command cannot establish removal or close live acceptance.
 
 Re-entry keeps the original creation request in that checkpoint even after an
 admitted apply or bootstrap continuation becomes the workspace's current
-operation. Before accepting the newer operation, the driver runs a fixed,
-read-only probe inside the exact selected API runtime. It traces each admitted
-request through the maintained immutable artifact validator back to the original
-preparation, checking the target, request parameters, successful parent attempts
-and artifact times. It then checks the current operation's request and workspace
-in the authenticated API and browser details, and re-reads the workspace after
-refresh. A changed current operation or unverifiable ancestry stops the phase;
-it never replaces or replays the original request. Private `browser.lineage`
-output contains hashed identities, not a new approval or Ready/cleanup receipt.
-Historical parent artifacts may be older than the admission freshness window:
-this verifies work already admitted, not permission to submit a continuation.
-The creation command does not submit continuations. Use the separate, explicitly
-selected phase command below; positive retirement remains unfinished.
+operation. The driver consumes authenticated native lifecycle lineage from the
+original-request API, checks current operation/request identities in browser details
+and re-reads the workspace after refresh. Changed pointers or unverifiable ancestry
+refuse re-entry; the original request is never replaced or replayed. No client
+Python/SQL probe is injected. Historical lineage is evidence of admitted work,
+not permission to submit a new phase. Use the separate continuation command below.
 
 ### Advance a separately approved continuation
 
@@ -227,23 +217,21 @@ requires reconciliation using the saved file, not a fresh request.
 
 This command always exits 2: a submission receipt is not completed execution,
 Ready, cleanup or zero-cost evidence. Read `browser.continuation` in the private
-report. Provider observation is a separate invocation; complete inventory,
-retirement admission and whole-lifecycle reporting remain unfinished.
+report. Provider observation and approved removal use separate commands below.
 
 After verified browser re-entry, `browser.lifecycle` contains a versioned
 execution-state snapshot for preparation, apply and bootstrap. Each observed
 phase has hashed request/operation references and its recorded state; a phase
 without evidence stays `NOT RUN`/`unobserved`, not successful. Continuation
-ancestry and its operation states are read together from the selected runtime's
-read-only database snapshot. Failed or cancelled execution is reported as `FAIL`;
+ancestry and operation states come from the authenticated native lifecycle projection. Failed or cancelled execution is reported as `FAIL`;
 pending, running and unknown outcomes are preserved. Even all three operations
 succeeding leaves independent readiness, removal, cleanup and cost checks blocked.
 The observation timestamp identifies this snapshot, which precedes any new
 continuation submission in that invocation. Read `browser.continuation` separately
 for admission or registration-recovery results, then rerun the same command with
 the same checkpoints to obtain another observation. Reports are not replayable
-authority and cannot authorize cleanup. Full retirement and provider cleanup
-integration still require the producer contracts described below.
+authority and cannot authorize cleanup. Follow the separately approved cleanup and
+removal sequence below.
 
 Provider integration requires authenticated **observed ownership**
 for the original managed workspace. The existing lifecycle-proposals API
@@ -255,18 +243,11 @@ teardown plans and exposes cleanup descriptors rather than a complete AWS
 resource catalog. The private controller-recovery API requires its own held
 recovery claim; a requester session must not impersonate that controller.
 
-The maintained private ownership probe now reads immutable apply artifacts in the
-exact selected API runtime. It uses the API's existing database transport and a
-read-only, consistent transaction; it does not claim a controller recovery lease,
-compose dispatchers, migrate the database or run Terraform. It validates the
-recorded apply and preparation against their successful source operations,
-original request, workspace, plan and target. It rejects missing provider
-snapshots, changed artifacts, foreign lineage and ambiguous results. Historical
-records are not current provider observations or fresh mutation authority.
-
-After separate authorization for these private reads, use the v2 authority and
-original submitted v3 checkpoint from `--advance-creation`. The command requires
-the same exact runtime/authority binding and checks it again before the read:
+The driver reads authenticated `applied_ownership` and `lifecycle_lineage`
+projections from the original-request API after checking the installed runtime,
+release, source and schema. It injects no Python or SQL into the application.
+Historical ownership is not current provider absence or mutation authority.
+Use the same v2 authority and original submitted checkpoint:
 
 ```bash
 PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
@@ -277,7 +258,7 @@ PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1
   --observe-ownership --report "$DEMO1_PRIVATE_DIR/ownership-report.json"
 ```
 
-The command does not launch a browser or change the checkpoint. It always exits 2
+The command restores the requester browser and leaves the checkpoint unchanged. It always exits 2
 and leaves lifecycle acceptance `BLOCKED`. A successful `ownership` observation
 contains hashed references for the recorded cluster, security groups and network
 subset; supplied VPC/subnets are preserved, not owned. `inventory_complete` stays
@@ -341,16 +322,8 @@ PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
   modules/domain-apps/superplane/tests/acceptance/test_demo1_current.py -q
 ```
 
-Complete lifecycle reporting and positive retirement integration remain harness
-work. Do not substitute planned resources or invented authority. These remaining
-source requirements are separate from #5540's later live evaluation.
-The prepared base supplies managed retirement preview/admission and cleanup-access
-producer code from the lifecycle owners (#5534/#5535). Its presence is not verified
-harness integration or evidence that a selected deployment exposes those contracts.
-The remaining driver work must consume the actual dedicated destroy plan, immutable
-cleanup grant and canonical resource coverage before enabling retirement. A provider
-census or a supplied private file cannot replace those checks. Until that wiring and
-its tests are complete, the driver continues to refuse positive retirement.
+The separate removal command below completes the dedicated Demo 1 journey using
+authenticated historical projections and an independent provider baseline.
 
 The existing diagnostic AWS reader treats an error as absence only for a matching
 resource-kind error, exact AWS operation and selected resource identity in a
@@ -399,8 +372,8 @@ preview. Proposed fencing is not observed fencing; an inventory digest is not pr
 of complete current ownership or absence. Denial, incomplete bootstrap, malformed
 responses and workspace changes refuse the review. The command always exits **2**
 with overall **BLOCKED**, including a compatible review. This preview does not admit
-preparation. Independent readiness, actual fenced inventory, approved deletion, cleanup and cost
-evidence remain unfinished harness work, not operations-evaluator implementation.
+preparation. Later commands establish readiness, separately approved deletion and
+independent scoped provider verification; residual cost remains unknown.
 
 Offline tests use synthetic provider facts and the maintained request compiler:
 
@@ -460,63 +433,57 @@ changes during this phase; preserve both checkpoints after any persistence failu
 
 `browser.cleanup_preparation` reports the preparation admission and execution state,
 not current cleanup authority, observed fencing, verified inventory or retirement.
-When that original operation reports `succeeded`, the same command also reads its
-immutable preparation artifact through the selected, pinned API runtime. A
-read-only database snapshot checks the original creation/apply/bootstrap lineage,
-the saved preparation request and approval, retained admission, original allocation
-seal and the maintained grant/fence/destroy metadata contract. Missing, changed,
-ambiguous or out-of-window evidence refuses the observation without replacing the
-request or checkpoints.
+When that operation reports `succeeded`, the driver validates the authenticated
+retirement preview's `cleanup_preparation` projection against the saved request,
+approval, revisions, producer identities, inventory and destroy hashes and exact
+compiled deletion request. The server retains its current grant, fence, lease and
+admission checks. Supplemental `current_eks_grants` and `current_kubernetes` checks
+are explicitly `UNVERIFIED`; no client Python/SQL probes are injected. This command
+reviews deletion and exits **2/BLOCKED**. Separate approval and submission follow.
 
-`browser.cleanup_preparation.artifact` contains sanitized references for the stored
-grant identities, fence readback, inventory digest, destroy-plan file/JSON/backend
-hashes and producer attempt/fence token. These are **historical preparation records**.
-The same command then uses the selected provider connection and exact observer role
-to read the recorded cleanup EKS access entry. It checks the immutable entry ARN,
-generation, principal, group mapping and username against the verified artifact,
-requires an empty and complete associated-policy response, then re-reads the entry
-to detect replacement during the observation. The account and role are checked
-before every EKS read; denied, missing, changed or incomplete responses refuse.
-`browser.cleanup_preparation.artifact.current_eks_grants` records only sanitized
-references and the observation time. The command then reads the six recorded
-Kubernetes cleanup roles/bindings and the two original creation-fence objects.
-It binds the cluster endpoint and CA to the immutable original apply artifact and
-its exact successful producer, then compares those values with a fresh EKS read.
-Kubernetes requests use that pinned TLS configuration and the same selected observer
-connection, with an account/role check before each read. No installer-role fallback
-or permission changes are attempted; unavailable observer permissions refuse.
-The maintained validators compare original UIDs, generation and permissions,
-including RBAC aggregation labels. The fence must be active, observed by Kubernetes
-and type-checked without warnings; it is read again after the grant checks.
-`browser.cleanup_preparation.artifact.current_kubernetes` records only sanitized
-references and observation time. Private temporary transport files are removed on
-success or refusal. These reads do not fetch plan bytes, establish complete resource
-coverage, or authorize deletion. The original private target and operation bindings and raw grant
-records are checked but not copied into the report. Both checkpoints remain unchanged
-if the observation refuses; no new preparation or deletion is submitted to recover it.
-After that read, the command requests the maintained public retirement preview.
-`browser.retirement_review` matches its exact request inputs to the immutable
-preparation record, including the source lineage, allocations, artifact, policy,
-credential references and destroy-plan hashes. It also checks the reviewed destroy
-descriptor and that the displayed steps equal the encoded approval request. A
-changed workspace or mismatched review refuses without rewriting either checkpoint.
-The runtime probe also loads canonical registration, sharing/peer state and the
-completed bootstrap ownership journal in that same repeatable read-only snapshot.
-It reuses the maintained inventory validator and retirement compiler, checks
-completeness of the recorded deletion plan, and compares the **entire** compiled
-request digest with the public review, including every ordered execution step.
-Changed policy, pending ownership, missing components, sharing or surviving peer
-membership refuses the review. This observer does not acquire the execution
-locks: its database snapshot is evidence, not ongoing authority to delete.
-This is a review read only: it neither requests deletion approval nor submits
-retirement. Canonical recorded coverage does not prove complete current provider
-inventory, exact plan-file bytes or successful cleanup. EKS/Kubernetes grant and
-fence reads are point-in-time observations, not locks or continuing execution
-authority. They do not prove that no additional grants or provider resources exist.
-Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
-and provider-verified cleanup remain unfinished harness work. Do not remove the
-fence, grant or checkpoints to force another attempt; retain cleanup ownership for
-the maintained recovery path and later deletion approval.
+### Complete dedicated Demo 1 removal
+
+The create driver uses the actual **Create this workspace** product button.
+Removal requires the original creation and cleanup checkpoints and exact retained
+KMS key and peer resource ARNs in the selection's survivors. The key must match
+cluster encryption and logging configuration. See [provider scope](PROVIDER_REMOVAL_SCOPE.md).
+
+```bash
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --advance-removal \
+  --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --retirement-checkpoint "$DEMO1_PRIVATE_DIR/cleanup.json" \
+  --removal-checkpoint "$DEMO1_PRIVATE_DIR/removal.json" \
+  --report "$DEMO1_PRIVATE_DIR/removal-report-01.json"
+```
+
+Use a new report filename each time. Before requesting separate teardown approval,
+this command requires authenticated completed bootstrap, a fresh healthy workspace
+and its visible **Ready** row. It durably saves that observation and an independent
+selected-role provider baseline. The first invocation normally waits for the
+designated approver; it never decides its own approval. Rerun with the same files
+after approval. The driver restores only original nonsecret receipt identifiers,
+checks the review and exact outgoing payload and clicks **Remove workspace**.
+Submitted or conflicting receipts cannot be reset to replace an operation.
+
+The private checkpoint precedes transmission. A lost approval reply reuses its
+original request; a lost removal reply uses **Recover removal request**, without
+submitting another removal. Missing or denied recovery remains blocked. On success,
+the workspace must report `retired`; independent provider reads then verify saved
+owned identities are absent or terminal and retained KMS/peers remain present.
+Denied, incomplete or changed reads cannot prove absence. The saved pre-removal
+Ready timestamp remains historical evidence after removal.
+
+Only combined observations produce top-level `status: PASS`, `demo1.status: PASS`
+and exit **0**; incomplete states exit **2**. The report scope names dedicated
+Demo 1. Story-wide criteria and live-acceptance flags live under
+`broader_acceptance`, whose status remains `UNVERIFIED`. This covers dedicated Demo 1 only. Broader acceptance scenarios,
+complete account inventory and residual cost remain unverified:
+`full_inventory_complete` stays false and `cost_usd` stays null. Offline synthetic
+tests and browser fixtures never constitute live demo evidence.
 
 Run the offline CLI admission and recovery fixtures:
 
@@ -648,8 +615,8 @@ workspace-selection button, `Readiness` region, `Review this plan` group and
 but **does not** sign a user in, submit creation or prove Ready. The proposed
 `Workspace retirement` region / `Review removal` button are not rendered at
 this pin, so no selector or success claim is made for them. That pinned server's
-retirement admission refuses; the later producer contracts supplied by #5534/#5535
-still require harness integration rather than a fixture-invented success.
+retirement admission refuses. This paragraph describes that historical checkpoint;
+the maintained controls and opt-in driver above integrate the later producer contracts.
 
 Source-only #5730 extensions `8ef3966cd617e657fff4e8ab7f047b9ce15e59ef`
 and `061fc683927cf13b4897a07318f76317baf17ee7` now render `Workspace

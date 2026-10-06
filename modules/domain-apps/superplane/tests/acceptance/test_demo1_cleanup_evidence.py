@@ -9,13 +9,9 @@ import pytest
 import test_demo1_cleanup as cleanup_fixtures
 from harness_jobs.identity import OperationRequest, payload_digest
 from test_demo1_browser import identity
-from test_demo1_cleanup_kubernetes import KubernetesCli
 
-from superplane_acceptance import demo1_journey
-from superplane_acceptance.demo1_evidence import EvidenceError
 from superplane_acceptance.demo1_report import reference
-from superplane_acceptance.demo1_runtime import RuntimeReader
-from workspace_provisioning.artifacts import canonical, digest
+from workspace_provisioning.artifacts import canonical
 from workspace_provisioning.execution_contract import encode_execution_steps
 from workspace_provisioning.retirement_access_authority import request_revision
 from workspace_provisioning.retirement_destroy_producer import DestroyPlanReference
@@ -86,18 +82,9 @@ def teardown_document(cleanup):
 
 @pytest.fixture
 def observed(cleanup, monkeypatch):
-    state = SimpleNamespace(change=lambda document: document, probes=[], succeeded=True)
-    state.provider = KubernetesCli(cleanup.driver.selected)
-    state.provider_calls = []
-
-    def provider_run(command, **options):
-        assert command[5] == cleanup.driver.envelope.broker_label
-        state.provider_calls.append(command)
-        command = list(command)
-        command[5] = "example-connection"
-        return state.provider(command, **options)
-
-    monkeypatch.setattr(demo1_journey.subprocess, "run", provider_run)
+    state = SimpleNamespace(
+        change=lambda document: document, probes=[], succeeded=True, provider_calls=[]
+    )
     state.review = teardown_document(cleanup)
     state.review_change = lambda document: document
     serve = cleanup.driver.page.service.request
@@ -108,48 +95,31 @@ def observed(cleanup, monkeypatch):
             assert method == "POST" and body == {
                 "operation_id": cleanup.original.retirement_request_id
             }
-            return 200, state.review_change(json.loads(json.dumps(state.review)))
-        return serve(method, path, body)
-
-    monkeypatch.setattr(cleanup.driver.page.service, "request", request)
-    producer = cleanup.driver.producer
-
-    def run(command, **options):
-        if (
-            "python" in command
-            and "immutable managed cleanup preparation" in command[-2]
-        ):
-            assert command[13:20] == [
-                "exec",
-                "pod/superplane-api-example",
-                "-c",
-                "superplane-api",
-                "--",
-                "python",
-                "-c",
+            saved = json.loads((cleanup.driver.path / "cleanup.json").read_text())[
+                "checkpoint"
             ]
-            assert "readonly=True" in command[-2]
-            assert producer.calls[-1][8:10] == ["sts", "get-caller-identity"]
-            scope = json.loads(command[-1])
-            state.probes.append(scope)
-            result = {
+            projection = {
+                "version": 1,
                 "status": "OBSERVED",
-                "scope": scope,
+                "org_id": cleanup.driver.selected.org_id,
+                "workspace_id": cleanup.original.workspace_id,
+                "source_operation_id": saved["source_operation_id"],
+                "retirement_request_id": saved["retirement_request_id"],
+                "preparation_request_id": saved["request_id"],
+                "preparation_revision": saved["revision"],
+                "preparation_plan_revision": saved["plan_revision"],
+                "preparation_approval_id": saved["approval_id"],
                 "artifact_id": "a" * 64,
                 "operation_id": identity(81),
                 "recorded_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
                 "producer_attempt_id": identity(83),
                 "producer_fence_token": 1,
                 "grant_count": 1,
-                "grants": state.provider.grants,
-                "kubernetes": state.provider.material,
-                "kubernetes_inventory_sha256": digest(state.provider.material),
                 **{
                     key: "b" * 64
                     for key in (
                         "grant_set_sha256",
                         "fence_sha256",
-                        "inventory_sha256",
                         "managed_workload_inventory_sha256",
                         "destroy_sha256",
                         "plan_file_sha256",
@@ -158,23 +128,17 @@ def observed(cleanup, monkeypatch):
                     )
                 },
                 "inventory_sha256": cleanup.review["inventory_sha256"],
-                "grant_set_sha256": digest(state.provider.grants),
-                "fence_sha256": digest(state.provider.material["fence"]),
                 "retirement_revision_sha256": state.review["revision"],
                 "retirement_plan_sha256": state.review["approval_request"][
                     "parameters"
                 ]["plan_revision"],
             }
-            return SimpleNamespace(
-                returncode=0, stdout=json.dumps(state.change(result)), stderr=""
-            )
-        return producer(command, **options)
+            result = json.loads(json.dumps(state.review))
+            result["cleanup_preparation"] = state.change(projection)
+            return 200, state.review_change(result)
+        return serve(method, path, body)
 
-    monkeypatch.setattr(
-        demo1_journey,
-        "RuntimeReader",
-        lambda selected, target: RuntimeReader(selected, target, runner=run),
-    )
+    monkeypatch.setattr(cleanup.driver.page.service, "request", request)
     cleanup.receipt_change = lambda receipt: {
         **receipt,
         "state": "succeeded" if state.succeeded else "pending",
@@ -185,220 +149,85 @@ def observed(cleanup, monkeypatch):
     return state
 
 
-def test_successful_preparation_reads_current_eks_entry_and_recorded_destroy_hashes(
+def test_authenticated_preparation_projection_preserves_distinct_approval_and_compiled_plan(
     observed,
 ):
     report = observed.cleanup.run()
-    preparation = report["browser"]["cleanup_preparation"]
-    artifact = preparation["artifact"]
+    artifact = report["browser"]["cleanup_preparation"]["artifact"]
     assert artifact["status"] == "OBSERVED" and artifact["grant_count"] == 1
     assert artifact["artifact_ref"] == reference("a" * 64)
-    assert artifact["plan_file_ref"] == reference("b" * 64)
-    assert artifact["current_eks_grants"]["status"] == "OBSERVED"
-    assert artifact["current_eks_grants"]["grant_set_ref"] == artifact["grant_set_ref"]
-    assert len(observed.provider_calls) == 28
-    assert artifact["current_kubernetes"]["status"] == "OBSERVED"
-    assert (
-        "complete provider inventory, plan bytes and cleanup unverified"
-        in artifact["scope"]
-    )
-    assert report["status"] == "BLOCKED" and report["live_acceptance"] is False
-    assert (
-        preparation["retirement_complete"] is False and observed.cleanup.admissions == 1
-    )
-    saved = json.loads((observed.cleanup.driver.path / "cleanup.json").read_text())[
-        "checkpoint"
-    ]
-    scope = observed.probes[0]
-    assert scope["approval_id"] == saved["approval_id"]
-    assert scope["preparation_revision"] == saved["revision"]
-    assert scope["retirement_request_id"] == saved["retirement_request_id"]
-    assert scope["request_id"] == observed.cleanup.driver.selected.request_id
+    assert artifact["retirement_revision_ref"] == reference(observed.review["revision"])
+    assert artifact["current_eks_grants"]["status"] == "UNVERIFIED"
+    assert artifact["current_kubernetes"]["status"] == "UNVERIFIED"
+    assert observed.provider_calls == [] and observed.probes == []
+    assert observed.cleanup.admissions == 1 and report["live_acceptance"] is False
     assert all(
-        value not in json.dumps(artifact)
-        for value in (
-            scope["org_id"],
-            scope["workspace_id"],
-            scope["account"],
-            scope["approval_id"],
-        )
+        "_demo1_" not in str(call) for call in observed.cleanup.driver.producer.calls
     )
     assert not any(
-        path.endswith(("/decision", "/retirement"))
-        for _, path, _ in observed.cleanup.calls
+        route.endswith(("/decision", "/retirement"))
+        for _, route, _ in observed.cleanup.calls
     )
 
 
-def test_pending_preparation_does_not_read_an_artifact(observed):
+def test_pending_preparation_has_no_historical_proof(observed):
     observed.succeeded = False
-    result = observed.cleanup.run()["browser"]["cleanup_preparation"]
-    assert "artifact" not in result and observed.probes == []
+    report = observed.cleanup.run()
+    assert "artifact" not in report["browser"]["cleanup_preparation"]
+    assert not any(
+        path.endswith("/retirement/preview") for _, path, _ in observed.cleanup.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("org_id", identity(99)),
+        ("workspace_id", identity(99)),
+        ("source_operation_id", identity(99)),
+        ("preparation_request_id", identity(99)),
+        ("preparation_approval_id", identity(99)),
+        ("retirement_request_id", identity(99)),
+        ("preparation_revision", "e" * 64),
+        ("preparation_plan_revision", "e" * 64),
+        ("retirement_revision_sha256", "e" * 64),
+        ("retirement_plan_sha256", "e" * 64),
+        ("operation_id", identity(99)),
+        ("producer_fence_token", 0),
+        ("grant_count", 0),
+        ("grant_count", 129),
+        ("artifact_id", "not-a-digest"),
+        ("status", "READY"),
+        ("version", 2),
+        ("recorded_at", "2099-01-01T00:00:00Z"),
+    ],
+)
+def test_changed_projection_refuses_without_deletion_or_checkpoint_drift(
+    observed, field, value
+):
+    observed.cleanup.run()
+    path = observed.cleanup.driver.path / "cleanup.json"
+    before = path.read_bytes()
+    observed.change = lambda proof: {**proof, field: value}
+    report = observed.cleanup.run()
+    assert report["status"] == "BLOCKED" and "cleanup" in report["reason"]
+    assert path.read_bytes() == before and observed.cleanup.admissions == 1
+    assert not any(
+        route.endswith("/retirement") for _, route, _ in observed.cleanup.calls
+    )
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        "blocked",
-        "scope",
-        "operation",
-        "future",
-        "digest",
-        "extra",
-        "grant_count",
-        "grants",
-        "grant_digest",
-        "kubernetes",
-        "kubernetes_transport",
-        "kubernetes_fence",
-        "attempt",
-        "fence_token",
+        lambda _: None,
+        lambda p: {k: v for k, v in p.items() if k != "preparation_approval_id"},
+        lambda p: {**p, "grants": []},
     ],
 )
-def test_changed_or_incomplete_cleanup_evidence_never_becomes_acceptance(
-    observed, change
-):
-    observed.cleanup.run()
-    path = observed.cleanup.driver.path / "cleanup.json"
-    before = path.read_bytes()
-
-    def changed(document):
-        if change == "blocked":
-            return {"status": "BLOCKED"}
-        if change == "scope":
-            document["scope"]["preparation_revision"] = "f" * 64
-        elif change == "operation":
-            document["operation_id"] = identity(99)
-        elif change == "future":
-            document["recorded_at"] = (
-                datetime.now(UTC) + timedelta(days=1)
-            ).isoformat()
-        elif change == "digest":
-            document["plan_file_sha256"] = "not-a-digest"
-        elif change == "extra":
-            document["credential"] = "must-not-be-exported"
-        elif change == "grant_count":
-            document["grant_count"] = 0
-        elif change == "grants":
-            document["grants"] = None
-        elif change == "grant_digest":
-            document["grant_set_sha256"] = "f" * 64
-        elif change == "kubernetes":
-            document["kubernetes"] = None
-        elif change == "kubernetes_transport":
-            document["kubernetes"]["transport"] = {}
-        elif change == "kubernetes_fence":
-            document["kubernetes"]["fence"]["identity"]["generation"] = "f" * 64
-        elif change == "attempt":
-            document["producer_attempt_id"] = "not-an-identity"
-        elif change == "fence_token":
-            document["producer_fence_token"] = True
-        return document
-
-    observed.change = changed
+def test_absent_or_unmodeled_projection_is_not_success(observed, change):
+    observed.change = change
     report = observed.cleanup.run()
-    assert report["status"] == "BLOCKED" and not report["live_acceptance"]
-    assert "cleanup" in report["reason"]
-    assert "artifact" not in report.get("browser", {}).get("cleanup_preparation", {})
-    assert path.read_bytes() == before and observed.cleanup.admissions == 1
-
-
-@pytest.mark.parametrize("case", ["wrong-role", "replacement", "policy", "incomplete"])
-def test_current_grant_refusal_preserves_checkpoints_and_prevents_review(
-    observed, case
-):
-    observed.cleanup.run()
-    root = observed.cleanup.driver.path
-    before = {
-        name: (root / name).read_bytes() for name in ("checkpoint.json", "cleanup.json")
-    }
-    previews = len(
-        [
-            call
-            for call in observed.cleanup.calls
-            if call[1].endswith("/retirement/preview")
-        ]
-    )
-
-    def changed(operation, value):
-        if case == "wrong-role" and operation == "get-caller-identity":
-            value["Arn"] = "foreign-role"
-        elif case == "replacement" and operation == "describe-access-entry":
-            value["accessEntry"]["accessEntryArn"] += "-replacement"
-        elif operation == "list-associated-access-policies":
-            if case == "policy":
-                value["associatedAccessPolicies"] = [{"policyArn": "foreign-policy"}]
-            elif case == "incomplete":
-                value["nextToken"] = "more-results"
-        return value
-
-    observed.provider.change = changed
-    report = observed.cleanup.run()
-    assert report["status"] == "BLOCKED" and report["live_acceptance"] is False
-    assert "cleanup grants" in report["reason"]
-    assert before == {name: (root / name).read_bytes() for name in before}
-    assert observed.cleanup.admissions == 1
-    assert previews == len(
-        [
-            call
-            for call in observed.cleanup.calls
-            if call[1].endswith("/retirement/preview")
-        ]
-    )
-
-
-def test_cleanup_observation_cannot_combine_other_runtime_scopes(observed):
-    reader = RuntimeReader(
-        observed.cleanup.driver.selected,
-        observed.cleanup.driver.envelope.runtime_target,
-        runner=lambda *args, **kwargs: pytest.fail("no remote calls permitted"),
-    )
-    with pytest.raises(EvidenceError):
-        reader.observe(30, cleanup_scope={}, ownership_scope={})
-    with pytest.raises(EvidenceError):
-        reader.observe(30, cleanup_scope={}, lineage_scope={})
-
-
-@pytest.mark.parametrize(
-    "case", ["changed-grant", "inactive-fence", "replaced-cluster"]
-)
-def test_kubernetes_refusal_preserves_original_requests_and_prevents_review(
-    observed, case
-):
-    observed.cleanup.run()
-    root = observed.cleanup.driver.path
-    before = {
-        name: (root / name).read_bytes() for name in ("checkpoint.json", "cleanup.json")
-    }
-    previews = len(
-        [
-            call
-            for call in observed.cleanup.calls
-            if call[1].endswith("/retirement/preview")
-        ]
-    )
-
-    def changed(body):
-        if case == "changed-grant" and body["kind"] == "Role":
-            body["metadata"]["uid"] += "-replacement"
-        elif case == "inactive-fence" and body["kind"] == "ValidatingAdmissionPolicy":
-            body["spec"]["validations"][0]["expression"] = "true"
-        return body
-
-    observed.provider.change_kube = changed
-    if case == "replaced-cluster":
-        observed.provider.change_cluster = lambda cluster: {
-            **cluster,
-            "certificateAuthority": {"data": "changed-ca"},
-        }
-    report = observed.cleanup.run()
-    assert report["status"] == "BLOCKED" and report["live_acceptance"] is False
-    assert "cleanup Kubernetes" in report["reason"]
-    assert before == {name: (root / name).read_bytes() for name in before}
-    assert observed.cleanup.admissions == 1
-    assert previews == len(
-        [
-            call
-            for call in observed.cleanup.calls
-            if call[1].endswith("/retirement/preview")
-        ]
+    assert report["status"] == "BLOCKED" and "retirement_review" not in report.get(
+        "browser", {}
     )

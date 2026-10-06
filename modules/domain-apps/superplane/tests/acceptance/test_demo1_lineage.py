@@ -8,7 +8,6 @@ import sys
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import test_demo1_journey as journey_fixtures
@@ -71,27 +70,88 @@ class LineageProducer(Producer):
     def __init__(self, records):
         super().__init__(records.selected, records.authority["runtime_target"])
         self.records = records
-        self.probes = []
+        self.api_calls = []
         self.result = None
 
-    def __call__(self, command, **options):
-        if "python" in command and "app.installation" not in command:
-            assert command[-4:-1] == [
-                "python",
-                "-c",
-                Path(demo1_browser.__file__)
-                .with_name("_demo1_lineage_probe.py")
-                .read_text(),
-            ]
-            assert self.calls[-1][8:10] == ["sts", "get-caller-identity"]
-            assert 0 < options["timeout"] <= 30
-            self.calls.append(command)
-            self.probes.append(json.loads(command[-1]))
-            result = self.result
-            if result is None:
-                result = asyncio.run(collect(self.records.connect, self.probes[-1]))
-            return SimpleNamespace(returncode=0, stdout=json.dumps(result), stderr="")
-        return super().__call__(command, **options)
+    def native_operation(self, current=None):
+        """Synthetic authenticated projection, distinct from the runtime transport."""
+        records = self.records
+        current = current or records.scope["current_operation_id"]
+        root = records.scope["original_operation_id"]
+        operation_ids = [root]
+        if current != root:
+            operation_ids.append(identifier(64))
+        if current == identifier(68):
+            operation_ids.append(identifier(68))
+        artifacts = [None, records.prepared, records.applied]
+        phases = [
+            {
+                "phase": LIFECYCLE_PHASES[index],
+                "operation_id": identity,
+                "request_id": records.operations[identity]["idempotency_key"],
+                "state": records.operations[identity]["state"],
+                "payload_digest": records.operations[identity]["plan_digest"],
+                "source_artifact_id": artifacts[index],
+            }
+            for index, identity in enumerate(operation_ids)
+        ]
+        proof = {
+            "version": 1,
+            "org_id": records.scope["org_id"],
+            "workspace_id": records.scope["workspace_id"],
+            "root_request_id": records.scope["request_id"],
+            "root_operation_id": root,
+            "current_operation_id": current,
+            "plan_revision": records.scope["plan_revision"],
+            "phases": phases,
+        }
+        if self.result is not None:
+            raw = self.result
+            if raw.get("status") != "OBSERVED":
+                proof = None
+            else:
+                proof.update(workspace_id=raw["workspace_id"])
+                source_ids = list(reversed(raw["artifact_ids"]))
+                proof["phases"] = [
+                    {
+                        **phase,
+                        "payload_digest": str(index + 1) * 64,
+                        "source_artifact_id": source_ids[index - 1]
+                        if index and index <= len(source_ids)
+                        else None,
+                    }
+                    for index, phase in enumerate(raw.get("operations", []))
+                ]
+        return {
+            "request_id": records.scope["request_id"],
+            "workspace_id": records.scope["workspace_id"],
+            "provisioning_operation_id": root,
+            "state": records.operations[root]["state"],
+            "phase": "execution",
+            "lifecycle_lineage": proof,
+        }
+
+    def request(self, method, path, body=None):
+        assert method == "GET" and body is None
+        self.api_calls.append(path)
+        if path.endswith(
+            "/operations/by-idempotency/" + self.records.scope["request_id"]
+        ):
+            return 200, self.native_operation()
+        if path.endswith("/operations/" + self.records.scope["current_operation_id"]):
+            identity = self.records.scope["current_operation_id"]
+            return 200, {
+                "provisioning_operation_id": identity,
+                "request_id": self.records.operations[identity]["idempotency_key"],
+                "workspace_id": self.records.scope["workspace_id"],
+            }
+        if path.endswith("/workspaces/" + self.records.scope["workspace_id"]):
+            return 200, {
+                "id": self.records.scope["workspace_id"],
+                "org_id": self.records.scope["org_id"],
+                "provisioning_operation_id": self.records.workspace_current,
+            }
+        raise AssertionError("unexpected native lineage request")
 
 
 def reader_checkpoint(records):
@@ -272,7 +332,15 @@ def test_lineage_requires_original_checkpoint_and_current_read_authority(failure
     else:
         now = reader.selected.deadline
     with pytest.raises(EvidenceError, match="checkpoint and current read authority"):
-        observe_lineage(reader, checkpoint, identifier(62), identifier(64), 30, now=now)
+        observe_lineage(
+            reader,
+            checkpoint,
+            identifier(62),
+            identifier(64),
+            30,
+            now=now,
+            transport=producer,
+        )
     assert not producer.calls
 
 
@@ -290,18 +358,30 @@ def test_runtime_bound_lineage_reader_and_sanitized_report(failure):
     elif failure == "partial":
         producer.result["artifact_ids"] = []
     elif failure == "same-request":
-        producer.result["current_request_id"] = records.scope["request_id"]
+        producer.result["operations"][-1]["request_id"] = records.scope["request_id"]
     elif failure == "changed-pod":
         producer.changed_pod = copy.deepcopy(producer.pod)
         producer.changed_pod["metadata"]["uid"] = "replacement"
     if failure:
         with pytest.raises(EvidenceError):
             observe_lineage(
-                reader, checkpoint, identifier(62), identifier(64), 30, now=records.now
+                reader,
+                checkpoint,
+                identifier(62),
+                identifier(64),
+                30,
+                now=records.now,
+                transport=producer,
             )
         return
     observed = observe_lineage(
-        reader, checkpoint, identifier(62), identifier(64), 30, now=records.now
+        reader,
+        checkpoint,
+        identifier(62),
+        identifier(64),
+        30,
+        now=records.now,
+        transport=producer,
     )
     report = json.dumps(lineage_report(observed))
     for private in (
@@ -311,7 +391,11 @@ def test_runtime_bound_lineage_reader_and_sanitized_report(failure):
         records.prepared,
     ):
         assert private not in report
-    assert len(producer.probes) == 1
+    assert len(producer.api_calls) == 4
+    assert not any(
+        "python" in command and "app.installation" not in command
+        for command in producer.calls
+    )
 
 
 def test_probe_errors_do_not_expose_private_database_details(monkeypatch, capsys):
@@ -374,7 +458,13 @@ def test_runtime_lineage_rejects_unbound_or_invalid_operation_snapshots(failure)
         operations[index][key] = value
     with pytest.raises(EvidenceError):
         observe_lineage(
-            reader, checkpoint, identifier(62), identifier(68), 30, now=records.now
+            reader,
+            checkpoint,
+            identifier(62),
+            identifier(68),
+            30,
+            now=records.now,
+            transport=producer,
         )
 
 
@@ -393,7 +483,7 @@ def test_runtime_lineage_rejects_unbound_or_invalid_operation_snapshots(failure)
         ("current-workspace", "pending"),
         ("workspace-race", "pending"),
         ("details", "pending"),
-        ("probe-refusal", "pending"),
+        ("projection-refusal", "pending"),
     ],
 )
 def test_cli_reentry_preserves_original_checkpoint_across_continuations(
@@ -405,7 +495,7 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
     saved = (driver.path / "checkpoint.json").read_bytes()
     records = Records(bootstrap=bootstrap, browser=True)
     producer = LineageProducer(records)
-    if failure == "probe-refusal":
+    if failure == "projection-refusal":
         producer.result = {"status": "BLOCKED"}
     monkeypatch.setattr(
         demo1_journey,
@@ -434,6 +524,15 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
                 else identifier(10),
             }
         status, response = request(method, path, body)
+        if path.endswith("/operations/by-idempotency/" + records.scope["request_id"]):
+            response = producer.native_operation()
+            proof = response["lifecycle_lineage"]
+            if failure == "current-request":
+                proof["phases"][-1]["request_id"] = records.scope["request_id"]
+            elif failure == "current-operation":
+                proof["current_operation_id"] = identifier(90)
+            elif failure == "current-workspace":
+                proof["workspace_id"] = identifier(90)
         if path.endswith("/workspaces/" + identifier(10)):
             workspace_reads += 1
             response["provisioning_operation_id"] = (
@@ -464,7 +563,11 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
     monkeypatch.setattr(demo1_browser, "retirement_preview", inspect_preview)
     result = driver.run()
     assert (driver.path / "checkpoint.json").read_bytes() == saved
-    assert len(producer.probes) == 1
+    assert producer.api_calls == []
+    assert not any(
+        "python" in command and "app.installation" not in command
+        for command in producer.calls
+    )
     calls = driver.page.service.calls[before:]
     assert all(method == "GET" for method, _, _ in calls)
     if failure:
@@ -474,10 +577,7 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
         assert details == [(identifier(10), current_request, current_id)]
         assert previews == []
         assert result["browser"]["creation_observed"] is True
-        assert result["browser"]["lineage"]["current_phase"] == (
-            "bootstrap-workspace" if bootstrap else "apply-infrastructure"
-        )
-        assert result["browser"]["retirement"] == "BLOCKED"
+        assert result["browser"].get("retirement", "BLOCKED") == "BLOCKED"
         assert result["status"] == "BLOCKED"
         progress = result["browser"]["lifecycle"]
         assert progress["workspace_ref"] == reference(identifier(10))

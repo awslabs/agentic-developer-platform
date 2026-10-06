@@ -95,6 +95,13 @@ class Transport:
                 "reason": None,
                 "observed_at": "2026-10-05T11:02:00+00:00",
                 "retryable": False,
+                "lifecycle_lineage": {
+                    **native_proof(self.selected),
+                    "current_operation_id": identity(12),
+                    "phases": [
+                        {**native_proof(self.selected)["phases"][0], "state": "pending"}
+                    ],
+                },
             }
         if path.endswith("/workspaces/" + identity(10)) and method == "GET":
             return 200, {
@@ -348,7 +355,7 @@ def test_reentry_requires_the_recovered_operation_identity(
         {"provisioning_operation_id": operation_id},
     )
     reason = (
-        "immutable continuation lineage required"
+        "native lifecycle lineage unavailable or differs"
         if operation_id
         else "current operation: invalid value"
     )
@@ -544,7 +551,7 @@ def test_submitted_operation_resumes_after_approval_expiry_without_recreation(
             path.endswith("/workspaces/" + checkpoint.workspace_id)
             for _, path, _ in transport.calls
         )
-        == 2
+        == 4
     )
     assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
     assert not any(path.endswith("/workspaces") for _, path, _ in transport.calls)

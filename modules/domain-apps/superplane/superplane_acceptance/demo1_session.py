@@ -99,3 +99,69 @@ def restore_browser_session(page, origin, session, *, timeout):
         )
     finally:
         page.unroute(bootstrap, serve)
+
+
+def observe_in_browser(selected, envelope, session, callback, *, max_runtime_seconds):
+    """Restore the requester browser; callback retains explicit effect gates."""
+    import time
+    from datetime import UTC, datetime
+
+    try:
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
+    except ImportError:
+        raise EvidenceError(
+            "browser observation: maintained browser runtime unavailable"
+        ) from None
+    from .demo1_browser import PREFIX, PlaywrightBrowserTransport, _response
+
+    expires = time.monotonic() + min(max_runtime_seconds, envelope.max_runtime_seconds)
+
+    def remaining_ms():
+        now = datetime.now(UTC)
+        remaining = min(
+            expires - time.monotonic(), (selected.deadline - now).total_seconds()
+        )
+        if not selected.authorized_at <= now < selected.deadline or remaining <= 0:
+            raise EvidenceError("browser observation: authorization window exhausted")
+        return max(1, int(remaining * 1000))
+
+    state, tokens = browser_state_parts(session, envelope.origin)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, timeout=remaining_ms())
+        try:
+            context = browser.new_context(storage_state=state, service_workers="block")
+            page = context.new_page()
+            page.set_default_timeout(min(30_000, remaining_ms()))
+            restore_browser_session(
+                page, envelope.origin, tokens, timeout=remaining_ms()
+            )
+            page.goto(
+                envelope.origin + "/superplane",
+                wait_until="domcontentloaded",
+                timeout=remaining_ms(),
+            )
+            transport = PlaywrightBrowserTransport(
+                page,
+                envelope.origin,
+                release_id=envelope.runtime_target.release_id,
+                remaining_ms=remaining_ms,
+                selected=selected,
+            )
+            _response(transport, "GET", PREFIX + "/capabilities")
+            identity = _response(transport, "GET", "/api/auth/me")
+            if (
+                identity.get("user_id") != selected.requester_id
+                or identity.get("org_id") != selected.org_id
+            ):
+                raise EvidenceError(
+                    "browser observation: requester or organization differs"
+                )
+            return callback(transport)
+        except (PlaywrightError, OSError, RuntimeError, ValueError) as error:
+            if isinstance(error, EvidenceError):
+                raise
+            raise EvidenceError(
+                "browser observation unavailable; retain original checkpoint for recovery"
+            ) from None
+        finally:
+            browser.close()

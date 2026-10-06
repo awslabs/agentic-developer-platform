@@ -55,6 +55,7 @@ class PlaywrightBrowserTransport:
         *,
         release_id: str | None = None,
         remaining_ms: Callable[[], int] = lambda: 30_000,
+        selected=None,
     ):
         self.page = page
         self.origin = checked_origin(origin)
@@ -62,6 +63,7 @@ class PlaywrightBrowserTransport:
             digest(release_id, "browser release") if release_id is not None else None
         )
         self.remaining_ms = remaining_ms
+        self.selected = selected
 
     def browser_page(self):
         return self.page
@@ -69,9 +71,9 @@ class PlaywrightBrowserTransport:
     def create_workspace(
         self, body: dict, before_send: Callable[[], None]
     ) -> tuple[int, object]:
-        return self.request(
-            "POST", PREFIX + "/workspaces", body, before_send=before_send
-        )
+        from .demo1_controls import create_workspace
+
+        return create_workspace(self, body, before_send)
 
     def request(
         self,
@@ -212,6 +214,8 @@ def _approval(
     selected: DemoInput,
     checkpoint: CreationCheckpoint,
     now: datetime,
+    *,
+    action: str = "provision",
 ) -> str:
     if (
         ticket.get("approval_id") != checkpoint.approval_id
@@ -219,7 +223,7 @@ def _approval(
         or ticket.get("requester") != selected.requester_id
         or not isinstance(ticket.get("request"), dict)
         or ticket.get("request", {}).get("idempotency_key") != selected.request_id
-        or ticket.get("request", {}).get("action") != "provision"
+        or ticket.get("request", {}).get("action") != action
         or not _plan_parameters_match(
             ticket["request"].get("parameters"), selected.plan_revision
         )
@@ -248,7 +252,7 @@ def _approval(
 
 def workspace_reading(workspace: dict, now: datetime) -> str:
     if (
-        workspace.get("status") not in ("Active", "Ready")
+        workspace.get("status") not in ("Active", "active", "Ready")
         or workspace.get("cluster_health") != "Healthy"
     ):
         return "UNKNOWN"
@@ -469,6 +473,7 @@ def advance_creation(
             checkpoint = submitted
 
         try:
+            transport.creation_workspace_id = checkpoint.workspace_id
             result = _response(
                 transport,
                 "POST",
@@ -548,20 +553,8 @@ def advance_creation(
         current_id, current_request, native_complete, native_operations = (
             _native_reentry(operation, workspace, selected, checkpoint)
         )
-    elif current_id != operation_id:
-        if verify_lineage is None:
-            raise EvidenceError("browser: immutable continuation lineage required")
-        lineage = verify_lineage(checkpoint, operation_id, current_id)
-        current_request = lineage["current_request_id"]
-        current = _response(transport, "GET", PREFIX + f"/operations/{current_id}")
-        if (
-            current.get("request_id") != current_request
-            or current.get("provisioning_operation_id") != current_id
-            or current.get("workspace_id") != checkpoint.workspace_id
-        ):
-            raise EvidenceError(
-                "browser: current operation differs from verified continuation"
-            )
+    else:
+        raise EvidenceError("browser: authenticated native lifecycle lineage required")
     page = transport.browser_page()
     if (
         inspect_reentry(page, selected.workspace_name)["reason"]
@@ -614,6 +607,8 @@ def advance_creation(
             "status": "BLOCKED",
             "reason": "creation re-entry verified; continuation requires separate approval",
             "creation_observed": True,
+            "bootstrap_complete": native_complete is True,
+            "readiness": workspace_reading(workspace, now),
             "operation_ref": reference(current_id),
             "lifecycle": progress,
             **({"lineage": lineage_report(lineage)} if lineage is not None else {}),

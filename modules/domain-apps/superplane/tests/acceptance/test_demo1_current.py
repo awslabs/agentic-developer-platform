@@ -5,6 +5,7 @@ import shlex
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import test_demo1_journey as journey_fixtures
@@ -57,6 +58,7 @@ class CurrentProducer:
         self.incomplete = set()
         self.wrong_role = False
         self.timeout = False
+        self.key_state = "Enabled"
 
     def __call__(self, command, **options):
         if command[5] == self.records.authority["runtime_target"]["broker_label"]:
@@ -81,6 +83,27 @@ class CurrentProducer:
             result = {
                 "Account": self.records.selected["account"],
                 "Arn": f"arn:aws:sts::{self.records.selected['account']}:assumed-role/{role}/example",
+            }
+        elif service == "kms":
+            assert operation == "describe-key" and command[10] == "--key-id"
+            assert self.calls[-2][8:10] == ["sts", "get-caller-identity"]
+            resource = command[11]
+            if resource in self.denied:
+                return subprocess.CompletedProcess(command, 254, "", "private denial")
+            if resource in self.absent:
+                return subprocess.CompletedProcess(
+                    command,
+                    254,
+                    "",
+                    f"An error occurred (NotFoundException) when calling the DescribeKey operation: Key {resource} does not exist",
+                )
+            result = {
+                "KeyMetadata": {
+                    "Arn": resource,
+                    "AWSAccountId": self.records.scope["account"],
+                    "Enabled": self.key_state == "Enabled",
+                    "KeyState": self.key_state,
+                }
             }
         elif (
             service == "resourcegroupstaggingapi"
@@ -152,11 +175,100 @@ class CurrentProducer:
         return subprocess.CompletedProcess(command, 0, json.dumps(result), "")
 
 
+def ownership_transport(records, producer=None):
+    """Authenticated API fixture with server-produced native ownership projection."""
+    source = producer.runtime if isinstance(producer, CurrentProducer) else producer
+    source = source or OwnershipProducer(records)
+    root = records.rows[records.prepared]["source_operation_id"]
+    applied = identifier(64)
+    current = identifier(70)
+    calls = []
+
+    def request(method, path, body=None):
+        assert method == "GET" and body is None
+        calls.append((method, path, body))
+        if path == "/api/auth/me":
+            return 200, {
+                "user_id": records.selected["requester_id"],
+                "org_id": records.scope["org_id"],
+            }
+        if path.endswith("/capabilities"):
+            return 200, {"features": ["create-operation-id-v1"]}
+        if path.endswith("/operations/by-idempotency/" + records.scope["request_id"]):
+            projection = {
+                **source.observation,
+                "version": 1,
+                "current_operation_id": current,
+                "plan_revision": records.scope["plan_revision"],
+                "account_id": records.scope["account"],
+                "region": records.scope["region"],
+            }
+            phases = []
+            for index, (phase, operation_id) in enumerate(
+                zip(
+                    (
+                        "prepare-infrastructure",
+                        "apply-infrastructure",
+                        "bootstrap-workspace",
+                    ),
+                    (root, applied, current),
+                    strict=True,
+                )
+            ):
+                phases.append(
+                    {
+                        "phase": phase,
+                        "operation_id": operation_id,
+                        "request_id": records.scope["request_id"]
+                        if index == 0
+                        else identifier(80 + index),
+                        "state": "succeeded",
+                        "payload_digest": str(index + 1) * 64,
+                        "source_artifact_id": str(index) * 64 if index else None,
+                    }
+                )
+            return 200, {
+                "request_id": records.scope["request_id"],
+                "workspace_id": records.scope["workspace_id"],
+                "provisioning_operation_id": root,
+                "state": "succeeded",
+                "phase": "execution",
+                "lifecycle_lineage": {
+                    "version": 1,
+                    "org_id": records.scope["org_id"],
+                    "workspace_id": records.scope["workspace_id"],
+                    "root_request_id": records.scope["request_id"],
+                    "root_operation_id": root,
+                    "current_operation_id": current,
+                    "plan_revision": records.scope["plan_revision"],
+                    "phases": phases,
+                },
+                "applied_ownership": projection,
+            }
+        if path.endswith("/workspaces/" + records.scope["workspace_id"]):
+            return 200, {
+                "id": records.scope["workspace_id"],
+                "org_id": records.scope["org_id"],
+                "provisioning_operation_id": current,
+            }
+        raise AssertionError("unexpected ownership API request")
+
+    return SimpleNamespace(
+        request=request, calls=calls, origin=records.authority["origin"]
+    )
+
+
 def run_observation(records, producer, **options):
     reader, checkpoint, _ = reader_checkpoint(records)
     envelope = LiveEnvelope.parse(records.authority, reader.selected)
     return demo1_current.observe_current_provider(
-        reader.selected, envelope, checkpoint, 900, runner=producer, **options
+        reader.selected,
+        envelope,
+        checkpoint,
+        900,
+        runner=producer,
+        transport=ownership_transport(records, producer),
+        **options,
     )
 
 
@@ -278,6 +390,7 @@ def test_one_budget_bounds_runtime_and_each_provider_call():
         checkpoint,
         900,
         runner=runner,
+        transport=ownership_transport(records, producer),
         monotonic=lambda: elapsed[0],
     )
     assert len(producer.calls) == 1
@@ -314,7 +427,12 @@ def test_invalid_selection_cannot_reach_provider(failure):
     envelope = LiveEnvelope.parse(records.authority, selected)
     with pytest.raises(EvidenceError):
         demo1_current.observe_current_provider(
-            selected, envelope, checkpoint, budget, runner=producer
+            selected,
+            envelope,
+            checkpoint,
+            budget,
+            runner=producer,
+            transport=ownership_transport(records, producer),
         )
     assert not producer.calls
 
@@ -324,7 +442,17 @@ def install_observer(monkeypatch, producer):
     monkeypatch.setattr(
         demo1_current,
         "observe_current_provider",
-        lambda *args: observe(*args, runner=producer),
+        lambda *args, **kwargs: observe(*args, runner=producer, **kwargs),
+    )
+
+    from superplane_acceptance import demo1_session
+
+    monkeypatch.setattr(
+        demo1_session,
+        "observe_in_browser",
+        lambda selected, envelope, session, callback, **kwargs: callback(
+            ownership_transport(producer.records, producer)
+        ),
     )
 
 
@@ -450,3 +578,28 @@ def test_existing_report_prevents_provider_reads(driver, monkeypatch):
     assert demo1_cli.main(arguments) == 2
     assert json.loads(report.read_text()) == {"preserve": True}
     assert not producer.calls and not producer.runtime.calls
+
+
+@pytest.mark.parametrize("state", ["present", "absent", "disabled", "denied"])
+def test_current_observer_can_read_declared_retained_kms_survivor(state):
+    records = records_for()
+    key = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555"
+    records.selected["survivors"].append(key)
+    producer = CurrentProducer(records)
+    if state == "absent":
+        producer.absent.add(key)
+    elif state == "denied":
+        producer.denied.add(key)
+    elif state == "disabled":
+        producer.key_state = "Disabled"
+    report = run_observation(records, producer)
+    if state == "present":
+        assert reference(key) in report["provider"]["survivor_present_refs"]
+        assert report["checks"]["survivors"]["status"] == "OBSERVED"
+    elif state == "absent":
+        assert reference(key) in report["provider"]["survivor_missing_refs"]
+        assert report["checks"]["survivors"]["status"] == "FAIL"
+    else:
+        assert report["checks"]["survivors"]["status"] == "BLOCKED"
+    assert key not in json.dumps(report)
+    assert report["checks"]["cleanup"]["status"] == "BLOCKED"

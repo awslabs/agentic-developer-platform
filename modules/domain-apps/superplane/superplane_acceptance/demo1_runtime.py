@@ -178,9 +178,9 @@ class RuntimeReader:
                     scope is not None
                     for scope in (ownership_scope, lineage_scope, cleanup_scope)
                 )
-                <= 1
+                == 0
             )
-            return self._observe(ownership_scope, lineage_scope, cleanup_scope)
+            return self._observe()
         except (
             OSError,
             subprocess.SubprocessError,
@@ -193,9 +193,7 @@ class RuntimeReader:
                 "runtime: denied, incomplete or mismatched observation; no lifecycle effects"
             ) from None
 
-    def _observe(
-        self, ownership_scope=None, lineage_scope=None, cleanup_scope=None
-    ) -> dict:
+    def _observe(self) -> dict:
         _require(self.aws._identity())
         code, response, _ = self.aws._execute(
             "eks",
@@ -309,7 +307,6 @@ class RuntimeReader:
             )["items"]
             _require(isinstance(pods, list) and len(pods) == replicas)
             observed = []
-            ownership = None
             for pod in pods:
                 name, uid, version = self._pod(pod)
                 owners = [
@@ -357,37 +354,6 @@ class RuntimeReader:
                     and runtime.get("domain_auth_enforced") is True
                 )
                 _require(database.get("revision") == self.selected.schema_revision)
-                scope = (
-                    ownership_scope
-                    if ownership_scope is not None
-                    else lineage_scope
-                    if lineage_scope is not None
-                    else cleanup_scope
-                )
-                if scope is not None and ownership is None:
-                    probe = (
-                        Path(__file__)
-                        .with_name(
-                            "_demo1_ownership_probe.py"
-                            if ownership_scope is not None
-                            else "_demo1_lineage_probe.py"
-                            if lineage_scope is not None
-                            else "_demo1_cleanup_probe.py"
-                        )
-                        .read_text()
-                    )
-                    ownership = self._kube(
-                        config,
-                        "exec",
-                        "pod/" + name,
-                        "-c",
-                        COMPONENT,
-                        "--",
-                        "python",
-                        "-c",
-                        probe,
-                        json.dumps(scope),
-                    )
                 _require(
                     self._pod(self._kube(config, "get", "pod/" + name, "-o", "json"))
                     == (name, uid, version)
@@ -410,7 +376,4 @@ class RuntimeReader:
             "pod_refs": observed,
             "observed_at": self.clock().isoformat(),
             "scope": "API artifact/source/schema only; public route, other components and lifecycle admission unverified",
-            **({"ownership": ownership} if ownership_scope is not None else {}),
-            **({"lineage": ownership} if lineage_scope is not None else {}),
-            **({"cleanup": ownership} if cleanup_scope is not None else {}),
         }

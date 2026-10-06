@@ -113,7 +113,7 @@ def validate_teardown_review(review, selected, envelope, original, artifact, now
 
 
 def read_teardown_review(
-    selected, envelope, transport, store, browser, artifact, *, clock
+    selected, envelope, transport, store, browser, artifact, *, clock, review=None
 ):
     saved, original = store.load(), store.original
     require(saved is not None and saved.submitted)
@@ -122,14 +122,15 @@ def read_teardown_review(
     )
     require(source == saved.source_operation_id)
     prefix = PREFIX + f"/workspaces/{original.workspace_id}"
-    review = _response(
-        transport,
-        "POST",
-        prefix + "/retirement/preview",
-        {
-            "operation_id": original.retirement_request_id,
-        },
-    )
+    if review is None:
+        review = _response(
+            transport,
+            "POST",
+            prefix + "/retirement/preview",
+            {
+                "operation_id": original.retirement_request_id,
+            },
+        )
     refreshed = _response(transport, "GET", prefix)
     require(
         all(

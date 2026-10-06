@@ -2,6 +2,7 @@
 
 import subprocess
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from .demo1_aws import AwsProviderReader, _resource
@@ -9,6 +10,10 @@ from .demo1_discovery import ProviderCensus, discovery_report
 from .demo1_evidence import EvidenceError, fields, instant
 from .demo1_ownership import observe_ownership, ownership_report
 from .demo1_provider import InventoryQuery
+from .demo1_plan_provider import (
+    exact_state as plan_state,
+    parse_resource as plan_resource,
+)
 from .demo1_report import reference
 from .demo1_runtime import RuntimeReader
 
@@ -19,6 +24,7 @@ def observe_current_provider(
     checkpoint,
     max_runtime_seconds,
     *,
+    transport,
     runner=subprocess.run,
     clock=lambda: datetime.now(UTC),
     monotonic=time.monotonic,
@@ -57,6 +63,7 @@ def observe_current_provider(
         checkpoint,
         remaining(),
         now=started,
+        transport=transport,
     )
     query = InventoryQuery(
         selected.connection_id,
@@ -76,8 +83,23 @@ def observe_current_provider(
         raise EvidenceError(
             "provider: bounded disjoint ownership and survivor identities required"
         )
+    keys = []
     for resource in resources:
-        _resource(resource, query)
+        try:
+            _resource(resource, query)
+        except EvidenceError:
+            if (
+                resource not in query.expected_survivors
+                or plan_resource(resource, query)[0] != "key"
+            ):
+                raise
+            keys.append(resource)
+    census_query = replace(
+        query,
+        expected_survivors=tuple(
+            arn for arn in query.expected_survivors if arn not in keys
+        ),
+    )
     report = {
         "runtime": runtime,
         "ownership": ownership_report(ownership),
@@ -114,12 +136,26 @@ def observe_current_provider(
             runner=bounded_run,
             clock=clock,
         )
-        snapshot = reader.read_current_inventory(query)
+        snapshot = reader.read_current_inventory(census_query)
+        if len(snapshot["resource_states"]) == len(
+            census_query.expected_owned + census_query.expected_survivors
+        ) and all(
+            state in {"present", "absent"}
+            for state in snapshot["resource_states"].values()
+        ):
+            for key in keys:
+                state = plan_state(reader, query, key)
+                snapshot["resource_states"][key] = (
+                    "incomplete" if state == "unavailable" else state
+                )
+                if state == "present":
+                    snapshot["survivors_present"].append(key)
+            snapshot["observed_at"] = clock().isoformat()
         remaining()
         _record_snapshot(report, snapshot, query, started, clock())
         if report["provider"].get("lookup_status") == "OBSERVED":
             census = ProviderCensus(
-                reader, query, selected.org_id, snapshot["resource_states"]
+                reader, census_query, selected.org_id, snapshot["resource_states"]
             ).collect()
             remaining()
             report["provider"]["discovery"] = discovery_report(census)

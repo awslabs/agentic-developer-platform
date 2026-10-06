@@ -1,9 +1,5 @@
-"""Bind recorded cleanup grants and destroy-plan hashes to the original admission."""
+"""Bind the authenticated historical preparation projection to its saved approval."""
 
-from workspace_provisioning.artifacts import digest as artifact_digest
-
-from .demo1_cleanup_grants import observe_grants
-from .demo1_cleanup_kubernetes import observe_kubernetes
 from .demo1_evidence import EvidenceError, digest, identifier, instant
 from .demo1_report import reference
 
@@ -15,7 +11,7 @@ def require(condition):
         )
 
 
-def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, provider):
+def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, review):
     selected, original, saved = reader.selected, store.original, store.load()
     require(
         saved is not None
@@ -26,25 +22,8 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         and preparation.get("request_ref") == reference(saved.request_id)
         and preparation.get("retirement_complete") is False
     )
-    scope = {
-        "org_id": selected.org_id,
-        "workspace_id": original.workspace_id,
-        "request_id": selected.request_id,
-        "plan_revision": selected.plan_revision,
-        "account": selected.account,
-        "region": selected.region,
-        "authorized_at": selected.authorized_at.isoformat(),
-        "observed_at": now.isoformat(),
-        "preparation_request_id": saved.request_id,
-        "preparation_revision": saved.revision,
-        "preparation_plan_revision": saved.plan_revision,
-        "retirement_request_id": saved.retirement_request_id,
-        "source_operation_id": saved.source_operation_id,
-        "original_allocation_id": saved.original_allocation_id,
-        "approval_id": saved.approval_id,
-    }
-    runtime = reader.observe(max_runtime_seconds, cleanup_scope=scope)
-    observed = runtime.get("cleanup")
+    runtime = reader.observe(max_runtime_seconds)
+    observed = review.get("cleanup_preparation")
     hashes = (
         "artifact_id",
         "grant_set_sha256",
@@ -57,27 +36,36 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         "backend_sha256",
         "retirement_plan_sha256",
         "retirement_revision_sha256",
-        "kubernetes_inventory_sha256",
+        "preparation_revision",
+        "preparation_plan_revision",
     )
+    bindings = {
+        "version": 1,
+        "status": "OBSERVED",
+        "org_id": selected.org_id,
+        "workspace_id": original.workspace_id,
+        "source_operation_id": saved.source_operation_id,
+        "retirement_request_id": saved.retirement_request_id,
+        "preparation_request_id": saved.request_id,
+        "preparation_revision": saved.revision,
+        "preparation_plan_revision": saved.plan_revision,
+        "preparation_approval_id": saved.approval_id,
+    }
     require(
         runtime.get("status") == "OBSERVED"
         and runtime.get("release_ref") == reference(reader.target.release_id)
         and isinstance(observed, dict)
         and set(observed)
         == set(hashes)
+        | set(bindings)
         | {
-            "status",
-            "scope",
             "operation_id",
             "recorded_at",
             "producer_attempt_id",
             "producer_fence_token",
             "grant_count",
-            "grants",
-            "kubernetes",
         }
-        and observed["status"] == "OBSERVED"
-        and observed["scope"] == scope
+        and all(observed.get(key) == value for key, value in bindings.items())
         and reference(identifier(observed["operation_id"], "cleanup operation"))
         == preparation.get("operation_ref")
         and selected.authorized_at
@@ -86,39 +74,18 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         and type(observed["producer_fence_token"]) is int
         and observed["producer_fence_token"] > 0
         and type(observed["grant_count"]) is int
-        and 0 < observed["grant_count"] <= 100
+        and 0 < observed["grant_count"] <= 128
+        and observed["retirement_revision_sha256"] == review.get("revision")
+        and observed["retirement_plan_sha256"]
+        == review.get("approval_request", {}).get("parameters", {}).get("plan_revision")
         and store.load() == saved
     )
     identifier(observed["producer_attempt_id"], "cleanup producer attempt")
     for key in hashes:
         digest(observed[key], "cleanup artifact digest")
-    require(
-        isinstance(observed["grants"], list)
-        and observed["grant_count"] == len(observed["grants"])
-    )
-    current = observe_grants(
-        provider, selected, observed["grants"], observed["grant_set_sha256"]
-    )
-    material = observed["kubernetes"]
-    require(
-        isinstance(material, dict)
-        and isinstance(material.get("transport"), dict)
-        and isinstance(material.get("fence"), dict)
-        and material["transport"].get("cluster_arn")
-        == observed["grants"][0]["spec"]["cluster_arn"]
-        and artifact_digest(material["fence"]) == observed["fence_sha256"]
-    )
-    kubernetes = observe_kubernetes(
-        provider,
-        selected,
-        original.workspace_id,
-        observed["kubernetes"],
-        observed["kubernetes_inventory_sha256"],
-    )
-    require(store.load() == saved)
     return {
         "status": "OBSERVED",
-        "scope": "immutable preparation, recorded deletion plan and current recorded EKS/Kubernetes grants and fence; complete provider inventory, plan bytes and cleanup unverified",
+        "scope": "authenticated historical preparation and canonical deletion request; current provider state and deletion unverified",
         "release_ref": runtime["release_ref"],
         "observed_at": now.isoformat(),
         "recorded_at": observed["recorded_at"],
@@ -126,8 +93,14 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         "producer_attempt_ref": reference(observed["producer_attempt_id"]),
         "producer_fence_token": observed["producer_fence_token"],
         "grant_count": observed["grant_count"],
-        "current_eks_grants": current,
-        "current_kubernetes": kubernetes,
+        "current_eks_grants": {
+            "status": "UNVERIFIED",
+            "scope": "supplemental client observation; server execution gates remain required",
+        },
+        "current_kubernetes": {
+            "status": "UNVERIFIED",
+            "scope": "supplemental client observation; server execution gates remain required",
+        },
         **{
             key.removesuffix("_sha256").removesuffix("_id") + "_ref": reference(
                 observed[key]

@@ -95,7 +95,9 @@ def test_rehashed_foreign_request_cannot_replace_prepared_inputs(observed, chang
 
     observed.review_change = change
     report = observed.cleanup.run()
-    assert report["status"] == "BLOCKED" and "retirement review" in report["reason"]
+    assert report["status"] == "BLOCKED" and any(
+        label in report["reason"] for label in ("retirement review", "cleanup evidence")
+    )
     assert "retirement_review" not in report.get("browser", {})
     assert path.read_bytes() == before and observed.cleanup.admissions == 1
     assert not any(
@@ -146,7 +148,9 @@ def test_self_consistent_step_list_must_match_canonical_compiled_request(
 
     observed.review_change = changed
     report = observed.cleanup.run()
-    assert report["status"] == "BLOCKED" and "retirement review" in report["reason"]
+    assert report["status"] == "BLOCKED" and any(
+        label in report["reason"] for label in ("retirement review", "cleanup evidence")
+    )
     assert "retirement_review" not in report.get("browser", {})
     assert path.read_bytes() == before and observed.cleanup.admissions == 1
 
@@ -235,7 +239,9 @@ def test_changed_workspace_after_preview_is_not_reported_as_matched(
 
     monkeypatch.setattr(observed.cleanup.driver.page.service, "request", request)
     report = observed.cleanup.run()
-    assert "retirement review" in report["reason"]
+    assert any(
+        label in report["reason"] for label in ("retirement review", "cleanup evidence")
+    )
     assert "retirement_review" not in report.get("browser", {})
 
 

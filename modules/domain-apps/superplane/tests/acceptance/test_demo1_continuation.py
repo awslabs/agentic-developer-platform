@@ -239,6 +239,8 @@ def continuation(driver, monkeypatch, request):
         if state.unavailable and path.endswith("/capabilities") and state.approved:
             return 503, {}
         status, response = base_request(method, path, body)
+        if path.endswith("/operations/by-idempotency/" + selected.request_id):
+            response = producer.native_operation(state.workspace_operation)
         if path.endswith("/workspaces/" + identifier(10)) and method == "GET":
             response["provisioning_operation_id"] = state.workspace_operation
             records.workspace_current = state.workspace_operation

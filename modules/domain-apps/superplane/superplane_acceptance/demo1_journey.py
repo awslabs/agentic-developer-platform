@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 from datetime import UTC, datetime
 
 from .demo1_browser import PREFIX, PlaywrightBrowserTransport, advance_creation
 from .demo1_evidence import EvidenceError
-from .demo1_lineage import observe_lineage
 from .demo1_report import reference
 from .demo1_runtime import RuntimeReader
 from .demo1_session import browser_state_parts, restore_browser_session
@@ -66,16 +64,6 @@ def advance_browser(
     reader = RuntimeReader(selected, envelope.runtime_target)
     runtime = reader.observe(remaining_ms() / 1000)
 
-    def verify_lineage(checkpoint, original_operation, current_operation):
-        return observe_lineage(
-            reader,
-            checkpoint,
-            original_operation,
-            current_operation,
-            remaining_ms() / 1000,
-            now=clock(),
-        )
-
     if runtime.get("status") != "OBSERVED" or runtime.get("release_ref") != reference(
         envelope.runtime_target.release_id
     ):
@@ -105,6 +93,7 @@ def advance_browser(
                     envelope.origin,
                     release_id=envelope.runtime_target.release_id,
                     remaining_ms=remaining_ms,
+                    selected=selected,
                 )
                 status, _ = transport.request("GET", PREFIX + "/capabilities")
                 if status != 200:
@@ -119,7 +108,6 @@ def advance_browser(
                     checkpoint=saved,
                     persist=store.save,
                     restore_unsent=store.restore_unsent,
-                    verify_lineage=verify_lineage,
                     preview_retirement=continuation_store is None
                     and cleanup_store is None
                     and not review_retirement_access,
@@ -155,27 +143,17 @@ def advance_browser(
                         clock=clock,
                     )
                     if result["cleanup_preparation"].get("state") == "succeeded":
-                        from .demo1_aws import AwsProviderReader
                         from .demo1_cleanup_evidence import observe_cleanup
                         from .demo1_teardown import read_teardown_review
 
-                        def provider_run(command, **options):
-                            options["timeout"] = min(
-                                options.get("timeout", 30), remaining_ms() / 1000
-                            )
-                            options.pop("check", None)
-                            response = subprocess.run(command, check=False, **options)
-                            remaining_ms()
-                            return response
+                        from .demo1_browser import _response
 
-                        provider = AwsProviderReader(
-                            connection_id=selected.connection_id,
-                            broker_label=envelope.broker_label,
-                            account=selected.account,
-                            role_name=selected.role,
-                            region=selected.region,
-                            runner=provider_run,
-                            clock=clock,
+                        review = _response(
+                            transport,
+                            "POST",
+                            PREFIX
+                            + f"/workspaces/{saved.workspace_id}/retirement/preview",
+                            {"operation_id": saved.retirement_request_id},
                         )
                         result["cleanup_preparation"]["artifact"] = observe_cleanup(
                             reader,
@@ -183,10 +161,10 @@ def advance_browser(
                             result["cleanup_preparation"],
                             remaining_ms() / 1000,
                             now=clock(),
-                            provider=provider,
+                            review=review,
                         )
                         result["cleanup_preparation"]["reason"] = (
-                            "immutable preparation, canonical recorded deletion plan and current recorded cleanup grants and fence verified; complete provider inventory and deletion remain unverified"
+                            "authenticated historical preparation and canonical deletion request verified; current provider state and deletion remain unverified"
                         )
                         _, result["retirement_review"] = read_teardown_review(
                             selected,
@@ -196,6 +174,7 @@ def advance_browser(
                             result,
                             result["cleanup_preparation"]["artifact"],
                             clock=clock,
+                            review=review,
                         )
                 remaining_ms()
             finally:

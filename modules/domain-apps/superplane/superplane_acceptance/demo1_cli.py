@@ -173,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint")
     parser.add_argument("--continuation-checkpoint")
     parser.add_argument("--retirement-checkpoint")
+    parser.add_argument("--removal-checkpoint")
     parser.add_argument("--observe-provider", action="store_true")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--observe-runtime", action="store_true")
@@ -180,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--advance-creation", action="store_true")
     action.add_argument("--review-retirement-access", action="store_true")
     action.add_argument("--advance-retirement-access", action="store_true")
+    action.add_argument("--advance-removal", action="store_true")
     action.add_argument(
         "--advance-continuation",
         choices=("apply-infrastructure", "bootstrap-workspace"),
@@ -187,11 +189,15 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
-            if bool(arguments.advance_retirement_access) != bool(
-                arguments.retirement_checkpoint
-            ):
+            if bool(
+                arguments.advance_retirement_access or arguments.advance_removal
+            ) != bool(arguments.retirement_checkpoint):
                 raise EvidenceError(
                     "cleanup preparation: explicit advancement and its private checkpoint required together"
+                )
+            if bool(arguments.advance_removal) != bool(arguments.removal_checkpoint):
+                raise EvidenceError(
+                    "removal: explicit advancement and private removal checkpoint required together"
                 )
             if bool(arguments.advance_continuation) != bool(
                 arguments.continuation_checkpoint
@@ -204,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                 or arguments.observe_ownership
                 or arguments.review_retirement_access
                 or arguments.advance_retirement_access
+                or arguments.advance_removal
             ):
                 raise EvidenceError(
                     "provider: choose provider observation alone or with browser advancement"
@@ -233,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 or arguments.advance_continuation
                 or arguments.review_retirement_access
                 or arguments.advance_retirement_access
+                or arguments.advance_removal
                 or arguments.observe_ownership
                 or arguments.observe_provider
             ):
@@ -246,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
                 or arguments.advance_continuation
                 or arguments.review_retirement_access
                 or arguments.advance_retirement_access
+                or arguments.advance_removal
                 or arguments.observe_ownership
                 or arguments.observe_provider
                 else None,
@@ -297,9 +306,52 @@ def main(argv: list[str] | None = None) -> int:
                             )
                     except EvidenceError as error:
                         report["reason"] = str(error)
+                if arguments.advance_removal:
+                    from datetime import UTC, datetime
+                    from .demo1_cleanup import PrivateCleanup
+                    from .demo1_removal import PrivateRemoval, run_removal
+
+                    report["version"] = "demo1-live-result-v1"
+                    report["evidence_mode"] = "live-demo1-dedicated-scope"
+                    report["scope"] = "dedicated Demo 1 workspace lifecycle only"
+                    report["broader_acceptance"] = {
+                        "status": "UNVERIFIED",
+                        "live_acceptance": report.pop("live_acceptance"),
+                        "criteria": report.pop("criteria"),
+                        "reason": "broader story scenarios, full account inventory and residual cost remain unverified",
+                    }
+                    try:
+                        with PrivateCleanup(
+                            arguments.retirement_checkpoint,
+                            selected,
+                            envelope,
+                            store.load(),
+                        ) as cleanup_store:
+                            with PrivateRemoval(
+                                arguments.removal_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                                cleanup_store.load(),
+                            ) as removal_store:
+                                report.update(
+                                    run_removal(
+                                        selected,
+                                        envelope,
+                                        session,
+                                        store,
+                                        cleanup_store,
+                                        removal_store,
+                                        clock=lambda: datetime.now(UTC),
+                                    )
+                                )
+                    except EvidenceError as error:
+                        report["reason"] = str(error)
+                        report["demo1"] = {"status": "BLOCKED", "cost_usd": None}
                 saved = store.load()
                 if arguments.observe_provider:
                     from .demo1_current import observe_current_provider
+                    from .demo1_session import observe_in_browser
 
                     report["evidence_mode"] = "current-provider-unverified"
                     if arguments.advance_creation and not report.get("browser", {}).get(
@@ -312,11 +364,18 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         try:
                             report.update(
-                                observe_current_provider(
+                                observe_in_browser(
                                     selected,
                                     envelope,
-                                    saved,
-                                    expires - time.monotonic(),
+                                    session,
+                                    lambda transport: observe_current_provider(
+                                        selected,
+                                        envelope,
+                                        saved,
+                                        expires - time.monotonic(),
+                                        transport=transport,
+                                    ),
+                                    max_runtime_seconds=expires - time.monotonic(),
                                 )
                             )
                         except EvidenceError as error:
@@ -330,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
                 if arguments.observe_ownership:
                     from .demo1_ownership import observe_ownership, ownership_report
                     from .demo1_runtime import RuntimeReader
+                    from .demo1_session import observe_in_browser
 
                     report["evidence_mode"] = "historical-ownership-unverified"
                     if envelope.runtime_target is None:
@@ -337,10 +397,17 @@ def main(argv: list[str] | None = None) -> int:
                             "ownership: explicit v2 authority target required before reads"
                         )
                     try:
-                        runtime, ownership = observe_ownership(
-                            RuntimeReader(selected, envelope.runtime_target),
-                            saved,
-                            envelope.max_runtime_seconds,
+                        runtime, ownership = observe_in_browser(
+                            selected,
+                            envelope,
+                            session,
+                            lambda transport: observe_ownership(
+                                RuntimeReader(selected, envelope.runtime_target),
+                                saved,
+                                expires - time.monotonic(),
+                                transport=transport,
+                            ),
+                            max_runtime_seconds=expires - time.monotonic(),
                         )
                         report["runtime"] = runtime
                         report["ownership"] = ownership_report(ownership)
@@ -385,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
             or arguments.advance_continuation
             or arguments.review_retirement_access
             or arguments.advance_retirement_access
+            or arguments.advance_removal
         ):
             label = "Live browser phase"
         elif arguments.observe_ownership:
@@ -393,6 +461,14 @@ def main(argv: list[str] | None = None) -> int:
             label = "Live selected provider observation"
         else:
             label = "Live selection preflight"
+        if (
+            arguments.advance_removal
+            and report.get("demo1", {}).get("status") == "PASS"
+        ):
+            print(
+                "Demo 1: PASS (dedicated workspace scope; broader acceptance and cost remain unverified)"
+            )
+            return 0
         print(f"{label}: BLOCKED (not lifecycle acceptance)")
         return 2
     try:
@@ -403,6 +479,8 @@ def main(argv: list[str] | None = None) -> int:
             or arguments.review_retirement_access
             or arguments.advance_retirement_access
             or arguments.retirement_checkpoint
+            or arguments.advance_removal
+            or arguments.removal_checkpoint
             or arguments.continuation_checkpoint
             or arguments.observe_ownership
             or arguments.observe_provider

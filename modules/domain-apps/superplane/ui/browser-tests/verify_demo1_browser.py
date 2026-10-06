@@ -279,12 +279,15 @@ def main():
                     else:
                         raise AssertionError("changed origin was not refused")
                     assert len(calls) == count
+                    from demo1_controls_fixture import run as run_controls
+                    controls_result = run_controls(browser, state, session, ORIGIN, LOCAL, RELEASE)
                     (OUTPUT / "demo1-browser.json").write_text(
                         json.dumps(
                             {
                                 "evidence_mode": "offline-synthetic-http",
                                 "browser": browser.version,
                                 "session_import": "passed",
+                                "product_controls": controls_result,
                                 "maintained_ui_reentry": "passed",
                                 "continuation_details": "passed",
                                 "release_redirect_session_refusals": "passed",

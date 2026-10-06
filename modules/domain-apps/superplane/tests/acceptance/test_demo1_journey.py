@@ -115,6 +115,7 @@ def test_cli_reports_preparation_state_without_claiming_later_phases(
         status, response = request(method, path, body)
         if "/operations/by-idempotency/" in path:
             response["state"] = state
+            response["lifecycle_lineage"]["phases"][0]["state"] = state
         return status, response
 
     monkeypatch.setattr(driver.page.service, "request", changed_state)
@@ -185,6 +186,17 @@ def driver(tmp_path, monkeypatch):
     parsed = DemoInput.parse(selected)
     producer = Producer(selected, authority["runtime_target"])
     page = Page(parsed, authority["runtime_target"]["release_id"])
+    # Journey state-machine tests use a browser-control I/O double. Actual DOM
+    # request matching and controls are covered by the Chromium regression.
+    from superplane_acceptance import demo1_controls
+
+    monkeypatch.setattr(
+        demo1_controls,
+        "create_workspace",
+        lambda transport, body, before_send: transport.request(
+            "POST", "/api/superplane/v1/workspaces", body, before_send=before_send
+        ),
+    )
     monkeypatch.setattr(
         demo1_journey,
         "RuntimeReader",
@@ -306,7 +318,7 @@ def test_cli_waits_for_independent_approval_and_recovers_lost_reply(driver, lost
     for _attempt in range(2):
         result = driver.run()
         assert result["browser"]["creation_observed"] is True
-        assert result["browser"]["retirement"] == "BLOCKED"
+        assert "awaiting completed approved bootstrap" in result["browser"]["reason"]
         assert result["browser"]["readiness"] == "UNKNOWN"
         assert result["status"] == "BLOCKED" and result["live_acceptance"] is False
     assert driver.page.reloads == (2 if lost_reply else 3)
