@@ -70,16 +70,31 @@ def execution_steps(recipe_sha256):
     )
 
 
-def access_request(plan, source, deployment_policy):
+def access_request(plan, source, deployment_policy, *, allocation_source=None):
     """Build from server-read bootstrap metadata and the service-compiled recipe."""
     policy = policy_document(deployment_policy)
     original = decode_payload(source.request_payload)
+    managed = isinstance(plan, ManagedRetirementAccessPlan)
+    paid_source = allocation_source if managed else source
     if (
         source.state != "succeeded"
         or original.action != "provision"
         or original.parameters.get("lifecycle_phase") != "bootstrap-workspace"
         or payload_digest(original) != source.plan_digest
-        or allocation_id_for(source) != plan.original_allocation_id
+        or paid_source is None
+        or allocation_id_for(paid_source) != plan.original_allocation_id
+        or (
+            managed
+            and (
+                paid_source.state != "succeeded"
+                or paid_source.operation_id
+                != original.parameters.get("lifecycle_source_operation_id")
+                or paid_source.org_id != source.org_id
+                or paid_source.workspace_id != source.workspace_id
+                or paid_source.admitted_request().parameters.get("lifecycle_phase")
+                != "apply-infrastructure"
+            )
+        )
         or source.org_id != plan.org_id
         or source.workspace_id != plan.workspace_id
     ):
@@ -88,7 +103,6 @@ def access_request(plan, source, deployment_policy):
         )
     request = json.loads(original.parameters["lifecycle_request"])
     account, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
-    managed = isinstance(plan, ManagedRetirementAccessPlan)
     expected_mode = "existing-account-managed" if managed else "bring-existing-cluster"
     if (
         request.get("mode") != expected_mode

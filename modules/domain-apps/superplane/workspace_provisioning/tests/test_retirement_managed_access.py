@@ -165,10 +165,14 @@ def test_managed_cleanup_plan_requires_real_original_seal(
     )
     plan = compile_managed_access_plan(**arguments)
     source = SimpleNamespace(
+        state="succeeded",
         org_id=plan.org_id,
         workspace_id=plan.workspace_id,
         admitted_request=lambda: SimpleNamespace(
-            parameters={"allocation_id": plan.original_allocation_id}
+            parameters={
+                "allocation_id": plan.original_allocation_id,
+                "lifecycle_phase": "apply-infrastructure",
+            }
         ),
     )
 
@@ -194,11 +198,21 @@ def test_managed_cleanup_plan_requires_real_original_seal(
             with pytest.raises(LifecycleRefused, match="exchange"):
                 await require_managed_sealed_plan(
                     connection,
+                    SimpleNamespace(**{**vars(source), "org_id": "other-org"}),
+                    plan,
+                )
+            with pytest.raises(LifecycleRefused, match="exchange"):
+                await require_managed_sealed_plan(
+                    connection,
                     SimpleNamespace(
+                        state="succeeded",
                         org_id=plan.org_id,
                         workspace_id=plan.workspace_id,
                         admitted_request=lambda: SimpleNamespace(
-                            parameters={"allocation_id": plan.allocation_id}
+                            parameters={
+                                "allocation_id": plan.allocation_id,
+                                "lifecycle_phase": "apply-infrastructure",
+                            }
                         ),
                     ),
                     plan,
@@ -209,7 +223,16 @@ def test_managed_cleanup_plan_requires_real_original_seal(
 
 
 @pytest.mark.parametrize(
-    "changed", ["unchanged", "artifact", "allocation", "mode", "approval_policy"]
+    "changed",
+    [
+        "unchanged",
+        "artifact",
+        "allocation",
+        "mode",
+        "approval_policy",
+        "missing_paid",
+        "bootstrap_reused",
+    ],
 )
 def test_managed_request_binds_original_artifact_and_separate_allocation(
     runtime, changed
@@ -249,10 +272,9 @@ def test_managed_request_binds_original_artifact_and_separate_allocation(
         action="provision",
         idempotency_key="bootstrap-request",
         parameters={
-            "allocation_id": "original-allocation"
-            if changed != "allocation"
-            else "wrong",
+            "allocation_id": "bootstrap-allocation",
             "lifecycle_phase": "bootstrap-workspace",
+            "lifecycle_source_operation_id": "completed-apply",
             "lifecycle_request": json.dumps(
                 {
                     "mode": "existing-account-managed"
@@ -279,11 +301,45 @@ def test_managed_request_binds_original_artifact_and_separate_allocation(
         request_payload=encode_payload(original),
         admitted_request=lambda: original,
     )
-    if changed in {"artifact", "allocation", "mode"}:
+    paid_request = OperationRequest(
+        action="provision",
+        idempotency_key="apply-request",
+        parameters={
+            "allocation_id": "wrong"
+            if changed == "allocation"
+            else "original-allocation",
+            "lifecycle_phase": "apply-infrastructure",
+        },
+    )
+    paid = SimpleNamespace(
+        state="succeeded",
+        operation_id="completed-apply",
+        org_id=plan.org_id,
+        workspace_id=plan.workspace_id,
+        admitted_request=lambda: paid_request,
+    )
+    allocation_source = (
+        None
+        if changed == "missing_paid"
+        else source
+        if changed == "bootstrap_reused"
+        else paid
+    )
+    if changed in {
+        "artifact",
+        "allocation",
+        "mode",
+        "missing_paid",
+        "bootstrap_reused",
+    }:
         with pytest.raises(LifecycleRefused):
-            access_request(plan, source, deployment)
+            access_request(
+                plan, source, deployment, allocation_source=allocation_source
+            )
         return
-    request = access_request(plan, source, deployment)
+    request = access_request(
+        plan, source, deployment, allocation_source=allocation_source
+    )
     if changed == "approval_policy":
         deployment["permitted_modes"] = ["adopt"]
         with pytest.raises(LifecycleRefused, match="policy"):

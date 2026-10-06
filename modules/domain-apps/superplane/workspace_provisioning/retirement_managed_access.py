@@ -124,6 +124,10 @@ async def require_managed_sealed_plan(connection, source, plan):
 
     if (
         not isinstance(plan, ManagedRetirementAccessPlan)
+        or source.state != "succeeded"
+        or source.admitted_request().parameters.get("lifecycle_phase")
+        != "apply-infrastructure"
+        or (source.org_id, source.workspace_id) != (plan.org_id, plan.workspace_id)
         or plan.original_allocation_id != allocation_id_for(source)
         or plan.allocation_id == plan.original_allocation_id
     ):
