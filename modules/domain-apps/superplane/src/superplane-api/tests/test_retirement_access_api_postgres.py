@@ -64,9 +64,17 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
 
     async with fixture.sessions() as db:
         await db.run_sync(
-            lambda session: database.Base.metadata.tables[
-                "workspace_lifecycle_control_operations"
-            ].create(session.connection())
+            lambda session: database.Base.metadata.create_all(
+                session.connection(),
+                tables=[
+                    database.Base.metadata.tables[name]
+                    for name in (
+                        "deployments",
+                        "controller_deployment_operations",
+                        "workspace_lifecycle_control_operations",
+                    )
+                ],
+            )
         )
         await db.commit()
     async with fixture.connections.connect() as connection:
