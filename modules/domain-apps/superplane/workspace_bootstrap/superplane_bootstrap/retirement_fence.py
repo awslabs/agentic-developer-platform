@@ -49,6 +49,8 @@ def documents(name, generation, *, active=False):
                 "failurePolicy": "Fail",
                 "matchConstraints": {
                     "matchPolicy": "Equivalent",
+                    "namespaceSelector": {},
+                    "objectSelector": {},
                     "resourceRules": rules,
                 },
                 "validations": [

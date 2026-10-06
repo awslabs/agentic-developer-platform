@@ -65,7 +65,7 @@ async def cleanup_client(facts, effects, clients):
     identity = await asyncio.to_thread(clients.eks.observe, grant)
     if identity is None:
         raise LifecycleRefused("cleanup EKS mapping must exist before fence activation")
-    clients.eks.verify(grant, identity)
+    await asyncio.to_thread(clients.eks.verify, grant, identity)
     grants = await asyncio.to_thread(
         open_cleanup_client,
         operation,

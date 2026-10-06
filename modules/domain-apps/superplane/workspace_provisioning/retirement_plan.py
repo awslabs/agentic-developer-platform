@@ -91,6 +91,7 @@ class RetirementPlan:
     components_authorized: bool = True
     owned_namespace_remaining: bool = False
     cluster_rbac_remaining: bool = False
+    managed_destroy_planned: bool = False
 
     @property
     def preserves_cluster(self) -> bool:
@@ -108,7 +109,7 @@ class RetirementPlan:
         """
         return (
             self.components_authorized
-            and self.preserves_cluster
+            and (self.preserves_cluster or self.managed_destroy_planned)
             and not self.owned_namespace_remaining
             and not self.cluster_rbac_remaining
         )
@@ -156,6 +157,8 @@ def _target(payload: dict) -> str:
 
 def _component_steps(
     inventory: RetirementInventory,
+    *,
+    managed_destroy=False,
 ) -> tuple[list[ExecutionStep], list[str]]:
     """Deletion steps for owned controller objects; preservation for adopted ones.
 
@@ -184,6 +187,8 @@ def _component_steps(
         kind = body.get("kind", "")
         name = body.get("metadata", {}).get("name", "")
         if kind in {"ClusterRole", "ClusterRoleBinding"}:
+            if managed_destroy and component.owned:
+                continue
             preserved.append(
                 f"{kind}/{name} (owned cluster-scoped controller RBAC; independent "
                 "exact-name cleanup authority is required; teardown remains incomplete)"
@@ -218,6 +223,8 @@ def _component_steps(
 
 def _grant_steps(
     inventory: RetirementInventory,
+    *,
+    managed_destroy=False,
 ) -> tuple[list[ExecutionStep], list[str]]:
     """Revocation steps for retained grants, keyed by their immutable identity."""
     steps: list[ExecutionStep] = []
@@ -241,6 +248,8 @@ def _grant_steps(
                 "ValidatingAdmissionPolicy",
                 "ValidatingAdmissionPolicyBinding",
             }:
+                if managed_destroy:
+                    continue
                 # Cluster scope does not imply shared ownership. In particular,
                 # supervisor-cluster grants are unique to a bootstrap generation.
                 # Namespaced cleanup authority cannot remove them, and preserving
@@ -356,7 +365,9 @@ def compose_retirement_plan(
     ]
     preserved: list[str] = []
 
-    component_steps, component_preserved = _component_steps(inventory)
+    component_steps, component_preserved = _component_steps(
+        inventory, managed_destroy=managed_destroy is not None
+    )
     steps.extend(component_steps)
     preserved.extend(component_preserved)
 
@@ -372,18 +383,21 @@ def compose_retirement_plan(
                 "plan a delete identified only by name, because a namespace with "
                 "this name may be a different object than the one created here"
             )
-        preserved.append(
-            f"Namespace/{inventory.namespace} (ADP-created, uid {inventory.namespace_uid}; "
-            "retained because component ownership cannot authorize a cascading deletion "
-            "or fence unrelated namespace contents; teardown remains incomplete)"
-        )
+        if managed_destroy is None:
+            preserved.append(
+                f"Namespace/{inventory.namespace} (ADP-created, uid {inventory.namespace_uid}; "
+                "retained because component ownership cannot authorize a cascading deletion "
+                "or fence unrelated namespace contents; teardown remains incomplete)"
+            )
     else:
         preserved.append(
             f"Namespace/{inventory.namespace} (adopted, not created by this "
             "bootstrap; may hold unrelated workloads)"
         )
 
-    grant_steps, grant_preserved = _grant_steps(inventory)
+    grant_steps, grant_preserved = _grant_steps(
+        inventory, managed_destroy=managed_destroy is not None
+    )
     steps.extend(grant_steps)
     preserved.extend(grant_preserved)
 
@@ -520,16 +534,22 @@ def compose_retirement_plan(
         steps=tuple(steps),
         preserved=tuple(preserved),
         components_authorized=inventory.components_complete,
-        owned_namespace_remaining=inventory.remove_namespace,
-        cluster_rbac_remaining=any(
-            grant.spec.get("body", {}).get("kind")
-            in {"ClusterRole", "ClusterRoleBinding"}
-            for grant in inventory.grants
-        )
-        or any(
-            component.owned
-            and component.desired.get("kind") in {"ClusterRole", "ClusterRoleBinding"}
-            for component in inventory.components
+        owned_namespace_remaining=inventory.remove_namespace
+        and managed_destroy is None,
+        managed_destroy_planned=managed_destroy is not None,
+        cluster_rbac_remaining=managed_destroy is None
+        and (
+            any(
+                grant.spec.get("body", {}).get("kind")
+                in {"ClusterRole", "ClusterRoleBinding"}
+                for grant in inventory.grants
+            )
+            or any(
+                component.owned
+                and component.desired.get("kind")
+                in {"ClusterRole", "ClusterRoleBinding"}
+                for component in inventory.components
+            )
         ),
     )
     encoded = plan.encode()
