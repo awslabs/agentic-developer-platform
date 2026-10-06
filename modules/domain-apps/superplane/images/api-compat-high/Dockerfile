@@ -27,4 +27,6 @@ COPY PSF-LICENSE.txt /opt/adp-security/api-high/PSF-LICENSE.txt
 RUN rm -f /usr/local/lib/python3.12/__pycache__/tarfile.*.pyc
 COPY verify.py /opt/adp-security/api-high/verify.py
 RUN python /opt/adp-security/api-high/verify.py
+COPY verify_jose_der.py /opt/adp-security/api-high/verify_jose_der.py
 USER 65532:65532
+RUN python /opt/adp-security/api-high/verify_jose_der.py
