@@ -120,7 +120,9 @@ aws sts get-caller-identity
 terraform -chdir=platform/automation-infra init -reconfigure \
   -backend-config=bucket=adp-terraform-state-879318057152 \
   -backend-config=key=dev/trusted-automation/terraform.tfstate \
-  -backend-config=region=us-east-1
+  -backend-config=region=us-east-1 \
+  -backend-config=dynamodb_table=adp-terraform-locks \
+  -backend-config=encrypt=true
 terraform -chdir=platform/automation-infra plan \
   -var-file=/private/existing-reviewed-automation.tfvars \
   -var=enable_superplane_operator_source=true \
@@ -130,6 +132,13 @@ terraform -chdir=platform/automation-infra plan \
 terraform -chdir=platform/automation-infra show -no-color \
   /private/superplane-build-authority.tfplan
 ```
+
+Keep the existing lock table configured before creating the saved plan. Terraform
+stores the backend configuration in saved plans; `apply -lock=true` cannot provide
+remote locking when that backend has no locking mechanism configured. A plan
+created without the lock table must be superseded by a newly reviewed plan after
+correct initialization. Do not disable locking or discard a checksum mismatch to
+get past initialization; reconcile the existing backend with its state owner.
 
 Review must show **one in-place update**, solely
 `aws_iam_role_policy.build_dispatch`, retaining all existing project/role/trust
