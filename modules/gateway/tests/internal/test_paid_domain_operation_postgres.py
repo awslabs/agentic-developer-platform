@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import boto3
@@ -315,6 +315,43 @@ async def test_recovery_scope_claim_subject_and_fence_are_current_paid_run(paid)
     async with paid.connect() as c:
         await c.execute("UPDATE harness_recovery_claim_bindings SET subject='foreign-run#1'")
     assert (await paid.post("/recovery/authority", {"claim": claim}, credential=credential)).status_code == 403
+
+
+@pytest.mark.parametrize("action", ["observe", "inventory", "lifecycle", "account-creation", "bootstrap"])
+async def test_recovery_observations_refuse_same_org_foreign_workspace_before_domain_call(paid, monkeypatch, action):
+    from harness_jobs.identity import ResolvedPrincipal
+    from harness_jobs.leases import acquire, fence_expired_lease
+
+    foreign_workspace = "20000000-0000-0000-0000-000000000003"
+    async with paid.connect() as connection:
+        await connection.execute("INSERT INTO workspaces VALUES($1::text::uuid)", foreign_workspace)
+        await acquire(connection, operation_id="original-operation", holder="dead-run#1", attempt_id="dead-run#1")
+        await connection.execute("UPDATE harness_operation_leases SET expires_at=clock_timestamp()-interval '1 second'")
+    paid.body["mode"] = "recovery"
+    dispatched, credential = await start(paid)
+    actor = ResolvedPrincipal(ORG, WORKSPACE, dispatched["principal"], frozenset({"workspace:recover"}))
+    async with paid.connect() as connection:
+        takeover = await fence_expired_lease(connection, operation_id="original-operation", recovery_principal=actor)
+    claim = {key: getattr(takeover.lease, key) for key in ("operation_id", "org_id", "workspace_id", "holder", "attempt_id", "fence_token")}
+    assert (await paid.post("/recovery/authority", {"claim": claim}, credential=credential)).status_code == 200
+
+    domain_request = AsyncMock(return_value={"claim": claim, "query_id": "query-1"})
+    monkeypatch.setattr(routes, "domain_request", domain_request)
+    body = {"claim": claim, "query_id": "query-1"}
+    body.update({"allocation_id": "allocation-1"} if action == "inventory" else {"idempotency_key": "observation-1"})
+    allowed = await paid.post(f"/recovery/{action}", body, credential=credential)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["claim"]["workspace_id"] == WORKSPACE
+
+    substituted = await paid.post(
+        f"/recovery/{action}",
+        {**body, "claim": {**claim, "workspace_id": foreign_workspace}},
+        credential=credential,
+    )
+    assert substituted.status_code == 403, substituted.text
+    domain_request.assert_awaited_once()
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
 
 
 async def test_expired_recovery_bootstrap_retries_but_active_claim_does_not(paid, monkeypatch):

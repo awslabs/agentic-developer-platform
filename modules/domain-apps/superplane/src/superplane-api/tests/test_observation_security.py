@@ -102,6 +102,98 @@ async def test_same_workspace_name_in_two_orgs_cannot_expand_grant(client, monke
     assert set(orgs) == {org_a} and org_b not in orgs
 
 
+async def test_same_org_monitor_credentials_cannot_substitute_workspace_observations(
+    client, monkeypatch
+):
+    org_id, own_workspace, own_cluster = await seed()
+    peer_workspace, peer_cluster = uuid.uuid4(), uuid.uuid4()
+    peer_credential = "security-test-peer-credential"
+    peer_key = b"security-test-peer-signing-key"
+    async with async_session_test() as db:
+        db.add(
+            Cluster(
+                id=peer_cluster, org_id=org_id, name="peer-cluster", status="Active"
+            )
+        )
+        await db.flush()
+        db.add(
+            Workspace(
+                id=peer_workspace,
+                org_id=org_id,
+                name="peer",
+                status="Active",
+                isolation_mode="namespace",
+                cluster_id=peer_cluster,
+            )
+        )
+        await db.commit()
+    monkeypatch.setattr(
+        settings,
+        "observation_submitters",
+        json.dumps(
+            [
+                {
+                    "submitter_id": "monitor-own",
+                    "credential": CREDENTIAL,
+                    "signing_key": KEY.decode(),
+                    "workspaces": [str(own_workspace)],
+                },
+                {
+                    "submitter_id": "monitor-peer",
+                    "credential": peer_credential,
+                    "signing_key": peer_key.decode(),
+                    "workspaces": [str(peer_workspace)],
+                },
+            ]
+        ),
+    )
+    for cluster, workspace, credential, key in (
+        (own_cluster, own_workspace, CREDENTIAL, KEY),
+        (peer_cluster, peer_workspace, peer_credential, peer_key),
+    ):
+        response = await _submit(
+            client,
+            _observation(cluster, workspace=str(workspace)),
+            credential=credential,
+            key=key,
+        )
+        assert response.status_code == 202, response.text
+    for credential, key, owned_cluster, foreign_cluster, foreign_workspace in (
+        (CREDENTIAL, KEY, own_cluster, peer_cluster, peer_workspace),
+        (peer_credential, peer_key, peer_cluster, own_cluster, own_workspace),
+    ):
+        refused = await _submit(
+            client,
+            _observation(foreign_cluster, workspace=str(foreign_workspace)),
+            credential=credential,
+            key=key,
+        )
+        assert refused.status_code == 403, refused.text
+        assert (
+            await client.get(
+                f"/internal/observations/{foreign_cluster}",
+                headers={"authorization": credential},
+            )
+        ).status_code == 404
+        own = await client.get(
+            f"/internal/observations/{owned_cluster}",
+            headers={"authorization": credential},
+        )
+        assert own.status_code == 200, own.text
+        visible = await client.get(
+            "/internal/observations/clusters", headers={"authorization": credential}
+        )
+        assert visible.status_code == 200, visible.text
+        assert [entry["cluster_id"] for entry in visible.json()] == [str(owned_cluster)]
+    async with async_session_test() as db:
+        assert (
+            await db.get(ObservationReceipt, own_cluster)
+        ).submitter_id == "monitor-own"
+        assert (
+            await db.get(ObservationReceipt, peer_cluster)
+        ).submitter_id == "monitor-peer"
+
+
 async def test_cluster_use_does_not_grant_shared_member_observations(
     client, monkeypatch
 ):
