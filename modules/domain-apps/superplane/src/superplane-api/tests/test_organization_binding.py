@@ -189,3 +189,101 @@ async def test_selected_organization_and_disjoint_human_grants_reach_only_own_wo
     reader.enabled = False
     assert await status_for("alice", second_workspace) == 403
     assert reader.calls[-1] == ("alice", "human", "O2")
+
+
+async def test_current_human_routes_refuse_service_and_monitor_credentials(client, monkeypatch):
+    import json
+
+    from app import auth
+    from app.adapters.operation_authority_source import (
+        ActingPrincipal,
+        GrantBackedAuthority,
+        reset_acting_principal,
+        set_acting_principal,
+    )
+    from app.config import settings
+    from app.current_identity import CurrentIdentity
+    from app.main import app
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from superplane_auth.policy import DomainTokenPolicy
+
+    org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add(Organization(id=org_id, name="typed-boundary", adp_org_id="selected-org"))
+        await db.flush()
+        db.add(Workspace(id=workspace_id, org_id=org_id, name="W1", isolation_mode="dedicated", status="Active"))
+        await db.flush()
+        db.add_all([
+            WorkspaceGrantRecord(workspace_id=workspace_id, org_id=org_id, principal="alice", principal_type="human", permissions="workspace:read"),
+            WorkspaceGrantRecord(workspace_id=workspace_id, org_id=org_id, principal="service-worker", principal_type="service", permissions="workspace:read"),
+        ])
+        await db.commit()
+
+    monkeypatch.setattr(auth, "verify_access_token", lambda token: {
+        "sub": token, "custom:org_id": "selected-org",
+        "custom:account_type": "service" if token == "service-worker" else "human",
+        "token_use": "access", "iss": "https://issuer.example", "client_id": "adp-client",
+    })
+    monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(
+        allowed_client_ids=["adp-client"], expected_issuer="https://issuer.example",
+    ), raising=False)
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class CurrentMemberships:
+        def __init__(self):
+            self.calls = []
+            self.substitute_subject = None
+
+        async def read(self, *, subject, principal_type, adp_org_id):
+            self.calls.append((subject, principal_type, adp_org_id))
+            return CurrentIdentity(
+                self.substitute_subject or subject,
+                principal_type, adp_org_id, "membership", True, True,
+                "claimed-delegation" if principal_type == "service" else None,
+            )
+
+    reader = CurrentMemberships()
+    monkeypatch.setattr(app.state, "current_identity_reader", reader, raising=False)
+    service_headers = {"Authorization": "Bearer service-worker"}
+    human_headers = {"Authorization": "Bearer alice"}
+    assert (await client.get(f"/workspaces/{workspace_id}", headers=service_headers)).status_code == 403
+    assert reader.calls == []
+    assert (await client.get(f"/workspaces/{workspace_id}", headers=human_headers)).status_code == 200
+    assert reader.calls == [("alice", "human", "selected-org")]
+    reader.substitute_subject = "service-worker"
+    assert (await client.get(f"/workspaces/{workspace_id}", headers=human_headers)).status_code == 403
+    reader.substitute_subject = None
+
+    token = set_acting_principal(ActingPrincipal(
+        subject="service-worker", org_id=str(org_id), workspace_id=str(workspace_id),
+        account_type="service", adp_org_id="selected-org", membership_id="membership",
+        identity_reader=reader,
+    ))
+    try:
+        assert await GrantBackedAuthority(async_session_test).resolve(
+            org_id=str(org_id), workspace_id=str(workspace_id), permission="workspace:read",
+        ) is None
+    finally:
+        reset_acting_principal(token)
+    assert reader.calls == [("alice", "human", "selected-org")] * 2
+
+    substituted = set_acting_principal(ActingPrincipal(
+        subject="service-worker", org_id=str(org_id), workspace_id=str(workspace_id),
+        account_type="human", adp_org_id="selected-org", membership_id="membership",
+        identity_reader=reader,
+    ))
+    try:
+        assert await GrantBackedAuthority(async_session_test).resolve(
+            org_id=str(org_id), workspace_id=str(workspace_id), permission="workspace:read",
+        ) is None
+    finally:
+        reset_acting_principal(substituted)
+
+    monkeypatch.setattr(settings, "observation_submitters", json.dumps([{
+        "submitter_id": "monitor", "credential": "monitor-only", "signing_key": "test-monitor-key",
+        "workspaces": [str(workspace_id)],
+    }]))
+    assert (await client.get("/internal/observations/clusters", headers=human_headers)).status_code == 401
+    assert (await client.get("/internal/observations/clusters", headers=service_headers)).status_code == 401
+    assert (await client.get("/internal/observations/clusters", headers={"Authorization": "monitor-only"})).status_code == 200

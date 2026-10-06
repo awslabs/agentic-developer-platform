@@ -36,7 +36,7 @@ class ProducerIdentityReader:
         self.adp_org_id = adp_org_id
 
     async def read(self, *, subject: str, principal_type: str, adp_org_id: str) -> CurrentIdentity:
-        if adp_org_id != self.adp_org_id or principal_type not in {"human", "service"}:
+        if adp_org_id != self.adp_org_id or principal_type != "human":
             raise IdentityDenied("current ADP identity organization or type refused")
         from app.adapters.operation_dispatch import ProducerRefusedError
 

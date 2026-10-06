@@ -214,6 +214,9 @@ class GrantBackedAuthority:
         if caller is None:
             return None
 
+        if identity_checks_enabled() and caller.account_type != "human":
+            return None
+
         if identity_checks_enabled():
             from app.models.organization import Organization
 

@@ -45,6 +45,9 @@ async def test_registered_producer_reader_checks_version_scope_and_membership():
     with pytest.raises(IdentityDenied):
         await reader.read(subject="alice", principal_type="human", adp_org_id="O2")
     assert len(transport.calls) == 1
+    with pytest.raises(IdentityDenied):
+        await reader.read(subject="alice", principal_type="service", adp_org_id="O1")
+    assert len(transport.calls) == 1
     transport.result = {**response, "version": 2}
     with pytest.raises(IdentityUnavailable):
         await reader.read(subject="alice", principal_type="human", adp_org_id="O1")

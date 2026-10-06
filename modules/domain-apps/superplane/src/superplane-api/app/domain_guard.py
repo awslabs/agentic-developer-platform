@@ -233,6 +233,8 @@ async def _authorize(
 
     scope, permission = requirement  # type: ignore[misc]
     caller = await domain_auth.require_verified_caller(request, credentials)
+    if identity_checks_enabled() and caller.principal.account_type != "human":
+        raise HTTPException(403, "human domain identity required")
     # Signature/policy verification established the actor even if tenant binding
     # or the later grant check refuses this request. Never publish an unbound tenant.
     request.state.audit_principal = caller.principal.subject
