@@ -217,6 +217,7 @@ def test_all_tables_registered():
         # schema able to express that, so authority was the caller's organization
         # and every org-mate reached every workspace in it.
         "workspace_grants",
+        "workspace_grant_changes",
         # Provider connections and their workspace bindings (issue #5053, U7b —
         # R7). Two tables, not one, because "who may delegate this credential"
         # and "which workspace may use it" are the two checks the contract
