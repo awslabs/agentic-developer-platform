@@ -222,7 +222,6 @@ def test_proof_route_requires_internal_iam_authentication():
     assert any(dependency.call is verify_internal_or_irsa for dependency in proof.router.routes[0].dependant.dependencies)
 
 
-
 def test_prepared_worker_is_attested_only_while_paused(installed):
     binding, responses, _, runtime = installed
     with pytest.raises(HTTPException):
@@ -242,14 +241,21 @@ def test_prepared_worker_is_attested_only_while_paused(installed):
 async def test_prepared_proof_refuses_existing_shared_work_before_workload_reads(installed, monkeypatch):
     binding, _, calls, _ = installed
     monkeypatch.setattr(proof, "producer", lambda *_: binding)
+
     @asynccontextmanager
     async def domain(_):
-        async def mapped(*_): return binding.adp_org_id
+        async def mapped(*_):
+            return binding.adp_org_id
+
         yield SimpleNamespace(fetchval=mapped)
+
     @asynccontextmanager
     async def shared(_):
-        async def outstanding(*_): return True
+        async def outstanding(*_):
+            return True
+
         yield SimpleNamespace(fetchval=outstanding)
+
     monkeypatch.setattr(proof, "domain_connect", domain)
     monkeypatch.setattr(proof, "operation_connect", shared)
     with pytest.raises(HTTPException) as refused:
@@ -262,20 +268,27 @@ async def test_prepared_proof_refuses_existing_shared_work_before_workload_reads
 async def test_quiescence_proof_does_not_claim_installed_or_read_worker(installed, monkeypatch):
     binding, _, calls, _ = installed
     produced = Mock(return_value=binding)
-    monkeypatch.setattr(proof, 'producer', produced)
+    monkeypatch.setattr(proof, "producer", produced)
+
     @asynccontextmanager
     async def domain(_):
-        async def mapped(*_): return binding.adp_org_id
+        async def mapped(*_):
+            return binding.adp_org_id
+
         yield SimpleNamespace(fetchval=mapped)
+
     @asynccontextmanager
     async def shared(_):
-        async def outstanding(*_): return False
+        async def outstanding(*_):
+            return False
+
         yield SimpleNamespace(fetchval=outstanding)
-    monkeypatch.setattr(proof, 'domain_connect', domain)
-    monkeypatch.setattr(proof, 'operation_connect', shared)
-    result = await proof.binding_proof(proof.BindingProofRequest(domain='superplane', org_id=binding.org_id, state='quiescent'), Mock())
-    assert result['quiescent'] is True
-    assert result['installed'] is False
-    assert result['org_id'] == binding.org_id
+
+    monkeypatch.setattr(proof, "domain_connect", domain)
+    monkeypatch.setattr(proof, "operation_connect", shared)
+    result = await proof.binding_proof(proof.BindingProofRequest(domain="superplane", org_id=binding.org_id, state="quiescent"), Mock())
+    assert result["quiescent"] is True
+    assert result["installed"] is False
+    assert result["org_id"] == binding.org_id
     assert produced.call_count == 2
     assert calls == []

@@ -155,6 +155,7 @@ async def domain_database_dsn(binding):
     ):
         raise HTTPException(503, "separate domain database binding unavailable")
     from dataclasses import replace
+
     return await database_dsn(replace(binding, database_secret_id=binding.domain_database_secret_id))
 
 
@@ -164,7 +165,9 @@ async def domain_connect(binding):
     try:
         connection = await asyncpg.connect(
             await domain_database_dsn(binding),
-            ssl=database_ssl(), timeout=10, command_timeout=20,
+            ssl=database_ssl(),
+            timeout=10,
+            command_timeout=20,
             server_settings={"search_path": binding.domain_database_schema + ",public"},
         )
         if await connection.fetchval("SELECT current_schema()") != binding.domain_database_schema:
@@ -181,7 +184,8 @@ async def domain_session(binding):
     engine = create_async_engine(
         dsn,
         connect_args={"ssl": database_ssl(), "server_settings": {"search_path": binding.domain_database_schema + ",public"}, "command_timeout": 20},
-        pool_size=1, max_overflow=0,
+        pool_size=1,
+        max_overflow=0,
     )
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:

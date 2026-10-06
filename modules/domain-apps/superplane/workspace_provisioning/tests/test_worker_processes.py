@@ -95,6 +95,7 @@ def test_executable_outside_exact_reviewed_paths_never_launches(tmp_path, monkey
 
 
 def test_real_child_sdk_renews_through_memory_bridge(tmp_path):
+    import boto3
     import sys
     from datetime import UTC, datetime, timedelta
 
@@ -116,7 +117,13 @@ def test_real_child_sdk_renews_through_memory_bridge(tmp_path):
         region="us-east-1",
         verify=lambda: None,
     )
-    script = """import boto3, time, os
+    # CI may install boto3 in the runner's user site. The child deliberately gets
+    # a private HOME, so select the real SDK's package directory explicitly for
+    # this test rather than weakening the production environment isolation.
+    sdk_packages = str(Path(boto3.__file__).resolve().parent.parent)
+    script = (
+        f"import sys; sys.path.insert(0, {sdk_packages!r})\n"
+        + """import boto3, time, os
 assert not {'AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN'} & os.environ.keys()
 credentials = boto3.Session().get_credentials()
 first = credentials.get_frozen_credentials().access_key
@@ -125,6 +132,7 @@ second = credentials.get_frozen_credentials().access_key
 assert first != second
 print('refreshed')
 """
+    )
     result = process.run(["python", "-c", script], timeout=20)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "refreshed" and len(calls) >= 2
