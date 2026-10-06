@@ -278,10 +278,15 @@ def verify_role(env, role, documents, oidc, *, legacy_routes=False):
             "dispatch",
             "binding-proof",
             "current-identity",
+            "current-identity/readiness",
         )
     }
     if legacy_routes:
-        allowed -= {prefix + "binding-proof", prefix + "current-identity"}
+        allowed -= {
+            prefix + "binding-proof",
+            prefix + "current-identity",
+            prefix + "current-identity/readiness",
+        }
     observed = set()
     for document in documents:
         statements = document.get("Statement", [])

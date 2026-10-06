@@ -120,6 +120,7 @@ def documents(env, oidc):
                         "dispatch",
                         "binding-proof",
                         "current-identity",
+                        "current-identity/readiness",
                     )
                 ],
             }

@@ -319,3 +319,21 @@ def test_known_legacy_route_upgrade_keeps_role_identity_and_exact_new_policy(pla
     )
     with pytest.raises(Refusal, match="inline policy differs"):
         producer_role.inspect_plan(installer, plan)
+
+
+def test_identity_preflight_has_exact_readiness_invoke_route(managed):
+    _, policy = producer_role.documents(
+        managed, "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    )
+    resources = policy["Statement"][0]["Resource"]
+    assert {
+        resource.split("/controller-execution/", 1)[1] for resource in resources
+    } == {
+        "producer-readiness",
+        "verify-run",
+        "dispatch",
+        "binding-proof",
+        "current-identity",
+        "current-identity/readiness",
+    }
+    assert all("*" not in resource for resource in resources)

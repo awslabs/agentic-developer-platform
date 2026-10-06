@@ -44,8 +44,8 @@ API admission. The shared binding digest must remain unchanged across this
 transition. An activation failure restores disabled API admission and pauses the
 worker; a failed restore remains a failure, never a successful receipt.
 
-The API producer's exact IAM recipe adds only `binding-proof` and `current-identity`
-to its existing three POST routes. A saved-plan upgrade may replace that known old
+The API producer's exact IAM recipe adds only `binding-proof`, `current-identity`, and
+`current-identity/readiness` to its existing three POST routes. A saved-plan upgrade may replace that known old
 inline recipe while preserving the role ARN, immutable RoleId, trust and all other
 authority. Arbitrary policy changes and role replacement remain refused.
 

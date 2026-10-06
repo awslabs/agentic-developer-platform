@@ -220,6 +220,7 @@ def test_dedicated_role_does_not_accept_worker_or_wildcard_authority(adapters):
                         "dispatch",
                         "binding-proof",
                         "current-identity",
+                        "current-identity/readiness",
                     )
                 ],
             }
