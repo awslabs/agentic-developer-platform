@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: ''
+      manual_source_revision:
+        description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
+        required: false
+        type: string
+        default: ''
       adp_source_revision:
         description: 'Engine-approved immutable source commit.'
         required: false
@@ -64,6 +69,11 @@ on:
     inputs:
       adp_correlation:
         description: 'Engine delivery correlation; empty preserves manual operation.'
+        required: false
+        type: string
+        default: ''
+      manual_source_revision:
+        description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
         required: false
         type: string
         default: ''
@@ -132,12 +142,17 @@ jobs:
     steps:
       - name: Guard engine delivery revisions
         env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
           ADP_CORRELATION: ${{ inputs.adp_correlation }}
           ADP_SOURCE: ${{ inputs.adp_source_revision }}
           ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
           ACTUAL_DEFINITION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+          fi
           if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
             [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
             [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -146,12 +161,16 @@ jobs:
           fi
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
 
@@ -174,7 +193,7 @@ jobs:
         env:
           CONTEXT_WORKFLOW: .github/workflows/run-gateway-migrations.yml
           CONTEXT_REVISION: ${{ github.workflow_sha }}
-          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
@@ -233,7 +252,7 @@ jobs:
       - name: Record gateway-migrations build evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/run-gateway-migrations.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-migrations

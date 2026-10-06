@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ''
+      manual_source_revision:
+        description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
+        required: false
+        type: string
+        default: ''
       adp_source_revision:
         description: 'Engine-approved immutable source commit.'
         required: false
@@ -109,12 +114,17 @@ jobs:
     steps:
       - name: Guard engine delivery revisions
         env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
           ADP_CORRELATION: ${{ inputs.adp_correlation }}
           ADP_SOURCE: ${{ inputs.adp_source_revision }}
           ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
           ACTUAL_DEFINITION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+          fi
           if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
             [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
             [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -123,7 +133,7 @@ jobs:
           fi
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           fetch-depth: 2
       - id: filter
         run: |
@@ -185,48 +195,64 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      deployments: write  # Durable successful-source receipt, independent of artifact retention.
       actions: write  # Required by "Trigger gateway-infra re-apply" step (gh workflow run)
 
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
 
-      - name: Resolve last successfully deployed revision
-        id: deployed
+      - name: Load maintained deployment guards
         env:
-          GH_TOKEN: ${{ github.token }}
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          # A run is only a deployment when the job carrying the guard actually
-          # ran and succeeded; runs whose deploy job was skipped do not count.
-          baseline=""
-          while read -r run_id head_sha; do
-            deployed=$(gh api "repos/${{ github.repository }}/actions/runs/${run_id}/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name == "Build and Deploy Backend" and .conclusion == "success")] | length')
-            if [ "$deployed" -gt 0 ]; then baseline="$head_sha"; break; fi
-          done < <(gh api "repos/${{ github.repository }}/actions/workflows/gateway-deploy.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
-            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
-          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/adp-gateway-control"
+          git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh" > "$RUNNER_TEMP/adp-gateway-control/assistant-guard.sh"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/gateway-deployment-receipt.py" > "$RUNNER_TEMP/adp-gateway-control/receipt.py"
+          git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/deployment-release-evidence.py" > "$RUNNER_TEMP/adp-gateway-control/release-evidence.py"
+
+      - name: Resolve last successfully deployed revision
+        id: deployed
+        # An explicit target approval is still validated by the unchanged guard;
+        # only the no-approval path needs a known previously deployed baseline.
+        if: >-
+          ${{ !(github.event_name == 'workflow_dispatch' && inputs.adp_approved_revision != '') &&
+          !(vars.ADP_ASSISTANT_APPROVED_TARGET == format('adp-gateway-deploy-{0}', inputs.environment || 'dev') && vars.ADP_ASSISTANT_APPROVED_REVISION != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADP_RECEIPT_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+          ADP_RECEIPT_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_RECEIPT_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+          ADP_RECEIPT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_RECEIPT_REPOSITORY_ID: ${{ github.repository_id }}
+        run: python3 "$RUNNER_TEMP/adp-gateway-control/receipt.py" resolve
 
       - name: Guard assistant auto-deployment
         env:
           ADP_ASSISTANT_DEPLOY_COMPONENT: gateway
           ADP_ASSISTANT_DEPLOY_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
-          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
           ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
           ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
           ADP_DEPLOYED_BASELINE: ${{ steps.deployed.outputs.baseline }}
-        run: bash scripts/check-assistant-deploy-boundary.sh
+        run: bash "$RUNNER_TEMP/adp-gateway-control/assistant-guard.sh"
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
@@ -247,7 +273,7 @@ jobs:
         env:
           CONTEXT_WORKFLOW: .github/workflows/gateway-deploy.yml
           CONTEXT_REVISION: ${{ github.workflow_sha }}
-          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
@@ -299,6 +325,7 @@ jobs:
       - name: Build image via CodeBuild
         uses: ./.github/actions/codebuild-run
         with:
+          source_revision: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           project_name: adp-${{ env.ENVIRONMENT }}-gateway-build
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
@@ -309,12 +336,12 @@ jobs:
             "name=REGISTRY,value=${{ steps.vars.outputs.registry }}"
             "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}"
             "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}"
-            "name=IMAGE_TAG,value=${{ inputs.adp_source_revision || github.sha }}"
+            "name=IMAGE_TAG,value=${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
           poll_interval: '10'
 
       - name: Export image tag
         env:
-          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_INPUT_3965067AD6: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           echo "IMAGE_TAG=${ADP_INPUT_3965067AD6}" >> $GITHUB_ENV
 
@@ -700,7 +727,7 @@ jobs:
       - name: Migrate schema then roll out new image
         id: release
         env:
-          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_INPUT_3965067AD6: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
           RENDERED_DEPLOYMENT=$(mktemp)
@@ -797,7 +824,7 @@ jobs:
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=600s
       - name: Update the scheduled orchestration engine
         env:
-          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           python3 modules/gateway/scripts/sync-gateway-engine.py \
             --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
@@ -912,7 +939,7 @@ jobs:
             --field environment="${ENVIRONMENT}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REVIEWED_SOURCE_SHA: ${{ inputs.adp_source_revision || github.sha }}
+          REVIEWED_SOURCE_SHA: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
           CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
           CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
@@ -956,7 +983,7 @@ jobs:
 
       - name: Verify gateway and engine release parity
         env:
-          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           python3 modules/gateway/scripts/sync-gateway-engine.py \
             --verify-only --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
@@ -965,10 +992,10 @@ jobs:
       - name: Record gateway-backend build evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
-        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-backend
+        run: python3 "$RUNNER_TEMP/adp-gateway-control/release-evidence.py" gateway-backend
       - name: Upload gateway-backend build evidence
         uses: actions/upload-artifact@v4
         with:
@@ -976,6 +1003,19 @@ jobs:
           path: ${{ runner.temp }}/adp-release-gateway-backend/release.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish successful Gateway source receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADP_RECEIPT_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+          ADP_RECEIPT_ROLE: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          ADP_RECEIPT_REGION: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+          ADP_RECEIPT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+          ADP_RECEIPT_REPOSITORY_ID: ${{ github.repository_id }}
+          ADP_RECEIPT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          ADP_RECEIPT_DEFINITION: ${{ github.workflow_sha }}
+          ADP_RECEIPT_IMAGE: ${{ steps.release.outputs.digest }}
+        run: python3 "$RUNNER_TEMP/adp-gateway-control/receipt.py" publish
 
   deploy-frontend:
     name: Build and Deploy Frontend
@@ -1001,12 +1041,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
 
@@ -1030,7 +1074,7 @@ jobs:
         env:
           CONTEXT_WORKFLOW: .github/workflows/gateway-deploy.yml
           CONTEXT_REVISION: ${{ github.workflow_sha }}
-          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
@@ -1118,7 +1162,7 @@ jobs:
       - name: Record gateway-frontend build evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
@@ -1146,6 +1190,7 @@ jobs:
     uses: ./.github/workflows/run-gateway-migrations.yml
     with:
       adp_correlation: ${{ inputs.adp_correlation || '' }}
+      manual_source_revision: ${{ inputs.manual_source_revision || '' }}
       adp_source_revision: ${{ inputs.adp_source_revision || '' }}
       adp_definition_revision: ${{ inputs.adp_definition_revision || '' }}
       # GitHub suppresses job outputs containing the masked AWS account ID.
@@ -1172,11 +1217,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
 
