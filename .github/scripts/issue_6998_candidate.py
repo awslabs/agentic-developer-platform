@@ -71,15 +71,49 @@ def map_records(catalog, hits):
     return matched
 
 
+def verify_original(raw, catalog):
+    """Verify the frozen report without conflating other SSRF records or suppressions."""
+    if hashlib.sha256(raw).hexdigest() != catalog["sourceReportSha256"]:
+        raise ValueError("original report digest differs from the frozen evidence")
+    resolver = severity_resolver()
+    expected = {(PREFIX + item["file"], item["line"]) for item in catalog["records"]}
+    found = defaultdict(list)
+    for run in json.loads(raw).get("runs", []):
+        rules = resolver._sarif_rule_index(run)
+        for result in run.get("results", []):
+            if not result.get("ruleId", "").endswith("." + catalog["rule"]):
+                continue
+            for location in result.get("locations", []):
+                physical = location.get("physicalLocation", {})
+                key = (physical.get("artifactLocation", {}).get("uri"),
+                       physical.get("region", {}).get("startLine"))
+                if key in expected:
+                    found[key].append((resolver.resolve_sarif_severity(result, rules),
+                                       resolver._has_accepted_suppression(result)))
+    if len(expected) != 18 or set(found) != expected or any(
+        values != [(("critical", "native"), False)] for values in found.values()
+    ):
+        raise ValueError("original report must contain exactly 18 assigned native critical records")
+    return len(found)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sarif", required=True, type=Path)
+    parser.add_argument("--sarif", type=Path)
+    parser.add_argument("--original", type=Path, help="verify the private frozen source report")
     parser.add_argument("--catalog", type=Path, default=ROOT / "data/security/issue-6998-http-destinations.json")
     parser.add_argument("--record", action="store_true", help="write candidate metadata, never dispositions")
     args = parser.parse_args()
+    catalog = json.loads(args.catalog.read_text())
+    if args.original:
+        count = verify_original(args.original.read_bytes(), catalog)
+        print(f"original verified: {count} assigned native critical records; digest matches")
+    if not args.sarif:
+        if not args.original or args.record:
+            parser.error("--sarif is required unless only verifying --original")
+        return
     raw = args.sarif.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
-    catalog = json.loads(args.catalog.read_text())
     matched = map_records(catalog, candidate_hits(json.loads(raw), catalog))
     if args.record:
         catalog["candidateRawSarifSha256"] = digest

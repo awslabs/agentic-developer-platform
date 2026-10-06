@@ -1,5 +1,6 @@
 """Check issue #6998's published selectors against the scanned source revision."""
 
+import hashlib
 import importlib.util
 import json
 from collections import Counter
@@ -36,7 +37,8 @@ class Issue6998MappingTest(unittest.TestCase):
         self.assertEqual(catalog["sourceRevision"], BASELINE)
         self.assertEqual(catalog["sourceReportSha256"],
                          "4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd")
-        self.assertIn("pending", catalog["sourceVerification"])
+        self.assertTrue(catalog["originalReportReview"]["verified"])
+        self.assertEqual(catalog["originalReportReview"]["recordCount"], 18)
         self.assertEqual(len(catalog["candidateRevision"]), 40)
         self.assertEqual(len(catalog["candidateRules"]["bundleSha256"]), 64)
         self.assertIn("not verified", catalog["candidateRules"]["source"])
@@ -62,6 +64,38 @@ class Issue6998MappingTest(unittest.TestCase):
             for line in lines:
                 self.assertIn("fetch(", source[line - 1], (path, line))
 
+
+    def test_original_evidence_rejects_tampering_missing_and_duplicate_records(self):
+        spec = importlib.util.spec_from_file_location(
+            "issue_6998_candidate", ROOT / ".github/scripts/issue_6998_candidate.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        catalog = json.loads(CATALOG.read_text())
+        rule = "tmp.gitlab." + catalog["rule"]
+        results = [{"ruleId": rule, "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": PREFIX + record["file"]},
+            "region": {"startLine": record["line"]}}}]} for record in catalog["records"]]
+        report = {"runs": [{"tool": {"driver": {"rules": [{"id": rule,
+            "properties": {"security-severity": "CRITICAL"}}]}}, "results": results}]}
+        def encoded():
+            raw = json.dumps(report).encode()
+            catalog["sourceReportSha256"] = hashlib.sha256(raw).hexdigest()
+            return raw
+        self.assertEqual(module.verify_original(encoded(), catalog), 18)
+        with self.assertRaisesRegex(ValueError, "digest"):
+            module.verify_original(encoded() + b" ", catalog)
+        results.append(results[0])
+        with self.assertRaisesRegex(ValueError, "exactly 18"):
+            module.verify_original(encoded(), catalog)
+        results.pop()
+        removed = results.pop()
+        with self.assertRaisesRegex(ValueError, "exactly 18"):
+            module.verify_original(encoded(), catalog)
+        results.append(removed)
+        results[0]["suppressions"] = [{"kind": "inSource", "status": "accepted"}]
+        with self.assertRaisesRegex(ValueError, "exactly 18"):
+            module.verify_original(encoded(), catalog)
 
     def test_candidate_coverage_and_unreviewed_suppressions(self):
         catalog = json.loads(CATALOG.read_text())
@@ -118,8 +152,8 @@ class Issue6998MappingTest(unittest.TestCase):
         self.assertIn("141/142", handoff["localChecks"]["agent"])
         self.assertIn("2859/2862", handoff["localChecks"]["agent"])
         self.assertIn("196/198", handoff["localChecks"]["codexReviewer"])
-        self.assertIn("403 Forbidden", catalog["sourceVerification"])
-        self.assertIn("not recovered", catalog["candidateRawRetention"])
+        self.assertIn("403 Forbidden", catalog["sourceVerificationHistory"])
+        self.assertIn("retained", catalog["candidateRawRetention"])
         self.assertIn("ready PR #7023", handoff["acceptance"]["AC-04"])
         comparison = handoff["suiteFailureComparison"]
         for path in comparison["unchangedFiles"]:
