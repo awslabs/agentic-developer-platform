@@ -1759,6 +1759,7 @@ def baseline_dispatch(tmp_path, monkeypatch, users, capsys):
         "fail": None,
         "created": None,
         "chunks": None,
+        "lifecycle": ["RUN_STARTED", "RUN_FINISHED"],
     }
     cfg = {
         "evaluation_id": "baseline-test",
@@ -1804,7 +1805,7 @@ def baseline_dispatch(tmp_path, monkeypatch, users, capsys):
         if len(state["sends"]) == 2:
             messages = [
                 {"role": "user", "content": module.PROMPT},
-                {"role": "assistant", "content": state["answer"]},
+                {"role": "assistant", "content": state["answer"], "task_id": "task-1"},
             ]
         return {**identity, "session_id": "server-session", "messages": messages}
 
@@ -1827,6 +1828,17 @@ def baseline_dispatch(tmp_path, monkeypatch, users, capsys):
                 return {
                     "request_id": state["sends"][0]["request_id"],
                     "session_id": "server-session",
+                }
+            if state["lifecycle"]:
+                assert state["sends"][-1]["persona"] == "intent-refinement"
+                return {
+                    "type": "ag_ui",
+                    "task_id": "task-1",
+                    "event": {
+                        "event_type": state["lifecycle"].pop(0),
+                        "threadId": "server-session",
+                        "runId": "task-1",
+                    },
                 }
             if state["chunks"] is not None:
                 return state["chunks"].pop(0)
@@ -1942,11 +1954,26 @@ def test_baseline_consumes_actual_response_router_chunks(
         "_send_frame",
         lambda payload, *_args: frames.append(json.loads(payload)) or True,
     )
+    state["lifecycle"] = []
+    for kind in ["RUN_STARTED", "RUN_FINISHED"]:
+        assert router.route(
+            "",
+            {
+                "connection_id": "owned",
+                "response_type": "ag_ui",
+                "ag_ui_payload": {
+                    "event_type": kind,
+                    "threadId": "server-session",
+                    "runId": "task-1",
+                },
+            },
+            "task-1",
+        )
     state["answer"] = "ready " * 5000
     assert router.route(
         state["answer"], {"connection_id": "owned", "status": "completed"}, "task-1"
     )
-    assert len(frames) > 1 and frames[0]["chunk_index"] == 1
+    assert len(frames) > 3 and frames[2]["chunk_index"] == 1
     state["chunks"] = frames
     code, evidence = run()
     assert code == 0 and evidence["detail"]["response_chunks"] > 1
@@ -2047,3 +2074,34 @@ def test_isolated_python_handles_relocated_installation(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(assistant_process.sysconfig, "get_config_var", settings.get)
     assert assistant_process.python_env(tmp_path)["LD_LIBRARY_PATH"] == str(library_dir)
+
+
+@pytest.mark.parametrize(
+    "events", [[], ["RUN_STARTED"], ["RUN_FINISHED"], ["RUN_STARTED", "RUN_ERROR"]]
+)
+def test_baseline_refuses_classifier_only_or_incomplete_worker_reply(
+    baseline_dispatch, events
+):
+    run, state, _module, _tokens = baseline_dispatch
+    state["lifecycle"] = events
+    code, evidence = run()
+    assert code == 1 and evidence["success"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value", [("runId", "other-task"), ("threadId", "other-session")]
+)
+def test_baseline_rejects_worker_lifecycle_from_another_turn(
+    baseline_dispatch, field, value
+):
+    run, state, _module, _tokens = baseline_dispatch
+    state["lifecycle"] = []
+    event = {
+        "event_type": "RUN_STARTED",
+        "threadId": "server-session",
+        "runId": "task-1",
+        field: value,
+    }
+    state["chunks"] = [{"type": "ag_ui", "task_id": "task-1", "event": event}]
+    code, evidence = run()
+    assert code == 1 and evidence["success"] is False
