@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-06T05:54:16.749Z",
+  "updated_at": "2026-10-06T05:56:16Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -212,12 +212,12 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Integrate affected packages and publish candidate revision, rollback, and AC handoff",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Handoff updated and pushed at 1847414e5; PR #7023 updated. Covering full suites are not green.",
+      "note": "Ready PR #7023 includes tested handoff and pinned-main comparison at a64938d; covering test cannot pass until unrelated baseline suite failures are reconciled by their owners.",
       "commits": [
         "23dab9f",
         "0925728",
@@ -229,16 +229,17 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Run npm ci, agent tests and build, plus harness and reviewer tests and builds",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-04-c-wire"
       ],
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Installs and builds passed; agent 2859/2862, harness 156/156, reviewer 196/198. Focused and catalog checks passed.",
+      "note": "Installs/builds pass; agent 2859/2862, harness 156/156, reviewer 196/198; focused and four catalog checks pass. Three agent assertions and two reviewer skill fixtures fail in source/tests identical to pinned main; fixture tree absent in both trees. Baseline owners must repair the required full-suite checks.",
       "commits": [
-        "ccea177"
+        "ccea177",
+        "a64938d"
       ]
     },
     {
