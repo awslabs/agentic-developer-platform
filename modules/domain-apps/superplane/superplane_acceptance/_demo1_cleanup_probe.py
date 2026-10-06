@@ -2,9 +2,12 @@
 
 import asyncio
 import json
+import re
 import sys
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
+from dataclasses import replace
 from datetime import datetime
+from types import SimpleNamespace
 from uuid import UUID
 
 
@@ -13,7 +16,53 @@ def require(condition):
         raise ValueError("cleanup artifact observation refused")
 
 
-async def collect(connect, scope):
+async def canonical_inventory(connection, org, workspace):
+    """Observe canonical records in one snapshot, never acquire mutation authority."""
+    from superplane_bootstrap.registry import _LOCK, _LOCK_PREFIX, SqlRegistrationStore
+
+    from workspace_provisioning.process import AsyncBridgeStore
+    from workspace_provisioning.retirement_inventory import (
+        load_bootstrap_retirement_review,
+    )
+
+    require(
+        connection.is_in_transaction()
+        and await connection.fetchval("SHOW transaction_read_only") == "on"
+        and await connection.fetchval("SHOW transaction_isolation") == "repeatable read"
+    )
+
+    class SnapshotStore(AsyncBridgeStore):
+        @contextmanager
+        def transaction(self):
+            yield
+
+        def execute(self, statement, parameters):
+            statement = statement.strip()
+            if statement == _LOCK:
+                require(parameters == {"binding": _LOCK_PREFIX + workspace})
+                return []
+            require(
+                statement.startswith("SELECT ")
+                and ";" not in statement
+                and parameters.get("workspace_id") == workspace
+                and parameters.get("org_id", org) == org
+                and parameters.get("org", org) == org
+            )
+            statement = re.sub(r" FOR UPDATE(?: OF [a-z, ]+)?$", "", statement)
+            require("FOR UPDATE" not in statement)
+            return super().execute(statement, parameters)
+
+    store = SnapshotStore(None, asyncio.get_running_loop())
+    store.connection = connection
+    return await asyncio.to_thread(
+        load_bootstrap_retirement_review,
+        registration_store=SqlRegistrationStore(store),
+        workspace_id=workspace,
+        org_id=org,
+    )
+
+
+async def collect(connect, scope, policy):
     from harness_jobs.identity import decode_payload, payload_digest
 
     from workspace_provisioning.artifacts import canonical, digest, read_artifact
@@ -22,6 +71,7 @@ async def collect(connect, scope):
         ManagedRetirementAccessPlan,
         require_managed_control_source,
     )
+    from workspace_provisioning.retirement_request import retirement_request
 
     org, workspace = scope["org_id"], scope["workspace_id"]
     async with connect() as connection:
@@ -65,6 +115,19 @@ async def collect(connect, scope):
             parameters = dict(request.parameters)
             metadata = json.loads(row["artifact_metadata_json"])
             plan = ManagedRetirementAccessPlan(**metadata["retirement_access_plan"])
+            sequences = (
+                "registrar_namespaces",
+                "owned_objects",
+                "revocation_order",
+                "grants",
+                "retained_grants",
+            )
+            require(
+                all(isinstance(getattr(plan, key), (list, tuple)) for key in sequences)
+            )
+            plan = replace(
+                plan, **{key: tuple(getattr(plan, key)) for key in sequences}
+            )
             require(
                 (plan.request_id, plan.allocation_id)
                 == access_identity(
@@ -88,6 +151,8 @@ async def collect(connect, scope):
                 <= row["created_at"]
                 <= datetime.fromisoformat(scope["observed_at"])
             )
+
+            operations = {}
 
             async def operation(identity, phase):
                 record = await connection.fetchrow(
@@ -119,6 +184,7 @@ async def collect(connect, scope):
                         )
                     )
                 )
+                operations[identity] = dict(record)
                 return original
 
             bootstrap = await operation(
@@ -193,6 +259,18 @@ async def collect(connect, scope):
                     "managed_workload_inventory_sha256"
                 ],
             )
+            inventory = await canonical_inventory(connection, org, workspace)
+            source = SimpleNamespace(
+                **operations[scope["source_operation_id"]],
+                admitted_request=lambda: bootstrap,
+            )
+            deletion_request, deletion = retirement_request(
+                inventory, plan, row, source, policy
+            )
+            require(
+                deletion.completes_teardown
+                and deletion_request.parameters["plan_revision"] == digest(retirement)
+            )
             return {
                 "status": "OBSERVED",
                 "scope": scope,
@@ -213,19 +291,21 @@ async def collect(connect, scope):
                 "plan_json_sha256": destroy["plan_json_sha256"],
                 "backend_sha256": destroy["backend_sha256"],
                 "retirement_plan_sha256": digest(retirement),
+                "retirement_revision_sha256": payload_digest(deletion_request),
             }
 
 
 async def run(scope):
     from app.adapters.harness_connection import build_harness_connections
     from app.config import settings
+    from app.services.onboarding import policy_for
 
     connections = build_harness_connections(settings)
     require(connections is not None)
     try:
         await connections.open()
         await connections.ensure_ready()
-        return await collect(connections.connect, scope)
+        return await collect(connections.connect, scope, policy_for(scope["org_id"]))
     finally:
         await connections.aclose()
 

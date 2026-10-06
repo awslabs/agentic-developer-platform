@@ -143,6 +143,7 @@ def observed(cleanup, monkeypatch):
                     )
                 },
                 "inventory_sha256": cleanup.review["inventory_sha256"],
+                "retirement_revision_sha256": state.review["revision"],
                 "retirement_plan_sha256": state.review["approval_request"][
                     "parameters"
                 ]["plan_revision"],
@@ -175,7 +176,7 @@ def test_successful_preparation_reads_recorded_grants_and_destroy_hashes_only(ob
     assert artifact["artifact_ref"] == reference("a" * 64)
     assert artifact["plan_file_ref"] == reference("b" * 64)
     assert (
-        "current grants, fence, inventory, plan bytes and cleanup unverified"
+        "current grants, fence, provider inventory, plan bytes and cleanup unverified"
         in artifact["scope"]
     )
     assert report["status"] == "BLOCKED" and report["live_acceptance"] is False

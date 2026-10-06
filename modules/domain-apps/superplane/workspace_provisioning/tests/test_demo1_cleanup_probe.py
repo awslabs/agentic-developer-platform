@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from harness_jobs.identity import OperationRequest, encode_payload, payload_digest
 
+from superplane_acceptance import _demo1_cleanup_probe
 from superplane_acceptance._demo1_cleanup_probe import collect
 from superplane_acceptance.demo1_report import reference
 from superplane_acceptance.demo1_teardown import validate_teardown_review
@@ -31,7 +32,8 @@ def identity(value):
 
 class Records:
     def __init__(self, composed):
-        _, plan, access, source, policy, _ = composed
+        self.inventory, plan, access, source, self.policy, _ = composed
+        policy = self.policy
         self.plan = plan
         self.operations = {}
         now = datetime.now(UTC)
@@ -182,12 +184,22 @@ class Records:
         return self.approved
 
     def collect(self):
-        return asyncio.run(collect(self.connect, self.scope))
+        return asyncio.run(collect(self.connect, self.scope, self.policy))
 
 
 def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence(
     composed,
+    monkeypatch,
 ):
+    async def inventory(connection, org, workspace):
+        assert connection.in_snapshot
+        assert (org, workspace) == (
+            connection.plan.org_id,
+            connection.plan.workspace_id,
+        )
+        return connection.inventory
+
+    monkeypatch.setattr(_demo1_cleanup_probe, "canonical_inventory", inventory)
     records = Records(composed)
     result = records.collect()
     assert result["status"] == "OBSERVED" and result["scope"] == records.scope
@@ -201,6 +213,7 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
     )
     request, deletion = retirement_request(inventory, plan, records.row, source, policy)
     assert result["retirement_plan_sha256"] == request.parameters["plan_revision"]
+    assert result["retirement_revision_sha256"] == payload_digest(request)
     now = datetime.now(UTC)
     artifact = {
         "status": "OBSERVED",
@@ -272,6 +285,8 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
         "destroy",
         "fence",
         "artifact",
+        "canonical_inventory",
+        "policy",
     ):
         changed = copy.deepcopy(records)
         if failure in ("missing", "duplicate"):
@@ -299,6 +314,12 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
             )
         elif failure == "artifact":
             changed.row["producer_holder"] = identity(99)
+        elif failure == "canonical_inventory":
+            from dataclasses import replace
+
+            changed.inventory = replace(changed.inventory, components_complete=False)
+        elif failure == "policy":
+            changed.policy["operation_max_runtime_seconds"] += 1
         else:
             metadata = json.loads(changed.row["artifact_metadata_json"])
             if failure == "grant":

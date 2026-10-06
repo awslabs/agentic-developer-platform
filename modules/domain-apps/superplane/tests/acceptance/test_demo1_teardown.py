@@ -28,7 +28,8 @@ def test_review_is_matched_without_requesting_approval_or_submitting_deletion(ob
     assert result["review_status"] == "OBSERVED"
     assert result["status"] == "BLOCKED" and result["admission_submitted"] is False
     assert result["revision_ref"] == reference(observed.review["revision"])
-    assert "full deletion coverage" in result["reason"]
+    assert "canonical recorded deletion plan matched" in result["reason"]
+    assert "provider coverage" in result["reason"]
     assert report["live_acceptance"] is False
     path = observed.cleanup.driver.path / "cleanup.json"
     checkpoint = path.read_bytes()
@@ -100,6 +101,54 @@ def test_rehashed_foreign_request_cannot_replace_prepared_inputs(observed, chang
     assert not any(
         route.endswith("/retirement") for _, route, _ in observed.cleanup.calls
     )
+
+
+@pytest.mark.parametrize("change", ["extra", "reordered", "replaced"])
+def test_self_consistent_step_list_must_match_canonical_compiled_request(
+    observed, change
+):
+    def rehash(document):
+        parameters = document["approval_request"]["parameters"]
+        parameters["execution_steps"] = json.dumps(document["steps"])
+        document["revision"] = payload_digest(
+            OperationRequest("teardown", document["request_id"], parameters)
+        )
+
+    observed.review["steps"].insert(
+        0,
+        {
+            "step_id": "block-admission",
+            "provider": "superplane-governance",
+            "operation_kind": "block-governed-admission",
+            "target": "fixture-workspace",
+        },
+    )
+    rehash(observed.review)
+    observed.cleanup.run()
+    path = observed.cleanup.driver.path / "cleanup.json"
+    before = path.read_bytes()
+
+    def changed(document):
+        step = {
+            "step_id": "foreign-delete",
+            "provider": "superplane-aws",
+            "operation_kind": "revoke-network-prerequisite",
+            "target": "unrelated-resource",
+        }
+        if change == "extra":
+            document["steps"].append(step)
+        elif change == "reordered":
+            document["steps"].reverse()
+        else:
+            document["steps"][0]["provider"] = "foreign-provider"
+        rehash(document)
+        return document
+
+    observed.review_change = changed
+    report = observed.cleanup.run()
+    assert report["status"] == "BLOCKED" and "retirement review" in report["reason"]
+    assert "retirement_review" not in report.get("browser", {})
+    assert path.read_bytes() == before and observed.cleanup.admissions == 1
 
 
 @pytest.mark.parametrize(

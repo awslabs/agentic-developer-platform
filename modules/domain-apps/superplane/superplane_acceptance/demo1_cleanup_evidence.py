@@ -52,6 +52,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
         "plan_json_sha256",
         "backend_sha256",
         "retirement_plan_sha256",
+        "retirement_revision_sha256",
     )
     require(
         runtime.get("status") == "OBSERVED"
@@ -86,7 +87,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
         digest(observed[key], "cleanup artifact digest")
     return {
         "status": "OBSERVED",
-        "scope": "immutable preparation record only; current grants, fence, inventory, plan bytes and cleanup unverified",
+        "scope": "immutable preparation and canonical recorded deletion plan only; current grants, fence, provider inventory, plan bytes and cleanup unverified",
         "release_ref": runtime["release_ref"],
         "observed_at": now.isoformat(),
         "recorded_at": observed["recorded_at"],

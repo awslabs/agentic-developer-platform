@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentActivity from '@/pages/AgentActivity';
 import type { InvocationItem } from '@/types/activity';
 
@@ -124,7 +124,9 @@ function renderWithParams(params: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/activity${params}`]}>
-        <AgentActivity />
+        <Routes>
+          <Route path="/activity" element={<AgentActivity />} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -158,6 +160,16 @@ describe('AgentActivity Deep Link (Issue #3632)', () => {
     await waitFor(() => {
       expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
     });
+  });
+
+  it('opens an activity citation with an encoded invocation id without treating it as extra query parameters', async () => {
+    const invocationId = 'orch:run/with spaces?view=all&other=id#fragment+%';
+    mockGetMyDetail.mockResolvedValue(makeInvocation({ invocation_id: invocationId, topic: 'Cited agent work' }));
+
+    renderWithParams(`?id=${encodeURIComponent(invocationId)}`);
+
+    await waitFor(() => expect(mockGetMyDetail).toHaveBeenCalledWith(invocationId));
+    expect(await screen.findByText('Cited agent work')).toBeInTheDocument();
   });
 
   it('?id=nonexistent loads page normally with no modal and no error', async () => {

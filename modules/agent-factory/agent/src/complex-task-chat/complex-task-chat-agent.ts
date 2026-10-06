@@ -30,6 +30,8 @@ import { buildToolSanitizers } from './tool-sanitizers';
 import { draftToolsForTurn } from './draft/tools';
 import { buildDraftStore } from './draft/factory';
 import { ChatDataClient } from './gateway/chat-data-client';
+import { activityTools } from './activity/tools';
+import { AGENT_WORK_PROMPT } from './activity/answer';
 import { BedrockSummarizer } from './context/summarize/bedrock-summarizer';
 import { Summarizer } from './context/summarize/port';
 import { loadLcmConfig } from './context/lcm/config';
@@ -81,6 +83,7 @@ export interface ChatStores {
   artifacts: ReturnType<typeof buildArtifactStore>;
   /** Issue #4208: persistence for the intent-intake draft panel. */
   draftStore: ReturnType<typeof buildDraftStore>;
+  activityTools?: AgentTool[];
 }
 
 export interface ChatStoreDeps {
@@ -159,7 +162,7 @@ export async function buildChatStores(
   const memory = buildMemoryProvider(env, { client });
   const artifacts = buildArtifactStore(env, { client, sessionId, workspaceRoot });
   const draftStore = buildDraftStore(env, { client, sessionId });
-  return { context, memory, artifacts, draftStore };
+  return { context, memory, artifacts, draftStore, activityTools: activityTools(client) };
 }
 
 async function main(): Promise<void> {
@@ -415,10 +418,12 @@ async function processOne(
     // knows when/how to use the registered MCP tools.
     const knowledgeLayerHint = KNOWLEDGE_LAYER_ENABLED ? '\n\n' + KNOWLEDGE_LAYER_PROMPT : '';
 
+    const activityHint = deps.activityTools ? '\n\n' + AGENT_WORK_PROMPT : '';
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
-        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint
-        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint,
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint + activityHint
+        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint + activityHint,
       personaLearnings: persona.learnings,
       memories: memBlock,
       priorExperience: priorExperienceSection,
@@ -490,6 +495,7 @@ async function processOne(
       ...artifactTools,
       ...vaultTools,
       ...draftTools,
+      ...(deps.activityTools ?? []),
     ];
 
     // Build per-tool input sanitizers for AG-UI event sanitization (#137).

@@ -165,7 +165,7 @@ def advance_browser(
                             now=clock(),
                         )
                         result["cleanup_preparation"]["reason"] = (
-                            "immutable preparation record verified; current grants, fence, inventory and deletion remain unverified"
+                            "immutable preparation and canonical recorded deletion plan verified; current grants, fence, provider inventory and deletion remain unverified"
                         )
                         _, result["retirement_review"] = read_teardown_review(
                             selected,

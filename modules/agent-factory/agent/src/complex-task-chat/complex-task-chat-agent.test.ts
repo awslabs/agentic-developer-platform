@@ -80,6 +80,7 @@ afterEach(() => {
 describe('buildChatStores with scoped chat data off', () => {
   it.each([undefined, 'false', '1', 'TRUE'])('keeps the current direct stores when ADP_CHAT_DATA_ENABLED=%s', async flag => {
     const stores = await buildChatStores({ ...currentEnv, ADP_CHAT_DATA_ENABLED: flag }, task);
+    expect(stores.activityTools).toBeUndefined();
     expect(stores.context).toBeInstanceOf(LcmContext);
     expect(stores.memory).toBeInstanceOf(DynamoMemoryProvider);
     expect(stores.artifacts).toBeInstanceOf(S3ArtifactStore);
@@ -111,6 +112,7 @@ describe('buildChatStores with scoped chat data on', () => {
     expect(stores.memory).toBeInstanceOf(GatewayMemoryProvider);
     expect(stores.artifacts).toBeInstanceOf(GatewayArtifactStore);
     expect(stores.draftStore).toBeInstanceOf(GatewayDraftStore);
+    expect(stores.activityTools?.map(tool => tool.name)).toEqual(['get_my_agent_work']);
 
     expect(ChatDataClient).toHaveBeenCalledTimes(1);
     expect(ChatDataClient).toHaveBeenCalledWith({ baseUrl: 'https://gateway.example.test', workloadToken: expect.any(Function) });

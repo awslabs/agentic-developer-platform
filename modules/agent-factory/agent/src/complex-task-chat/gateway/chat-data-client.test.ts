@@ -51,6 +51,24 @@ describe('chat data transport', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(['user_id', 'tenant_id', 'ownerUserId', 'headers'])('rejects forged activity scope %s before exchange', async field => {
+    await expect(client.runRequest('activity/work', { from: '2026-10-01T00:00:00Z', to: '2026-10-04T00:00:00Z', timezone: 'UTC', [field]: 'victim' }))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('binds activity work to the exchanged chat run, not the user-supplied window', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding)).mockResolvedValueOnce(json({ runs: [], issues: [], last_key: null }));
+    const window = { from: '2026-10-01T00:00:00Z', to: '2026-10-04T00:00:00Z', timezone: 'UTC' };
+    await expect(client.runRequest('activity/work', window)).resolves.toMatchObject({ runs: [] });
+    expect(fetchMock.mock.calls[1]).toEqual([
+      'https://gateway.example.test/v1/chat/data/activity/work', expect.objectContaining({
+        body: JSON.stringify({ ...window, run_id: 'run-a' }),
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability' },
+      }),
+    ]);
+  });
+
   it('rejects a guessed session before sending a storage request', async () => {
     fetchMock.mockResolvedValueOnce(json(binding));
     await expect(client.sessionRequest('draft/read', 'session-other')).rejects.toMatchObject({ code: 'scope_mismatch' });

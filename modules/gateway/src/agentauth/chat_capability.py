@@ -23,6 +23,7 @@ MAX_TTL_SECONDS = 300
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 Operation = Literal[
     "history.read",
+    "activity.read",
     "history.expand",
     "history.append",
     "memory.search",

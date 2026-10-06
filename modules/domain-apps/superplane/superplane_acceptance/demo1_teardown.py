@@ -64,6 +64,7 @@ def validate_teardown_review(review, selected, envelope, original, artifact, now
             == payload_digest(
                 OperationRequest("teardown", original.retirement_request_id, parameters)
             )
+            and reference(review["revision"]) == artifact["retirement_revision_ref"]
         )
         for public, parameter in {
             "source_operation_id": "retirement_source_operation_id",
@@ -107,7 +108,7 @@ def validate_teardown_review(review, selected, envelope, original, artifact, now
         "plan_file_ref": artifact["plan_file_ref"],
         "observed_at": now.isoformat(),
         "admission_submitted": False,
-        "reason": "recorded request inputs and destroy descriptor matched; full deletion coverage, current fence, separate approval and cleanup unverified",
+        "reason": "canonical recorded deletion plan matched; current grants, fence, provider coverage, separate approval and cleanup unverified",
     }
 
 

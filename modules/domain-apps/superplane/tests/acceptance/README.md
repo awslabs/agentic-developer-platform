@@ -480,9 +480,17 @@ preparation record, including the source lineage, allocations, artifact, policy,
 credential references and destroy-plan hashes. It also checks the reviewed destroy
 descriptor and that the displayed steps equal the encoded approval request. A
 changed workspace or mismatched review refuses without rewriting either checkpoint.
+The runtime probe also loads canonical registration, sharing/peer state and the
+completed bootstrap ownership journal in that same repeatable read-only snapshot.
+It reuses the maintained inventory validator and retirement compiler, checks
+completeness of the recorded deletion plan, and compares the **entire** compiled
+request digest with the public review, including every ordered execution step.
+Changed policy, pending ownership, missing components, sharing or surviving peer
+membership refuses the review. This observer does not acquire the execution
+locks: its database snapshot is evidence, not ongoing authority to delete.
 This is a review read only: it neither requests deletion approval nor submits
-retirement. Matching recorded inputs and the destroy descriptor does not verify
-the complete deletion set against current canonical ownership or provider state.
+retirement. Canonical recorded coverage does not prove complete current provider
+inventory, live grant/fence state, exact plan-file bytes or successful cleanup.
 Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
 and provider-verified cleanup remain unfinished harness work. Do not remove the
 fence, grant or checkpoints to force another attempt; retain cleanup ownership for

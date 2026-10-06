@@ -4,9 +4,11 @@ import asyncio
 import functools
 import os
 import time
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
@@ -18,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, Response
 
+from src.activity.chat_work import read_work
+from src.activity.routes import get_activity_service
 from src.agentauth.bootstrap import BootstrapRefusedError, envelope_digest
 from src.agentauth.chat_admission import admit, renew_lease, root_identity
 from src.agentauth.chat_artifact import (
@@ -192,6 +196,40 @@ class AclWriteRequest(HistoryRequest, AclWrite):
     pass
 
 
+class ActivityWorkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: Identifier
+    from_time: str = Field(alias="from", min_length=1, max_length=40)
+    to_time: str = Field(alias="to", min_length=1, max_length=40)
+    timezone: str = Field(min_length=1, max_length=64)
+    page_size: int = Field(default=20, strict=True, ge=1, le=20)
+    last_key: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
+def activity_window(body: ActivityWorkRequest) -> tuple[str, str]:
+    try:
+        zone = ZoneInfo(body.timezone)
+        start = datetime.fromisoformat(body.from_time.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(body.to_time.replace("Z", "+00:00"))
+        for stamp in (start, end):
+            if stamp.tzinfo is None:
+                first = stamp.replace(tzinfo=zone, fold=0)
+                second = stamp.replace(tzinfo=zone, fold=1)
+                if first.utcoffset() != second.utcoffset() or first.astimezone(UTC).astimezone(zone).replace(tzinfo=None) != stamp:
+                    raise ValueError("ambiguous or nonexistent local time")
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=zone)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=zone)
+        start, end = start.astimezone(UTC), end.astimezone(UTC)
+        if not start < end <= start + timedelta(days=31):
+            raise ValueError("invalid window")
+    except (ValueError, OverflowError, ZoneInfoNotFoundError):
+        raise HTTPException(422, detail={"error": "activity_window_invalid"}) from None
+    return start.isoformat(timespec="microseconds").replace("+00:00", "Z"), end.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def memory_table():
     name = os.environ.get("MEMORY_TABLE", "").strip()
     if not name:
@@ -222,6 +260,24 @@ def bearer(request: Request) -> str:
 
 
 Capability = Annotated[str, Depends(bearer)]
+
+
+@router.post("/v1/chat/data/activity/work", dependencies=[Depends(enabled)])
+@contract_errors
+async def read_activity_work(
+    body: ActivityWorkRequest,
+    request: Request,
+    token: Capability,
+    services=Depends(runtime),
+    activity_service=Depends(get_activity_service),
+):
+    _, capabilities = services
+    launch = await run_in_threadpool(capabilities.verify_run, token, run_id=body.run_id, operation="activity.read", now=clock())
+    since, until = activity_window(body)
+    result = await read_work(
+        request, launch, activity_service, since=since, until=until, page_size=body.page_size, last_key=body.last_key, timezone=body.timezone
+    )
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/v1/chat/data/history/read", dependencies=[Depends(enabled)])
