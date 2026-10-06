@@ -97,6 +97,8 @@ def installed_worker(binding, runtime, state="executable"):
             or worker.get("args")
             or environment.get("ADP_AGENT_AUTHORITY_ENABLED") != "true"
             or environment.get("SUPERPLANE_PAID_WORKER_MODE") != "native-lifecycle"
+            or environment.get("SUPERPLANE_OPERATION_SCHEMA", binding.database_schema) != binding.database_schema
+            or environment.get("SUPERPLANE_DOMAIN_SCHEMA", binding.domain_database_schema) != binding.domain_database_schema
             or len(pod["containers"]) != 1
             or pod.get("initContainers")
             or not database_only
