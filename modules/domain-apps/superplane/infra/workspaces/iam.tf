@@ -54,9 +54,10 @@ data "aws_iam_policy_document" "cluster_assume_role" {
 }
 
 resource "aws_iam_role" "cluster" {
-  name               = "${local.name_prefix}-cluster-role"
-  assume_role_policy = data.aws_iam_policy_document.cluster_assume_role.json
-  description        = "EKS control-plane role for Superplane workspace ${var.workspace_name} (${var.environment}). Assumable only by eks.amazonaws.com."
+  permissions_boundary = var.workspace_role_permissions_boundary_arn != "" ? var.workspace_role_permissions_boundary_arn : null
+  name                 = "${local.name_prefix}-cluster-role"
+  assume_role_policy   = data.aws_iam_policy_document.cluster_assume_role.json
+  description          = "EKS control-plane role for Superplane workspace ${var.workspace_name} (${var.environment}). Assumable only by eks.amazonaws.com."
 }
 
 resource "aws_iam_role_policy_attachment" "cluster_eks" {
@@ -80,9 +81,10 @@ data "aws_iam_policy_document" "node_assume_role" {
 }
 
 resource "aws_iam_role" "node" {
-  name               = "${local.name_prefix}-node-role"
-  assume_role_policy = data.aws_iam_policy_document.node_assume_role.json
-  description        = "EKS node role for Superplane workspace ${var.workspace_name} (${var.environment})."
+  permissions_boundary = var.workspace_role_permissions_boundary_arn != "" ? var.workspace_role_permissions_boundary_arn : null
+  name                 = "${local.name_prefix}-node-role"
+  assume_role_policy   = data.aws_iam_policy_document.node_assume_role.json
+  description          = "EKS node role for Superplane workspace ${var.workspace_name} (${var.environment})."
 }
 
 resource "aws_iam_role_policy_attachment" "node_worker" {
@@ -120,7 +122,8 @@ resource "aws_iam_role_policy" "node_image_pull" {
 # The CNI can alter ENIs; these permissions belong only to kube-system/aws-node,
 # never to the node role or a tenant service account.
 resource "aws_iam_role" "vpc_cni" {
-  name = "${local.name_prefix}-vpc-cni-role"
+  permissions_boundary = var.workspace_role_permissions_boundary_arn != "" ? var.workspace_role_permissions_boundary_arn : null
+  name                 = "${local.name_prefix}-vpc-cni-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -242,6 +245,7 @@ data "aws_iam_policy_document" "workspace_admin_assume_role" {
 }
 
 resource "aws_iam_role" "workspace_admin" {
+  permissions_boundary = var.workspace_role_permissions_boundary_arn != "" ? var.workspace_role_permissions_boundary_arn : null
   # Only created once someone is named — human or automation. A role with an empty principal
   # list is harmless but it is also noise in the account, and its existence would imply an
   # operator exists.

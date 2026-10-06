@@ -84,6 +84,7 @@ def test_preparation_derives_and_binds_actual_backend_without_applying(tmp_path)
         (tmp_path / "review/workspace-authorization.proposed.json").read_text()
     )
     assert authorization["backend"]["key"] == backend_config(target)["key"]
+    assert "workspace_key_prefix" not in authorization["backend"]
     assert authorization["plan_file_sha256"]
     assert all(call[0] != "apply" for call in json.loads(record.read_text()))
 
@@ -126,3 +127,26 @@ def test_preparation_does_not_reconfigure_or_migrate_reused_directory(
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode != 0
     assert all(call[0] == "version" for call in json.loads(record.read_text()))
+
+
+def test_governed_preparation_binds_scoped_workspace_discovery_prefix(tmp_path):
+    command, module, target, record = prepare_fixture(tmp_path)
+    variables = tmp_path / "input.json"
+    document = json.loads(variables.read_text())
+    document["workspace_role_permissions_boundary_arn"] = (
+        f"arn:aws:iam::{ACCOUNT}:policy/owner/workspace-services"
+    )
+    variables.write_text(json.dumps(document))
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    backend = json.loads((module / ".terraform/terraform.tfstate").read_text())[
+        "backend"
+    ]["config"]
+    expected = backend_config(target)["key"].rsplit("/", 1)[0] + "/workspaces"
+    assert backend["workspace_key_prefix"] == expected
+    authorization = json.loads(
+        (tmp_path / "review/workspace-authorization.proposed.json").read_text()
+    )
+    assert authorization["backend"]["workspace_key_prefix"] == expected
+    assert authorization["backend"]["workspace"] == "default"
+    assert all(call[0] != "apply" for call in json.loads(record.read_text()))

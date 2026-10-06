@@ -176,3 +176,124 @@ def test_unreviewable_runtime_is_refused(change):
         value["management_api_origin"] = "https://user:secret@example.invalid/"
     with pytest.raises(LifecycleRefused):
         validate_runtime_config(value)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        None,
+        42,
+        [],
+        "reviewed-policy",
+        "arn:aws:iam::aws:policy/AdministratorAccess",
+        "arn:aws:iam::111122223333:policy/*",
+        "arn:aws:iam::111122223333:role/role",
+        "arn:aws:iam::111122223333:policy/owner//boundary",
+    ],
+)
+def test_role_boundary_must_be_an_exact_customer_policy(boundary):
+    config = runtime_config()
+    config["workspace_variables"]["workspace_role_permissions_boundary_arn"] = boundary
+    with pytest.raises(LifecycleRefused, match="workspace role boundary"):
+        validate_runtime_config(config)
+
+
+def test_role_boundary_is_preserved_and_bound_into_approved_policy():
+    original = policy()
+    configured = deepcopy(original)
+    boundary = "arn:aws:iam::000000000002:policy/owner/workspace-services"
+    configured["runtime"]["workspace_variables"][
+        "workspace_role_permissions_boundary_arn"
+    ] = boundary
+    normalized = policy_document(configured)
+    assert (
+        normalized["runtime"]["workspace_variables"][
+            "workspace_role_permissions_boundary_arn"
+        ]
+        == boundary
+    )
+    assert policy_digest(configured) != policy_digest(original)
+    changed = deepcopy(configured)
+    changed["runtime"]["workspace_variables"][
+        "workspace_role_permissions_boundary_arn"
+    ] = boundary + "-changed"
+    assert policy_digest(changed) != policy_digest(configured)
+    assert (
+        "workspace_role_permissions_boundary_arn"
+        not in original["runtime"]["workspace_variables"]
+    )
+
+
+def test_typed_installation_provider_handle_survives_policy_digest():
+    from uuid import NAMESPACE_URL, uuid5
+
+    original = policy()
+    handle = "spda1:" + str(uuid5(NAMESPACE_URL, "review-only-role"))
+    original["credential_references"]["000000000002"]["credential_id"] = handle
+    original["runtime"]["workspace_variables"][
+        "workspace_role_permissions_boundary_arn"
+    ] = "arn:aws:iam::000000000002:policy/owner/workspace-services"
+    api = LifecyclePolicy.model_validate(original)
+    assert (
+        policy_document(api)["credential_references"]["000000000002"]["credential_id"]
+        == handle
+    )
+    assert policy_digest(original) == policy_digest(api)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "spda1:00000000-0000-4000-8000-000000000000",
+        "spda1:00000000000050008000000000000000",
+        "spda1:00000000-0000-5000-8000-00000000000A",
+        "SPDA1:00000000-0000-5000-8000-000000000000",
+        "spda1:not-a-uuid",
+        "spda1:00000000-0000-5000-8000-000000000000/extra",
+        "spda2:00000000-0000-5000-8000-000000000000",
+    ],
+)
+def test_typed_installation_provider_handle_refuses_aliases(reference):
+    with pytest.raises((ValidationError, ValueError)):
+        CredentialReference(
+            credential_id=reference,
+            credential_service="aws",
+            credential_label="fixture",
+        )
+
+
+@pytest.mark.parametrize(
+    "alteration", ["missing", "empty", "foreign", "supplied", "vpc", "subnets"]
+)
+def test_installation_provider_cannot_admit_without_owned_network_and_boundary(
+    alteration,
+):
+    from uuid import NAMESPACE_URL, uuid5
+
+    configured = policy()
+    configured["credential_references"]["000000000002"]["credential_id"] = (
+        "spda1:" + str(uuid5(NAMESPACE_URL, "fixture-role"))
+    )
+    variables = configured["runtime"]["workspace_variables"]
+    variables["workspace_role_permissions_boundary_arn"] = (
+        "arn:aws:iam::000000000002:policy/owner/workspace-services"
+    )
+    if alteration == "missing":
+        variables.pop("workspace_role_permissions_boundary_arn")
+    elif alteration == "empty":
+        variables["workspace_role_permissions_boundary_arn"] = ""
+    elif alteration == "foreign":
+        variables["workspace_role_permissions_boundary_arn"] = (
+            "arn:aws:iam::000000000003:policy/foreign"
+        )
+    elif alteration == "supplied":
+        variables["networking_mode"] = "supplied"
+    elif alteration == "vpc":
+        variables["supplied_vpc_id"] = "vpc-0123456789abcdef0"
+    else:
+        variables["supplied_private_subnet_ids"] = ["subnet-0123456789abcdef0"]
+    with pytest.raises(
+        ValidationError,
+        match="reviewed same-account role boundary and owned networking",
+    ):
+        LifecyclePolicy.model_validate(configured)

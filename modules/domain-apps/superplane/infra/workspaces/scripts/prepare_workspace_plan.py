@@ -69,6 +69,13 @@ def main(argv=None):
             "key": state_key(target),
             "encrypt": True,
         }
+        if values.get("workspace_role_permissions_boundary_arn"):
+            # S3 backend initialization lists named workspaces even though this
+            # recipe permits only the default workspace. Keep that discovery
+            # inside this workspace's state directory, not the bucket-wide env:/.
+            config["workspace_key_prefix"] = (
+                state_key(target).rsplit("/", 1)[0] + "/workspaces"
+            )
         expected = {"type": "s3", "workspace": "default", **config}
         if (module / "terraform.tfstate").exists():
             raise WorkspaceOwnershipError(

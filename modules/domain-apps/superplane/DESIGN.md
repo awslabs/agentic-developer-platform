@@ -831,6 +831,18 @@ that asserts readiness or hash current provider state to manufacture an expectat
 
 ### 7.2 Infrastructure source and lifecycle ownership
 
+Installation-owned platform-account provider execution is a separate protected
+capability; it does not relax personal AWS connection restrictions. Governed
+workspace roles receive an explicit owner-reviewed boundary, bound into the
+approved runtime policy. CNI and primary node interfaces receive immutable
+ownership tags at creation. The unused AWS default security group remains
+unmanaged in this mode, avoiding permission to claim arbitrary untagged groups.
+AWS CreateCluster cannot be constrained to a VPC/subnet by IAM: the protected
+worker, exact source and saved-plan approval enforce the owned network graph.
+See the [provider permission matrix](infra/domain-provider/README.md) for this
+residual service-linked authority, phased preparation and required live proof.
+
+
 All Superplane-specific infrastructure definitions, environment inputs and
 provisioning logic live under `modules/domain-apps/superplane/`. Persistent AWS
 resources, IAM roles/policies and EKS access mappings use app-owned Terraform.

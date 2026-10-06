@@ -2,8 +2,9 @@
 
 from typing import Annotated, Literal
 import re
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .artifacts import digest
 from .runtime_config import validate_runtime_config
@@ -22,7 +23,17 @@ class CredentialReference(BaseModel):
 
         # Policy references are opaque ASCII handles. Reject URI/escape forms
         # entirely, so encoded ARN or secret strings cannot become references.
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", value):
+        if value.lower().startswith("spda1:"):
+            # Reserved installation-owned provider handles are a distinct source
+            # kind. No aliases, arbitrary URI schemes or personal fallback.
+            suffix = value.removeprefix("spda1:")
+            try:
+                parsed = UUID(suffix)
+            except ValueError:
+                raise ValueError("invalid installation provider handle") from None
+            if value != "spda1:" + str(parsed) or parsed.version != 5:
+                raise ValueError("invalid installation provider handle")
+        elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", value):
             raise ValueError("lifecycle credential must be an opaque ADP handle")
         assert_no_secret_material(value, what="lifecycle credential reference")
         return value
@@ -50,6 +61,24 @@ class LifecyclePolicy(BaseModel):
     @classmethod
     def trusted_runtime(cls, value):
         return validate_runtime_config(value)
+
+    @model_validator(mode="after")
+    def governed_provider_requires_reviewed_boundary(self):
+        variables = self.runtime["workspace_variables"]
+        for account, reference in self.credential_references.items():
+            if not reference.credential_id.startswith("spda1:"):
+                continue
+            boundary = variables.get("workspace_role_permissions_boundary_arn", "")
+            if (
+                not boundary.startswith(f"arn:aws:iam::{account}:policy/")
+                or variables.get("networking_mode", "owned") != "owned"
+                or variables.get("supplied_vpc_id")
+                or variables.get("supplied_private_subnet_ids")
+            ):
+                raise ValueError(
+                    "installation provider requires its reviewed same-account role boundary and owned networking"
+                )
+        return self
 
 
 def policy_document(value):

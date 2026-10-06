@@ -37,6 +37,7 @@ VARIABLES = frozenset(
         "log_retention_days",
         "cost_center",
         "node_image_repository_arns",
+        "workspace_role_permissions_boundary_arn",
         "hybrid_networks",
     }
 )
@@ -93,6 +94,19 @@ def validate_runtime_config(value):
         raise LifecycleRefused(
             "Terraform variables contain a target override or unsupported field"
         )
+    if "workspace_role_permissions_boundary_arn" in variables:
+        boundary = variables["workspace_role_permissions_boundary_arn"]
+        if not isinstance(boundary, str) or (
+            boundary != ""
+            and not re.fullmatch(
+                r"arn:aws[a-z-]*:iam::[0-9]{12}:policy/"
+                r"(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]+",
+                boundary,
+            )
+        ):
+            raise LifecycleRefused(
+                "workspace role boundary must be an exact customer-managed policy ARN"
+            )
     from .public_network import validate_public_management
 
     validate_public_management(config)
