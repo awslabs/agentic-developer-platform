@@ -442,6 +442,12 @@ jobs:
         working-directory: modules/gateway/frontend
         run: npm ci
 
+      - name: Lint frontend
+        # Keep configuration and suppression directives validated in CI.
+        # Dependency findings remain warnings, matching the local lint command.
+        working-directory: modules/gateway/frontend
+        run: npm run lint
+
       - name: Run Vitest
         working-directory: modules/gateway/frontend
         # ARC requests two CPUs for this pod. Bound jsdom workers to that share
