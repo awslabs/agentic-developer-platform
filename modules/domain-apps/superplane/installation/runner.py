@@ -473,11 +473,6 @@ class Installer:
             ["docker", "pull", image(self.lock, "superplane-api")],
             timeout=self.env["timeout_seconds"],
         )
-        environment = (
-            self.management_probe_environment()
-            if self.control_plane_only and not self.env.get("api_adapters")
-            else {}
-        )
         result = self.commands.call(
             [
                 "docker",
@@ -486,20 +481,16 @@ class Installer:
                 "--network=none",
                 "--entrypoint",
                 "python",
-                *[item for key in environment for item in ("--env", key)],
                 image(self.lock, "superplane-api"),
                 "-m",
                 "app.installation",
                 "image-contract"
-                if self.env.get("api_adapters")
-                else "management-capabilities"
-                if self.control_plane_only
+                if self.env.get("api_adapters") or self.control_plane_only
                 else "capabilities",
             ],
-            env=dict(os.environ, **environment),
             allow_failure=True,
         )
-        if self.env.get("api_adapters"):
+        if self.env.get("api_adapters") or self.control_plane_only:
             from .api_adapters import image_contract_valid
 
             require(
@@ -507,12 +498,6 @@ class Installer:
                 "Packaged API image contract failed",
             )
             self.receipt["image_contract"] = self.json(result)
-        elif self.control_plane_only:
-            require(
-                result.returncode == 0
-                and self.json(result).get("controller_management") is True,
-                "Image does not implement authenticated management mode",
-            )
         capabilities = self.json(result).get("capabilities", {})
         required = {
             "credential_evidence",
@@ -584,17 +569,6 @@ class Installer:
         self.receipt["controller_profiles"] = verify_result(self.json(result), self.env)
         self.save()
 
-    def management_probe_environment(self):
-        return {
-            "SUPERPLANE_MANAGEMENT_ONLY": "true",
-            "DOMAIN_AUTH_ENFORCED": "true",
-            "COGNITO_ENABLED": "true",
-            "COGNITO_ISSUER": self.env["auth"]["issuer"],
-            "DOMAIN_AUTH_ALLOWED_CLIENT_IDS": json.dumps(
-                self.env["auth"]["client_ids"]
-            ),
-        }
-
     def cluster_images(self):
         for name in self.image_components[:-1]:
             source = self.lock["image_sources"][name]
@@ -651,17 +625,12 @@ class Installer:
             probe.isolate()
             action = (
                 "image-contract"
-                if self.env.get("api_adapters")
-                else "management-capabilities"
-                if self.control_plane_only
+                if self.env.get("api_adapters") or self.control_plane_only
                 else "capabilities"
             )
             api = probe.run(
                 "superplane-api",
                 ["python", "-m", "app.installation", action],
-                values=self.management_probe_environment()
-                if self.control_plane_only and not self.env.get("api_adapters")
-                else None,
             )
             observed = self.json(api)
             from .api_adapters import image_contract_valid
@@ -670,15 +639,13 @@ class Installer:
                 api.returncode == 0
                 and (
                     image_contract_valid(observed)
-                    if self.env.get("api_adapters")
-                    else observed.get("controller_management") is True
-                    if self.control_plane_only
+                    if self.env.get("api_adapters") or self.control_plane_only
                     else len(observed.get("capabilities", {})) == 4
                     and all(observed["capabilities"].values())
                 ),
                 "API production capability preflight failed",
             )
-            if self.env.get("api_adapters"):
+            if self.env.get("api_adapters") or self.control_plane_only:
                 self.receipt["image_contract"] = observed
             controller = probe.run(
                 "superplane-controller",
@@ -2118,6 +2085,29 @@ class Installer:
 
     def private_services(self):
         namespace = self.env["namespace"]
+        if self.control_plane_only and not self.env.get("api_adapters"):
+            # Production imports require the actual database URL and trusted CA.
+            # Prove the HTTP surface in the deployed environment before routing;
+            # the isolated image contract never claims management readiness.
+            result = self.kube(
+                "exec",
+                "deployment/superplane-api",
+                "-n",
+                namespace,
+                "--",
+                "python",
+                "-m",
+                "app.installation",
+                "management-capabilities",
+                allow_failure=True,
+            )
+            observed = self.json(result)
+            require(
+                result.returncode == 0
+                and observed.get("controller_management") is True,
+                "Deployed API does not implement authenticated management mode",
+            )
+            self.receipt["management_capabilities"] = observed
         from .controller_profiles import VERIFY_PROGRAM, projection, verify_result
 
         profiles = projection(self.env)
