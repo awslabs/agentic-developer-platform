@@ -261,7 +261,13 @@ def _plan():
 
 
 async def _open(
-    harness, plan, *, ledger=None, key="retire-ws-1", retirement_inventory=None
+    harness,
+    plan,
+    *,
+    ledger=None,
+    key="retire-ws-1",
+    retirement_inventory=None,
+    approved_parameters=None,
 ):
     """Admit the retirement through the REAL facade, plan included in the request.
 
@@ -290,6 +296,7 @@ async def _open(
                 if retirement_inventory is not None
                 else {}
             ),
+            **(approved_parameters or {}),
         },
     )
 

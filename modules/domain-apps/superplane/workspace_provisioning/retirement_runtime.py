@@ -31,7 +31,7 @@ from .retirement_plan import (
     VERIFY_RESOURCES,
     compose_retirement_plan,
 )
-from .retirement_terraform import ACTION, PROVIDER
+from .retirement_terraform import ACTION, PROVIDER, ReviewedDestroy
 
 
 def verify_retirement_inventory(operation, inventory, *, lease=None):
@@ -275,13 +275,21 @@ class RetirementRecoveryObserver:
             ]
             if len(matched) != 1:
                 raise OperationRefused("retirement recovery step was not approved")
-        inventory, removals = await self.resolve(grant, record)
+        inventory, removals, artifact = await self.resolve(grant, record)
         if not isinstance(removals, OwnedResourceRemover):
             raise OperationRefused("retirement recovery has no scoped provider reads")
         verify_retirement_inventory(record, inventory, lease=grant.lease)
+        if artifact is not None:
+            if not isinstance(artifact, ReviewedDestroy):
+                raise OperationRefused("retirement recovery has no reviewed destroy")
+            await asyncio.to_thread(
+                artifact.read, inventory, record.admitted_request().parameters
+            )
         if [
             (step.step_id, step.provider, step.operation_kind, step.target)
-            for step in compose_retirement_plan(inventory).steps
+            for step in compose_retirement_plan(
+                inventory, managed_destroy=artifact
+            ).steps
         ] != [
             (step.step_id, step.provider, step.operation_kind, step.target)
             for step in admitted_steps(record)
