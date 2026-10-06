@@ -163,7 +163,7 @@ def resolve_file(files, path):
     raise Invalid("symlink cycle or excessive depth")
 
 
-def collect_oci(archive, platform_digest):
+def collect_oci(archive, platform_digest, *, retain_paths=(), file_layers=None):
     """Verify OCI blobs and reconstruct file hashes, never extract archive paths.
 
     OCI tar and gzip/identity layers are supported. Unknown compression, devices,
@@ -271,6 +271,8 @@ def collect_oci(archive, platform_digest):
                             ):
                                 files.pop(key)
                                 retained.pop(key, None)
+                                if file_layers is not None:
+                                    file_layers.pop(key, None)
                 for member, name in zip(entries, names):
                     if posixpath.basename(name).startswith(".wh."):
                         continue
@@ -280,6 +282,10 @@ def collect_oci(archive, platform_digest):
                             if key.startswith(name.rstrip("/") + "/"):
                                 files.pop(key)
                                 retained.pop(key, None)
+                                if file_layers is not None:
+                                    file_layers.pop(key, None)
+                    if file_layers is not None:
+                        file_layers[name] = diff_id
                     populated_prefixes.update(
                         "/" + "/".join(parents[: i + 1]) for i in range(len(parents))
                     )
@@ -292,9 +298,13 @@ def collect_oci(archive, platform_digest):
                             "mode": member.mode,
                             "size": len(content),
                         }
-                        if name == "/var/lib/dpkg/status" or (
-                            name.startswith("/var/lib/dpkg/info/")
-                            and name.endswith(".list")
+                        if (
+                            name in retain_paths
+                            or name == "/var/lib/dpkg/status"
+                            or (
+                                name.startswith("/var/lib/dpkg/info/")
+                                and name.endswith(".list")
+                            )
                         ):
                             retained[name] = content
                     elif member.isdir():
@@ -405,7 +415,7 @@ def dpkg_status(content):
     return packages
 
 
-def collect(root, inputs, image, source_revision):
+def collect(root, inputs, image, source_revision, *, components=None):
     exact_keys(inputs, INPUT_KEYS, "inputs")
     require(
         re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image),
@@ -516,7 +526,7 @@ def collect(root, inputs, image, source_revision):
         hashes == {key: file_sha(path) for key, path in paths.items()},
         "input changed during collection",
     )
-    return {
+    observation = {
         "schema": "adp-exact-image-observation/v1",
         "image": image,
         "platform_digest": platform,
@@ -529,6 +539,36 @@ def collect(root, inputs, image, source_revision):
         "embedded_packages": embedded,
         "occurrences": mappings,
     }
+    if components is not None:
+        component_verifier().collect_components(
+            sys.modules.get(__name__) or _module_api(),
+            root,
+            paths,
+            observation,
+            sbom,
+            native,
+            sarif,
+            components,
+        )
+    return observation
+
+
+def _module_api():
+    # Tests load this file with importlib without installing it in sys.modules.
+    from types import SimpleNamespace
+
+    return SimpleNamespace(**globals())
+
+
+@lru_cache(maxsize=1)
+def component_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "adp_exact_image_components",
+        Path(__file__).with_name("exact_image_components.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def help_field(text, field):
@@ -823,7 +863,16 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
         {"schema", "observation_sha256", "reviewer", "decisions", "evidence"},
         "receipt",
     )
-    require(receipt["schema"] == "adp-exact-image-review/v1", "unsupported receipt")
+    component_mode = observation.get("schema") == "adp-exact-image-observation/v2"
+    require(
+        receipt["schema"]
+        == (
+            "adp-exact-image-review/v2"
+            if component_mode
+            else "adp-exact-image-review/v1"
+        ),
+        "unsupported receipt",
+    )
     require(
         isinstance(receipt["reviewer"], str) and receipt["reviewer"].strip(),
         "independent reviewer identity required",
@@ -918,28 +967,45 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
                 "not-affected decision must not imply package replacement",
             )
         occurrence = occurrences[key]
-        package = observation["packages"].get(occurrence["package"]["purl"])
-        require(
-            package is not None,
-            "only verified Debian package decisions currently supported",
+        component = (
+            observation.get("components", {}).get(occurrence["package"]["id"])
+            if component_mode
+            else None
         )
-        require(
-            package["package"] == occurrence["package"],
-            "decision package identity mismatch",
-        )
-        require(decision["files"], "exact installed-file evidence required")
-        for path, expected in decision["files"].items():
-            require(
-                path in package["files"] and package["files"][path] == expected,
-                "installed-file binding mismatch",
+        if component is not None:
+            component_verifier().verify_decision(
+                _module_api(),
+                root,
+                receipt,
+                observation,
+                decision,
+                occurrence,
+                component,
             )
-        if decision["status"] == "fixed":
-            artifact = local_file(root, decision["package_artifact"])
-            verify_deb(artifact, package, decision["files"])
+        else:
+            package = observation["packages"].get(occurrence["package"]["purl"])
             require(
-                file_sha(artifact) == receipt["evidence"][decision["package_artifact"]],
-                "package changed during inspection",
+                package is not None,
+                "only verified Debian package decisions currently supported",
             )
+            require(
+                package["package"] == occurrence["package"],
+                "decision package identity mismatch",
+            )
+            require(decision["files"], "exact installed-file evidence required")
+            for path, expected in decision["files"].items():
+                require(
+                    path in package["files"] and package["files"][path] == expected,
+                    "installed-file binding mismatch",
+                )
+            if decision["status"] == "fixed":
+                artifact = local_file(root, decision["package_artifact"])
+                verify_deb(artifact, package, decision["files"])
+                require(
+                    file_sha(artifact)
+                    == receipt["evidence"][decision["package_artifact"]],
+                    "package changed during inspection",
+                )
         result = results[occurrence["result_index"]]
         require(
             object_sha(result) == occurrence["result_sha256"],
@@ -1045,6 +1111,9 @@ def main():
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--receipt", default="review.json")
     parser.add_argument(
+        "--components", help="opt-in v2 component binding manifest inside bundle"
+    )
+    parser.add_argument(
         "--approved-receipt-sha256",
         help="independently supplied trust pin; never copied from bundle",
     )
@@ -1057,7 +1126,9 @@ def main():
     try:
         root = args.bundle.resolve(strict=True)
         inputs = parse(local_file(root, args.inputs).read_bytes())
-        observation = collect(root, inputs, args.image, args.source_revision)
+        observation = collect(
+            root, inputs, args.image, args.source_revision, components=args.components
+        )
         if args.mode == "collect":
             print(json.dumps(observation, indent=2))
             return 0
