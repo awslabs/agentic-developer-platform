@@ -5,12 +5,14 @@ paid database checks, HMAC, registry, BootstrapStore and TaskDelivery remain rea
 """
 
 import json
+import os
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import boto3
@@ -24,11 +26,14 @@ from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.routes import AgentRuntime
 from src.auth.agent_registry import AgentRegistryService
 from src.internal import controller_execution_routes as controller_routes
+from src.internal import domain_current_identity
 from src.internal import domain_operation_dispatch as dispatch_module
 from src.internal import domain_operation_routes as routes
 from src.internal import domain_operation_runtime as runtime_module
 from src.internal.domain_operation_store import DomainBinding
 from src.internal.vault_evidence_routes import DELIVERY_SCOPE
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, User
 from tests.agentauth.test_bootstrap_routes import DIGEST, ENV, kubernetes, store  # noqa: F401
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
 
@@ -122,6 +127,8 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         "org/repo",
         "https://domain.example",
         "observer-secret",
+        domain_database_secret_id="separate-domain-secret",
+        domain_database_schema="superplane_domain",
     )
     monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps([asdict(binding)]))
     for key, value in ENV.items():
@@ -136,6 +143,8 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
             yield session
 
     monkeypatch.setattr(controller_routes, "operation_session", operation_session)
+    for module in (routes, dispatch_module):
+        monkeypatch.setattr(module, "domain_connect", connect)
     for module in (routes, runtime_module, dispatch_module):
         monkeypatch.setattr(module, "operation_connect", connect)
     for module in (routes, runtime_module):
@@ -199,7 +208,17 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         mode="execution",
     )
     try:
-        yield SimpleNamespace(post=post, connect=connect, store=store, runtime=runtime, body=body, kubernetes=kubernetes, sqs=sqs, queue=queue)
+        yield SimpleNamespace(
+            post=post,
+            client=client,
+            connect=connect,
+            store=store,
+            runtime=runtime,
+            body=body,
+            kubernetes=kubernetes,
+            sqs=sqs,
+            queue=queue,
+        )
     finally:
         await client.aclose()
         await engine.dispose()
@@ -312,6 +331,43 @@ async def test_recovery_scope_claim_subject_and_fence_are_current_paid_run(paid)
     assert (await paid.post("/recovery/authority", {"claim": claim}, credential=credential)).status_code == 403
 
 
+@pytest.mark.parametrize("action", ["observe", "inventory", "lifecycle", "account-creation", "bootstrap"])
+async def test_recovery_observations_refuse_same_org_foreign_workspace_before_domain_call(paid, monkeypatch, action):
+    from harness_jobs.identity import ResolvedPrincipal
+    from harness_jobs.leases import acquire, fence_expired_lease
+
+    foreign_workspace = "20000000-0000-0000-0000-000000000003"
+    async with paid.connect() as connection:
+        await connection.execute("INSERT INTO workspaces VALUES($1::text::uuid)", foreign_workspace)
+        await acquire(connection, operation_id="original-operation", holder="dead-run#1", attempt_id="dead-run#1")
+        await connection.execute("UPDATE harness_operation_leases SET expires_at=clock_timestamp()-interval '1 second'")
+    paid.body["mode"] = "recovery"
+    dispatched, credential = await start(paid)
+    actor = ResolvedPrincipal(ORG, WORKSPACE, dispatched["principal"], frozenset({"workspace:recover"}))
+    async with paid.connect() as connection:
+        takeover = await fence_expired_lease(connection, operation_id="original-operation", recovery_principal=actor)
+    claim = {key: getattr(takeover.lease, key) for key in ("operation_id", "org_id", "workspace_id", "holder", "attempt_id", "fence_token")}
+    assert (await paid.post("/recovery/authority", {"claim": claim}, credential=credential)).status_code == 200
+
+    domain_request = AsyncMock(return_value={"claim": claim, "query_id": "query-1"})
+    monkeypatch.setattr(routes, "domain_request", domain_request)
+    body = {"claim": claim, "query_id": "query-1"}
+    body.update({"allocation_id": "allocation-1"} if action == "inventory" else {"idempotency_key": "observation-1"})
+    allowed = await paid.post(f"/recovery/{action}", body, credential=credential)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["claim"]["workspace_id"] == WORKSPACE
+
+    substituted = await paid.post(
+        f"/recovery/{action}",
+        {**body, "claim": {**claim, "workspace_id": foreign_workspace}},
+        credential=credential,
+    )
+    assert substituted.status_code == 403, substituted.text
+    domain_request.assert_awaited_once()
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+
 async def test_expired_recovery_bootstrap_retries_but_active_claim_does_not(paid, monkeypatch):
     from harness_jobs.identity import ResolvedPrincipal
     from harness_jobs.leases import acquire, fence_expired_lease
@@ -387,3 +443,308 @@ async def test_current_domain_approval_and_exact_reservation_gate_every_executio
     async with paid.connect() as c:
         assert await c.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
         assert await c.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+
+@pytest.mark.parametrize("failure", ["human", "approver", "missing-membership", "provider-outage"])
+async def test_original_human_membership_is_rechecked_before_dispatch_and_paid_effects(paid, db_session, monkeypatch, failure):
+    db_session.add_all(
+        [
+            Organization(id="tenant", name="Current ADP tenant"),
+            Organization(id="other-tenant", name="Other ADP tenant"),
+        ]
+    )
+    await db_session.flush()
+    memberships = {}
+    for subject in ("human", "approver"):
+        user = User(
+            id=f"adp-{subject}",
+            org_id="tenant",
+            team_id="",
+            email=f"{subject}@example.test",
+            cognito_sub=subject,
+        )
+        db_session.add(user)
+        await db_session.flush()
+        membership = TenantMembership(user_id=user.id, tenant_id="tenant", is_active=True)
+        db_session.add(membership)
+        memberships[subject] = membership
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def membership_session():
+        yield db_session
+
+    monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
+    monkeypatch.setattr(domain_current_identity, "cognito_user_pool_id", lambda: "fixture-pool")
+    cognito = MagicMock()
+
+    def lookup(**kwargs):
+        return {"Users": [{"Username": kwargs["Filter"].split('"')[1]}]}
+
+    cognito.list_users.side_effect = lookup
+    cognito.admin_get_user.side_effect = lambda **kwargs: {
+        "Enabled": True,
+        "UserAttributes": [
+            {"Name": "sub", "Value": kwargs["Username"]},
+            {"Name": "custom:org_id", "Value": "tenant"},
+        ],
+    }
+    monkeypatch.setattr(domain_current_identity, "aws_client", lambda service: cognito)
+    bindings = json.loads(os.environ["ADP_DOMAIN_OPERATION_BINDINGS"])
+    bindings[0]["current_identity_enforced"] = True
+    monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps(bindings))
+
+    async def change_identity(refused):
+        if failure == "provider-outage":
+            cognito.list_users.side_effect = RuntimeError("identity provider unavailable") if refused else lookup
+        elif failure == "missing-membership":
+            memberships["human"].tenant_id = "other-tenant" if refused else "tenant"
+            await db_session.commit()
+        else:
+            memberships[failure].revoked_at = datetime.now(UTC) if refused else None
+            await db_session.commit()
+
+    expected_status = 503 if failure == "provider-outage" else 403
+    await change_identity(True)
+    refused = await paid.post("/dispatch", paid.body, role="producer")
+    assert refused.status_code == expected_status, (failure, refused.text)
+    assert "Messages" not in paid.sqs.receive_message(QueueUrl=paid.queue)
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+    await change_identity(False)
+    dispatched, credential = await start(paid)
+    first_lease = await paid.post(
+        "/lease",
+        {"operation_id": "original-operation"},
+        credential=credential,
+    )
+    assert first_lease.status_code == 200, first_lease.text
+    assert cognito.admin_get_user.call_count >= 4
+
+    await change_identity(True)
+    for path, body, role in [
+        ("/authority", {"operation_id": "original-operation"}, "worker"),
+        ("/lease", {"operation_id": "original-operation"}, "worker"),
+        ("/renew", None, "worker"),
+        (
+            "/verify-run",
+            {key: paid.body[key] for key in ("domain", "org_id", "workspace_id", "operation_id")} | {"subject": dispatched["principal"]},
+            "producer",
+        ),
+    ]:
+        response = await paid.post(path, body, credential=credential, role=role)
+        assert response.status_code == expected_status, (failure, path, response.text)
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
+        assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+
+async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db_session, pg_url, monkeypatch):  # noqa: F811
+    import hmac
+    import uuid
+
+    import botocore.auth
+    import botocore.awsrequest
+    from botocore.credentials import Credentials
+    from sqlalchemy import text
+
+    from src.shared.database import get_db
+
+    for dependency in (
+        "harness/jobs",
+        "domain-apps/superplane/contracts",
+        "domain-apps/superplane/auth",
+        "domain-apps/superplane/src/superplane-api",
+    ):
+        monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / dependency))
+    monkeypatch.setenv("DATABASE_URL", to_async_url(pg_url))
+    monkeypatch.setenv("SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS", "true")
+    from superplane_auth.policy import DomainPrincipal, Permission
+
+    from app.adapters.operation_authority_source import (
+        ActingPrincipal,
+        GrantBackedAuthority,
+        reset_acting_principal,
+        set_acting_principal,
+    )
+    from app.adapters.operation_dispatch import ProducerTransport
+    from app.auth import VerifiedCaller, authorize_workspace_operation
+    from app.config import settings as domain_settings
+    from app.current_identity import MappedProducerIdentityReader, require_current_identity
+    from app.database import Base
+    from app.models.cloud_account import CloudAccount
+    from app.models.cluster import Cluster
+    from app.models.organization import Organization as DomainOrganization
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+
+    db_session.add(Organization(id="tenant", name="ADP selected organization"))
+    await db_session.flush()
+    for subject in ("human", "approver"):
+        user = User(id=f"adp-{subject}", org_id="tenant", team_id="", email=f"{subject}@example.test", cognito_sub=subject)
+        db_session.add(user)
+        await db_session.flush()
+        db_session.add(TenantMembership(user_id=user.id, tenant_id="tenant", is_active=True))
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def membership_session():
+        yield db_session
+
+    async def gateway_database():
+        yield db_session
+
+    paid.client._transport.app.dependency_overrides[get_db] = gateway_database
+    monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
+    monkeypatch.setattr(domain_current_identity, "cognito_user_pool_id", lambda: "fixture-pool")
+    cognito = MagicMock()
+    cognito.list_users.side_effect = lambda **kwargs: {"Users": [{"Username": kwargs["Filter"].split('"')[1]}]}
+    cognito.admin_get_user.side_effect = lambda **kwargs: {
+        "Enabled": True,
+        "UserAttributes": [
+            {"Name": "sub", "Value": kwargs["Username"]},
+            {"Name": "custom:org_id", "Value": "tenant"},
+        ],
+    }
+    monkeypatch.setattr(domain_current_identity, "aws_client", lambda service: cognito)
+    bindings = json.loads(os.environ["ADP_DOMAIN_OPERATION_BINDINGS"])
+    bindings[0]["current_identity_enforced"] = True
+    monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps(bindings))
+
+    credentials = Credentials("fixture-access", "fixture-signing")
+
+    async def trusted_edge(request):
+        unsigned = botocore.awsrequest.AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
+        )
+        timestamp = request.headers.get("X-Amz-Date")
+        if not timestamp:
+            return httpx.Response(403)
+        unsigned.context["timestamp"] = timestamp
+        signer = botocore.auth.SigV4Auth(credentials, "execute-api", "us-east-1")
+        signer._modify_request_before_signing(unsigned)
+        signature = signer.signature(signer.string_to_sign(unsigned, signer.canonical_request(unsigned)), unsigned)
+        if not hmac.compare_digest(request.headers.get("Authorization", "").split("Signature=")[-1], signature):
+            return httpx.Response(403)
+        response = await paid.client.post(
+            request.url.path,
+            content=request.content,
+            headers={
+                "Content-Type": "application/json",
+                "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/producer/pod",
+                "X-Adp-Edge-Provenance": "edge-proof",
+                "X-Adp-Workload-Token": "pod-token",
+            },
+        )
+        return httpx.Response(response.status_code, content=response.content)
+
+    producer = ProducerTransport(
+        "https://gateway.example",
+        "us-east-1",
+        session=SimpleNamespace(get_credentials=lambda: credentials),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(trusted_edge)),
+    )
+    schema = "identity_composition_" + uuid.uuid4().hex
+    admin = create_async_engine(to_async_url(pg_url))
+    async with admin.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    domain_engine = create_async_engine(to_async_url(pg_url), connect_args={"server_settings": {"search_path": schema}})
+    sessions = async_sessionmaker(domain_engine, expire_on_commit=False)
+    workspace_id = uuid.UUID(WORKSPACE)
+    try:
+        async with domain_engine.begin() as connection:
+            await connection.run_sync(
+                Base.metadata.create_all,
+                tables=[
+                    DomainOrganization.__table__,
+                    CloudAccount.__table__,
+                    Cluster.__table__,
+                    Workspace.__table__,
+                    WorkspaceGrantRecord.__table__,
+                ],
+            )
+        async with sessions() as session:
+            session.add(DomainOrganization(id=uuid.UUID(ORG), name="mapped", adp_org_id="tenant"))
+            session.add(Workspace(id=workspace_id, org_id=uuid.UUID(ORG), name="workspace", status="Ready", isolation_mode="dedicated"))
+            await session.flush()
+            session.add(
+                WorkspaceGrantRecord(
+                    org_id=uuid.UUID(ORG),
+                    workspace_id=workspace_id,
+                    principal="human",
+                    principal_type="human",
+                    permissions="workspace:provision",
+                )
+            )
+            await session.commit()
+
+        monkeypatch.setattr(domain_settings, "current_identity_enforced", True)
+        reader = MappedProducerIdentityReader(producer, sessions)
+        identity = await require_current_identity(reader, subject="human", principal_type="human", adp_org_id="tenant")
+        assert identity.membership_id
+        caller = VerifiedCaller(
+            DomainPrincipal("human", ORG, "adp-client", "human"),
+            {},
+            source_org_id="tenant",
+            identity_evidence=identity.membership_id,
+        )
+        async with sessions() as session:
+            assert await authorize_workspace_operation(session, caller, workspace_id, Permission.PROVISION)
+        authority = GrantBackedAuthority(sessions)
+        token = set_acting_principal(
+            ActingPrincipal(
+                "human",
+                ORG,
+                WORKSPACE,
+                adp_org_id="tenant",
+                membership_id=identity.membership_id,
+                identity_reader=reader,
+            )
+        )
+        try:
+            assert await authority.resolve(org_id=ORG, workspace_id=WORKSPACE, permission="workspace:provision")
+        finally:
+            reset_acting_principal(token)
+
+        dispatched, credential = await start(paid)
+        assert dispatched["org_id"] == ORG
+        assert (await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)).status_code == 200
+        assert (await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)).status_code == 200
+        assert cognito.admin_get_user.call_count >= 6
+        async with paid.connect() as connection:
+            assert await connection.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
+    finally:
+        await producer.aclose()
+        await domain_engine.dispose()
+        async with admin.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await admin.dispose()
+async def test_paid_dispatch_uses_disjoint_domain_and_harness_schemas(paid, monkeypatch):
+    domain_tables = ("organizations", "operation_budget_reservations", "operation_approvals", "workspaces", "workspace_grants", "organization_grants")
+    async with paid.connect() as connection:
+        await connection.execute("CREATE SCHEMA domain_only")
+        for table in domain_tables:
+            await connection.execute(f"ALTER TABLE {table} SET SCHEMA domain_only")
+
+    @asynccontextmanager
+    async def domain_connect(binding):
+        async with paid.connect() as connection:
+            await connection.execute("SET search_path TO domain_only,pg_catalog")
+            assert await connection.fetchval("SELECT to_regclass('harness_operations')") is None
+            yield connection
+
+    monkeypatch.setattr(dispatch_module, "domain_connect", domain_connect)
+    monkeypatch.setattr(routes, "domain_connect", domain_connect)
+    _, credential = await start(paid)
+    lease = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert lease.status_code == 200, lease.text
+    response = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 200, response.text
+    async with domain_connect(None) as connection:
+        await connection.execute("UPDATE workspace_grants SET revoked_at=clock_timestamp() WHERE principal='human'")
+    response = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 403

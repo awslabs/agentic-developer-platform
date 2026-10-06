@@ -53,7 +53,7 @@ async def lifecycle_proposals(
     composition = _composition(request)
     try:
         workspace, _ = await workspace_scope(db, org_id, workspace_id)
-        async with composition.operation_connect() as connection:
+        async with composition.domain_connect() as connection:
             rows = await connection.fetch(
                 "SELECT artifact_id FROM workspace_lifecycle_artifacts WHERE org_id=$1 AND workspace_id=$2 "
                 "AND source_operation_id=$3 ORDER BY created_at DESC LIMIT 20",

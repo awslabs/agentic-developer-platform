@@ -1,4 +1,4 @@
-"""Offline Demo 1 fixture driver; real browser and provider actions are not enabled."""
+"""Demo 1 fixture driver and guarded live-selection preflight."""
 
 from __future__ import annotations
 
@@ -154,10 +154,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--private-input")
     parser.add_argument("--fixture")
     parser.add_argument("--report")
+    parser.add_argument("--authority")
+    parser.add_argument("--browser-state")
+    parser.add_argument("--checkpoint")
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
+        try:
+            if arguments.fixture or not all(
+                (
+                    arguments.private_input,
+                    arguments.authority,
+                    arguments.browser_state,
+                    arguments.checkpoint,
+                    arguments.report,
+                )
+            ):
+                raise EvidenceError(
+                    "live: private selection, authority, browser state, checkpoint and report required"
+                )
+            from .demo1_live import LiveEnvelope, PrivateCheckpoint, preflight_report
+            from .demo1_report import reference
+
+            selected = DemoInput.parse(_read_private(arguments.private_input))
+            envelope = LiveEnvelope.parse(_read_private(arguments.authority), selected)
+            session = _read_private(arguments.browser_state)
+            report = preflight_report(selected, envelope, session)
+            with PrivateCheckpoint(
+                arguments.checkpoint, selected, envelope.origin
+            ) as store:
+                saved = store.load()
+                if saved is not None:
+                    report["checkpoint"] = {
+                        "request_ref": reference(saved.request_id),
+                        "workspace_ref": reference(saved.workspace_id),
+                        "approval_ref": reference(saved.approval_id),
+                        "submitted": saved.submitted,
+                    }
+                _publish(report, arguments.report)
+        except EvidenceError as error:
+            print(f"BLOCKED: {error}")
+            return 2
         print(
-            "BLOCKED: no authorized browser/provider adapter or reviewed live envelope is registered"
+            "Live selection preflight: BLOCKED (no runtime admission or release verification)"
         )
         return 2
     try:

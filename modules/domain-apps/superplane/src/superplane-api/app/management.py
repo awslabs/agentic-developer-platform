@@ -29,6 +29,8 @@ MANAGEMENT_ROUTES = frozenset(
         ("POST", "/workspaces/preview"),
         ("POST", "/workspaces/adopt"),
         ("POST", "/workspaces/{workspace_id}/retirement/preview"),
+        ("POST", "/workspaces/{workspace_id}/retirement/access/preview"),
+        ("POST", "/workspaces/{workspace_id}/retirement/access"),
         ("POST", "/workspaces/{workspace_id}/retirement"),
         ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"),
         (
@@ -67,7 +69,11 @@ MANAGEMENT_ROUTES = frozenset(
         ("GET", "/events"),
         ("GET", "/events/{event_id}"),
         ("GET", "/internal/installation"),
-        ("GET", "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}"),
+        ("GET", "/internal/installation/organization-bootstrap"),
+        (
+            "GET",
+            "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+        ),
         ("GET", "/internal/observations/clusters"),
         ("POST", "/internal/observations/leases"),
         ("POST", "/internal/observations/leases/release"),

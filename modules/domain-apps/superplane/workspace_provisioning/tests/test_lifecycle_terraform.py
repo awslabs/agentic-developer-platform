@@ -1,10 +1,10 @@
 """The exact reviewed binary plan is consumed, never silently planned again."""
 
-from types import SimpleNamespace
 import json
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -208,3 +208,44 @@ def test_fsgroup_parent_ownership_does_not_require_chown_of_shared_pvc(
     assert result.parent.stat().st_uid == os.getuid()
     assert result.parent.stat().st_mode & 0o077 == 0
     assert result == operation_directory(mount, "org", "workspace", "operation")
+
+
+def test_destroy_preparation_is_explicit_and_saves_immutable_review(reviewed):
+    operation, context, config, _, _, original, _ = reviewed
+    directory = original.parent / "destroy-preparation"
+    directory.mkdir()
+    process = Process(directory)
+    # Even a zero new-cost allowance permits the separately reviewed removal plan.
+    operation.request.parameters["lifecycle_allocation_max_cost_micros"] = "0"
+    request = SimpleNamespace(
+        region="us-west-2",
+        vpc_cidr="10.64.0.0/16",
+        availability_zones=("us-west-2a", "us-west-2b"),
+        cluster_version="1.31",
+        node_instance_type=None,
+    )
+    target, metadata = prepare(
+        operation,
+        context,
+        config,
+        request,
+        "000000000002",
+        process,
+        destroy=True,
+    )
+    assert len(process.calls) == 1
+    assert process.calls[0][-1] == "--destroy"
+    assert metadata["next_phase"] == "retire-workspace"
+    assert target["workspace_id"] == "ws-1"
+    assert set(metadata["files"]) == {
+        "workspace.tfplan",
+        "workspace-plan.json",
+        "workspace-authorization.proposed.json",
+        "workspace-inventory.json",
+        "workspace-estimate.json",
+        "workspace-backend.json",
+    }
+    assert all(
+        (directory / "review" / name).stat().st_mode & 0o777 == 0o400
+        for name in metadata["files"]
+    )

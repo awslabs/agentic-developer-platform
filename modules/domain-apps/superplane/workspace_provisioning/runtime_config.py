@@ -61,7 +61,7 @@ def validate_runtime_config(value):
     }
     if (
         not isinstance(value, dict)
-        or set(value) - required - {"new_account"}
+        or set(value) - required - {"new_account", "management_public_access"}
         or required - set(value)
     ):
         raise LifecycleRefused("lifecycle runtime configuration is incomplete")
@@ -93,6 +93,9 @@ def validate_runtime_config(value):
         raise LifecycleRefused(
             "Terraform variables contain a target override or unsupported field"
         )
+    from .public_network import validate_public_management
+
+    validate_public_management(config)
     if variables.get("hybrid_networks") is not None:
         hybrid = variables["hybrid_networks"]
         try:

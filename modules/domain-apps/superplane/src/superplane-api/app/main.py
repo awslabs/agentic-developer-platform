@@ -35,6 +35,7 @@ from app.routers.internal import router as internal_router
 from app.routers.operation_approvals import router as operation_approvals_router
 from app.routers.onboarding import router as onboarding_router
 from app.routers.retirement import router as retirement_router
+from app.routers.retirement_access import router as retirement_access_router
 from app.routers.orgs import router as orgs_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
@@ -43,6 +44,7 @@ from app.routers.quota import router as quota_router
 from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
+from app.routers.workspace_access import router as workspace_access_router
 from app.services.vault_sync import VaultSyncReconciler
 from app.services.workspace_reconciler import WorkspaceReconciler
 
@@ -132,6 +134,7 @@ async def lifespan(app: FastAPI):
     # docstring above).
     composition = compose_vault_client()
     app.state.trust_composition = composition
+    composition.install_identity_reader(app)
 
     # Connect what composition built but deliberately did not open (issue #5535).
     # `compose()` is synchronous and must run where there is no event loop and no
@@ -334,10 +337,12 @@ async def _scrubbed_validation_error(
 app.include_router(operation_approvals_router)
 app.include_router(onboarding_router)
 app.include_router(retirement_router)
+app.include_router(retirement_access_router)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)
 app.include_router(workspaces_router)
+app.include_router(workspace_access_router)
 app.include_router(provider_connections_router)
 app.include_router(proxy_router)
 app.include_router(cost_router)

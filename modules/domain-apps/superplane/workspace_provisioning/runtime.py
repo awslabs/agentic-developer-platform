@@ -21,6 +21,19 @@ async def delivery_session(operation, context, account_id, region):
     from .credentials import assume_session
 
     await current_operation(operation, context)
+    if getattr(context, "brokered_provider", False):
+
+        async def verify_broker():
+            await current_operation(operation, context)
+
+        session = await context.authority.provider_session(
+            operation, region, verify=verify_broker
+        )
+        if not session._superplane_role_arn.startswith(
+            f"arn:aws:iam::{account_id}:role/"
+        ):
+            raise LifecycleRefused("brokered provider names another AWS account")
+        return session
     delivered = await context.authority.delivery_role(operation)
     if not delivered["role_arn"].startswith(f"arn:aws:iam::{account_id}:role/"):
         raise LifecycleRefused("delivered provider role names another AWS account")

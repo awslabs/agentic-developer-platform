@@ -21,8 +21,10 @@ from workspace_provisioning.retirement_inventory import (
 from workspace_provisioning.retirement_plan import compose_retirement_plan
 
 from app import database
+from app.adapters.operation_dispatch import OperationDispatcher
 from app.adapters.operation_authority_source import GrantBackedAuthority
 from app.models.workspace import Workspace
+from app.operation_activation import expected_lifecycle_binding
 from app.services import onboarding, provisioning, retirement, retirement_access
 from app.services.provisioning import ProvisioningRefused
 from tests.test_lifecycle_api_postgres import (
@@ -31,21 +33,31 @@ from tests.test_lifecycle_api_postgres import (
     lifecycle as lifecycle,
     pytestmark as pytestmark,
 )
+from tests.test_operation_dispatch_postgres import GatewayTransport
 
 
-def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
+def test_cleanup_access_routes_are_mounted_and_allowlisted_under_runtime_gate():
     from pathlib import Path
+
     from app.main import app
     from app.routers.retirement_access import router
 
     paths = {route.path for route in router.routes}
     assert paths
-    assert paths.isdisjoint({route.path for route in app.routes})
+
+    def mounted_paths(routes):
+        for route in routes:
+            if hasattr(route, "path"):
+                yield route.path
+            else:
+                yield from mounted_paths(route.original_router.routes)
+
+    assert paths <= set(mounted_paths(app.routes))
     gateway = (
         Path(__file__).resolve().parents[5]
         / "gateway/src/domain_proxy/superplane_routes.json"
     )
-    assert paths.isdisjoint({path for _, path in json.loads(gateway.read_text())})
+    assert paths <= {path for _, path in json.loads(gateway.read_text())}
 
 
 @pytest.fixture
@@ -60,9 +72,17 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
 
     async with fixture.sessions() as db:
         await db.run_sync(
-            lambda session: database.Base.metadata.tables[
-                "workspace_lifecycle_control_operations"
-            ].create(session.connection())
+            lambda session: database.Base.metadata.create_all(
+                session.connection(),
+                tables=[
+                    database.Base.metadata.tables[name]
+                    for name in (
+                        "deployments",
+                        "controller_deployment_operations",
+                        "workspace_lifecycle_control_operations",
+                    )
+                ],
+            )
         )
         await db.commit()
     async with fixture.connections.connect() as connection:
@@ -137,7 +157,8 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
         components_complete=True,
     )
 
-    async def facts(composition, db, org_id, workspace_id):
+    async def facts(composition, db, org_id, workspace_id, *, access_review=False):
+        assert access_review
         current = await db.get(Workspace, workspace_id)
         principal = await GrantBackedAuthority(fixture.sessions).resolve(
             org_id=str(org_id),
@@ -232,6 +253,85 @@ async def test_exact_human_approval_admits_one_zero_spend_control_and_keeps_boot
         assert workspace.provisioning_operation_id == cleanup.source_id
         assert workspace.status == "Active"
         assert workspace.teardown_operation_id is None
+
+
+async def test_approved_cleanup_control_dispatches_after_registration(cleanup):
+    request_id = uuid.uuid4()
+    review = await cleanup.preview(request_id)
+    approval_id = await cleanup.fixture.approve(review)
+    result = await cleanup.admit(request_id, review, approval_id)
+    operation_id = result["control_operation_id"]
+    async with cleanup.fixture.connections.connect() as connection:
+        operation = await connection.fetchrow(
+            "SELECT * FROM harness_operations WHERE operation_id=$1", operation_id
+        )
+        registration = await connection.fetchrow(
+            "SELECT * FROM workspace_lifecycle_control_operations WHERE operation_id=$1",
+            operation_id,
+        )
+        outbox = await connection.fetchrow(
+            "SELECT * FROM harness_dispatch_outbox WHERE operation_id=$1", operation_id
+        )
+    assert registration["source_bootstrap_operation_id"] == cleanup.source_id
+    assert registration["plan_digest"] == payload_digest(
+        decode_payload(operation["request_payload"])
+    )
+    assert outbox["delivered_at"] is None
+
+    transport = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
+    dispatcher = OperationDispatcher(
+        cleanup.fixture.connections.connect,
+        transport,
+        domain_connect=cleanup.fixture.connections.connect,
+        policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
+    )
+    async with cleanup.fixture.connections.connect() as connection:
+        report = await dispatcher.outbox.drain_once(
+            connection, dispatcher, operation_ids=(operation_id,)
+        )
+    async with cleanup.fixture.connections.connect() as connection:
+        dispatch_error = await connection.fetchval(
+            "SELECT last_error FROM harness_dispatch_outbox WHERE operation_id=$1",
+            operation_id,
+        )
+    assert report.delivered == 1, (dispatch_error, transport.proofs, transport.calls)
+    assert report.failed == report.exhausted == 0
+    assert transport.proofs == [
+        {"domain": "superplane", "org_id": str(cleanup.fixture.org_id)}
+    ]
+    assert transport.calls == [
+        (
+            "/dispatch",
+            {
+                "domain": "superplane",
+                "mode": "execution",
+                **{
+                    key: operation[key]
+                    for key in (
+                        "operation_id",
+                        "job_id",
+                        "attempt_id",
+                        "org_id",
+                        "workspace_id",
+                    )
+                },
+            },
+        )
+    ]
+    async with cleanup.fixture.connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT delivered_at FROM harness_dispatch_outbox WHERE operation_id=$1",
+                operation_id,
+            )
+            is not None
+        )
+        assert (
+            await dispatcher.outbox.drain_once(
+                connection, dispatcher, operation_ids=(operation_id,)
+            )
+        ).handled == 0
+    assert len(transport.calls) == 1
 
 
 async def test_different_requests_cannot_purchase_competing_cleanup_access(cleanup):

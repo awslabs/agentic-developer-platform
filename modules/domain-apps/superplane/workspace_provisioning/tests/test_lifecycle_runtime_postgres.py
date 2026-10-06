@@ -425,6 +425,22 @@ def test_managed_preparation_and_apply_preserve_review_and_original_allocation(
         assert (
             facts["allocation_source_operation_id"] == applying.grant.lease.operation_id
         )
+        assert (
+            await bootstrap_runtime.original_managed_allocation(
+                applying, scenario.context, applied
+            )
+            == applying.request.parameters["allocation_id"]
+        )
+        substituted = dict(applied, source_attempt_id="different-attempt")
+        with pytest.raises(LifecycleRefused, match="paid apply"):
+            await bootstrap_runtime.original_managed_allocation(
+                applying, scenario.context, substituted
+            )
+        substituted = dict(applied, source_operation_id="different-operation")
+        with pytest.raises(LifecycleRefused, match="original apply operation"):
+            await bootstrap_runtime.original_managed_allocation(
+                applying, scenario.context, substituted
+            )
         assert len(scenario.process_calls) == 3
         assert not scenario.creates and not scenario.bootstrap_calls
 

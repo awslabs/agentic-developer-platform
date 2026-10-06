@@ -8,27 +8,27 @@ at the mutation boundary. Managed infrastructure remains with its Terraform stat
 
 from __future__ import annotations
 
+import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
-import re
 
-from superplane_contracts.provisioning import (
-    OperationBinding,
-    REQUIRED_PERMISSION,
-    TEARDOWN,
-)
-from superplane_contracts.version import CONTRACT_VERSION
-from superplane_bootstrap.errors import BootstrapRefused
-from superplane_bootstrap.inventory import OwnedPrerequisite, inventory_from_mapping
-from superplane_bootstrap.registry import registration_lock
-from superplane_bootstrap.prerequisites import REQUIRED_PREREQUISITE_KINDS
 from superplane_bootstrap.component_journal import (
     component_key,
     expected_component_keys,
     merge_component_records,
 )
+from superplane_bootstrap.errors import BootstrapRefused
+from superplane_bootstrap.inventory import OwnedPrerequisite, inventory_from_mapping
+from superplane_bootstrap.prerequisites import PUBLIC_ENDPOINT, valid_prerequisite_kinds
+from superplane_bootstrap.registry import registration_lock
+from superplane_contracts.provisioning import (
+    REQUIRED_PERMISSION,
+    TEARDOWN,
+    OperationBinding,
+)
+from superplane_contracts.version import CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class RetirementInventory:
     prerequisites: tuple[OwnedPrerequisite, ...]
     components: tuple[ComponentOwnership, ...] = ()
     components_complete: bool = False
+    system_workload_baseline: dict | None = None
 
     @property
     def preserve_cluster(self):
@@ -88,6 +89,8 @@ def _grant_key(spec):
         "RoleBinding",
         "ClusterRole",
         "ClusterRoleBinding",
+        "ValidatingAdmissionPolicy",
+        "ValidatingAdmissionPolicyBinding",
     }:
         raise BootstrapRefused(
             "retirement encountered an unsupported retained Kubernetes grant"
@@ -179,7 +182,7 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
         ):
             raise BootstrapRefused("canonical bootstrap identity is missing or changed")
         rows = db.execute(
-            "SELECT generation, cluster_arn, org_id, plan_json, progress_json, revoked "
+            "SELECT generation, operation_id, cluster_arn, org_id, plan_json, progress_json, revoked "
             "FROM workspace_bootstrap_authority WHERE workspace_id=:workspace_id",
             {"workspace_id": workspace_id},
         )
@@ -189,6 +192,7 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             )
         grants, prerequisites, component_records = {}, {}, {}
         components_complete = False
+        system_workload_baseline = None
         namespace_owned = False
         complete_inventory = False
         for row in rows:
@@ -200,6 +204,28 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             )
             if progress.get("phase") != "revoked" or not progress.get("complete"):
                 raise BootstrapRefused("bootstrap revocation is not complete")
+            baseline = progress.get("system_workload_baseline")
+            if baseline is not None:
+                if (
+                    not isinstance(baseline, dict)
+                    or baseline.get("version") != 1
+                    or baseline.get("cluster_arn") != target.cluster_arn
+                    or baseline.get("generation") != row["generation"]
+                    or baseline.get("operation_id") != row["operation_id"]
+                    or baseline.get("original_allocation_id")
+                    not in {
+                        grant.get("original_allocation_id")
+                        for grant in plan.get("grants", [])
+                        if grant.get("key") == "retirement-fence-policy"
+                    }
+                    or not isinstance(baseline.get("objects"), list)
+                    or (
+                        system_workload_baseline is not None
+                        and baseline != system_workload_baseline
+                    )
+                ):
+                    raise BootstrapRefused("original system workload baseline changed")
+                system_workload_baseline = deepcopy(baseline)
             components = progress.get("components", {})
             if not isinstance(components, dict):
                 raise BootstrapRefused("component ownership inventory is malformed")
@@ -258,13 +284,19 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
                     raise BootstrapRefused(
                         "prerequisite inventory describes another workspace"
                     )
-                if {item.kind for item in inventory.prerequisites} != set(
-                    REQUIRED_PREREQUISITE_KINDS
+                if not valid_prerequisite_kinds(
+                    item.kind for item in inventory.prerequisites
                 ):
                     raise BootstrapRefused(
                         "prerequisite ownership inventory is incomplete"
                     )
                 for item in inventory.prerequisites:
+                    if item.kind == PUBLIC_ENDPOINT and (
+                        item.removable or item.identifier != target.cluster_arn
+                    ):
+                        raise BootstrapRefused(
+                            "public endpoint inventory cannot grant deletion authority"
+                        )
                     key = item.kind, item.identifier
                     if key in prerequisites and prerequisites[key] != item:
                         raise BootstrapRefused("prerequisite ownership is ambiguous")
@@ -292,6 +324,15 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
                 elif spec.get("lifetime") == "workspace" and progress.get(
                     "retain_workspace"
                 ):
+                    if (
+                        spec.get("key", "").startswith(
+                            ("cleanup-", "retirement-fence-")
+                        )
+                        and status.get("phase") != "granted"
+                    ):
+                        raise BootstrapRefused(
+                            "cleanup capability was not created by this bootstrap"
+                        )
                     if status.get("phase") not in {
                         "granted",
                         "adopted",
@@ -357,4 +398,176 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             tuple(prerequisites.values()),
             tuple(components),
             components_complete,
+            system_workload_baseline,
         )
+
+
+@dataclass(frozen=True)
+class RetainedCleanupCapability:
+    org_id: str
+    workspace_id: str
+    cluster_arn: str
+    group: str
+    generation: str
+    original_allocation_id: str
+    grants: tuple[OwnedGrant, ...]
+
+
+def retained_cleanup_capability(
+    inventory,
+    *,
+    original_allocation_id,
+    release,
+    principals,
+    controller_mode,
+    kubernetes,
+    review_only=False,
+):
+    """Match retained grant UIDs to the bootstrap recipe; reread them at execution."""
+    from types import SimpleNamespace
+
+    from superplane_bootstrap.grant_plan import BootstrapRelease, compile_grants
+    from superplane_bootstrap.kube_grants import KubeGrants
+    from superplane_bootstrap.kube_grants import _digest as grant_digest
+
+    if (
+        inventory.cluster_ownership != "adp-created"
+        or not inventory.remove_namespace
+        or not isinstance(release, BootstrapRelease)
+        or release.namespace != inventory.namespace
+        or not isinstance(original_allocation_id, str)
+        or not original_allocation_id
+        or (review_only and kubernetes is not None)
+        or (
+            not review_only
+            and (
+                not isinstance(kubernetes, KubeGrants)
+                or kubernetes.target.cluster_arn != inventory.cluster_arn
+                or kubernetes.target.workspace_id != inventory.workspace_id
+                or kubernetes.target.org_id != inventory.org_id
+            )
+        )
+    ):
+        raise BootstrapRefused("managed cleanup requires complete original ownership")
+    retained = tuple(
+        grant
+        for grant in inventory.grants
+        if grant.spec.get("key", "").startswith("cleanup-")
+    )
+    actual = {grant.spec.get("key"): grant for grant in retained}
+    keys = {
+        f"cleanup-{scope}-{kind}"
+        for scope in ("cluster", "namespace", "system")
+        for kind in ("role", "binding")
+    }
+    if len(retained) != len(keys) or set(actual) != keys:
+        raise BootstrapRefused("original bootstrap cleanup capability is incomplete")
+    generations = {grant.spec.get("generation") for grant in actual.values()}
+    if len(generations) != 1:
+        raise BootstrapRefused("cleanup capability generation differs")
+    generation = generations.pop()
+    if not isinstance(generation, str) or not re.fullmatch(r"[a-f0-9]{64}", generation):
+        raise BootstrapRefused("cleanup capability generation is invalid")
+    account = inventory.cluster_arn.split(":")[4]
+    target = SimpleNamespace(
+        account_id=account,
+        workspace_id=inventory.workspace_id,
+        cluster_arn=inventory.cluster_arn,
+        is_adopted=False,
+    )
+    journal = SimpleNamespace(
+        target=target,
+        generation=generation,
+        original_allocation_id=original_allocation_id,
+    )
+    if controller_mode not in {"legacy", "management"}:
+        raise BootstrapRefused("cleanup bootstrap controller mode is unverified")
+    expected = {
+        spec["key"]: spec
+        for spec in compile_grants(
+            journal, release, principals, controller_mode=controller_mode
+        )["grants"]
+        if spec["key"].startswith("cleanup-")
+    }
+    if set(expected) != keys:
+        raise BootstrapRefused("approved cleanup grant recipe is incomplete")
+    for key, grant in actual.items():
+        identity = grant.identity
+        if (
+            grant.spec != expected[key]
+            or not isinstance(identity, dict)
+            or not isinstance(identity.get("uid"), str)
+            or not identity["uid"]
+            or identity.get("generation") != generation
+            or identity.get("digest") != grant_digest(expected[key]["body"])
+        ):
+            raise BootstrapRefused(
+                "cleanup grant UID, rules or original allocation changed"
+            )
+        if not review_only:
+            observed = kubernetes.observe(expected[key])
+            if observed != identity:
+                raise BootstrapRefused(
+                    "cleanup grant live UID or body differs from journal"
+                )
+            kubernetes.verify(expected[key], observed)
+    ordered = tuple(actual[key] for key in sorted(keys))
+    return RetainedCleanupCapability(
+        org_id=inventory.org_id,
+        workspace_id=inventory.workspace_id,
+        cluster_arn=inventory.cluster_arn,
+        group="sp-bootstrap-" + generation[:24] + ":cleanup",
+        generation=generation,
+        original_allocation_id=original_allocation_id,
+        grants=ordered,
+    )
+
+
+def require_cleanup_group_mapping(capability, eks, *, spec=None, identity=None):
+    from superplane_bootstrap.eks_grants import EksGrants, _pages
+
+    if (
+        not isinstance(capability, RetainedCleanupCapability)
+        or not isinstance(eks, EksGrants)
+        or len(capability.grants) != 6
+        or (eks.target.org_id, eks.target.workspace_id, eks.target.cluster_arn)
+        != (capability.org_id, capability.workspace_id, capability.cluster_arn)
+    ):
+        raise BootstrapRefused(
+            "cleanup EKS observation is outside the original cluster"
+        )
+    if spec is not None or identity is not None:
+        if (
+            not isinstance(spec, dict)
+            or not isinstance(identity, dict)
+            or spec.get("key") != "cleaner-entry"
+            or spec.get("kind") != "eks-entry"
+            or spec.get("cluster_arn") != capability.cluster_arn
+            or spec.get("groups") != [capability.group]
+            or eks.observe(spec) != identity
+        ):
+            raise BootstrapRefused("cleanup mapping differs from confirmed entry")
+        eks.verify(spec, identity)
+    matches = []
+    for principal in _pages(
+        eks.client,
+        "list_access_entries",
+        "accessEntries",
+        clusterName=eks.target.cluster_name,
+    ):
+        response = eks.client.describe_access_entry(
+            clusterName=eks.target.cluster_name, principalArn=principal
+        )
+        entry = response.get("accessEntry", {})
+        if entry.get("principalArn") != principal or not isinstance(
+            entry.get("kubernetesGroups", []), list
+        ):
+            raise BootstrapRefused("cleanup EKS access inventory is unanswered")
+        if capability.group in entry.get("kubernetesGroups", []):
+            matches.append(principal)
+    if matches != ([spec["principal_arn"]] if spec is not None else []):
+        raise BootstrapRefused("cleanup group has an unapproved EKS mapping")
+
+
+def require_dormant_cleanup_group(capability, eks):
+    require_cleanup_group_mapping(capability, eks)
