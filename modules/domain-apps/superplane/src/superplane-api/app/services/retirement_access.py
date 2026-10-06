@@ -14,7 +14,7 @@ from workspace_provisioning.retirement_access_plan import PHASE, compile_access_
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_review,
     managed_recipe_inputs,
-    require_managed_sealed_plan,
+    require_managed_paid_plan,
 )
 
 
@@ -56,7 +56,7 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
                 retirement_request_id=str(retirement_request_id),
                 **managed_recipe_inputs(inventory, runtime),
             )
-            await require_managed_sealed_plan(connection, paid_source, plan)
+            await require_managed_paid_plan(connection, paid_source, plan)
     else:
         paid_source = None
         plan = compile_access_plan(

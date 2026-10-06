@@ -224,3 +224,18 @@ async def require_managed_sealed_plan(connection, source, plan):
     await require_original_seal(
         connection, source, {"original_allocation_id": plan.original_allocation_id}
     )
+
+
+async def require_managed_paid_plan(connection, source, plan):
+    await require_managed_sealed_plan(connection, source, plan)
+    approved = await connection.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption "
+        "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 "
+        "AND plan_digest=$4 AND reservation_state IN ('confirmed','retained','released'))",
+        source.operation_id,
+        plan.org_id,
+        plan.workspace_id,
+        source.plan_digest,
+    )
+    if not approved:
+        raise LifecycleRefused("managed cleanup requires its original paid approval")

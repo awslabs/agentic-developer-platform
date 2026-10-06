@@ -151,7 +151,7 @@ async def load_access_context(operation, context, registration_store, *, current
         from .retirement_managed_access import (
             compile_managed_access_review,
             managed_recipe_inputs,
-            require_managed_sealed_plan,
+            require_managed_paid_plan,
         )
 
         metadata = json.loads(artifact["artifact_metadata_json"])
@@ -169,20 +169,7 @@ async def load_access_context(operation, context, registration_store, *, current
             **managed_recipe_inputs(inventory, config),
         )
         async with context.connect() as connection:
-            paid = await connection.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption "
-                "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 "
-                "AND plan_digest=$4 AND reservation_state IN ('confirmed','retained','released'))",
-                producer.operation_id,
-                lease.org_id,
-                lease.workspace_id,
-                artifact["source_payload_digest"],
-            )
-            if not paid:
-                raise LifecycleRefused(
-                    "managed cleanup requires its paid apply approval"
-                )
-            await require_managed_sealed_plan(connection, producer, plan)
+            await require_managed_paid_plan(connection, producer, plan)
     else:
         plan = compile_access_plan(
             inventory,
