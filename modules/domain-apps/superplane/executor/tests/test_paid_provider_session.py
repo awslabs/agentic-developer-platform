@@ -149,3 +149,43 @@ async def test_scoped_session_cannot_replace_provider_role_id(
     assert session._superplane_role_id == "AROA" + "A" * 17
     with pytest.raises(OperationRefused, match="scoped provider role changed"):
         await asyncio.to_thread(session._superplane_scoped_entry, entry)
+
+
+async def test_actor_refresh_rechecks_shortened_current_authority(
+    request_operation, aws_identity, monkeypatch
+):
+    import asyncio
+    from workspace_provisioning.credentials import assume_session
+    from workspace_provisioning.runtime_config import LifecycleRefused
+
+    async def post(path, body):
+        if path.endswith("provider-preflight"):
+            return {
+                "admits_work": True,
+                "operation_id": "operation",
+                "authority_expires_at": (
+                    datetime.now(UTC) + timedelta(seconds=300)
+                ).isoformat(),
+            }
+        return response()
+
+    session = await provider_session.session_for(
+        SimpleNamespace(post=post), request_operation, "us-east-1"
+    )
+
+    def no_assume(**kwargs):
+        pytest.fail("shortened authority must refuse before actor STS")
+
+    monkeypatch.setattr(
+        session,
+        "client",
+        lambda *args, **kwargs: SimpleNamespace(assume_role=no_assume),
+    )
+    with pytest.raises(LifecycleRefused, match="shorter than the STS minimum"):
+        await asyncio.to_thread(
+            assume_session,
+            session,
+            role_arn="arn:aws:iam::123456789012:role/installer",
+            region="us-east-1",
+            verify=lambda: None,
+        )

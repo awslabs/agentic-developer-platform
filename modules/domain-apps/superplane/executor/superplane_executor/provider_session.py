@@ -135,7 +135,35 @@ async def session_for(
         session._superplane_role_id = pinned[1]
         session._superplane_source_session = session
         session._superplane_external_id = None
-        session._superplane_authority_deadline = lambda: authority_deadline
+
+        def current_deadline():
+            async def read():
+                if verify is not None:
+                    await verify()
+                return await authority.post(
+                    "/internal/v1/controller-execution/provider-preflight",
+                    {"operation_id": operation_id, "region": region},
+                )
+
+            pending = asyncio.run_coroutine_threadsafe(read(), loop)
+            try:
+                answer = pending.result(timeout=60)
+                expiry = datetime.fromisoformat(answer["authority_expires_at"])
+                if (
+                    answer.get("admits_work") is not True
+                    or answer.get("operation_id") != operation_id
+                    or expiry.tzinfo is None
+                    or expiry <= datetime.now(UTC)
+                ):
+                    raise ValueError("current provider authority differs")
+                return min(authority_deadline, expiry)
+            except BaseException:
+                pending.cancel()
+                raise OperationRefused(
+                    "current provider deadline unavailable"
+                ) from None
+
+        session._superplane_authority_deadline = current_deadline
 
         def scoped_entry(entry):
             pending = asyncio.run_coroutine_threadsafe(

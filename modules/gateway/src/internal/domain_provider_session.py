@@ -190,7 +190,7 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
             raise HTTPException(403, REFUSED)
         if preflight_only:
             await refresh()
-            return {"admits_work": True}
+            return {"admits_work": True, "operation_id": body.operation_id, "authority_expires_at": deadline.isoformat()}
         role, external_id, selected_account = connection_material(json.loads(secret.reveal()), credential.scopes or {}, credential)
         if selected_account != account:
             raise HTTPException(403, REFUSED)

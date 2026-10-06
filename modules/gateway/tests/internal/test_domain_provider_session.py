@@ -191,7 +191,7 @@ def test_target_comes_from_sealed_request(monkeypatch):
 
 async def test_preflight_checks_current_connection_without_sts(context):
     answer = await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=True)
-    assert answer == {"admits_work": True} and context.changed.sts == 0
+    assert answer["admits_work"] is True and answer["operation_id"] == "operation" and context.changed.sts == 0
 
 
 def test_maintained_sts_preserves_sdk_identity_and_applies_narrow_policy(monkeypatch):
@@ -246,7 +246,9 @@ def test_maintained_sts_preserves_sdk_identity_and_applies_narrow_policy(monkeyp
 
 async def test_preflight_does_not_mint_or_require_full_sts_minimum(context):
     context.state[4]["approval_expires_at"] = datetime.now(UTC) + timedelta(seconds=600)
-    assert await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=True) == {"admits_work": True}
+    answer = await broker.provider_session(None, context.body, context.db, context.sm, preflight_only=True)
+    assert answer["admits_work"] is True
+    assert datetime.fromisoformat(answer["authority_expires_at"]) == context.state[4]["approval_expires_at"]
     assert context.changed.sts == 0
     with pytest.raises(HTTPException):
         await broker.provider_session(None, context.body, context.db, context.sm)
