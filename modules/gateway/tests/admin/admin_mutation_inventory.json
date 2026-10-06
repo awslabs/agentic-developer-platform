@@ -295,6 +295,13 @@
   },
   {
     "method": "POST",
+    "path": "/admin/organizations/{org_id}/connections/github/{installation_id}/reconcile-routing",
+    "module": "src.admin.org_connections.routes",
+    "endpoint": "reconcile_github_routing",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/organizations/{org_id}/departments",
     "module": "src.admin.routes",
     "endpoint": "create_department",
