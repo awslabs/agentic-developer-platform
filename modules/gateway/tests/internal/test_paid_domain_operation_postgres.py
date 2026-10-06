@@ -205,8 +205,15 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
     )
     try:
         yield SimpleNamespace(
-            post=post, client=client, connect=connect, store=store, runtime=runtime,
-            body=body, kubernetes=kubernetes, sqs=sqs, queue=queue,
+            post=post,
+            client=client,
+            connect=connect,
+            store=store,
+            runtime=runtime,
+            body=body,
+            kubernetes=kubernetes,
+            sqs=sqs,
+            queue=queue,
         )
     finally:
         await client.aclose()
@@ -586,7 +593,9 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
 
     async def trusted_edge(request):
         unsigned = botocore.awsrequest.AWSRequest(
-            method=request.method, url=str(request.url), data=request.content,
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
             headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
         )
         timestamp = request.headers.get("X-Amz-Date")
@@ -599,7 +608,8 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
         if not hmac.compare_digest(request.headers.get("Authorization", "").split("Signature=")[-1], signature):
             return httpx.Response(403)
         response = await paid.client.post(
-            request.url.path, content=request.content,
+            request.url.path,
+            content=request.content,
             headers={
                 "Content-Type": "application/json",
                 "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/producer/pod",
@@ -610,7 +620,8 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
         return httpx.Response(response.status_code, content=response.content)
 
     producer = ProducerTransport(
-        "https://gateway.example", "us-east-1",
+        "https://gateway.example",
+        "us-east-1",
         session=SimpleNamespace(get_credentials=lambda: credentials),
         client=httpx.AsyncClient(transport=httpx.MockTransport(trusted_edge)),
     )
@@ -623,18 +634,29 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
     workspace_id = uuid.UUID(WORKSPACE)
     try:
         async with domain_engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all, tables=[
-                DomainOrganization.__table__, CloudAccount.__table__, Cluster.__table__,
-                Workspace.__table__, WorkspaceGrantRecord.__table__,
-            ])
+            await connection.run_sync(
+                Base.metadata.create_all,
+                tables=[
+                    DomainOrganization.__table__,
+                    CloudAccount.__table__,
+                    Cluster.__table__,
+                    Workspace.__table__,
+                    WorkspaceGrantRecord.__table__,
+                ],
+            )
         async with sessions() as session:
             session.add(DomainOrganization(id=uuid.UUID(ORG), name="mapped", adp_org_id="tenant"))
             session.add(Workspace(id=workspace_id, org_id=uuid.UUID(ORG), name="workspace", status="Ready", isolation_mode="dedicated"))
             await session.flush()
-            session.add(WorkspaceGrantRecord(
-                org_id=uuid.UUID(ORG), workspace_id=workspace_id, principal="human",
-                principal_type="human", permissions="workspace:provision",
-            ))
+            session.add(
+                WorkspaceGrantRecord(
+                    org_id=uuid.UUID(ORG),
+                    workspace_id=workspace_id,
+                    principal="human",
+                    principal_type="human",
+                    permissions="workspace:provision",
+                )
+            )
             await session.commit()
 
         monkeypatch.setattr(domain_settings, "current_identity_enforced", True)
@@ -642,16 +664,24 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
         identity = await require_current_identity(reader, subject="human", principal_type="human", adp_org_id="tenant")
         assert identity.membership_id
         caller = VerifiedCaller(
-            DomainPrincipal("human", ORG, "adp-client", "human"), {},
-            source_org_id="tenant", identity_evidence=identity.membership_id,
+            DomainPrincipal("human", ORG, "adp-client", "human"),
+            {},
+            source_org_id="tenant",
+            identity_evidence=identity.membership_id,
         )
         async with sessions() as session:
             assert await authorize_workspace_operation(session, caller, workspace_id, Permission.PROVISION)
         authority = GrantBackedAuthority(sessions)
-        token = set_acting_principal(ActingPrincipal(
-            "human", ORG, WORKSPACE, adp_org_id="tenant",
-            membership_id=identity.membership_id, identity_reader=reader,
-        ))
+        token = set_acting_principal(
+            ActingPrincipal(
+                "human",
+                ORG,
+                WORKSPACE,
+                adp_org_id="tenant",
+                membership_id=identity.membership_id,
+                identity_reader=reader,
+            )
+        )
         try:
             assert await authority.resolve(org_id=ORG, workspace_id=WORKSPACE, permission="workspace:provision")
         finally:
