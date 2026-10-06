@@ -2,7 +2,10 @@
 
 Reduced from a real Terraform 1.14.0 saved control-plane plan using AWS provider
 6.67.0 and app source `db852f87065ab666cf0ea6a5f1ca902581562244`.
-The original private plan SHA-256 was `eb07b85bdca97605759e2f8d9f3b5ed263b7dfd3c0f6477401f72f7acdacc324`.
+The original private `terraform show -json` representation SHA-256 was
+`eb07b85bdca97605759e2f8d9f3b5ed263b7dfd3c0f6477401f72f7acdacc324`.
+This identifies the JSON used to extract the fixture, not the binary saved plan
+used for apply approval.
 
 Only the producer role resource change, matching configuration resource and plan
 versions are retained. Account, API ID and OIDC issuer ID were replaced with test
