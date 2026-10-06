@@ -104,6 +104,14 @@ and a valid profile cannot establish that result.
 
 The release lock must remove the three built images from `pending_images`, supply their observed ECR digests in `images`, and record `registry`, `repository` and `source_revision` under each `image_sources` entry. Set the root `source_revision` to the exact clean ADP checkout used by the maintained build lanes. Registry tags and OCI revision labels must match each image’s recorded build revision. An image from an earlier commit is reusable only when Git proves its complete component build context (including its Dockerfile) is identical to the installation revision. Both commits must be available locally; changed or unavailable source is refused. The receipt records reused build revisions and Git tree IDs. Preserve the reviewed SkyPilot 0.12.0 digest. This command consumes completed immutable builds; it does not treat a workflow dispatch as a completed build.
 
+When the API build selects a reviewed Python base, also record the exact
+`repository@sha256:<64 lowercase hex characters>` reference in
+`image_sources.superplane-api.python_image`. Both local Docker and private-cluster
+verification require its `<source revision>-py-<full base digest>` ECR tag and exact
+source/base OCI labels. The installer reads the registry by the locked image
+digest; it never resolves a selected base from a mutable tag. Omit `python_image`
+for the default build to retain the existing full/short source-tag contract.
+
 Both managed VPC CNI and EKS Auto Mode are supported when NetworkPolicy enforcement
 is verified. Set `gateway_namespace` to the existing Gateway's actual namespace.
 Native EKS Auto Mode DNS is discovered automatically during target preflight

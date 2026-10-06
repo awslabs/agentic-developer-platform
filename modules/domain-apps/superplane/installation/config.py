@@ -470,10 +470,9 @@ def validate(
                     source.get("repository") == f"adp-{component}",
                     f"Wrong ECR repository: {component}",
                 )
-                require(
-                    SHA.fullmatch(str(source.get("source_revision", ""))),
-                    f"Image provenance needs an exact source revision: {component}",
-                )
+                from .image_provenance import ImageProvenance
+
+                ImageProvenance.from_source(component, source)
     require(
         preparation or env.get("network_policy_enforced") is True,
         "The selected cluster must enforce Kubernetes NetworkPolicy",
