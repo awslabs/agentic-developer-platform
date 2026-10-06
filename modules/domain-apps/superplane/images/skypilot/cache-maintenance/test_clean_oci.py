@@ -51,7 +51,14 @@ def fixture(tmp_path, orphan=False):
         {
             "architecture": "amd64",
             "os": "linux",
-            "config": {"User": "1000", "WorkingDir": "/work"},
+            "config": {
+                "User": "1000",
+                "WorkingDir": "/work",
+                "Labels": {
+                    "existing": "preserved",
+                    "org.opencontainers.image.revision": "old",
+                },
+            },
             "rootfs": {"type": "layers", "diff_ids": [layer_digest]},
         }
     )
@@ -119,3 +126,79 @@ def test_existing_output_cannot_be_replaced(tmp_path):
     target.mkdir()
     with pytest.raises(D.Invalid, match="output directory already exists"):
         CLEAN.build(D, archive, platform, target)
+
+
+def source_checkout(tmp_path):
+    import shutil
+    import subprocess
+
+    root = tmp_path / "source"
+    root.mkdir()
+    recipe = root / "recipe/clean_oci.py"
+    recipe.parent.mkdir()
+    shutil.copyfile(HERE / "clean_oci.py", recipe)
+    (root / "codebuild").mkdir()
+    for module in (D, D.component_verifier()):
+        shutil.copyfile(
+            module.__file__, root / "codebuild" / Path(module.__file__).name
+        )
+    (root / "context.txt").write_text("tracked context\n")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Synthetic source",
+        ],
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    spec = importlib.util.spec_from_file_location("synthetic_recipe", recipe)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    verifier = module.load_verifier(root / "codebuild/exact_image_disposition.py")
+    return root, module, verifier, revision
+
+
+def test_source_label_binds_actual_clean_checkout_only(tmp_path):
+    root, module, verifier, revision = source_checkout(tmp_path)
+    archive, platform = fixture(tmp_path)
+    receipt = module.build(verifier, archive, platform, tmp_path / "labeled", revision)
+    config, _, _, _ = verifier.collect_oci(
+        tmp_path / "labeled/image.tar", receipt["output"]["platform_digest"]
+    )
+    assert config["config"] == {
+        "User": "1000",
+        "WorkingDir": "/work",
+        "Labels": {
+            "existing": "preserved",
+            "org.opencontainers.image.revision": revision,
+        },
+    }
+    assert receipt["source_context"]["revision"] == revision
+    assert len(receipt["source_context"]["executed_source_files"]) == 3
+    assert not receipt["runtime_config_unchanged"]
+    assert receipt["runtime_config_unchanged_except_revision_label"]
+    with pytest.raises(verifier.Invalid, match="does not equal executed checkout HEAD"):
+        module.verify_source(verifier, "0" * 40)
+    (root / "context.txt").write_text("changed tracked context\n")
+    import subprocess
+
+    with pytest.raises(subprocess.CalledProcessError):
+        module.verify_source(verifier, revision)
+
+
+def test_label_cannot_use_verifier_from_another_checkout(tmp_path):
+    _, module, _, revision = source_checkout(tmp_path)
+    with pytest.raises(D.Invalid, match="same source checkout"):
+        module.verify_source(D, revision)
