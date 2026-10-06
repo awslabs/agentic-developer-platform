@@ -41,7 +41,7 @@ RUN python -c "import sky; import ssl; import OpenSSL; import cryptography; impo
 # Preserve all three SSH packages with the reviewed critical/high backports.
 COPY --from=openssh-security /out/ /tmp/adp-openssh-packages/
 RUN python - <<'PYTHON'
-import os, subprocess, shutil
+import grp, os, pwd, subprocess, shutil
 from pathlib import Path
 root = Path('/tmp/adp-openssh-packages')
 packages = sorted(root.glob('openssh-*.deb'))
@@ -58,6 +58,15 @@ for name in ['source-lock.json', 'NOTICE', 'patched-source-sha256.txt']:
     shutil.copyfile(root / name, out / name)
 shutil.copytree(root / 'source-authentication', out / 'source-authentication', dirs_exist_ok=True)
 shutil.rmtree(root)
+# Native SSH requires a passwd entry for the deployment's existing UID/GID1000.
+try:
+    pwd.getpwuid(1000)
+except KeyError:
+    try:
+        grp.getgrgid(1000)
+    except KeyError:
+        subprocess.run(['groupadd', '--gid', '1000', 'sky'], check=True)
+    subprocess.run(['useradd', '--uid', '1000', '--gid', '1000', '--create-home', '--home-dir', '/home/sky', '--shell', '/bin/sh', 'sky'], check=True)
 PYTHON
 
 # Apply after apt upgrades so distribution packages cannot replace the fix.
