@@ -455,7 +455,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "Next task; full final-head suites pending."
+      "note": "Local frontend 178 suites/2971 tests, TypeScript, domain UI lint, fixture tests (46), CLI onboarding (136) and UI contract (21) pass; browser and domain CI passed on 8698a4f. Gateway shard 4 found missing cleanup-access CLI declarations; repair prepared and locally passing, final-head CI rerun pending. Full npm lint still fails on five pre-existing directives identical to main."
     },
     {
       "id": "AC-06-t2",
