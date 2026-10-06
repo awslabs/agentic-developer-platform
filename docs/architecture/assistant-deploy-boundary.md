@@ -65,10 +65,9 @@ authorizes that run only and does not update the persistent approval.
 
 When no approval applies to the target, the guard does not disable the workflow
 globally. A step before the guard resolves `ADP_DEPLOYED_BASELINE` with the job's
-`GITHUB_TOKEN` (`actions: read`): it lists the last ten successful runs of the
+`GITHUB_TOKEN`. For the worker workflows (`actions: read`), it lists the last ten successful runs of the
 same workflow file on the target branch and, querying each run's jobs in order,
-takes the `head_sha` of the first run whose guarded deploy job (`Build and Deploy
-Backend`, `Build TS Image and Update Chat ScaledJob` with its `Update chat
+takes the `head_sha` of the first run whose guarded deploy job (`Build TS Image and Update Chat ScaledJob` with its `Update chat
 ScaledJob manifest` step, or `Roll out Agent Runtime Image`) concluded `success`.
 A successful run whose deploy job or rollout step was skipped is not a deployment
 and is passed over. If no protected file changed between that baseline and
@@ -85,3 +84,52 @@ Bootstrap: the first run of a brand-new workflow has no successful deploy job an
 therefore no baseline. The operator records `ADP_ASSISTANT_APPROVED_*` on the
 target environment or dispatches once with `adp_approved_revision`; the code
 does not special-case this.
+
+
+### Gateway source selection and deployment evidence
+
+`gateway-deploy.yml` accepts a separate `manual_source_revision` dispatch input:
+an exact lowercase 40-character commit, already an ancestor of the dispatched
+`main` revision. It cannot accompany any engine correlation/source/definition
+input. Engine delivery retains its complete validated tuple. Every checkout,
+CodeBuild source, image tag, reusable migration input and release record uses the
+selected revision. Jobs retain their main-only protected environments and OIDC
+roles. Selecting an ancestor does not approve held assistant changes: the
+unchanged assistant guard compares that candidate against the verified deployed
+source, or against a normal explicit target-specific approval.
+
+The Gateway loads its guard, receipt resolver and backend evidence writer from
+`github.workflow_sha` into runner temporary storage. A historical source cannot
+supply an obsolete or missing guard. The source checkout remains the selected
+commit, with full history for ancestry checks.
+
+The Gateway baseline resolver examines actual backend jobs, including successful
+backend jobs in runs whose later frontend/migration jobs failed. It uses the
+exact run attempt, requires a successful rollout and completed backend job, and
+refuses a later incomplete rollout instead of using an older baseline. Lookup is
+bounded to 1,000 records per collection; exhaustion refuses. A different target
+in that history also refuses rather than silently guessing a baseline.
+
+New backend releases finish by writing a GitHub Deployment with task
+`adp-gateway-source-v1`, the protected environment, exact source SHA, and the
+release evidence payload. Its successful status links the exact run attempt.
+The durable payload binds repository, run, attempt, workflow path and definition,
+account, region, cluster/namespace, source, and image digest. Publication compares
+the digest with the deployed release output. Baseline resolution checks those
+bindings and the completed backend job, independently of Actions artifact expiry.
+`deployments: write` is confined to that protected backend job.
+
+A legacy workflow without the receipt publication step can resolve its existing
+`adp-release-gateway-backend-<attempt>` Actions artifact. Exactly one nonexpired,
+bounded artifact must have the authenticated run/repository/head metadata, its
+GitHub SHA-256 digest must match the downloaded archive, and its sole
+`release.json` must satisfy the same release bindings. A maintained workflow
+missing its durable receipt cannot fall back to this legacy path. Missing,
+ambiguous, expired, or mismatched evidence refuses; the workflow's `head_sha`
+is never substituted for deployed source. Neither a receipt nor an artifact
+constitutes assistant rollout approval.
+
+A normal explicit assistant approval skips baseline lookup and is independently
+validated by the guard, preserving the documented first-deployment bootstrap.
+Do not provide that approval merely to recover missing evidence. Inspect the
+failed rollout or recover its authenticated deployment evidence first.

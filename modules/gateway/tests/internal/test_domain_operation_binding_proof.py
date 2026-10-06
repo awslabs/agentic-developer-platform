@@ -6,8 +6,10 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
+from src.auth.agent_registry import AgentRegistryService
 from src.internal import domain_operation_binding_proof_routes as proof
 from src.internal.domain_operation_routes import DomainScope
 from src.internal.domain_operation_store import DomainBinding
@@ -101,12 +103,23 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
 
         yield SimpleNamespace(fetchval=mapped)
 
-    registry = Mock()
-    registry.get_current_agent.return_value = {
-        "org_id": binding.adp_org_id,
-        "scope": "internal",
-        "credential_scopes": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE],
+    role = responses["serviceaccounts"]["metadata"]["annotations"]["eks.amazonaws.com/role-arn"]
+    role_id = "AROA11111111111111111"
+    registration = {
+        "agent_id": {"S": binding.worker_registry_id},
+        "role_arn": {"S": role},
+        "iam_role_id": {"S": role_id},
+        "owner": {"S": "webhook-terraform-domain-operations-v1"},
+        "status": {"S": "active"},
+        "org_id": {"S": binding.adp_org_id},
+        "scope": {"S": "internal"},
+        "credential_scopes": {"SS": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE]},
     }
+    registry = AgentRegistryService(table_name="registry")
+    registry._dynamodb = Mock(spec=["get_item"])
+    registry._dynamodb.get_item.return_value = {"Item": registration}
+    registry._iam = Mock(spec=["get_role"])
+    registry._iam.get_role.return_value = {"Role": {"Arn": role, "RoleId": role_id}}
     store = SimpleNamespace(table="authority-table", client=SimpleNamespace(describe_table=lambda **_: {"Table": {"TableStatus": "ACTIVE"}}))
     queue = SimpleNamespace(get_queue_attributes=lambda **_: {"Attributes": {"QueueArn": "arn:aws:sqs:us-east-1:123456789012:paid-operations"}})
     monkeypatch.setattr(proof, "operation_connect", connect)
@@ -124,18 +137,31 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
     assert len(calls) == 3
     assert all("task" not in path and "pod" not in path for path in calls)
     assert produced.call_count == 2
-    registry.get_current_agent.assert_called_once_with(binding.worker_registry_id, result["worker_role_arn"])
+    registry._dynamodb.get_item.assert_called_once_with(
+        TableName="registry", Key={"agent_id": {"S": binding.worker_registry_id}}, ConsistentRead=True
+    )
+    registry._iam.get_role.assert_called_once_with(RoleName="paid-worker")
 
-    registry.get_current_agent.return_value = {"org_id": binding.adp_org_id, "scope": "internal", "credential_scopes": []}
+    registry._iam.get_role.return_value["Role"]["RoleId"] = "AROA22222222222222222"
+    with pytest.raises(HTTPException) as replaced_role:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert replaced_role.value.status_code == 503
+    assert replaced_role.value.detail == "paid worker registration unavailable"
+    registry._iam.get_role.return_value["Role"]["RoleId"] = role_id
+
+    registry._iam.get_role.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetRole")
+    with pytest.raises(HTTPException) as unavailable_role:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert unavailable_role.value.status_code == 503
+    assert unavailable_role.value.detail == "paid worker registration unavailable"
+    registry._iam.get_role.side_effect = None
+
+    registration["credential_scopes"] = {"SS": []}
     with pytest.raises(HTTPException) as revoked:
         await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
     assert revoked.value.status_code == 503
 
-    registry.get_current_agent.return_value = {
-        "org_id": binding.adp_org_id,
-        "scope": "internal",
-        "credential_scopes": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE],
-    }
+    registration["credential_scopes"] = {"SS": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE]}
     monkeypatch.setattr(
         proof,
         "aws_client",

@@ -66,8 +66,8 @@ class ConnectionVerification(BaseModel):
     identity_index_row: bool | None = Field(
         default=None,
         description=(
-            "Whether the forward DynamoDB row (installation → tenant) exists. False means "
-            "inbound webhooks for this installation are rejected as unknown_installation."
+            "Whether the forward DynamoDB row (installation → tenant) names this "
+            "connection's canonical tenant. False means routing is absent or mismatched."
         ),
     )
     reverse_identity_row: bool | None = Field(

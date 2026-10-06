@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T02:20:12.337Z",
+  "updated_at": "2026-10-06T02:47:24.549Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed.",
+      "note": "Prior completion retained; no worker implementation changes this milestone.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed.",
+      "note": "Prior completion retained; focused tests verify compatibility with current-role validation from the merged base.",
       "commits": [
         "931919f"
       ]
@@ -1882,7 +1882,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed.",
+      "note": "Prior completion retained; focused API composition and activation checks pass.",
       "commits": [
         "f6cf576"
       ]
@@ -1895,7 +1895,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed.",
+      "note": "Prior completion retained.",
       "commits": [
         "cce8e6c"
       ]
@@ -1910,7 +1910,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Previously passed.",
+      "note": "Prior passing evidence retained; not rerun this milestone.",
       "commits": [
         "105f0f8",
         "3cede13",
@@ -3767,8 +3767,10 @@
       "covers": [
         "AC-01-c2"
       ],
-      "files": [],
-      "note": "Previously passed."
+      "files": [
+        "modules/gateway/tests/internal/test_domain_operation_binding_proof.py"
+      ],
+      "note": "132 tests pass across binding proof, protected registry identity, and internal-plane guards. Binding proof now exercises the real registry with mocked service responses."
     },
     {
       "id": "AC-01-t6",
@@ -3780,7 +3782,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Previously passed."
+      "note": "Focused composition, installation, activation, lifecycle-dispatch, and permission-contract run: 188 passed, 2 xfailed."
     },
     {
       "id": "AC-01-t7",
@@ -3792,7 +3794,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed."
+      "note": "Prior evidence retained; lifecycle-dispatch tests also pass in this milestone's focused API run."
     },
     {
       "id": "AC-01-t1",
@@ -3807,7 +3809,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed; Go-backed restart also passed in CI.",
+      "note": "Prior passing evidence retained. Final merged-head integration and Go-backed restart evidence remains required under AC-03-t1.",
       "commits": [
         "14f7ccf"
       ]
@@ -3824,7 +3826,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Previously passed.",
+      "note": "Prior passing evidence retained; added passing binding-readiness checks for replaced IAM role identity and denied IAM lookup.",
       "commits": [
         "9b03cb4"
       ]
@@ -3840,7 +3842,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed.",
+      "note": "Prior passing evidence retained.",
       "commits": [
         "2fa4703"
       ]
@@ -3853,7 +3855,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed.",
+      "note": "Prior completion retained; merged registry integration fails readiness when current role authority cannot be verified.",
       "commits": [
         "9304825"
       ]
@@ -3866,7 +3868,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; installer activation remains refused.",
+      "note": "Prior completion retained; installer activation remains refused.",
       "commits": [
         "b154e68"
       ]
@@ -3882,7 +3884,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Previously passed offline and with PostgreSQL fixtures; not live-binding evidence.",
+      "note": "Prior packaged evidence retained. Paid-worker and deployment-identity installer tests pass locally; this is not live-binding evidence.",
       "commits": [
         "851851d"
       ]
@@ -3898,7 +3900,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Previously passed."
+      "note": "Paid-worker refusal tests pass alongside the merged deployment-identity safeguards."
     },
     {
       "id": "AC-02-t3",
@@ -3910,7 +3912,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Previously passed in test fixtures, not a deployed target."
+      "note": "Prior fixture-based evidence retained; no deployed-target verification claimed."
     },
     {
       "id": "AC-03-c1",
@@ -3920,7 +3922,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; four wheels built.",
+      "note": "Prior build evidence retained. Gateway and Superplane packages installed successfully into separate Python 3.12 test environments using their respective dependencies.",
       "commits": [
         "ad9b739",
         "dfc2add",
@@ -3934,16 +3936,44 @@
       "kind": "test",
       "criterion": "AC-03",
       "title": "Run affected full domain and Gateway suites on final PR head",
-      "status": "done",
+      "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Previously passed locally and in CI; the documentation-only final head also has 30 passing CI checks.",
+      "note": "Reopened because the prepared base merge and regression-test update postdate previous CI. Controller must supply required checks for the resulting published head.",
       "commits": [
         "33b64c6",
         "851d83f"
       ]
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Preserve lifecycle and current-base behavior in the prepared merge",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/README.md",
+        "modules/gateway/src/auth/agent_registry.py",
+        "modules/gateway/src/internal/domain_operation_binding_proof_routes.py"
+      ],
+      "note": "Added for this merge milestone. No unresolved entries existed; both README additions are preserved, and focused checks found no production-code repair needed."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Verify merged binding readiness and installer safeguards with service-response fixtures",
+      "status": "done",
+      "covers": [
+        "AC-03-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_domain_operation_binding_proof.py"
+      ],
+      "note": "Strengthened real-registry coverage. Gateway: 132 passed; API: 188 passed, 2 xfailed; installer: 41 passed. Ruff and diff checks pass. Installer fixtures require SSL_CERT_FILE pointing to the installed certifi bundle in this worker."
     },
     {
       "id": "AC-04-c1",
@@ -3956,7 +3986,7 @@
         "modules/domain-apps/superplane/installation/NATIVE-LIFECYCLE-HANDOFF.md",
         "modules/domain-apps/superplane/installation/README.md"
       ],
-      "note": "Committed and pushed a7b3b4e45; ready PR #7047 links the handoff.",
+      "note": "Existing published handoff retained. Merged documentation check passes: 1434 files, zero findings.",
       "commits": [
         "a7b3b4e"
       ]
@@ -3966,22 +3996,22 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify published PR head, required checks, and acceptance-to-evidence handoff",
-      "status": "done",
+      "status": "open",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Remote and PR heads match a7b3b4e45; all 30 reported checks pass. Focused package tests and public-docs check pass locally."
+      "note": "Reopened for controller publication and final-head evidence. Local HEAD remains a1fa8a594ab9da65138aec9c20b795d01563084d with the prepared merge and test update uncommitted."
     },
     {
       "id": "AC-04-c2",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Complete reviewed and verified merge",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [],
-      "note": "Foreground/#5540 owns review and merge; developer must not merge."
+      "note": "Controller-owned after final review and required checks; pending merge is not an external blocker. No commit, push, or merge performed."
     },
     {
       "id": "AC-04-t2",
@@ -3993,7 +4023,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "deployed-target: foreground/#5540 owns authorized release and live verification; no deployment was authorized or performed."
+      "note": "deployed-target: foreground/#5540 owns separately authorized release and live verification. No deployment performed; this deferred gate does not block code-stage review."
     }
   ]
 }
