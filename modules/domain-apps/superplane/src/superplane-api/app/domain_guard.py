@@ -221,6 +221,8 @@ async def _authorize(
     # Step 4 — domain routes.
     policy = getattr(request.app.state, "domain_policy", None)
     if policy is None:
+        if identity_checks_enabled():
+            raise HTTPException(503, "current ADP authorization policy unavailable")
         # Enforcement is off: the legacy org-scoped JWT path in
         # app/middleware/auth.py remains authoritative, and this guard has still
         # done its structural job (the route was classified). With enforcement ON
