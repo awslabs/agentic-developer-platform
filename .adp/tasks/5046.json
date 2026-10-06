@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "issue": 5046,
+  "updated_at": "2026-10-06T00:41:33.806Z",
+  "tasks": [
+    {
+      "id": "REF01-c1",
+      "kind": "code",
+      "criterion": "REF01",
+      "title": "Reconcile shared credential-reference validation across model and API inputs",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/models/credential.py"
+      ],
+      "note": "Unchanged by the new prepared merge. Prior focused regression evidence remains applicable; no production edits required."
+    },
+    {
+      "id": "REF01-t1",
+      "kind": "test",
+      "criterion": "REF01",
+      "title": "Verify accepted opaque IDs through model and API unit tests",
+      "status": "done",
+      "covers": [
+        "REF01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_accounts.py"
+      ],
+      "note": "Preserved prior evidence: 260 focused tests passed using Python 3.12.15 and pytest 9.1.1. Relevant content is unchanged; tests were not repeated."
+    },
+    {
+      "id": "REF01-t2",
+      "kind": "test",
+      "criterion": "REF01",
+      "title": "Verify plain ARN and secret rejection through model and API unit tests",
+      "status": "done",
+      "covers": [
+        "REF01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_accounts.py"
+      ],
+      "note": "Previously passing plain ARN and secret-rejection regressions are unchanged by the new merge."
+    },
+    {
+      "id": "REF01-t3",
+      "kind": "test",
+      "criterion": "REF01",
+      "title": "Verify chained encoded and budget-exhausted rejection through model and API unit tests",
+      "status": "done",
+      "covers": [
+        "REF01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_accounts.py"
+      ],
+      "note": "Previously passing chained-encoding and exhausted-budget HTTP refusal tests are unchanged.",
+      "commits": [
+        "ec76b2f"
+      ]
+    },
+    {
+      "id": "FIELDS02-c1",
+      "kind": "code",
+      "criterion": "FIELDS02",
+      "title": "Reconcile domain reference fields and secret-ARN consumer inventory",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/models/credential.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/models/cloud_account.py"
+      ],
+      "note": "Reference-only models and active reader paths are unchanged. The previously documented unwired helper remains outside the active record-reader path."
+    },
+    {
+      "id": "FIELDS02-t1",
+      "kind": "test",
+      "criterion": "FIELDS02",
+      "title": "Verify forbidden secret fields and consumer regression assertions with unit tests",
+      "status": "done",
+      "covers": [
+        "FIELDS02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py"
+      ],
+      "note": "Preserved passing evidence for model field assertions and the AST legacy-reader guard; inspected content is unchanged.",
+      "commits": [
+        "267146c"
+      ]
+    },
+    {
+      "id": "MIG03-c1",
+      "kind": "code",
+      "criterion": "MIG03",
+      "title": "Reconcile existing credential migration against maintained chain and lock",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/alembic/versions/012_adp_credential_reference.py"
+      ],
+      "note": "Migration, chain and release lock are unchanged. Prior migration regressions and 30 passing lock tests remain applicable; live schema status intentionally remains unverified."
+    },
+    {
+      "id": "MIG03-t1",
+      "kind": "test",
+      "criterion": "MIG03",
+      "title": "Verify supported upgrade, readable rows and counts using disposable migration fixture",
+      "status": "done",
+      "covers": [
+        "MIG03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_migrations.py"
+      ],
+      "note": "Preserved passing disposable-fixture evidence for supported-state row preservation and counts; migration 012 previously measured 100% statement coverage.",
+      "commits": [
+        "876a098"
+      ]
+    },
+    {
+      "id": "MIG03-t2",
+      "kind": "test",
+      "criterion": "MIG03",
+      "title": "Verify unknown-state refusal without mutation using disposable migration fixture",
+      "status": "done",
+      "covers": [
+        "MIG03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_migrations.py"
+      ],
+      "note": "Previously passing unknown-state refusal, unchanged rows/schema and non-echoing error assertions remain unchanged."
+    },
+    {
+      "id": "EVID04-c1",
+      "kind": "code",
+      "criterion": "EVID04",
+      "title": "Publish criterion-level current-source reconciliation and deferred-owner boundary",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/docs/5046-credential-reference-reconciliation.md"
+      ],
+      "note": "Reconciliation documentation and deferred-owner boundaries are unchanged. Prior focused-test counts and coverage were independently reproduced.",
+      "commits": [
+        "e95a150"
+      ]
+    },
+    {
+      "id": "EVID04-t1",
+      "kind": "test",
+      "criterion": "EVID04",
+      "title": "Verify changed-code coverage, public-document safety and full maintained domain checks",
+      "status": "open",
+      "covers": [
+        "EVID04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/",
+        "modules/domain-apps/superplane/docs/5046-credential-reference-reconciliation.md"
+      ],
+      "note": "New prepared merge is conflict-free and passes the diff check. Prior unchanged-content evidence is retained: 260 focused tests, 30 lock tests, 93–100% coverage, critical Ruff success and zero public-document findings. Final published-head full API/domain, aggregate-gate and required CI evidence is still pending; supplied controller status contains no named check results."
+    },
+    {
+      "id": "LIVE05-c1",
+      "kind": "code",
+      "criterion": "LIVE05",
+      "title": "Establish ADP credential ownership and resolvability in audited migration",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "deployed-target: U7/vault owner; separately authorized account, vault/KMS permissions, backup and cleanup owner required. Outside this offline assignment and not a bounded-PR merge blocker. Keep the story open."
+    },
+    {
+      "id": "LIVE05-t1",
+      "kind": "test",
+      "criterion": "LIVE05",
+      "title": "Verify live rotation, revocation and exact credential binding",
+      "status": "blocked",
+      "covers": [
+        "LIVE05-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: U7/vault owner; live migration and cloud operations were not authorized or run. Installed-image verification remains with #5538 and release with #5327; none is claimed complete."
+    }
+  ]
+}

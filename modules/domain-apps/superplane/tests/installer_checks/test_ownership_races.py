@@ -20,6 +20,27 @@ class RacingKubernetes:
         self.foreign = None
 
     def call(self, args, **kwargs):
+        if "get-caller-identity" in args:
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "Account": "879318057152",
+                        "Arn": "arn:aws:sts::879318057152:assumed-role/test-installer/fixture",
+                        "UserId": "AROA" + "A" * 17 + ":fixture",
+                    }
+                )
+            )
+        if "get-role" in args:
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "Role": {
+                            "Arn": "arn:aws:iam::879318057152:role/deployment/test-installer",
+                            "RoleId": "AROA" + "A" * 17,
+                        }
+                    }
+                )
+            )
         if "get" in args:
             value = self.current
         else:

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-06T02:32:57.819Z",
+  "updated_at": "2026-10-06T02:56:46.730Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py"
       ],
-      "note": "Covered by AC-01-t1.",
+      "note": "Mounted HTTP contract passed in the full merged-working-tree API suite.",
       "commits": [
         "77e56f7"
       ]
@@ -30,7 +30,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted contract passes locally and in exact-head API CI."
+      "note": "Passed in the full local API suite."
     },
     {
       "id": "AC-02-c1",
@@ -42,7 +42,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Covered by AC-02-t1 and AC-02-t2.",
+      "note": "Implementation unchanged; mounted HTTP and real PostgreSQL denial tests passed.",
       "commits": [
         "94b9309"
       ]
@@ -59,7 +59,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Mounted denial and PostgreSQL cases passed."
+      "note": "Merged-working-tree PostgreSQL tests passed, including cross-tenant, removed-member and viewer denial."
     },
     {
       "id": "AC-02-t2",
@@ -73,7 +73,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted and PostgreSQL cases passed."
+      "note": "Mounted HTTP and PostgreSQL service-target/self-change denial tests passed."
     },
     {
       "id": "AC-03-c1",
@@ -85,7 +85,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Covered by AC-03-t1.",
+      "note": "Implementation unchanged; real PostgreSQL concurrency, revision and revocation checks passed.",
       "commits": [
         "0404ea0",
         "7604c97"
@@ -103,7 +103,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "All seven grant PostgreSQL cases passed at the final head.",
+      "note": "All seven PostgreSQL cases ran and passed without skips, including duplicate requests, stale administrators and revoked-target replay.",
       "commits": [
         "4bca57f",
         "844bab9"
@@ -119,7 +119,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Covered by AC-04-t1.",
+      "note": "Implementation unchanged; PostgreSQL audit rollback and retry verification passed.",
       "commits": [
         "8f80c64",
         "6e40fc0"
@@ -137,7 +137,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Audit failure, retry and scoped visibility passed locally and in PostgreSQL CI.",
+      "note": "Audit failure rollback/retry and duplicate-request audit assertions passed on disposable PostgreSQL.",
       "commits": [
         "fb12a2b"
       ]
@@ -154,7 +154,7 @@
         "modules/domain-apps/superplane/releases/superplane.lock.yaml",
         "modules/domain-apps/superplane/installation/config.py"
       ],
-      "note": "Routes and consumer contracts match; migration 043 is reflected in the observed lock and strict installer pin without promoting the release.",
+      "note": "Prior completion retained; full API suite verifies mounted routes, permission inventory and API migration contracts.",
       "commits": [
         "26adc79",
         "d25f89c",
@@ -175,11 +175,55 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py",
         "modules/domain-apps/superplane/tests/installer_checks/test_complete_command.py"
       ],
-      "note": "Exact-head Domain CI and Gateway CI passed; locally, focused API 299, installer/lock 485, Superplane UI 341, and gateway proxy/CLI 180 passed. No validation infrastructure was provisioned.",
+      "note": "Prior-head completion retained. New merged-head validation is tracked in AC-05-t3.",
       "commits": [
         "067bd89",
         "cad01d7"
       ]
+    },
+    {
+      "id": "AC-05-c2",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Reconcile the permission contract with the prepared base merge",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+      ],
+      "note": "Previous milestone retained unchanged; no unmerged files remain and diff checks pass."
+    },
+    {
+      "id": "AC-05-t2",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify mounted human workspace routes and absent broader interfaces with offline API tests",
+      "status": "done",
+      "covers": [
+        "AC-05-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
+      ],
+      "note": "Previous focused result was 107 passed, 2 xfailed; regression assertions also passed in the full API run."
+    },
+    {
+      "id": "AC-05-t3",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify full relevant suites, PostgreSQL integration and exact-head CI after the base merge",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
+        ".github/workflows/superplane-domain-ci.yml",
+        ".github/workflows/gateway-ci.yml"
+      ],
+      "note": "Local validation complete: Python 3.12 with repository transfer constraints and pgserver; pytest tests/ from the API directory returned 2456 passed, 11 skipped, 2 xfailed. All seven grant PostgreSQL cases passed. Evidence: /tmp/superplane-review-api-tests.log and /tmp/superplane-review-api-results.xml. Tested HEAD 8cae76687234e1cdda524dd4096f21910b1f4848 with prepared base ab0f00b920161f3dc2aa480fdfe97be4e955d422 and local conflict repairs. Remains open solely for publication and exact-head CI verification."
     }
   ]
 }

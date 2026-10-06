@@ -51,10 +51,14 @@ def test_source_revision_reaches_every_checkout_and_build_tag():
     for job in document["jobs"].values():
         for step in job.get("steps", []):
             if str(step.get("uses", "")).startswith("actions/checkout@"):
-                assert step["with"]["ref"] == "${{ inputs.adp_source_revision || github.sha }}"
+                assert step["with"]["ref"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
     backend = document["jobs"]["deploy-backend"]
     build = next(step for step in backend["steps"] if step.get("uses") == "./.github/actions/codebuild-run")
-    assert "name=IMAGE_TAG,value=${{ inputs.adp_source_revision || github.sha }}" in build["with"]["environment_variables"]
+    assert build["with"]["source_revision"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
+    assert (
+        "name=IMAGE_TAG,value=${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
+        in build["with"]["environment_variables"]
+    )
     # Pass the immutable revision through the reusable workflow input: GitHub
     # suppresses job outputs containing the masked AWS account ID.
     assert document["jobs"]["run-migrations"]["with"]["expected_image_digest"] == "${{ needs.deploy-backend.outputs.release_digest }}"
@@ -107,3 +111,60 @@ def test_actual_target_mismatch_cannot_publish_context(evidence, field, value):
     env, read = evidence
     with pytest.raises(ValueError):
         context_module.context({**env, field: value}, read)
+
+
+@pytest.mark.parametrize("name", ["gateway-deploy.yml", "run-gateway-migrations.yml"])
+@pytest.mark.parametrize(
+    "manual,source,definition,correlation,valid",
+    [
+        ("b" * 40, "", "", "", True),
+        ("main", "", "", "", False),
+        ("b" * 12, "", "", "", False),
+        ("$(echo untrusted)", "", "", "", False),
+        ("b" * 40, "b" * 40, "a" * 40, "c" * 64, False),
+        ("b" * 40, "", "a" * 40, "", False),
+        ("", "b" * 40, "", "", False),
+    ],
+)
+def test_manual_source_is_separate_exact_and_mutually_exclusive(name, manual, source, definition, correlation, valid):
+    document = workflow(name)
+    events = document.get("on", document.get(True))
+    assert events["workflow_dispatch"]["inputs"]["manual_source_revision"]["default"] == ""
+    if name == "run-gateway-migrations.yml":
+        assert "manual_source_revision" in events["workflow_call"]["inputs"]
+    guard = next(iter(document["jobs"].values()))["steps"][0]
+    result = subprocess.run(
+        ["/bin/bash", "-c", guard["run"]],
+        env={
+            "ADP_MANUAL_SOURCE": manual,
+            "ADP_SOURCE": source,
+            "ADP_DEFINITION": definition,
+            "ADP_CORRELATION": correlation,
+            "ACTUAL_DEFINITION": "a" * 40,
+        },
+        capture_output=True,
+    )
+    assert (result.returncode == 0) == valid
+
+
+def test_deployment_control_comes_from_definition_and_receipt_follows_verification():
+    document = workflow("gateway-deploy.yml")
+    backend = document["jobs"]["deploy-backend"]
+    assert "github.ref == 'refs/heads/main'" in backend["if"]
+    assert backend["permissions"]["deployments"] == "write"
+    steps = backend["steps"]
+    control = next(s for s in steps if s.get("name") == "Load maintained deployment guards")
+    assert control["env"]["ADP_WORKFLOW_REVISION"] == "${{ github.workflow_sha }}"
+    assert 'git show "$ADP_WORKFLOW_REVISION:scripts/check-assistant-deploy-boundary.sh"' in control["run"]
+    assert 'git show "$ADP_WORKFLOW_REVISION:modules/gateway/scripts/gateway-deployment-receipt.py"' in control["run"]
+    assert 'git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"' in control["run"]
+    receipt = next(s for s in steps if s.get("name") == "Publish successful Gateway source receipt")
+    assert steps[-1] == receipt
+    assert receipt["env"]["ADP_RECEIPT_IMAGE"] == "${{ steps.release.outputs.digest }}"
+    assert document["jobs"]["run-migrations"]["with"]["manual_source_revision"] == "${{ inputs.manual_source_revision || '' }}"
+    for name in ("gateway-deploy.yml", "run-gateway-migrations.yml"):
+        for job in workflow(name)["jobs"].values():
+            for step in job.get("steps", []):
+                if step.get("name") == "Verify source belongs to reviewed main history":
+                    assert 'test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"' in step["run"]
+                    assert "git merge-base --is-ancestor HEAD FETCH_HEAD" in step["run"]
