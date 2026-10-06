@@ -61,6 +61,14 @@ journey. They require an operations-authorized exact target, independent request
 and approver, installed release, bounded budget, deadline and cleanup owner.
 Source and synthetic test verification do not establish live acceptance.
 
+The live acceptance driver also imports the maintained workspace bootstrap contracts.
+Install that local package in the operator Python environment before running the
+commands below (the domain CI lane installs the same dependency):
+
+```sh
+python3 -m pip install -e modules/domain-apps/superplane/workspace_bootstrap
+```
+
 ### Guarded browser creation and recovery
 
 This opt-in command advances **one creation/recovery phase**, not a complete
