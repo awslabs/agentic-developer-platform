@@ -41,13 +41,16 @@ RESOURCE_KINDS = {
     ),
 }
 NOT_FOUND = {
-    "ResourceNotFoundException",
-    "InvalidInstanceID.NotFound",
-    "InvalidVolume.NotFound",
-    "InvalidVpcID.NotFound",
-    "InvalidSubnetID.NotFound",
-    "InvalidNetworkInterfaceID.NotFound",
-    "InvalidGroup.NotFound",
+    "cluster": ("ResourceNotFoundException", "DescribeCluster"),
+    "instance": ("InvalidInstanceID.NotFound", "DescribeInstances"),
+    "volume": ("InvalidVolume.NotFound", "DescribeVolumes"),
+    "vpc": ("InvalidVpcID.NotFound", "DescribeVpcs"),
+    "subnet": ("InvalidSubnetID.NotFound", "DescribeSubnets"),
+    "network-interface": (
+        "InvalidNetworkInterfaceID.NotFound",
+        "DescribeNetworkInterfaces",
+    ),
+    "security-group": ("InvalidGroup.NotFound", "DescribeSecurityGroups"),
 }
 AWS_ARN = re.compile(
     r"arn:(?:aws|aws-us-gov|aws-cn):(?P<service>eks|ec2):(?P<region>[a-z0-9-]+):(?P<account>[0-9]{12}):(?P<kind>[a-z-]+)/(?P<name>[A-Za-z0-9_-]{1,100})\Z"
@@ -188,8 +191,21 @@ class AwsProviderReader:
                 and entries[0].get(id_field) == name
             )
         if code:
-            found = re.search(r"\(([A-Za-z0-9.]+)\)", error)
-            return "absent" if found and found[1] in NOT_FOUND else "denied"
+            expected_error, expected_operation = NOT_FOUND[kind]
+            found = re.fullmatch(
+                rf"\s*An error occurred \({re.escape(expected_error)}\) when calling "
+                rf"the {expected_operation} operation: ([^\r\n]+)\s*",
+                error,
+            )
+            return (
+                "absent"
+                if code in (254, 255)
+                and found
+                and re.search(
+                    rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", found[1]
+                )
+                else "denied"
+            )
         return "present" if matches else "incomplete"
 
     def read_inventory(self, query: InventoryQuery) -> dict:

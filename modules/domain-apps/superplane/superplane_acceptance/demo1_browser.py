@@ -38,9 +38,20 @@ class CreationCheckpoint:
 class PlaywrightBrowserTransport:
     """Keep the bearer token inside an already signed-in requester page."""
 
-    def __init__(self, page, origin: str):
+    def __init__(
+        self,
+        page,
+        origin: str,
+        *,
+        release_id: str | None = None,
+        remaining_ms: Callable[[], int] = lambda: 30_000,
+    ):
         self.page = page
         self.origin = checked_origin(origin)
+        self.release_id = (
+            digest(release_id, "browser release") if release_id is not None else None
+        )
+        self.remaining_ms = remaining_ms
 
     def browser_page(self):
         return self.page
@@ -50,28 +61,43 @@ class PlaywrightBrowserTransport:
     ) -> tuple[int, object]:
         from playwright.sync_api import Error as PlaywrightError
 
-        if method not in ("GET", "POST") or not path.startswith("/api/") or "?" in path:
+        if (
+            method not in ("GET", "POST")
+            or not (path == "/api/auth/me" or path.startswith(PREFIX + "/"))
+            or any(character in path for character in ("?", "#", "%", "\\"))
+            or any(part in ("", ".", "..") for part in path.split("/")[1:])
+        ):
             raise EvidenceError("browser: unapproved request path")
         if (
             urlsplit(self.page.url).scheme + "://" + urlsplit(self.page.url).netloc
             != self.origin
         ):
             raise EvidenceError("browser: session origin changed")
+        if method == "POST" and self.release_id is not None:
+            status, _ = self.request("GET", PREFIX + "/capabilities")
+            if status != 200:
+                raise EvidenceError(
+                    "browser: public release probe unavailable before submission"
+                )
+        timeout = min(30_000, self.remaining_ms())
+        if timeout <= 0:
+            raise EvidenceError("browser: authorized runtime exhausted")
         try:
             result = self.page.evaluate(
-                """async ({method, path, body}) => {
+                """async ({method, path, body, timeout}) => {
                   const token = localStorage.getItem('cognito_access_token');
-                  if (!token) return [401, null];
+                  if (!token) return [401, null, null];
                   const response = await fetch(path, {
-                    method, credentials: 'same-origin',
+                    method, credentials: 'same-origin', redirect: 'error',
+                    signal: AbortSignal.timeout(timeout),
                     headers: {'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json'},
                     ...(body === null ? {} : {body: JSON.stringify(body)})
                   });
                   let data = null;
                   try { data = await response.json(); } catch { data = null; }
-                  return [response.status, data];
+                  return [response.status, data, response.headers.get('X-Superplane-Release')];
                 }""",
-                {"method": method, "path": path, "body": body},
+                {"method": method, "path": path, "body": body, "timeout": timeout},
             )
         except (PlaywrightError, OSError, RuntimeError, ValueError):
             raise EvidenceError(
@@ -79,10 +105,18 @@ class PlaywrightBrowserTransport:
             ) from None
         if (
             not isinstance(result, list)
-            or len(result) != 2
+            or len(result) != 3
             or type(result[0]) is not int
         ):
             raise EvidenceError("browser: invalid response; retain original request")
+        if (
+            self.release_id is not None
+            and path.startswith(PREFIX + "/")
+            and result[2] != self.release_id
+        ):
+            raise EvidenceError(
+                "browser: public route release differs; retain original request"
+            )
         return result[0], result[1]
 
 

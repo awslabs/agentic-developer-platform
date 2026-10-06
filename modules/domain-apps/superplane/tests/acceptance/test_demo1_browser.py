@@ -565,7 +565,7 @@ def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
 
     def evaluate(script, arguments):
         calls.append((script, arguments))
-        return [200, {"version": 1}]
+        return [200, {"version": 1}, None]
 
     page = SimpleNamespace(url="https://example.invalid/workspaces", evaluate=evaluate)
     transport = demo1_browser.PlaywrightBrowserTransport(

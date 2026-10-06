@@ -123,12 +123,19 @@ def _criteria(scenario: dict) -> dict:
     }
 
 
-def _publish(document: dict, filename: str) -> None:
+def _new_report_path(filename: str) -> Path:
     path = Path(filename)
     if not path.is_absolute() or not path.parent.is_dir() or path.parent.is_symlink():
         raise EvidenceError(
             "report: absolute new file in an existing directory required"
         )
+    if path.exists() or path.is_symlink():
+        raise EvidenceError("report: new file required; retain original checkpoint")
+    return path
+
+
+def _publish(document: dict, filename: str) -> None:
+    path = _new_report_path(filename)
     temporary = None
     try:
         descriptor, name = tempfile.mkstemp(prefix=".demo1-report-", dir=path.parent)
@@ -157,7 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authority")
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
-    parser.add_argument("--observe-runtime", action="store_true")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--observe-runtime", action="store_true")
+    action.add_argument("--observe-ownership", action="store_true")
+    action.add_argument("--advance-creation", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
@@ -180,10 +190,52 @@ def main(argv: list[str] | None = None) -> int:
             envelope = LiveEnvelope.parse(_read_private(arguments.authority), selected)
             session = _read_private(arguments.browser_state)
             report = preflight_report(selected, envelope, session)
+            if arguments.advance_creation or arguments.observe_ownership:
+                _new_report_path(arguments.report)
             with PrivateCheckpoint(
-                arguments.checkpoint, selected, envelope.origin
+                arguments.checkpoint,
+                selected,
+                envelope.origin,
+                envelope=envelope
+                if arguments.advance_creation or arguments.observe_ownership
+                else None,
             ) as store:
+                if arguments.advance_creation:
+                    from .demo1_journey import advance_browser
+
+                    report["evidence_mode"] = "live-browser-phase-unverified"
+                    try:
+                        report.update(
+                            advance_browser(selected, envelope, session, store)
+                        )
+                    except EvidenceError as error:
+                        report["reason"] = str(error)
                 saved = store.load()
+                if arguments.observe_ownership:
+                    from .demo1_ownership import observe_ownership, ownership_report
+                    from .demo1_runtime import RuntimeReader
+
+                    report["evidence_mode"] = "historical-ownership-unverified"
+                    if envelope.runtime_target is None:
+                        raise EvidenceError(
+                            "ownership: explicit v2 authority target required before reads"
+                        )
+                    try:
+                        runtime, ownership = observe_ownership(
+                            RuntimeReader(selected, envelope.runtime_target),
+                            saved,
+                            envelope.max_runtime_seconds,
+                        )
+                        report["runtime"] = runtime
+                        report["ownership"] = ownership_report(ownership)
+                    except EvidenceError as error:
+                        report["ownership"] = {
+                            "status": "BLOCKED",
+                            "reason": str(error),
+                        }
+                    report["reason"] = (
+                        "historical ownership read attempted; current provider inventory, cost and retirement remain unverified; no lifecycle effects"
+                    )
                 if saved is not None:
                     report["checkpoint"] = {
                         "request_ref": reference(saved.request_id),
@@ -212,10 +264,20 @@ def main(argv: list[str] | None = None) -> int:
         except EvidenceError as error:
             print(f"BLOCKED: {error}")
             return 2
-        print("Live selection preflight: BLOCKED (not lifecycle acceptance)")
+        if arguments.advance_creation:
+            label = "Live browser phase"
+        elif arguments.observe_ownership:
+            label = "Live historical ownership observation"
+        else:
+            label = "Live selection preflight"
+        print(f"{label}: BLOCKED (not lifecycle acceptance)")
         return 2
     try:
-        if arguments.observe_runtime:
+        if (
+            arguments.observe_runtime
+            or arguments.advance_creation
+            or arguments.observe_ownership
+        ):
             raise EvidenceError("runtime: live mode and explicit authority required")
         if not all((arguments.private_input, arguments.fixture, arguments.report)):
             raise EvidenceError(

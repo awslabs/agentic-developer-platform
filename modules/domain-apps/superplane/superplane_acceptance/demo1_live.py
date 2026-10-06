@@ -154,7 +154,14 @@ def validate_browser_state(value: object, origin: str) -> None:
 class PrivateCheckpoint:
     """One cooperating process per private checkpoint, with atomic durable replacement."""
 
-    def __init__(self, path: str, selected: DemoInput, origin: str):
+    def __init__(
+        self,
+        path: str,
+        selected: DemoInput,
+        origin: str,
+        *,
+        envelope: LiveEnvelope | None = None,
+    ):
         self.path = Path(path)
         if (
             not self.path.is_absolute()
@@ -173,6 +180,15 @@ class PrivateCheckpoint:
             "authorized_at": selected.authorized_at.isoformat(),
             "deadline": selected.deadline.isoformat(),
         }
+        self.version = CHECKPOINT_VERSION
+        if envelope is not None:
+            if envelope.origin != origin or envelope.runtime_target is None:
+                raise EvidenceError("checkpoint: execution runtime selection required")
+            self.version = "demo1-checkpoint-v3"
+            binding["execution"] = {
+                **asdict(envelope),
+                "cleanup_deadline": envelope.cleanup_deadline.isoformat(),
+            }
         self.scope = sha256(
             json.dumps(
                 binding, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -246,7 +262,7 @@ class PrivateCheckpoint:
         if (
             not isinstance(value, dict)
             or set(value) != {"version", "scope", "checkpoint"}
-            or value["version"] != CHECKPOINT_VERSION
+            or value["version"] != self.version
             or value["scope"] != self.scope
         ):
             raise EvidenceError("checkpoint: private selection differs")
@@ -284,7 +300,7 @@ class PrivateCheckpoint:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(
                     {
-                        "version": CHECKPOINT_VERSION,
+                        "version": self.version,
                         "scope": self.scope,
                         "checkpoint": asdict(checkpoint),
                     },
