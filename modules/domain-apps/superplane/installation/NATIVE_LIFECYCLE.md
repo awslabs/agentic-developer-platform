@@ -11,6 +11,14 @@ the shared Harness schema and must differ from `database.schema` (the domain).
 The worker checks the exact release's domain migration head and checks the Harness
 version only on the execution pool.
 
+Native lifecycle mounts only the combined domain/execution database Secret, the
+reviewed policy, workload identity token and persistent state. It does not mount
+workload credentials or a SkyPilot provider token and does not run the controller
+sidecar. `workspace_credentials_secret` and `provider_secret` are rejected in this
+mode; native-controller retains both requirements. Gateway prepared/executable
+binding proof also refuses legacy credential mounts or a controller sidecar in a
+native lifecycle template. No empty placeholder Secret is needed.
+
 Native mode additionally requires exact existing `lifecycle_policy_configmap`,
 `lifecycle_state_claim`, and `lifecycle_policy_sha256` (SHA-256 of the UTF-8 bytes of
 `data.lifecycle.json`). The state PVC must be Bound. The installer reads policy

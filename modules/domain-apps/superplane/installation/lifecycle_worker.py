@@ -275,14 +275,7 @@ def installed_snapshot(installer, *, active=False):
     cluster = installer.json(
         installer.aws("eks", "describe-cluster", "--name", env["cluster"])
     )["cluster"]
-    names = [
-        config[key]
-        for key in (
-            "database_secret",
-            "provider_secret",
-            "workspace_credentials_secret",
-        )
-    ]
+    names = [config["database_secret"]]
     names.append(
         env["api_adapters"]["dispatcher"]["operation_database_secret_ref"]["name"]
     )

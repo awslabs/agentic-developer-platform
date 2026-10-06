@@ -70,6 +70,15 @@ def installed_worker(binding, runtime, state="executable"):
         account = service_account["metadata"]
         role = account["annotations"]["eks.amazonaws.com/role-arn"]
         queue = _QUEUE.fullmatch(binding.queue_url)
+        # Native lifecycle uses the paid provider broker. Workload/SkyPilot
+        # Secrets and a controller sidecar must not gate first workspace create.
+        volumes = pod.get("volumes", [])
+        secret_volumes = [volume for volume in volumes if "secret" in volume]
+        database_only = (
+            len(secret_volumes) == 1
+            and secret_volumes[0].get("name") == "database"
+            and secret_volumes[0]["secret"].get("items") == [{"key": key, "path": key} for key in ("domain-dsn", "execution-dsn", "ca.pem")]
+        )
         if (
             metadata["namespace"] != namespace
             or metadata["name"] != name
@@ -88,6 +97,12 @@ def installed_worker(binding, runtime, state="executable"):
             or worker.get("args")
             or environment.get("ADP_AGENT_AUTHORITY_ENABLED") != "true"
             or environment.get("SUPERPLANE_PAID_WORKER_MODE") != "native-lifecycle"
+            or len(pod["containers"]) != 1
+            or pod.get("initContainers")
+            or not database_only
+            or any(value.get("name") in {"workspaces", "provider"} for value in volumes)
+            or any("secret" in source for volume in volumes for source in volume.get("projected", {}).get("sources", []))
+            or {"SUPERPLANE_WORKSPACE_CREDENTIALS_DIR", "SKYPILOT_SERVICE_TOKEN_FILE"}.intersection(environment)
             or source != {"configMapRef": {"name": name + "-config"}}
             or configuration["metadata"]["namespace"] != namespace
             or configuration["metadata"]["name"] != name + "-config"

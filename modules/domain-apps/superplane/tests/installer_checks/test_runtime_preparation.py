@@ -137,6 +137,8 @@ def contract_input(native):
             "queue_observer_role_arn",
             "queue_url",
             "queue_arn",
+            "workspace_credentials_secret",
+            "provider_secret",
         }
     }
     worker.update(

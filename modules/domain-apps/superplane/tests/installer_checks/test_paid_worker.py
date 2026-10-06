@@ -203,6 +203,8 @@ def test_verified_caller_receipt_cannot_bypass_worker_activation_gate(native):
 
 
 def lifecycle_config(env):
+    env["paid_worker"].pop("workspace_credentials_secret", None)
+    env["paid_worker"].pop("provider_secret", None)
     env["paid_worker"].update(
         mode="native-lifecycle",
         operation_schema="superplane_operations",
@@ -595,3 +597,44 @@ def test_upgrade_checks_shared_store_after_role_plan_before_worker_resources(
         ("shared-new-image-check", {}),
     ]
     installer.foundations.assert_not_called()
+
+
+def test_native_lifecycle_needs_only_database_secret_and_no_controller_sidecar(native):
+    env, lock = native
+    lifecycle_config(env)
+    paid_worker.validate(env, lock)
+    docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
+    paid_worker.project(env, lock, docs)
+    pod = next(d for d in docs[1:] if d["kind"] == "ScaledJob")["spec"]["jobTargetRef"][
+        "template"
+    ]["spec"]
+    assert not pod.get("initContainers")
+    assert {v["name"] for v in pod["volumes"] if "secret" in v} == {"database"}
+    assert not {"workspaces", "provider"} & {
+        v["name"] for v in pod["containers"][0]["volumeMounts"]
+    }
+    assert not {
+        "SUPERPLANE_WORKSPACE_CREDENTIALS_DIR",
+        "SKYPILOT_SERVICE_TOKEN_FILE",
+    } & {v["name"] for v in pod["containers"][0]["env"]}
+    env["paid_worker"]["provider_secret"] = "unused-placeholder"
+    with pytest.raises(Refusal):
+        paid_worker.validate(env, lock)
+
+
+def test_native_controller_retains_real_workload_secret_contract(native):
+    env, lock = native
+    docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
+    paid_worker.project(env, lock, docs)
+    pod = next(d for d in docs[1:] if d["kind"] == "ScaledJob")["spec"]["jobTargetRef"][
+        "template"
+    ]["spec"]
+    assert len(pod["initContainers"]) == 1
+    assert {v["name"] for v in pod["volumes"] if "secret" in v} == {
+        "database",
+        "workspaces",
+        "provider",
+    }
+    del env["paid_worker"]["provider_secret"]
+    with pytest.raises(Refusal):
+        paid_worker.validate(env, lock)

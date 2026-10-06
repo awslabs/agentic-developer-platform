@@ -45,6 +45,15 @@ def installed(tmp_path):
                 "template": {
                     "spec": {
                         "serviceAccountName": binding.worker_service_account,
+                        "volumes": [
+                            {
+                                "name": "database",
+                                "secret": {
+                                    "secretName": "paid-database",
+                                    "items": [{"key": key, "path": key} for key in ("domain-dsn", "execution-dsn", "ca.pem")],
+                                },
+                            }
+                        ],
                         "containers": [
                             {
                                 "name": binding.worker_container,
@@ -292,3 +301,22 @@ async def test_quiescence_proof_does_not_claim_installed_or_read_worker(installe
     assert result["org_id"] == binding.org_id
     assert produced.call_count == 2
     assert calls == []
+
+
+@pytest.mark.parametrize("fault", ["legacy-secret", "sidecar", "legacy-env", "projected-secret", "missing-domain-dsn"])
+def test_native_proof_refuses_legacy_or_extra_credential_mounts(installed, fault):
+    binding, responses, _, runtime = installed
+    pod = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]
+    if fault == "legacy-secret":
+        pod["volumes"].append({"name": "provider", "secret": {"secretName": "legacy"}})
+    if fault == "sidecar":
+        pod["initContainers"] = [{"name": "controller", "image": "unneeded"}]
+    if fault == "legacy-env":
+        pod["containers"][0]["env"].append({"name": "SKYPILOT_SERVICE_TOKEN_FILE", "value": "/run/provider/token"})
+    if fault == "projected-secret":
+        pod["volumes"].append({"name": "extra", "projected": {"sources": [{"secret": {"name": "legacy"}}]}})
+    if fault == "missing-domain-dsn":
+        pod["volumes"][0]["secret"]["items"].pop(0)
+    with pytest.raises(HTTPException) as refused:
+        proof.installed_worker(binding, runtime)
+    assert refused.value.status_code == 503

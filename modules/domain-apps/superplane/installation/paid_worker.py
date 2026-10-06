@@ -33,8 +33,6 @@ def validate(env, lock):
             "queue_url",
             "queue_arn",
             "database_secret",
-            "workspace_credentials_secret",
-            "provider_secret",
             "operation_schema",
             "skypilot_url",
             "management_api_server",
@@ -50,7 +48,7 @@ def validate(env, lock):
                 "lifecycle_policy_sha256",
             }
             if lifecycle
-            else set()
+            else {"workspace_credentials_secret", "provider_secret"}
         ),
         "paid_worker",
     )
@@ -106,26 +104,22 @@ def validate(env, lock):
         match and config["queue_arn"] == f"arn:aws:sqs:{region}:{account}:{match[1]}",
         "paid_worker queue URL/ARN must identify one standard queue in the selected account and region",
     )
-    for key in ("database_secret", "workspace_credentials_secret", "provider_secret"):
+    secret_keys = (
+        ("database_secret",)
+        if lifecycle
+        else ("database_secret", "workspace_credentials_secret", "provider_secret")
+    )
+    for key in secret_keys:
         require(name(config[key]), "paid_worker requires exact existing Secret names")
     require(
-        len(
-            {
-                config[k]
-                for k in (
-                    "database_secret",
-                    "workspace_credentials_secret",
-                    "provider_secret",
-                )
-            }
-        )
-        == 3,
+        len({config[key] for key in secret_keys}) == len(secret_keys),
         "paid_worker Secret purposes must be separate",
     )
-    require(
-        config["workspace_credentials_secret"] != "superplane-workspace-access",
-        "paid_worker cannot use read-only manager credentials",
-    )
+    if not lifecycle:
+        require(
+            config["workspace_credentials_secret"] != "superplane-workspace-access",
+            "paid_worker cannot use read-only manager credentials",
+        )
     schema = config["operation_schema"]
     require(
         isinstance(schema, str)
@@ -263,6 +257,27 @@ def project(env, lock, docs):
         for value in worker["env"]
         if lifecycle or not value["name"].startswith("SUPERPLANE_LIFECYCLE_")
     ]
+    if lifecycle:
+        pod.pop("initContainers", None)
+        worker["env"] = [
+            value
+            for value in worker["env"]
+            if value["name"]
+            not in {
+                "SUPERPLANE_WORKSPACE_CREDENTIALS_DIR",
+                "SKYPILOT_SERVICE_TOKEN_FILE",
+            }
+        ]
+        worker["volumeMounts"] = [
+            value
+            for value in worker["volumeMounts"]
+            if value["name"] not in {"workspaces", "provider"}
+        ]
+        pod["volumes"] = [
+            value
+            for value in pod["volumes"]
+            if value["name"] not in {"workspaces", "provider"}
+        ]
     worker["env"].extend(
         {"name": key, "value": value}
         for key, value in {

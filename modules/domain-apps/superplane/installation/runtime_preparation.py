@@ -382,8 +382,6 @@ def compose(request, reviewed, env, lock, operator):
             "lifecycle_state_claim",
             "lifecycle_policy_sha256",
             "database_secret",
-            "workspace_credentials_secret",
-            "provider_secret",
             "operation_schema",
             "skypilot_url",
             "management_api_server",
@@ -525,8 +523,6 @@ def compose(request, reviewed, env, lock, operator):
         "secret_projection_names": {
             "database": selected["database_secret"],
             "operation_api": "superplane-operation-api-db",
-            "workspace": selected["workspace_credentials_secret"],
-            "provider": selected["provider_secret"],
         },
         "policy_configmap": operator["policy_configmap"],
         "state_claim": operator["state_claim"],
