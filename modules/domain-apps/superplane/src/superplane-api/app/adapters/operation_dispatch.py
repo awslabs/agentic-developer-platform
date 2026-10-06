@@ -81,6 +81,10 @@ WHERE """
 )
 
 
+class ProducerRefusedError(Exception):
+    """The registered producer explicitly denied this request."""
+
+
 class ProducerTransport:
     """API workload IAM identity only; execution tokens are never producer inputs."""
 
@@ -123,11 +127,20 @@ class ProducerTransport:
         ).add_auth(request)
         return dict(request.headers)
 
-    async def post(self, route, payload):
+    def can_sign(self):
+        return bool(
+            self._headers(self.endpoint + PREFIX + "/current-identity", b"{}").get(
+                "Authorization"
+            )
+        )
+
+    async def post(self, route, payload, *, distinguish_denial=False):
         url = self.endpoint + PREFIX + route
         encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()
         headers = await asyncio.to_thread(self._headers, url, encoded)
         response = await self.client.post(url, content=encoded, headers=headers)
+        if distinguish_denial and response.status_code == 403:
+            raise ProducerRefusedError("operation producer refused")
         if response.status_code != 200 or len(response.content) > 65536:
             raise RuntimeError("operation producer refused or unavailable")
         value = response.json()

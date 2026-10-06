@@ -1,13 +1,11 @@
-"""Domain-side contract for authoritative ADP principal and membership reads.
+"""Domain-side contract for uncached authoritative ADP principal and membership reads."""
 
-The gateway has no endpoint that establishes this complete contract yet. When explicitly enabled, a
-missing reader or incomplete response refuses mapped-tenant capabilities. The
-reader must use an authenticated ADP interface, not token claims or gateway DB
-tables; its result is deliberately not cached between authority boundaries.
-"""
-
+import asyncio
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
+
+from sqlalchemy import select
 
 
 @dataclass(frozen=True)
@@ -31,6 +29,124 @@ class IdentityUnavailable(Exception):
     """The upstream identity contract cannot currently establish authority."""
 
 
+class IdentityDenied(IdentityUnavailable):
+    """The upstream provider established that the principal lacks authority."""
+
+
+class ProducerIdentityReader:
+    def __init__(self, transport, *, domain_org_id: str, adp_org_id: str):
+        self.transport = transport
+        self.domain_org_id = domain_org_id
+        self.adp_org_id = adp_org_id
+
+    async def read(self, *, subject: str, principal_type: str, adp_org_id: str) -> CurrentIdentity:
+        if adp_org_id != self.adp_org_id or principal_type != "human":
+            raise IdentityDenied("current ADP identity organization or type refused")
+        from app.adapters.operation_dispatch import ProducerRefusedError
+
+        try:
+            response = await self.transport.post(
+                "/current-identity",
+                {"domain": "superplane", "org_id": self.domain_org_id, "subject": subject, "principal_type": principal_type},
+                distinguish_denial=True,
+            )
+        except ProducerRefusedError:
+            raise IdentityDenied("current ADP identity refused") from None
+        except Exception:
+            raise IdentityUnavailable("current ADP identity provider unavailable") from None
+        if type(response.get("version")) is not int or response["version"] != 1:
+            raise IdentityUnavailable("unsupported ADP identity contract")
+        try:
+            return CurrentIdentity(**{key: response[key] for key in (
+                "subject", "principal_type", "adp_org_id", "membership_id", "active", "enabled"
+            )})
+        except (KeyError, TypeError):
+            raise IdentityUnavailable("incomplete ADP identity contract") from None
+
+
+class MappedProducerIdentityReader:
+    def __init__(self, transport, session_factory):
+        self.transport = transport
+        self.session_factory = session_factory
+
+    async def _mapped_organization(self, adp_org_id: str) -> str:
+        from app.models.organization import Organization
+
+        try:
+            async with self.session_factory() as db:
+                organization = await db.scalar(
+                    select(Organization).where(Organization.adp_org_id == adp_org_id)
+                )
+                if organization is None:
+                    raise IdentityDenied("ADP organization has no domain binding")
+                try:
+                    legacy_id = uuid.UUID(adp_org_id)
+                except ValueError:
+                    legacy_id = None
+                if legacy_id is not None:
+                    legacy = await db.get(Organization, legacy_id)
+                    if legacy is not None and legacy.id != organization.id:
+                        raise IdentityDenied(
+                            "ADP organization has ambiguous domain bindings"
+                        )
+                return str(organization.id)
+        except IdentityDenied:
+            raise
+        except Exception:
+            raise IdentityUnavailable("domain organization mapping unavailable") from None
+
+    async def read(
+        self, *, subject: str, principal_type: str, adp_org_id: str
+    ) -> CurrentIdentity:
+        if principal_type != "human" or not adp_org_id:
+            raise IdentityDenied("current ADP identity organization or type refused")
+        domain_org_id = await self._mapped_organization(adp_org_id)
+        return await ProducerIdentityReader(
+            self.transport, domain_org_id=domain_org_id, adp_org_id=adp_org_id
+        ).read(subject=subject, principal_type=principal_type, adp_org_id=adp_org_id)
+
+    async def upstream_ready(self) -> bool:
+        if not await composed_identity_reader_ready(self):
+            return False
+        from app.models.organization import Organization
+
+        try:
+            async with self.session_factory() as db:
+                selected = (await db.scalars(
+                    select(Organization.adp_org_id)
+                    .where(Organization.adp_org_id.is_not(None))
+                    .limit(65)
+                )).all()
+            if not selected or len(selected) > 64:
+                return False
+            for adp_org_id in selected:
+                domain_org_id = await self._mapped_organization(adp_org_id)
+                response = await self.transport.post(
+                    "/current-identity/readiness",
+                    {"domain": "superplane", "org_id": domain_org_id},
+                    distinguish_denial=True,
+                )
+                if response != {
+                    "version": 1,
+                    "domain": "superplane",
+                    "org_id": domain_org_id,
+                    "adp_org_id": adp_org_id,
+                }:
+                    return False
+            return True
+        except Exception:
+            return False
+
+
+async def composed_identity_reader_ready(reader: CurrentIdentityReader | None) -> bool:
+    if not isinstance(reader, MappedProducerIdentityReader):
+        return False
+    try:
+        return await asyncio.to_thread(reader.transport.can_sign) is True
+    except Exception:
+        return False
+
+
 async def require_current_identity(
     reader: CurrentIdentityReader | None,
     *,
@@ -45,6 +161,8 @@ async def require_current_identity(
         identity = await reader.read(
             subject=subject, principal_type=principal_type, adp_org_id=adp_org_id
         )
+    except IdentityDenied:
+        raise
     except Exception as exc:
         raise IdentityUnavailable("current ADP identity could not be read") from exc
     if (
@@ -62,7 +180,7 @@ async def require_current_identity(
         or (principal_type == "service" and not identity.delegation_id)
         or (principal_type == "human" and identity.delegation_id is not None)
     ):
-        raise IdentityUnavailable("current ADP principal authority was not established")
+        raise IdentityDenied("current ADP principal authority was not established")
     return identity
 
 

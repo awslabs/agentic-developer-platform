@@ -20,9 +20,8 @@ or grants access. Supported ADP membership mutation remains unavailable here.
 
 ## Shared interfaces still required
 
-Read-only review of Gateway `src/internal/domain_operation_routes.py` found a
-bound service `verify-run` operation. It validates current run/task authority but
-does not expose current human organization membership. Its
+Gateway's bound service `verify-run` operation validates current run/task authority
+but does not itself expose current human organization membership. Its
 `domain_operation_approval.py` rereads domain approval/grant rows; that is not an
 ADP principal-status check. Gateway owns `tenant_memberships` and identity links;
 the domain must not copy their lifecycle or infer membership from email.
@@ -39,20 +38,25 @@ mapping from the stored organization rather than optional request fields, and
 approvers require current human membership. No positive result is cached.
 Unbound legacy installations retain their bounded compatibility path.
 
-The gateway does **not** currently expose an authenticated, current selected-org
-identity introspection interface with disabled-principal state and service
-delegation. `/api/auth/workspaces` supports only human bootstrap role/membership
-checking; `is_current` reflects token context and the response contains neither
-enabled state nor service delegation. Consequently the application does not install
-a production `current_identity_reader`. Enabling the integration without one
-fails `/readyz` and mapped-tenant admission; `/health` separately reports whether
-it is required and whether a reader is configured. Do not enable it in a release
-until the shared identity owner provides and composes a protected reader. A reader must
-authenticate to ADP, validate its response for each immutable subject/selected
-organization and principal type, and provide stable membership-generation evidence.
-No gateway-owned table is accessed from this domain module. An authenticated
-worker-side identity lookup independent of HTTP request context remains a separate
-integration requirement for registered-worker recovery and delivery paths.
+Gateway now provides the versioned `/internal/v1/controller-execution/current-identity`
+route for registered producers. It returns current, nonrevoked human membership
+and Cognito's enabled and selected-organization evidence, and refuses unsupported
+service requests. The domain has a typed reader for its signed producer transport,
+but startup still does not install the reader. Until API and worker composition are
+qualified together, `CURRENT_IDENTITY_ENFORCED` stays off. Explicitly enabling it
+without a reader fails `/readyz` and mapped-tenant requests; `/health` reports the
+required/configured status. `/api/auth/workspaces` still supplies only human
+bootstrap information, not disabled-state or service delegation. The domain never
+reads Gateway-owned tables. Worker-side revalidation of the durably recorded
+requester and approver at credential and execution boundaries is still required.
+Service delegation remains a separate unsupported identity contract.
+
+Migration 036 changes only the `users.cognito_sub` unique index from global to
+organization-local; it rewrites no users or references. The PostgreSQL migration
+test starts with the preceding index, retains an existing user's ID and reference,
+then proves a second organization can hold the same subject. Downgrade cannot
+restore the former global uniqueness once such a second row exists: it must fail
+pending an explicit, reviewed data-preservation decision, not delete or merge rows.
 
 A supported organization-local membership mutation interface is also required
 before these domain user mutations can be enabled for ADP-bound organizations.
@@ -60,10 +64,11 @@ It must resolve targets through ADP immutable identities and cannot globally
 disable another organization's member. Cluster-use, administration and observation
 authority must integrate with #6048 independently of workspace membership.
 
-Remote code-only tests with a deterministic ADP fixture and real PostgreSQL/API/
-registered-worker composition remain required. Actual ADP membership withdrawal,
-disabled-principal propagation, service delegation, and worker acceptance remain
-pending the shared interface. Refusal of unsafe mutations is not their completion.
+Remote code-only tests with a deterministic ADP fixture and composed Gateway/API/
+registered-worker authority remain required. PostgreSQL migration preservation
+passed in the API lane at the reviewed source checkpoint; this does not establish
+worker revalidation, service delegation or live acceptance. Refusal of unsafe
+mutations is not their completion.
 
 Supervisor repair: this PR is additive integration preparation, not completion of
 #6127. It does not turn off the existing `domain_auth_enforced` default or bypass

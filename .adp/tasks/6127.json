@@ -1,0 +1,508 @@
+{
+  "version": 1,
+  "issue": 6127,
+  "updated_at": "2026-10-06T03:45:19.243Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Serve authenticated producer-bound human identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation and previously verified identity tests; unchanged by the ancestry-only update.",
+      "commits": [
+        "02119b1"
+      ]
+    },
+    {
+      "id": "AC-01-c-wire",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Consume typed organization-bound identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation and passing current-identity, composition and signed-reader evidence."
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test two-organization identity fixtures",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior focused evidence retained; supplied API and Gateway CI pass at abc7d764."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Reject invalid current identities",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Prior focused denial evidence retained; supplied API and Gateway CI pass at abc7d764."
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify internal-route security inventory",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Retained supplied evidence: e243ee4.",
+      "commits": [
+        "e243ee4"
+      ]
+    },
+    {
+      "id": "AC-01-t4",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify merged inactive-identity fixtures through the API",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": "Published in 64de209 and retained in abc7d764. Prior focused suite passed 126 tests; supplied Superplane API CI now passes at abc7d764."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Preserve organization-local subject mapping",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation: 2c3280a; reused migration 036.",
+      "commits": [
+        "2c3280a"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test PostgreSQL migration preservation",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": "Retained prior migration evidence; supplied Superplane API CI passes at abc7d764. No redundant local rerun.",
+      "commits": [
+        "e497897"
+      ]
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Reject ambiguous legacy mappings",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": "Retained passing organization-binding evidence."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Require current identity and explicit API grants",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation and passing API evidence.",
+      "commits": [
+        "3b87cc0"
+      ]
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Revalidate stored worker organization identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation: c3589f7, with passing authority and registered-worker evidence.",
+      "commits": [
+        "c3589f7"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test API and worker permission implications",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "Retained passing current-identity, permission-contract and PostgreSQL authority evidence."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject revoked grants and bootstrap fallback",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "Retained passing current-identity and operation-authority regressions.",
+      "commits": [
+        "819594e"
+      ]
+    },
+    {
+      "id": "AC-03-t3",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject shared-cluster and cross-workspace authority",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "Retained supplied evidence: 6a9083f.",
+      "commits": [
+        "6a9083f"
+      ]
+    },
+    {
+      "id": "AC-03-t4",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test mapped API grant and identity checks",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Retained current-identity and organization-binding evidence."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Recheck durable requester and approver",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation; approver-outage handling is repaired under AC-04-c3.",
+      "commits": [
+        "e5cd337"
+      ]
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Separate human and service credentials",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation: 9581395.",
+      "commits": [
+        "9581395"
+      ]
+    },
+    {
+      "id": "AC-04-c3",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Preserve unavailable errors during approver revalidation",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
+      ],
+      "note": "R1 repair is published in abc7d764. IdentityDenied remains unauthorized; IdentityUnavailable propagates as _AuthorityUnreadable. Local regression evidence and supplied Superplane API CI pass."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test revocation before executor side effects",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "Retained non-skipped local PostgreSQL evidence; supplied Gateway shards pass at abc7d764.",
+      "commits": [
+        "8301f5a"
+      ]
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject principal and subject substitution",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "Retained focused API and Gateway evidence; corresponding supplied CI checks pass."
+    },
+    {
+      "id": "AC-04-t3",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject cross-workspace credential and observation substitution",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "Retained non-skipped registered-worker PostgreSQL evidence.",
+      "commits": [
+        "b8ad6cd"
+      ]
+    },
+    {
+      "id": "AC-04-t4",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test persisted-human revalidation",
+      "status": "done",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Retained passing Gateway identity and PostgreSQL worker evidence."
+    },
+    {
+      "id": "AC-04-t5",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test approval issuance outage and denial responses with database fixtures",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c3"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": "Published in abc7d764. Regression reproduced 403 instead of 503 before repair; subsequent 104-test focused suite passed without skips. Supplied Superplane API CI at abc7d764 is successful: run 37408875536, job 112092715985."
+    },
+    {
+      "id": "AC-05-c1",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Compose signed reader and signer-aware readiness",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation and passing identity/lifecycle composition evidence.",
+      "commits": [
+        "2938dd9"
+      ]
+    },
+    {
+      "id": "AC-05-c-wire",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Wire registered-producer transport to domain consumers",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Both current_identity_enforced and worker_scaled_job remain preserved. The new ancestry-only merge changes no source.",
+      "commits": [
+        "50b4bcf"
+      ]
+    },
+    {
+      "id": "AC-05-c2",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Correct the current-identity port registry citation",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Retained implementation: 90e79b2.",
+      "commits": [
+        "90e79b2"
+      ]
+    },
+    {
+      "id": "AC-05-t1",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test API/PostgreSQL/registered-worker composition",
+      "status": "done",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "Retained non-skipped local composition evidence; supplied Gateway and Superplane API CI pass at abc7d764.",
+      "commits": [
+        "5d0de9c",
+        "8c9230b"
+      ]
+    },
+    {
+      "id": "AC-05-t2",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test onboarding and restart preservation",
+      "status": "done",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "Retained supplied evidence: 72851ab.",
+      "commits": [
+        "72851ab"
+      ]
+    },
+    {
+      "id": "AC-05-t3",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Reject provider outage and missing membership before effects",
+      "status": "done",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "Retained Gateway denial evidence and published approval-outage regression under AC-04-t5.",
+      "commits": [
+        "47bb9e6"
+      ]
+    },
+    {
+      "id": "AC-05-t4",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify deployed identity against an authorized live target",
+      "status": "blocked",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: supervisor/live-acceptance owner for #6970. Separately deferred, not a code-merge prerequisite. No live acceptance claimed."
+    },
+    {
+      "id": "AC-05-t5",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test startup composition and signer-aware readiness",
+      "status": "done",
+      "covers": [
+        "AC-05-c1"
+      ],
+      "files": [],
+      "note": "Retained passing current-identity and composition evidence; supplied API CI passes at abc7d764."
+    },
+    {
+      "id": "AC-05-t6",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test signed registered-producer identity transport and scoped readiness",
+      "status": "done",
+      "covers": [
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "Retained signed-reader, readiness and protected-role denial evidence; supplied Gateway CI passes."
+    },
+    {
+      "id": "AC-05-t7",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify current-identity protocol appears in the integration registry",
+      "status": "done",
+      "covers": [
+        "AC-05-c2"
+      ],
+      "files": [],
+      "note": "Retained registry evidence; supplied Superplane Domain CI passes at abc7d764."
+    },
+    {
+      "id": "AC-05-t8",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify management readiness refuses an unqualified identity reader",
+      "status": "done",
+      "covers": [
+        "AC-05-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_controller_management.py:90"
+      ],
+      "note": "Retained focused evidence; supplied Superplane API CI passes at abc7d764.",
+      "commits": [
+        "baf5524"
+      ]
+    },
+    {
+      "id": "AC-05-t9",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify merged producer and registered-worker identity integration",
+      "status": "done",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_domain_current_identity.py",
+        "modules/gateway/tests/internal/test_paid_domain_operation_postgres.py",
+        "modules/gateway/tests/auth/test_domain_registry_role_identity.py"
+      ],
+      "note": "Retained prior 66-test integration result without skips. Supplied Gateway CI passes at abc7d764. New base and previous base have identical trees; prepared index and working tree match abc7d764, so no additional source validation was needed."
+    },
+    {
+      "id": "AC-05-t10",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify published merge with Gateway, Superplane Domain and Harness Jobs CI",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire",
+        "AC-05-c2",
+        "AC-04-c3"
+      ],
+      "files": [
+        ".github/workflows/gateway-ci.yml",
+        ".github/workflows/superplane-domain-ci.yml"
+      ],
+      "note": "Supplied checks now all pass for published abc7d764: Gateway run 37408875186, Superplane Domain run 37408875536 and Harness Jobs run 37408875199. This supersedes the older pending-check evidence. The prepared b441e114 ancestry-only merge has no conflicts or source changes, but remains uncommitted by the controller. Keep this task open for resulting-head publication, applicable CI confirmation and final evidence inspection."
+    }
+  ]
+}
