@@ -45,8 +45,8 @@ resource "aws_ecr_repository" "agent_context_images" {
 
 # -----------------------------------------------------------------------------
 # ECR Lifecycle Policies
-# DeepWiki also stores digest-pinned build inputs: preserve tagged manifests so
-# a runtime publication cannot expire the curl packages required by its Dockerfile.
+# DeepWiki and ingestion store digest-pinned build inputs: preserve tagged
+# manifests so runtime publications cannot expire required curl/indexer donors.
 # Other repositories retain their existing last-10 policy.
 # -----------------------------------------------------------------------------
 
@@ -67,7 +67,7 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
         }
         action = { type = "expire" }
       }
-      ], each.key == "deepwiki" ? [] : [
+      ], contains(["deepwiki", "ingestion"], each.key) ? [] : [
       {
         rulePriority = 2
         description  = "Keep last 10 tagged images"
