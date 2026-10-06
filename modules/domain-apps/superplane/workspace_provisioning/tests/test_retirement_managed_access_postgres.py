@@ -17,7 +17,7 @@ from harness_jobs.execution_rpc import ExecutionGrant, ExecutionRPCServer
 from harness_jobs.identity import ResolvedPrincipal, decode_payload
 from superplane_bootstrap.errors import BootstrapRefused
 
-from workspace_provisioning import retirement_runtime
+from workspace_provisioning import retirement_control, retirement_runtime
 from workspace_provisioning.artifacts import canonical, digest
 from workspace_provisioning.retirement_access_artifact import (
     access_metadata,
@@ -29,6 +29,7 @@ from workspace_provisioning.retirement_access_grants import (
     revoke_managed_access_grant,
 )
 from workspace_provisioning.retirement_adapters import OwnedResourceRemover
+from workspace_provisioning.retirement_control import resolve_managed_control
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_plan,
     require_managed_control_source,
@@ -54,7 +55,7 @@ pytestmark = requires_harness_postgres
 
 
 async def _execute_managed_revoke(
-    harness, facade, principal, arguments, plan, artifact, paid_operation_id, monkeypatch, case, cloud
+    harness, facade, principal, arguments, plan, artifact, paid_operation_id, monkeypatch, case, cloud, deployment
 ):
     output = StringIO()
     context = MigrationContext.configure(
@@ -123,6 +124,35 @@ async def _execute_managed_revoke(
         "load_bootstrap_retirement_inventory",
         lambda **kwargs: owned,
     )
+    if case == "legacy-denied":
+        trusted_context = SimpleNamespace(
+            connect=harness.connect,
+            domain_connect=harness.connect,
+            policy=deployment,
+            policy_fixture=True,
+        )
+        access_for = lambda current, inventory: resolve_managed_control(
+            current, inventory, trusted_context
+        )
+    else:
+        access_for = AsyncMock(return_value=(plan, paid_operation_id))
+    if case == "confirmed":
+        with monkeypatch.context() as isolated:
+            isolated.setattr(
+                retirement_control,
+                "compile_managed_access_review",
+                lambda *_args, **_kwargs: plan,
+            )
+            assert await resolve_managed_control(
+                operation,
+                owned,
+                SimpleNamespace(
+                    connect=harness.connect,
+                    domain_connect=harness.connect,
+                    policy=deployment,
+                    policy_fixture=True,
+                ),
+            ) == (plan, paid_operation_id)
     provider = RetirementRuntime(
         connect=harness.connect,
         domain_connect=harness.connect,
@@ -133,7 +163,7 @@ async def _execute_managed_revoke(
         ),
         lifecycle=SimpleNamespace(managed_fence=AsyncMock(return_value=True)),
         verify_inventory=AsyncMock(),
-        control_access_for=AsyncMock(return_value=(plan, paid_operation_id)),
+        control_access_for=access_for,
         control_verify=AsyncMock(),
     )
 
@@ -201,7 +231,9 @@ async def _execute_managed_revoke(
         ) == "reviewed-paid-apply"
 
 
-@pytest.mark.parametrize("admitted_revoke", ["none", "confirmed", "released", "missing"])
+@pytest.mark.parametrize(
+    "admitted_revoke", ["none", "confirmed", "released", "missing", "legacy-denied"]
+)
 def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
     runtime, tmp_path_factory, request, monkeypatch, admitted_revoke
 ):
@@ -410,6 +442,7 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                     monkeypatch,
                     admitted_revoke,
                     runtime.cloud,
+                    deployment,
                 )
                 return
             journal = Journal(
