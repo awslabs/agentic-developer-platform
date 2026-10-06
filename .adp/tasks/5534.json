@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:07:39.352Z",
+  "updated_at": "2026-10-06T01:14:10.673Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,9 +11,10 @@
       "status": "open",
       "covers": [],
       "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
         "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py"
       ],
-      "note": "757ae6e adds artifact-bound exact EKS revocation; admitted production activation and revocation remain unwired.",
+      "note": "aac4f18 verifies retained control and paid lineage. Admitted managed retirement revocation remains unwired.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -25,7 +26,8 @@
         "73430b4",
         "fab15ef",
         "70801fd",
-        "757ae6e"
+        "757ae6e",
+        "aac4f18"
       ]
     },
     {
@@ -38,9 +40,10 @@
         "AC-01-c1"
       ],
       "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
       ],
-      "note": "63 targeted tests passed, including earlier PostgreSQL paid-control admission; new revocation cases use a doubled provider and in-memory journal.",
+      "note": "65 targeted tests passed; PostgreSQL source proof and doubled revocation are not an allocation-bound production effect test.",
       "commits": [
         "b92e027"
       ]
@@ -95,7 +98,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Offline stale-authority and changed-recipe denial pass; admitted-effect denial remains."
+      "note": "Released-control and stale-authority denial pass in their respective tests; admitted-effect denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -135,7 +138,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Managed producer and worker wiring remain; coordinate native registration with #5535.",
+      "note": "Managed producer and native worker registration remain; coordinate registration with #5535.",
       "commits": [
         "3a02dea",
         "886fab6",
