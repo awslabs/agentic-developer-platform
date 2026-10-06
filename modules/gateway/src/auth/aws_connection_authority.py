@@ -58,6 +58,10 @@ def invalidate_connection(credential):
 
 
 def verified_connection_evidence(credential):
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(getattr(credential, "id", None)):
+        raise connection_conflict()
     require_active_connection(credential)
     if (
         not credential.aws_external_id
@@ -77,6 +81,10 @@ def verified_connection_evidence(credential):
 
 
 async def owned_aws_connection(db, credential_id, user_id, org_id, *, lock=False):
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(credential_id):
+        raise HTTPException(403, "governed provider requires domain authority")
     query = (
         select(UserCredential)
         .where(
