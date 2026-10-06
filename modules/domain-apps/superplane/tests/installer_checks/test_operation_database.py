@@ -84,3 +84,74 @@ def test_missing_or_unreviewed_paid_image_refuses(inputs, tmp_path):
     installer = OperationInstaller(*inputs, tmp_path, control_plane_only=True)
     with pytest.raises(Refusal, match="reviewed paid-worker"):
         preparation_plan(installer, "superplane_operations")
+
+
+def test_runtime_secret_projection_replay_and_conflict(inputs, tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    from installation.config import LABEL
+    from installation.operation_database import project_runtime_secrets
+
+    installer = OperationInstaller(*inputs, tmp_path, control_plane_only=True)
+    plan = preparation_plan(installer, "superplane_operations")
+    existing = {}
+    created = []
+    verified = []
+    monkeypatch.setattr(
+        installer, "verify_deployment_identity", lambda: verified.append(True)
+    )
+
+    def kube(*args, data=None):
+        if args[0] == "create":
+            value = json.loads(data)
+            name = value["metadata"]["name"]
+            assert name not in existing
+            created.append(value)
+            existing[name] = {
+                **value,
+                "data": {
+                    k: base64.b64encode(v.encode()).decode()
+                    for k, v in value.pop("stringData").items()
+                },
+            }
+            return SimpleNamespace(stdout="", returncode=0)
+        assert args[:4] == ("-n", installer.env["namespace"], "get", "secret")
+        return SimpleNamespace(
+            stdout=json.dumps(existing[args[4]]) if args[4] in existing else "",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(installer, "kube", kube)
+    dsns = {
+        plan["roles"]["gateway"]: "gateway-shared",
+        plan["roles"]["worker"]: "worker-shared",
+    }
+
+    def project():
+        project_runtime_secrets(
+            installer, plan, domain_dsn="domain", operation_dsns=dsns, ca_pem="ca"
+        )
+
+    project()
+    api = existing["superplane-operation-api-db"]
+    assert api["data"] == {"dsn": base64.b64encode(b"gateway-shared").decode()}
+    assert len(created) == 2 and len(verified) == 2
+    project()
+    assert len(created) == 2 and len(verified) == 4
+    for conflict in ("dsn", "owner", "extra", "type", "malformed"):
+        pristine = json.loads(json.dumps(api))
+        if conflict == "dsn":
+            api["data"]["dsn"] = base64.b64encode(b"worker-shared").decode()
+        elif conflict == "owner":
+            api["metadata"]["labels"][LABEL] = "other-owner"
+        elif conflict == "extra":
+            api["data"]["extra"] = base64.b64encode(b"x").decode()
+        elif conflict == "type":
+            api["type"] = "kubernetes.io/basic-auth"
+        else:
+            api["data"]["dsn"] = "!!!"
+        with pytest.raises(Refusal, match="replacement refused"):
+            project()
+        assert len(created) == 2
+        api.clear()
+        api.update(pristine)

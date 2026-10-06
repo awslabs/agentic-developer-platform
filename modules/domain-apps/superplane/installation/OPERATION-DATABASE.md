@@ -63,6 +63,10 @@ The exact outputs are Secrets Manager references under the installation's
   Gateway's domain ORM adapter. It is never given shared-store grants.
 - Kubernetes `superplane-paid-worker-db`: `domain-dsn`, `execution-dsn`, `ca.pem`,
   created only in the installation namespace after role authentication.
+- Kubernetes `superplane-operation-api-db`: `dsn` projected from the authenticated
+  Gateway shared-store role for the API Harness adapter. It does not reuse the
+  worker role. Both Kubernetes Secrets reconcile only when ownership and every
+  data key match; conflicting Secrets are never replaced.
 
 Configure Gateway `database_secret_id`/`database_schema` for the shared store,
 and `domain_database_secret_id`/`domain_database_schema` for the domain adapter.

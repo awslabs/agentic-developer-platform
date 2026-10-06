@@ -103,6 +103,7 @@ def preparation_plan(installer, schema):
             for kind in ("operation", "operation-worker", "domain")
         },
         "worker_secret": "superplane-paid-worker-db",
+        "api_secret": "superplane-operation-api-db",
         "forbidden_schemas": [
             env["database"]["schema"],
             env["database"]["skypilot_schema"],
@@ -290,51 +291,13 @@ def execute(installer, plan, approved, admin_url):
             value == {"dsn": dsn},
             "Existing domain projection differs; explicit rotation is required",
         )
-        # A create-only Secret is projected after real database authentication.
-        # Same-input reconciliation compares all content and the owner label.
-        from .config import LABEL
-
-        secret = {
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "metadata": {
-                "name": plan["worker_secret"],
-                "namespace": env["namespace"],
-                "labels": {LABEL: installer.owner},
-            },
-            "type": "Opaque",
-            "stringData": {
-                "domain-dsn": dsn,
-                "execution-dsn": dsns[plan["roles"]["worker"]],
-                "ca.pem": domain_value["ca-pem"],
-            },
-        }
-        existing = installer.kube(
-            "-n",
-            env["namespace"],
-            "get",
-            "secret",
-            plan["worker_secret"],
-            "--ignore-not-found",
-            "-o",
-            "json",
+        project_runtime_secrets(
+            installer,
+            plan,
+            domain_dsn=dsn,
+            operation_dsns=dsns,
+            ca_pem=domain_value["ca-pem"],
         )
-        if existing.stdout.strip():
-            import base64
-
-            current = installer.json(existing)
-            require(
-                current["metadata"].get("labels", {}).get(LABEL) == installer.owner
-                and current.get("type") == "Opaque"
-                and {
-                    k: base64.b64decode(v).decode()
-                    for k, v in current.get("data", {}).items()
-                }
-                == secret["stringData"],
-                "Existing worker database Secret differs; replacement refused",
-            )
-        else:
-            installer.kube("create", "-f", "-", data=json.dumps(secret))
         installer.receipt["operation_database"] = dict(
             observed,
             secret_versions=versions,
@@ -342,6 +305,62 @@ def execute(installer, plan, approved, admin_url):
         )
         installer.receipt["status"] = "shared-database-prepared"
         installer.save()
+
+
+def project_runtime_secrets(installer, plan, *, domain_dsn, operation_dsns, ca_pem):
+    """Project authenticated roles without replacing an existing Secret."""
+    from .config import LABEL
+    import base64
+
+    projections = {
+        plan["worker_secret"]: {
+            "domain-dsn": domain_dsn,
+            "execution-dsn": operation_dsns[plan["roles"]["worker"]],
+            "ca.pem": ca_pem,
+        },
+        plan["api_secret"]: {"dsn": operation_dsns[plan["roles"]["gateway"]]},
+    }
+    for name, data in projections.items():
+        installer.verify_deployment_identity()
+        secret = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": name,
+                "namespace": installer.env["namespace"],
+                "labels": {LABEL: installer.owner},
+            },
+            "type": "Opaque",
+            "stringData": data,
+        }
+        existing = installer.kube(
+            "-n",
+            installer.env["namespace"],
+            "get",
+            "secret",
+            name,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        )
+        if existing.stdout.strip():
+            current = installer.json(existing)
+            try:
+                same_data = {
+                    k: base64.b64decode(v, validate=True).decode()
+                    for k, v in current.get("data", {}).items()
+                } == data
+            except (ValueError, UnicodeError):
+                same_data = False
+            require(
+                current.get("metadata", {}).get("labels", {}).get(LABEL)
+                == installer.owner
+                and current.get("type") == "Opaque"
+                and same_data,
+                "Existing runtime database Secret differs; replacement refused",
+            )
+        else:
+            installer.kube("create", "-f", "-", data=json.dumps(secret))
 
 
 def main(argv=None):
