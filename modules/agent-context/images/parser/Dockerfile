@@ -15,6 +15,7 @@
 # We deliberately do NOT copy zoekt since the parser doesn't need it.
 
 # Stage 2: SCIP toolchain
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
 FROM public.ecr.aws/docker/library/node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
 FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS parser
@@ -106,6 +107,14 @@ print('Parser manifest import OK'); \
 COPY security-stdlib/ /opt/adp-stdlib-security/
 RUN python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/adp-stdlib-security/check.py
+
+# Preserve curl and Git transports using the existing reviewed curl packages.
+# Keep source identities/licenses outside dpkg's slim-image doc exclusions.
+COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
+COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
+COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/gnutls.deb
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 USER appuser
 WORKDIR /app
