@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:21:35.612Z",
+  "updated_at": "2026-10-06T01:28:19.312Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,10 +11,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_plan.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py",
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_adapters.py"
       ],
-      "note": "Exact step and PostgreSQL control proof are pushed; admitted runtime revocation remains unwired.",
+      "note": "ed2882e adds guarded admitted revocation; trusted producer composition remains.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -29,7 +29,8 @@
         "757ae6e",
         "aac4f18",
         "a3ea318",
-        "b277612"
+        "b277612",
+        "ed2882e"
       ]
     },
     {
@@ -44,7 +45,7 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "PostgreSQL source checks pass; receipt and inner effect journal remain fixture-built.",
+      "note": "84 changed-package tests pass; the new RPC test uses a digested inserted receipt and stubbed live callbacks, not full production composition.",
       "commits": [
         "b92e027"
       ]
@@ -74,7 +75,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Production successor coverage remains."
+      "note": "Production-effect successor coverage remains."
     },
     {
       "id": "AC-01-t3",
@@ -86,7 +87,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Not run against the production producer."
+      "note": "Not run against a production retirement producer."
     },
     {
       "id": "AC-01-t4",
@@ -99,7 +100,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Plan/source denial passes; admitted deletion denial remains."
+      "note": "Admitted revoke rejects stale approval and missing receipt; remaining production denial paths need coverage."
     },
     {
       "id": "AC-02-c1",
@@ -139,7 +140,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Producer composition and native worker registration remain; coordinate with #5535.",
+      "note": "Producer composition remains; coordinate native worker registration with #5535.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -194,7 +195,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Targeted tests passed; full suites and required CI remain."
+      "note": "Changed-package tests pass; full relevant suites and required CI remain."
     },
     {
       "id": "AC-04-c1",
