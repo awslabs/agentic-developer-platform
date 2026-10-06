@@ -581,6 +581,23 @@ source IDs, UTC timestamps, citation IDs and page counts; credentials and the
 synthetic secret canary are redacted before state or report persistence. Do not
 derive timestamp expectations from the returned answer.
 
+For #6934, E44 also requires a private `assistant_provider_activity` fixture:
+`from`, `to`, `timezone`, `gitlab_base_url`, nonempty `denied_repositories`, `coverage` for **both**
+GitHub and GitLab (each a list of `[status, reason]` pairs), and `events` keyed
+by `provider:repository:kind:event_id`. Each expected event records its UTC
+`timestamp`, `provider`, `repository`, `kind`, `attribution`, `actor_id`, and
+`source_url`. The E44 provider adapter compares that fixture to a structured
+`provider_response` captured from the authorized gateway work read, not to
+generated answer text. It rejects unknown, missing and duplicated events,
+assignment-only activity, bot actions counted as human work, denied repositories,
+incorrect timestamps or links, conflicting coverage and an unavailable provider.
+Only a known denied repository may account for partial provider coverage in E44's
+positive case. These offline checks do **not** supply the missing ordinary-user
+driver for the delegated work read; #6933 must supply that authorized capture,
+and #6937 must verify controlled live fixtures before E44 can establish live
+provider coverage. Do not supply provider tokens or copied production evidence
+as a fixture.
+
 Remote evidence is also sanitized before it reaches retained SSM stdout, on both
 success and failure. The shared emitter checks raw events/pages for the synthetic
 canary, removes the raw canary field, and redacts its occurrences in every emitted

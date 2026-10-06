@@ -96,3 +96,20 @@ it('can establish an empty window when it aggregates every page with all sources
   expect(result.coverage.every((entry: { status: string }) => entry.status === 'available')).toBe(true);
   expect(result.answer).toContain('No agent invocations were recorded');
 });
+
+it('retains distinct historical provider events through pagination while deduplicating source IDs', async () => {
+  const providerEvent = {
+    provider: 'github', source_id: 'github:org/repo:comment:42', event_kind: 'comment', repository: 'org/repo',
+    source_url: 'https://github.com/org/repo/issues/1#issuecomment-42', occurred_at: '2026-10-02T11:00:00Z',
+    attribution: 'human', human_work: true,
+  };
+  const runRequest = jest.fn()
+    .mockResolvedValueOnce({ runs: [], issues: [], external_events: [providerEvent], last_key: 'page-two' })
+    .mockResolvedValueOnce({ runs: [], issues: [], external_events: [providerEvent], last_key: null });
+  const tool = activityTools({ runRequest } as unknown as ChatDataClient)[0];
+  const result = JSON.parse((await tool.handler({ from: '2026-10-01T00:00:00Z', to: '2026-10-04T00:00:00Z', timezone: 'UTC' })).content[0].text);
+  expect(result.external_events).toEqual([providerEvent]);
+  expect(result.status).toBe('ok');
+  expect(result.answer).toContain('github posted comment');
+  expect(result.answer).toContain('[source](https://github.com/org/repo/issues/1#issuecomment-42)');
+});

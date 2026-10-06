@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from src.activity import task_readthrough
+from src.activity.external_scope import read_external_work
 from src.activity.service import ActivityService, _decode_cursor, _encode_cursor
 from src.activity.work_summary import summarize_work
 from src.agentauth.chat_capability import ChatLaunch
@@ -135,6 +136,13 @@ async def read_work(
                 "to": min(end, retention_start).isoformat().replace("+00:00", "Z"),
             }
         )
+    external_events = []
+    if first:
+        external_read = await read_external_work(request, launch, start, end)
+        external_events = [item for item in external_read.events if _within_window(item.event.occurred_at, start, end)]
+        coverage.extend(external_read.coverage)
+    else:
+        coverage.append({"source": "external", "status": "partial", "reason": "continuation_only"})
     in_window = []
     for item in items:
         if _within_window(item.invoked_at, start, end):
@@ -145,7 +153,7 @@ async def read_work(
                 coverage.append({"source": "transcript", "status": "partial", "reason": "missing_or_pending", "invocation_id": item.invocation_id})
         elif not item.invoked_at or not _valid_instant(item.invoked_at):
             coverage.append({"source": item.source_type, "status": "partial", "reason": "timestamp_invalid"})
-    result = summarize_work(in_window).model_dump(mode="json")
+    result = summarize_work(in_window, external_events).model_dump(mode="json")
     cursors = {"direct": activity.direct_cursor, "descendants": activity.descendant_cursor, "tasks": task_cursor}
     next_cursor = _encode_cursor({**cursors, "scope": [launch.user_id, launch.tenant_id, since, until]}) if any(cursors.values()) else None
     result["last_key"] = next_cursor
@@ -155,7 +163,8 @@ async def read_work(
     result["observed_at"] = observed_at.isoformat().replace("+00:00", "Z")
     result["coverage"] = coverage
     if any(entry["status"] != "available" for entry in coverage) or next_cursor:
-        result["status"] = "partial" if in_window or any(entry["status"] == "available" for entry in coverage) else "unavailable"
+        has_covered_source = any(entry["status"] in {"available", "partial"} for entry in coverage)
+        result["status"] = "partial" if in_window or external_events or has_covered_source else "unavailable"
     else:
-        result["status"] = "ok" if in_window else "empty"
+        result["status"] = "ok" if in_window or external_events else "empty"
     return result

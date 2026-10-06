@@ -735,6 +735,7 @@ def _journey_payload(cfg, ctx):
         "human_task_coding": cfg.get("human_task_coding") or {},
         "human_task_chat": cfg.get("human_task_chat") or {},
         "assistant_users": cfg.get("assistant_users") or {},
+        "assistant_provider_activity": cfg.get("assistant_provider_activity") or {},
         "websocket_url": cfg.get("websocket_url") or "",
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
         "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},

@@ -7,6 +7,7 @@ import { renderAgentWorkAnswer, WorkPresentation } from './answer';
 interface WorkPage {
   runs: WorkPresentation['runs'];
   issues: WorkPresentation['issues'];
+  external_events?: WorkPresentation['external_events'];
   last_key: string | null;
   coverage?: WorkPresentation['coverage'];
   observed_at?: string;
@@ -15,7 +16,7 @@ interface WorkPage {
 export function activityTools(client: ChatDataClient): AgentTool[] {
   return [{
     name: 'get_my_agent_work',
-    description: 'Read recorded ADP agent work for the current user in a specified time window. A completed run is not proof an issue is closed. Incomplete coverage is not evidence of no work.',
+    description: 'Read recorded ADP agent work and authorized external human actions for the current user in a specified time window. A completed run is not proof an issue is closed. Incomplete coverage is not evidence of no work.',
     inputSchema: {
       from: z.string().datetime({ offset: true }).describe('Inclusive ISO-8601 start of the window'),
       to: z.string().datetime({ offset: true }).describe('Exclusive ISO-8601 end of the window'),
@@ -26,6 +27,8 @@ export function activityTools(client: ChatDataClient): AgentTool[] {
     handler: async input => {
       const runs: WorkPage['runs'] = [];
       const issues = new Map<string, WorkPage['issues'][number]>();
+      const externalEvents: NonNullable<WorkPage['external_events']> = [];
+      const seenExternal = new Set<string>();
       const coverage: NonNullable<WorkPage['coverage']> = input.last_key
         ? [{ source: 'pagination', status: 'partial', reason: 'continuation_only' }] : [];
       let observedAt: string | undefined;
@@ -34,11 +37,11 @@ export function activityTools(client: ChatDataClient): AgentTool[] {
       let cursor = input.last_key as string | undefined;
       const presentation = (nextCursor: string | null) => {
         const gap = coverage.some(entry => entry.status !== 'available');
-        const status = gap || nextCursor ? (runs.length || coverage.some(entry => entry.status === 'available') ? 'partial' : 'unavailable')
-          : runs.length ? 'ok' : 'empty';
+        const status = gap || nextCursor ? (runs.length || externalEvents.length || coverage.some(entry => entry.status === 'available') ? 'partial' : 'unavailable')
+          : runs.length || externalEvents.length ? 'ok' : 'empty';
         const work: WorkPresentation = {
           status, from: input.from as string, to: input.to as string, timezone: input.timezone as string, observed_at: observedAt,
-          runs, issues: [...issues.values()], coverage, last_key: nextCursor,
+          runs, issues: [...issues.values()], external_events: externalEvents, coverage, last_key: nextCursor,
         };
         return { ...work, answer: renderAgentWorkAnswer(work) };
       };
@@ -49,6 +52,11 @@ export function activityTools(client: ChatDataClient): AgentTool[] {
         for (const run of page.runs) {
           const key = `${run.source_type}:${run.invocation_id}`;
           if (!seenRuns.has(key)) { seenRuns.add(key); runs.push(run); }
+        }
+        if (page.external_events && !Array.isArray(page.external_events)) throw new ChatDataError('invalid_response');
+        for (const event of page.external_events ?? []) {
+          if (!event || typeof event.source_id !== 'string' || typeof event.source_url !== 'string') throw new ChatDataError('invalid_response');
+          if (!seenExternal.has(event.source_id)) { seenExternal.add(event.source_id); externalEvents.push(event); }
         }
         for (const issue of page.issues) {
           const existing = issues.get(issue.url);

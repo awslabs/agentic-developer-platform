@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import threading
+from copy import deepcopy
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -15,6 +16,7 @@ import pytest
 
 from tests.e2e.cli_uplift import (
     assistant_oracles,
+    assistant_provider_sources,
     bundle,
     cases,
     cleanup,
@@ -284,6 +286,196 @@ def source_fixture():
             "timezone": "UTC",
         },
     }
+
+
+def provider_fixture():
+    return {
+        "from": "2026-01-01T10:00:00+00:00",
+        "to": "2026-01-01T12:00:00+00:00",
+        "timezone": "UTC",
+        "gitlab_base_url": "https://gitlab.example.invalid",
+        "denied_repositories": ["org/private"],
+        "coverage": {
+            "github": [["available", "queried"]],
+            "gitlab": [["partial", "repository_not_authorized"]],
+        },
+        "events": {
+            "github:org/repo:commit:sha": {
+                "timestamp": "2026-01-01T10:10:00+00:00",
+                "provider": "github",
+                "repository": "org/repo",
+                "kind": "commit",
+                "attribution": "human",
+                "actor_id": "17",
+                "source_url": "https://github.com/org/repo/commit/sha",
+            },
+            "github:org/repo:review:3": {
+                "timestamp": "2026-01-01T10:20:00+00:00",
+                "provider": "github",
+                "repository": "org/repo",
+                "kind": "review",
+                "attribution": "bot",
+                "actor_id": "99",
+                "source_url": "https://github.com/org/repo/pull/3#pullrequestreview-3",
+            },
+            "gitlab:org/repo:comment:42": {
+                "timestamp": "2026-01-01T11:00:00+00:00",
+                "provider": "gitlab",
+                "repository": "org/repo",
+                "kind": "comment",
+                "attribution": "human",
+                "actor_id": "42",
+                "source_url": "https://gitlab.example.invalid/org/repo/-/issues/4",
+            },
+        },
+    }
+
+
+def provider_response():
+    fixture = provider_fixture()
+    return {
+        "status": "partial",
+        "from": fixture["from"],
+        "to": fixture["to"],
+        "timezone": fixture["timezone"],
+        "last_key": None,
+        "coverage": [
+            {"source": provider, "status": status, "reason": reason}
+            for provider, reasons in fixture["coverage"].items()
+            for status, reason in reasons
+        ],
+        "external_events": [
+            {
+                "source_id": source_id,
+                "occurred_at": event["timestamp"],
+                "provider": event["provider"],
+                "repository": event["repository"],
+                "event_kind": event["kind"],
+                "attribution": event["attribution"],
+                "actor_id": event["actor_id"],
+                "source_url": event["source_url"],
+                "human_work": event["attribution"] == "human",
+            }
+            for source_id, event in fixture["events"].items()
+        ],
+    }
+
+
+def test_e44_provider_adapter_requires_independent_human_bot_and_denied_repository_evidence():
+    observed = assistant_provider_sources.verify(
+        provider_response(), provider_fixture(), canary="synthetic-secret"
+    )
+    assert {row["provider"] for row in observed["records"]} == {"github", "gitlab"}
+    assert [row["attribution"] for row in observed["records"]] == [
+        "human",
+        "bot",
+        "human",
+    ]
+    assert len(observed["records"]) == 3
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        lambda response: response["external_events"].append(
+            deepcopy(response["external_events"][0])
+        ),
+        lambda response: response["external_events"].pop(),
+        lambda response: response["external_events"][0].update(
+            repository="org/private"
+        ),
+        lambda response: response["external_events"][0].update(event_kind="assignment"),
+        lambda response: response["external_events"][1].update(human_work=True),
+        lambda response: response["external_events"][0].update(actor_id="99"),
+        lambda response: response["external_events"][0].update(
+            source_url="https://evil.invalid/leak"
+        ),
+        lambda response: response["external_events"][2].update(
+            source_url="https://evil.invalid/org/repo/-/issues/4"
+        ),
+        lambda response: response["external_events"][0].update(
+            occurred_at="2026-01-01T09:59:59+00:00"
+        ),
+        lambda response: response["coverage"][1].update(status="available"),
+        lambda response: response["coverage"].pop(),
+        lambda response: response.update(last_key="more"),
+        lambda response: response["external_events"][0].update(
+            source_url="https://github.com/synthetic-secret"
+        ),
+    ],
+)
+def test_e44_provider_adapter_rejects_forged_or_incomplete_evidence(alter):
+    response = provider_response()
+    alter(response)
+    with pytest.raises(assistant_oracles.EvidenceError):
+        assistant_provider_sources.verify(
+            response, provider_fixture(), canary="synthetic-secret"
+        )
+
+
+def test_e44_provider_adapter_rejects_missing_fixture_and_model_answer():
+    with pytest.raises(assistant_oracles.EvidenceError):
+        assistant_provider_sources.verify(
+            provider_response(), None, canary="synthetic-secret"
+        )
+    with pytest.raises(assistant_oracles.EvidenceError):
+        assistant_provider_sources.verify(
+            {"text": "I saw three commits"},
+            provider_fixture(),
+            canary="synthetic-secret",
+        )
+
+
+def test_e44_provider_adapter_never_waives_unavailable_provider():
+    response, fixture = provider_response(), provider_fixture()
+    fixture["coverage"]["gitlab"] = [["unavailable", "provider_failure"]]
+    response["coverage"][1].update(status="unavailable", reason="provider_failure")
+    with pytest.raises(
+        assistant_oracles.EvidenceError, match="unavailable or incomplete"
+    ):
+        assistant_provider_sources.verify(response, fixture, canary="synthetic-secret")
+
+
+def test_e44_driver_redacts_provider_only_canary_before_reporting(capsys):
+    response = provider_response()
+    response["external_events"][0]["source_url"] += "?synthetic-secret"
+    assert (
+        common.emit(
+            {
+                "success": True,
+                "provider_response": response,
+                "canary": "synthetic-secret",
+            }
+        )
+        == 1
+    )
+    delivered = json.loads(capsys.readouterr().out)
+    assert delivered["success"] is False and delivered["canary_check"] == "failed"
+    assert "synthetic-secret" not in json.dumps(delivered)
+
+
+def test_e44_source_stage_requires_provider_response_and_controller_fixture():
+    evidence = {
+        "success": True,
+        "pages": pages(),
+        "expected_ids": ["activity-1", "activity-2"],
+        "allowed_ids": ["activity-1", "activity-2"],
+        "canary": "synthetic-secret",
+        **source_fixture(),
+    }
+    for fixture, response in ((provider_fixture(), None), (None, provider_response())):
+        matrix = cases.new_matrix(("assistant",))
+        observed = {**evidence, "provider_response": response}
+        stages.journeys_stage(
+            {"assistant_provider_activity": fixture},
+            {
+                "journey": lambda purpose: (lambda _instance, _context: observed)
+                if purpose == "assistant_sources"
+                else None
+            },
+        )(stage_context(matrix))
+        assert matrix["E44"]["status"] == cases.FAILED
+        assert matrix["E44"]["detail"]["oracle_error"]
 
 
 def test_sources_accept_authorized_pagination_and_empty():
@@ -731,6 +923,7 @@ def test_assistant_stage_grades_injected_evidence_without_faking_qualification(i
             return lambda instance, ctx: {
                 "success": True,
                 "pages": source_pages,
+                "provider_response": provider_response(),
                 **source_fixture(),
                 "expected_ids": {"activity-1", "activity-2"},
                 "allowed_ids": {"activity-1", "activity-2"},
@@ -738,7 +931,9 @@ def test_assistant_stage_grades_injected_evidence_without_faking_qualification(i
             }
         return None
 
-    stages.journeys_stage({}, {"journey": resolve})(context)
+    stages.journeys_stage(
+        {"assistant_provider_activity": provider_fixture()}, {"journey": resolve}
+    )(context)
     for identifier in ("E43", "E44"):
         assert matrix[identifier]["status"] == (
             cases.FAILED if invalid else cases.PASSED
@@ -814,6 +1009,8 @@ def test_assistant_emit_rejects_raw_canary_leaks_before_grading(
             else {"note": canary, canary: [canary]}
         )
     evidence["resources"] = [["adp_connection", "owned-resource"]]
+    if case_id == "E44":
+        evidence["provider_response"] = provider_response()
     original = json.dumps(evidence, sort_keys=True)
 
     exit_code = common.emit(evidence)
@@ -846,9 +1043,10 @@ def test_assistant_emit_rejects_raw_canary_leaks_before_grading(
             matrix, identifier, status, detail
         ),
     }
-    stages.journeys_stage({}, {"journey": lambda _purpose: lambda *_args: delivered})(
-        context
-    )
+    stages.journeys_stage(
+        {"assistant_provider_activity": provider_fixture()},
+        {"journey": lambda _purpose: lambda *_args: delivered},
+    )(context)
     assert matrix[case_id]["status"] == (
         cases.PASSED if expected_success else cases.FAILED
     )
@@ -1481,7 +1679,10 @@ def test_assistant_redacts_evidence_before_state_and_report(
     from tests.unit.test_cli_uplift import NOW, FakeS3, write_config
 
     cfg_path = write_config(
-        tmp_path, assistant_users=users, websocket_url="wss://example.invalid/ws"
+        tmp_path,
+        assistant_users=users,
+        websocket_url="wss://example.invalid/ws",
+        assistant_provider_activity=provider_fixture(),
     )
     store = statestore.S3StateStore(FakeS3(), "synthetic-state", clock=lambda: NOW)
     canary = "synthetic-canary"
@@ -1491,6 +1692,7 @@ def test_assistant_redacts_evidence_before_state_and_report(
         "events": events(),
         "request_id": "request-1",
         "pages": pages(),
+        "provider_response": provider_response(),
         "expected_ids": ["activity-1", "activity-2"],
         "allowed_ids": ["activity-1", "activity-2"],
         **source_fixture(),
@@ -1514,7 +1716,9 @@ def test_assistant_redacts_evidence_before_state_and_report(
     stage_map = {name: lambda _ctx: None for name in runner.STAGES}
     stage_map.update(
         ec2=lambda ctx: ctx["document"].update(instance_id="i-synthetic"),
-        journeys=stages.journeys_stage({}, {"journey": resolve}),
+        journeys=stages.journeys_stage(
+            {"assistant_provider_activity": provider_fixture()}, {"journey": resolve}
+        ),
         cleanup=lambda _ctx: True,
     )
     state_dir = tmp_path / "run"
@@ -1573,7 +1777,10 @@ def test_assistant_interrupt_restore_resume_and_repeated_cleanup(
     from tests.unit.test_cli_uplift import NOW, FakeS3, write_config
 
     cfg_path = write_config(
-        tmp_path, assistant_users=users, websocket_url="wss://example.invalid/ws"
+        tmp_path,
+        assistant_users=users,
+        websocket_url="wss://example.invalid/ws",
+        assistant_provider_activity=provider_fixture(),
     )
     store = statestore.S3StateStore(FakeS3(), "synthetic-state", clock=lambda: NOW)
     interrupted = True
@@ -1613,6 +1820,7 @@ def test_assistant_interrupt_restore_resume_and_repeated_cleanup(
             return {
                 "success": True,
                 "pages": pages(),
+                "provider_response": provider_response(),
                 "expected_ids": ["activity-1", "activity-2"],
                 "allowed_ids": ["activity-1", "activity-2"],
                 "canary": "synthetic-secret",
@@ -1629,7 +1837,9 @@ def test_assistant_interrupt_restore_resume_and_repeated_cleanup(
     stage_map = {name: lambda _ctx: None for name in runner.STAGES}
     stage_map.update(
         ec2=prepare,
-        journeys=stages.journeys_stage({}, {"journey": resolve}),
+        journeys=stages.journeys_stage(
+            {"assistant_provider_activity": provider_fixture()}, {"journey": resolve}
+        ),
         cleanup=lambda ctx: cleanup.sweep(ctx["manifest"], {"ec2_instance": remove})[0],
     )
 
@@ -1894,6 +2104,58 @@ def test_registered_baseline_dispatch_and_resume(baseline_dispatch, tmp_path):
     assert matrix["E50"]["status"] == cases.PASSED
     assert matrix["E43"]["status"] == cases.FAILED
     assert cases.accept(matrix, ("assistant",), cleanup_ok=True)[0] != cases.PASSED
+
+
+@pytest.mark.parametrize("provider_available", [True, False])
+@pytest.mark.parametrize("worker_complete", [True, False])
+def test_provider_and_worker_stage_requirements_remain_independent(
+    baseline_dispatch, provider_available, worker_complete
+):
+    run, _state, _module, _tokens = baseline_dispatch
+    code, baseline_evidence = run()
+    assert code == 0
+    if not worker_complete:
+        baseline_evidence["detail"].pop("worker_completion_verified")
+
+    fixture = provider_fixture()
+    response = provider_response()
+    if not provider_available:
+        fixture["coverage"]["gitlab"] = [["unavailable", "provider_failure"]]
+        response["coverage"][1].update(status="unavailable", reason="provider_failure")
+        response["external_events"] = [
+            event
+            for event in response["external_events"]
+            if event["provider"] != "gitlab"
+        ]
+    source_evidence = {
+        "success": True,
+        "pages": pages(),
+        "expected_ids": ["activity-1", "activity-2"],
+        "allowed_ids": ["activity-1", "activity-2"],
+        "canary": "synthetic-secret",
+        "provider_response": response,
+        **source_fixture(),
+    }
+    drivers = {
+        "assistant_sources": lambda *_args: source_evidence,
+        "assistant_baseline": lambda *_args: baseline_evidence,
+    }
+    matrix = cases.new_matrix(("assistant",))
+    stages.journeys_stage(
+        {"assistant_provider_activity": fixture},
+        {"journey": drivers.get},
+    )(stage_context(matrix))
+
+    assert matrix["E44"]["status"] == (
+        cases.PASSED if provider_available else cases.FAILED
+    )
+    assert matrix["E50"]["status"] == (
+        cases.PASSED if worker_complete else cases.FAILED
+    )
+    if not provider_available:
+        assert "unavailable" in matrix["E44"]["detail"]["oracle_error"]
+    if not worker_complete:
+        assert "incomplete" in matrix["E50"]["detail"]["oracle_error"]
 
 
 @pytest.mark.parametrize(

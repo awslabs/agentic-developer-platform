@@ -75,3 +75,28 @@ it('the registered tool returns the cited answer alongside bounded source record
   expect(response.answer).not.toContain('/me/agent-invocations/');
   expect(response.status).toBe('partial');
 });
+
+it('reports provider human work separately from bot actions and never claims issue completion', () => {
+  const answer = renderAgentWorkAnswer({ ...fixture, runs: [], issues: [], external_events: [
+    { provider: 'github', source_id: 'github:org/repo:pull_request:1', event_kind: 'pull_request', repository: 'org/repo',
+      source_url: 'https://github.com/org/repo/pull/1', occurred_at: '2026-10-02T10:00:00Z', attribution: 'human', human_work: true },
+    { provider: 'gitlab', source_id: 'gitlab:org/repo:comment:2', event_kind: 'comment', repository: 'org/repo',
+      source_url: 'https://gitlab.example.invalid/org/repo/-/issues/1', occurred_at: '2026-10-02T11:00:00Z', attribution: 'bot', human_work: false },
+  ] });
+  expect(answer).toContain('External human actions (historical; current issue state is unverified):');
+  expect(answer).toContain('github authored PR');
+  expect(answer).toContain('[source](https://github.com/org/repo/pull/1)');
+  expect(answer).toContain('Related bot/agent activity (not counted as your actions):');
+  expect(answer).toContain('gitlab bot comment');
+  expect(answer).not.toMatch(/issue (is|was) (closed|completed)/i);
+});
+
+it('does not render provider credential URLs as clickable links', () => {
+  const answer = renderAgentWorkAnswer({ ...fixture, external_events: [
+    { provider: 'gitlab', source_id: 'gitlab:org/repo:comment:2', event_kind: 'comment', repository: 'org/repo',
+      source_url: 'https://credential@gitlab.example.invalid/org/repo/-/issues/1',
+      occurred_at: '2026-10-02T11:00:00Z', attribution: 'human', human_work: true },
+  ] });
+  expect(answer).toContain('source link unavailable');
+  expect(answer).not.toContain('credential@');
+});

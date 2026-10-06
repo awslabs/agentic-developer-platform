@@ -1,9 +1,12 @@
 """Read-only presentation of authorized Activity and Task invocation records."""
 
+from datetime import datetime
+from typing import Literal
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
+from src.activity.external_events import ActorKind, ClassifiedEvent, EventKind, Provider
 from src.activity.schemas import InvocationItem, TriggerKind
 
 
@@ -35,15 +38,41 @@ class WorkIssue(BaseModel):
     invocation_ids: list[str]
 
 
+class WorkExternalEvent(BaseModel):
+    provider: Provider
+    source_id: str
+    event_kind: EventKind
+    repository: str
+    source_url: str
+    occurred_at: str
+    actor_id: str
+    attribution: ActorKind
+    human_work: bool
+
+
+class WorkTimelineEntry(BaseModel):
+    source_type: Literal["adp", "github", "gitlab"]
+    source_id: str
+    occurred_at: str
+
+
 class WorkSummary(BaseModel):
     runs: list[WorkRun]
     issues: list[WorkIssue]
+    external_events: list[WorkExternalEvent] = Field(default_factory=list)
+    timeline: list[WorkTimelineEntry] = Field(default_factory=list)
 
 
-def summarize_work(items: list[InvocationItem]) -> WorkSummary:
+def _time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def summarize_work(items: list[InvocationItem], external_events: list[ClassifiedEvent] | None = None) -> WorkSummary:
     """Group issue presentation without discarding provenance from its runs."""
     runs: list[WorkRun] = []
     issues: dict[tuple[str, int], WorkIssue] = {}
+    external: list[WorkExternalEvent] = []
+    timeline: list[WorkTimelineEntry] = []
     seen: set[tuple[str, str]] = set()
     for item in sorted(items, key=lambda record: (record.invoked_at, record.invocation_id)):
         identity = item.source_type, item.invocation_id
@@ -60,6 +89,7 @@ def summarize_work(items: list[InvocationItem]) -> WorkSummary:
             evidence["task_report"] = transcript_url
         elif item.source_type == "activity" and item.transcript_key:
             evidence["transcript"] = transcript_url
+        timeline.append(WorkTimelineEntry(source_type="adp", source_id=item.invocation_id, occurred_at=item.invoked_at))
         runs.append(
             WorkRun(
                 invocation_id=item.invocation_id,
@@ -92,4 +122,27 @@ def summarize_work(items: list[InvocationItem]) -> WorkSummary:
                     invocation_ids=[],
                 )
             issues[key].invocation_ids.append(item.invocation_id)
-    return WorkSummary(runs=runs, issues=list(issues.values()))
+    seen_external: set[tuple[str, str, str, str]] = set()
+    for classified in external_events or []:
+        event = classified.event
+        identity = (event.provider, event.repository, event.kind, event.event_id)
+        if event.kind == "assignment" or identity in seen_external:
+            continue
+        seen_external.add(identity)
+        source_id = ":".join(identity)
+        external.append(
+            WorkExternalEvent(
+                provider=event.provider,
+                source_id=source_id,
+                event_kind=event.kind,
+                repository=event.repository,
+                source_url=event.source_url,
+                occurred_at=event.occurred_at,
+                actor_id=event.actor_id,
+                attribution=classified.attribution,
+                human_work=classified.human_work,
+            )
+        )
+        timeline.append(WorkTimelineEntry(source_type=event.provider, source_id=source_id, occurred_at=event.occurred_at))
+    timeline.sort(key=lambda entry: (_time(entry.occurred_at), entry.source_type, entry.source_id))
+    return WorkSummary(runs=runs, issues=list(issues.values()), external_events=external, timeline=timeline)

@@ -27,6 +27,7 @@ import shlex
 
 from . import (
     assistant_oracles,
+    assistant_provider_sources,
     bundle,
     cases,
     cleanup,
@@ -953,6 +954,14 @@ def journeys_stage(cfg, ports):
                             canary_check=evidence.get("canary_check"),
                             expected_timestamps=evidence.get("expected_timestamps"),
                             window=evidence.get("window"),
+                        )
+                        observations["provider_evidence"] = (
+                            assistant_provider_sources.verify(
+                                evidence.get("provider_response"),
+                                cfg.get("assistant_provider_activity"),
+                                canary=evidence.get("canary"),
+                                canary_check=evidence.get("canary_check"),
+                            )
                         )
                     detail = {**detail, "assistant_observations": observations}
                 except (assistant_oracles.EvidenceError, TypeError) as exc:
