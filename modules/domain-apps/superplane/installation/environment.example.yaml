@@ -70,3 +70,12 @@ control_plane_only: false
 # document fields, required pre-existing cloud identities and DB role separation.
 # Omit/null unless those exact prerequisites are reviewed and available.
 credential_controller: null
+
+# Required for live preflight/execution, optional for offline planning only.
+# Resolve from the authenticated selected connection and independently verified IAM
+# role inventory, never from ambient credentials. See installation/README.md.
+# deployment_identity:
+#   service: aws
+#   connection_label: <authorized connection label>
+#   expected_role_arn: <full IAM role ARN including path>
+#   expected_role_id: <immutable IAM RoleId>
