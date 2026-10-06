@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -88,6 +90,46 @@ def launch(tmp_path: Path, selected, authority, session):
         str(report),
     )
     return result, report, checkpoint
+
+
+def test_documented_preflight_command_is_runnable_but_never_accepts(tmp_path):
+    selected, authority, session = inputs()
+    tmp_path.chmod(0o700)
+    for name, document in (
+        ("selection.json", selected),
+        ("authority.json", authority),
+        ("requester-state.json", session),
+    ):
+        write_private(tmp_path / name, document)
+
+    documentation = (Path(__file__).parent / "README.md").read_text()
+    match = re.search(
+        r"### Guarded live-selection preflight \(no effects\).*?```sh\n(.*?)\n```",
+        documentation,
+        re.DOTALL,
+    )
+    assert match is not None
+    repository = Path(__file__).resolve().parents[5]
+    result = subprocess.run(
+        ["bash", "-c", match.group(1)],
+        cwd=repository,
+        env={**os.environ, "DEMO1_PRIVATE_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    report = tmp_path / "report.json"
+    assert result.returncode == 2
+    assert "Live selection preflight: BLOCKED" in result.stdout
+    assert not result.stderr
+    document = json.loads(report.read_text())
+    assert report.stat().st_mode & 0o777 == 0o600
+    assert document["live_acceptance"] is False
+    assert document["status"] == "BLOCKED"
+    assert document["evidence_mode"] == "live-selection-unverified"
+    assert not (tmp_path / "checkpoint.json").exists()
+    assert session["origins"][0]["localStorage"][0]["value"] not in report.read_text()
 
 
 def test_cli_records_private_preflight_without_launching_or_claiming_success(tmp_path):

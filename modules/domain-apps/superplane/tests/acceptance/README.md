@@ -54,10 +54,58 @@ For an operator-supplied **offline** fixture, substitute *absolute* paths to
 two previously prepared, non-symlink, owner-only regular files in the command
 above; supply a new report path in an existing private directory. Do not use
 this fixture path as a shortcut to a live authorization or a real cleanup
-receipt. There is no supported live invocation command until #5534/#5535,
+receipt. The separately gated live-selection **preflight** below is runnable, but is
+not a lifecycle invocation: it does not create, approve, observe or remove a
+workspace. There is no supported live *journey* invocation until #5534/#5535,
 #5730 and #5538 provide compatible reviewed interfaces and the Wave 6
 operations owner authorizes an exact target, identity, release, budget,
-deadline and cleanup continuation. Do not run `--mode live` in this assignment.
+deadline and cleanup continuation. Do not invoke it against a real target in
+this source-only assignment.
+
+### Guarded live-selection preflight (no effects)
+
+After separate operations authorization, an operator may run the preflight
+**from the repository root** using Python 3.12+. Prepare `DEMO1_PRIVATE_DIR`
+as an *absolute path* to an existing owner-owned directory with mode 0700;
+set it in the operator's private shell, not in a published script. Put three
+owner-only 0600, regular, non-symlink JSON files there: `selection.json` with
+the `demo1-v1` fields above; `authority.json` with the exact matching
+`demo1-live-v1` bindings plus reviewed HTTPS `origin`, selected
+`broker_label`, authority UUID, positive `max_runtime_seconds` (at most
+14,400, fitting inside the deadline), and `cleanup_deadline` no later than
+24 hours after the selection deadline; and `requester-state.json` containing
+an independently authenticated requester browser storage state for that
+exact origin. The authority also binds the original request, plan, approved
+release, target, distinct approver, budget and cleanup owner. A file that
+merely claims those bindings does **not** independently verify approval or
+release. Never put a second human's browser state in this directory.
+
+Use new `report.json` for each attempt (the CLI refuses overwrites). A
+`checkpoint.json` may be absent on first preflight; if it exists, it must be
+the original scope's owner-only checkpoint. Preserve it and its `.lock` file
+across retries; never reset an uncertain original request to force a pass.
+The command below reads those files but makes **no** browser, broker, AWS,
+provisioning or retirement call:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --report "$DEMO1_PRIVATE_DIR/report.json"
+```
+
+With structurally valid private inputs, expect exit **2** and
+`Live selection preflight: BLOCKED (no runtime admission or release
+verification)`. The new 0600 report has version `demo1-live-preflight-v1`,
+`evidence_mode: live-selection-unverified`, `live_acceptance: false` and
+`status: BLOCKED`; its references are hashes, not private identities.
+Malformed, foreign, expired or unsafe files also exit 2, typically without
+creating a report. No effect, authenticated provider observation, human
+approval, Ready receipt, removal or cost proof follows a successful preflight.
+The operations evaluator must wait for the producer-backed lifecycle driver
+before attempting a real journey; do not substitute this preflight for one.
 
 ### Private schema and provenance
 
@@ -111,8 +159,9 @@ that the released browser create/removal controls and backend admission exist,
 obtain the named Wave 6 authorization, and observe each original operation,
 approval, attempt and fence together with provider inventory. An unavailable
 interface or denied/incomplete read is `BLOCKED`, not a reason to fill in a
-fixture or issue a retry. There is **no** executable live command to hand off
-until those capabilities have been reviewed and implemented.
+fixture or issue a retry. There is **no** executable create → Ready → remove command to hand off
+until those capabilities have been reviewed and implemented; the guarded
+preflight above checks inputs and reports BLOCKED without effects.
 
 Reverting this harness changes reporting code only: it does not undo a
 workspace, close an account, or discharge cleanup ownership. Before a tooling
