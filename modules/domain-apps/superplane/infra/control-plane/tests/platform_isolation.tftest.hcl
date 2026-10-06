@@ -85,12 +85,12 @@ run "gateway_route_grant_is_owned_by_superplane" {
   }
 
   assert {
-    condition     = aws_iam_role_policy.gateway_route_read.role == "adp-dev-role-gateway-service"
+    condition     = aws_iam_role_policy_attachment.gateway_route_read.role == "adp-dev-role-gateway-service" && aws_iam_role_policy_attachment.gateway_route_read.policy_arn == "arn:aws:iam::111122223333:policy/adp-dev-superplane-gateway-route-read"
     error_message = "Superplane must attach its route grant to the gateway role exported by platform."
   }
 
   assert {
-    condition = jsondecode(aws_iam_role_policy.gateway_route_read.policy).Statement == [{
+    condition = jsondecode(aws_iam_policy.gateway_route_read.policy).Statement == [{
       Effect   = "Allow"
       Action   = ["s3:GetObject"]
       Resource = "arn:aws:s3:::adp-terraform-state-111122223333/domain-routes/dev/superplane/public-route.json"
@@ -416,7 +416,7 @@ run "all_resource_names_are_domain_prefixed" {
         aws_iam_role.skypilot.name,
         aws_iam_role_policy.control_plane.name,
         aws_iam_role_policy.skypilot.name,
-        aws_iam_role_policy.gateway_route_read.name,
+        aws_iam_policy.gateway_route_read.name,
       ] : startswith(name, "adp-dev-superplane-")
     ])
     error_message = "every IAM resource must carry the adp-<env>-superplane- prefix so domain-owned resources are distinguishable from platform-owned ones."
