@@ -57,6 +57,7 @@ def test_workspace_access_inventory_matches_mounted_routes():
     mounted = mounted_operations(app)
     expected = {
         ("GET", "/workspaces/{workspace_id}/access/v1/me"): Permission.READ,
+        ("GET", "/workspaces/{workspace_id}/access/v1/grants"): Permission.ADMINISTER,
         ("POST", "/workspaces/{workspace_id}/access/v1/grants"): Permission.ADMINISTER,
     }
     for operation, permission in expected.items():

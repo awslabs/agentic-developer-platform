@@ -211,6 +211,9 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # one workspace, so it takes the same scope for the same reason.
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("GET", "/workspaces/{workspace_id}/access/v1/me"): (Scope.WORKSPACE, Permission.READ),
+    ("GET", "/workspaces/{workspace_id}/access/v1/grants"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
     ("POST", "/workspaces/{workspace_id}/access/v1/grants"): (
         Scope.WORKSPACE, Permission.ADMINISTER,
     ),
@@ -356,6 +359,8 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/events/{event_id}"): (Scope.ORGANIZATION, Permission.READ),
     # -- Organization records ------------------------------------------------
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/orgs/current/access/v1/me"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("GET", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),

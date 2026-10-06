@@ -28,7 +28,7 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
   now: number;
 }) {
   const [revision, setRevision] = useState(0);
-  const [showApproverSetup, setShowApproverSetup] = useState(false);
+  const [showReadSharing, setShowReadSharing] = useState(false);
   const [state, setState] = useState<DetailsState>({ phase: 'loading' });
   const clusterFreshness = state.phase === 'loaded' ? freshnessOf(state.workspace.last_heartbeat, now) : 'unknown';
 
@@ -121,10 +121,10 @@ export function WorkspaceDetails({ workspaceId, scope, guard, sessionToken, now 
           {!state.workspace.provisioning_operation_id && (
             <p role="status">This workspace does not report an original provisioning operation. Do not start another request to infer its status.</p>
           )}
-          <Button variant="secondary" className="mt-4" onClick={() => setShowApproverSetup((visible) => !visible)}>
-            Set up workspace approver
+          <Button variant="secondary" className="mt-4" onClick={() => setShowReadSharing((visible) => !visible)}>
+            Share workspace read access
           </Button>
-          {showApproverSetup && (
+          {showReadSharing && (
             <ApproverAccessControl key={`${scope.orgId}:${workspaceId}:${sessionToken}`}
               workspaceId={workspaceId} guard={guard} sessionToken={sessionToken} />
           )}

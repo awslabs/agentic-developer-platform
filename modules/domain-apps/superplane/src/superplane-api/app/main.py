@@ -36,6 +36,7 @@ from app.routers.operation_approvals import router as operation_approvals_router
 from app.routers.onboarding import router as onboarding_router
 from app.routers.retirement import router as retirement_router
 from app.routers.orgs import router as orgs_router
+from app.routers.organization_access import router as organization_access_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
 from app.routers.proxy import router as proxy_router
@@ -338,6 +339,7 @@ app.include_router(retirement_router)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)
+app.include_router(organization_access_router)
 app.include_router(workspaces_router)
 app.include_router(workspace_access_router)
 app.include_router(provider_connections_router)

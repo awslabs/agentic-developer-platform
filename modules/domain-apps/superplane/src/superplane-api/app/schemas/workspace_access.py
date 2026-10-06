@@ -1,6 +1,7 @@
 """Explicit human workspace access API contract."""
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -36,3 +37,25 @@ class WorkspaceAccessResponse(BaseModel):
     granted_by: str | None = None
     reason: str | None = None
     request_id: uuid.UUID | None = None
+
+
+class WorkspaceAssignmentResponse(BaseModel):
+    """Stored assignment evidence, not current membership or effective authority."""
+
+    workspace_id: uuid.UUID
+    grant_id: uuid.UUID
+    revision: int
+    principal_type: str
+    subject: str
+    assigned_permissions: list[Permission]
+    revoked_at: datetime | None
+    source: Literal["explicit_assignment", "preexisting_grant"]
+    changed_by: str | None = None
+    reason: str | None = None
+    request_id: uuid.UUID | None = None
+
+
+class WorkspaceAssignmentsResponse(BaseModel):
+    workspace_id: uuid.UUID
+    assignments: list[WorkspaceAssignmentResponse]
+    next_after: uuid.UUID | None = None
