@@ -42,3 +42,25 @@ run "missing_image_role_is_rejected" {
 
   expect_failures = [var.codebuild_service_role_arns]
 }
+
+run "pinned_build_donors_survive_runtime_publication" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for name in ["deepwiki", "ingestion"] : alltrue([
+        for rule in jsondecode(aws_ecr_lifecycle_policy.agent_context_images[name].policy).rules :
+        rule.selection.tagStatus == "untagged"
+      ])
+    ])
+    error_message = "Tagged build donors must not be expired by runtime image-count retention."
+  }
+
+  assert {
+    condition = alltrue([
+      for name in ["context-mcp", "codegraph-context", "litellm-proxy"] :
+      length(jsondecode(aws_ecr_lifecycle_policy.agent_context_images[name].policy).rules) == 2
+    ])
+    error_message = "Repositories without pinned donors retain their existing cleanup policy."
+  }
+}
