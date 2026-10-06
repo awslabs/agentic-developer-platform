@@ -1,20 +1,19 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:35:51.545Z",
+  "updated_at": "2026-10-06T01:36:15.258Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Preserve original sealed allocation and establish separate exact-name cleanup authority",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_control.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_control.py"
       ],
-      "note": "340e296 derives stored control lineage; trusted production composition remains.",
+      "note": "Trusted production composition remains; reviewer owns disposition after operator-directed handoff.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -44,10 +43,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_control.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "90 focused tests pass; production management-mode activation and revocation are not proved.",
+      "note": "Production management-mode execution remains unproved.",
       "commits": [
         "b92e027"
       ]
@@ -89,7 +87,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Not run against a production retirement producer."
+      "note": "Production-producer coverage remains."
     },
     {
       "id": "AC-01-t4",
@@ -102,7 +100,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Legacy management-recipe denial passes; remaining production denial paths need coverage."
+      "note": "Remaining production denial paths need coverage."
     },
     {
       "id": "AC-02-c1",
@@ -142,7 +140,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "No run_retirement producer or native worker registration exists; coordinate with #5535.",
+      "note": "No run_retirement producer or native worker registration exists.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -175,7 +173,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "Not run against production composition."
+      "note": "Production negative integration remains."
     },
     {
       "id": "AC-03-c1",
@@ -185,7 +183,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Workflow enforcement remains to inspect."
+      "note": "Workflow enforcement remains."
     },
     {
       "id": "AC-03-t1",
@@ -197,7 +195,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Focused local tests pass; final-head CI is pending and full suites remain."
+      "note": "Full suites and final-head CI result remain."
     },
     {
       "id": "AC-04-c1",
@@ -207,7 +205,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "PR handoff records source limits; evaluator documentation remains."
+      "note": "PR contains source handoff; evaluator documentation remains."
     },
     {
       "id": "AC-04-t1",
@@ -219,7 +217,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Public-documentation check and final evidence matrix remain."
+      "note": "Final documentation and evidence checks remain."
     },
     {
       "id": "AC-04-t2",
@@ -231,7 +229,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Reviewer/foreground owns review and merge; CI is pending."
+      "note": "Reviewer/foreground owns review and merge."
     }
   ]
 }
