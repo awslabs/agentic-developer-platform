@@ -51,6 +51,7 @@ class RetirementObservations:
         creation_keys=frozenset(),
         *,
         include_bootstrap=True,
+        include_infrastructure=True,
         infrastructure_document=None,
     ):
         self._scope(inventory)
@@ -89,7 +90,7 @@ class RetirementObservations:
             # A durable uncertainty is part of membership, not an empty-success
             # branch. No provider observation can turn missing ownership into zero.
             add("unresolved-bootstrap-ownership", workspace=inventory.workspace_id)
-        if inventory.cluster_ownership == "adp-created":
+        if inventory.cluster_ownership == "adp-created" and include_infrastructure:
             if artifact is None and infrastructure_document is None:
                 raise OperationRefused(
                     "managed retirement requires its reviewed state inventory"

@@ -144,6 +144,29 @@ def test_descriptor_reference_is_bounded_and_recoverable_from_original_journal(
     assert reader.observe(record, saved).presence is ResourcePresence.ABSENT
 
 
+def test_bootstrap_allocation_catalog_keeps_ownership_separate_from_paid_state(
+    observer,
+):
+    reader, record, _ = observer
+    record = replace(
+        record, cluster_ownership="adp-created", components=(component("owned"),)
+    )
+    with pytest.raises(Exception, match="reviewed state inventory"):
+        reader.catalog(record, None, {}, {})
+    members = reader.catalog(
+        record,
+        None,
+        {},
+        {},
+        frozenset({"original-bootstrap"}),
+        include_infrastructure=False,
+    )
+    assert len(members) == 1
+    member = next(iter(members.values()))
+    assert member.kind == "bootstrap-component"
+    assert member.operation_keys == frozenset({"original-bootstrap"})
+
+
 def test_terminated_instances_are_absent_but_stopped_instances_still_cost(observer):
     reader, record, clients = observer
     state = "stopped"
