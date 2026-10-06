@@ -1,0 +1,180 @@
+"""A distinct approved control admission retains its paid apply allocation."""
+
+import json
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
+from harness_jobs.identity import ResolvedPrincipal, decode_payload
+
+from workspace_provisioning.retirement_access_authority import access_request
+from workspace_provisioning.retirement_managed_access import (
+    compile_managed_access_plan,
+    require_managed_paid_plan,
+)
+from workspace_provisioning.runtime_config import LifecycleRefused
+
+from .postgres_bridge import Harness, requires_harness_postgres
+from .test_lifecycle_policy import policy
+from .test_retirement_execution_postgres import (
+    _Approves,
+    _Ledger,
+    _Resolver,
+)
+from .test_retirement_managed_access import inputs
+from .test_retirement_plan import component
+
+pytestmark = requires_harness_postgres
+
+
+def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
+    runtime, tmp_path_factory, request
+):
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    account_id, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
+    deployment = policy()
+    deployment["runtime"] = arguments["runtime"]
+    deployment["permitted_target_accounts"] = [account_id]
+    deployment["permitted_regions"] = [region]
+    deployment["credential_references"][account_id] = deployment[
+        "credential_references"
+    ].pop("000000000002")
+
+    async def exercise(harness):
+        principal = ResolvedPrincipal(
+            org_id=plan.org_id,
+            workspace_id=plan.workspace_id,
+            subject="user-1",
+            permissions=frozenset({REQUIRED_PERMISSION}),
+        )
+        facade = OperationFacadeService(
+            connect=harness.connect,
+            resolver=_Resolver(principal),
+            approvals=_Approves(),
+            ledger=_Ledger(),
+        )
+
+        async def admit(parameters, identifier):
+            progress = await facade.open_operation(
+                action="provision",
+                workspace_id=plan.workspace_id,
+                org_id=plan.org_id,
+                permission=REQUIRED_PERMISSION,
+                parameters={**parameters, "idempotency_key": identifier},
+            )
+            async with harness.connect() as connection:
+                return await OperationStore().get(
+                    connection, principal, progress.operation_id
+                )
+
+        paid = await admit(
+            {
+                "allocation_id": plan.original_allocation_id,
+                "lifecycle_phase": "apply-infrastructure",
+            },
+            "paid-apply",
+        )
+        async with harness.connect() as connection:
+            await connection.execute(
+                "UPDATE harness_operations SET state='succeeded' WHERE operation_id=$1",
+                paid.operation_id,
+            )
+            paid = await OperationStore().get(connection, principal, paid.operation_id)
+
+        bootstrap = await admit(
+            {
+                "allocation_id": "bootstrap-allocation",
+                "lifecycle_phase": "bootstrap-workspace",
+                "lifecycle_source_operation_id": paid.operation_id,
+                "lifecycle_request": json.dumps(
+                    {
+                        "mode": "existing-account-managed",
+                        "region": region,
+                        "target_account_id": account_id,
+                        "workspace_id": plan.workspace_id,
+                    }
+                ),
+                "lifecycle_inputs": json.dumps({"isolation_mode": "dedicated"}),
+                "lifecycle_artifact_id": plan.bootstrap_artifact_id,
+                "aws_account_id": account_id,
+            },
+            "managed-bootstrap",
+        )
+        async with harness.connect() as connection:
+            await connection.execute(
+                "UPDATE harness_operations SET state='succeeded' WHERE operation_id=$1",
+                bootstrap.operation_id,
+            )
+            bootstrap = await OperationStore().get(
+                connection, principal, bootstrap.operation_id
+            )
+            with pytest.raises(LifecycleRefused, match="sealed"):
+                await require_managed_paid_plan(connection, paid, plan)
+            await connection.execute(
+                "INSERT INTO harness_allocation_seal "
+                "(org_id,workspace_id,allocation_id,sealed_revision,operation_id,"
+                "attempt_id,executor_id,fence_token) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                paid.org_id,
+                paid.workspace_id,
+                plan.original_allocation_id,
+                "reviewed-paid-apply",
+                paid.operation_id,
+                paid.attempt_id,
+                "original-worker",
+                1,
+            )
+            await require_managed_paid_plan(connection, paid, plan)
+            forged_paid = SimpleNamespace(
+                state=paid.state,
+                org_id=paid.org_id,
+                workspace_id=paid.workspace_id,
+                operation_id="unapproved-paid-apply",
+                plan_digest=paid.plan_digest,
+                admitted_request=paid.admitted_request,
+            )
+            with pytest.raises(LifecycleRefused, match="original paid approval"):
+                await require_managed_paid_plan(connection, forged_paid, plan)
+        proposed = access_request(plan, bootstrap, deployment, allocation_source=paid)
+        control = await admit(dict(proposed.parameters), proposed.idempotency_key)
+        stored = decode_payload(control.request_payload)
+        assert stored == proposed
+        assert (
+            stored.parameters["original_allocation_id"] == plan.original_allocation_id
+        )
+        assert stored.parameters["allocation_id"] == plan.allocation_id
+        assert stored.parameters["allocation_id"] != plan.original_allocation_id
+        async with harness.connect() as connection:
+            approval = await connection.fetchrow(
+                "SELECT reservation_state,plan_digest FROM harness_approval_consumption "
+                "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3",
+                control.operation_id,
+                plan.org_id,
+                plan.workspace_id,
+            )
+            assert approval["reservation_state"] == "confirmed"
+            assert approval["plan_digest"] == control.plan_digest
+            seal = await connection.fetchval(
+                "SELECT sealed_revision FROM harness_allocation_seal "
+                "WHERE org_id=$1 AND workspace_id=$2 AND allocation_id=$3",
+                paid.org_id,
+                paid.workspace_id,
+                plan.original_allocation_id,
+            )
+            assert seal == "reviewed-paid-apply"
+            assert not await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM harness_allocation_seal WHERE allocation_id=$1)",
+                plan.allocation_id,
+            )
+
+    with Harness.started(tmp_path_factory, request.node.name) as harness:
+        harness.run(exercise(harness))
