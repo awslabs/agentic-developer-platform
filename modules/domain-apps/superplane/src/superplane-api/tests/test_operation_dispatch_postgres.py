@@ -39,6 +39,7 @@ class GatewayTransport:
         self.binding = binding
         self.adp_org_id = adp_org_id
         self.proofs = []
+        self.proof_override = {}
 
     async def post(self, route, payload):
         if route == "/binding-proof":
@@ -51,6 +52,7 @@ class GatewayTransport:
                 "org_id": payload["org_id"],
                 "adp_org_id": self.adp_org_id,
                 **self.binding,
+                **self.proof_override,
             }
         self.calls.append((route, payload))
         return {
@@ -166,6 +168,44 @@ async def test_admission_before_workspace_commit_is_not_delivered_or_exhausted(
     assert transport.calls == [
         ("/dispatch", {"domain": "superplane", "mode": "execution", **identity})
     ]
+
+
+@pytest.mark.parametrize(
+    "proof_change",
+    [
+        {"checked_at": "2000-01-01T00:00:00+00:00"},
+        {"org_id": "other-organization"},
+        {"adp_org_id": "other-adp-organization"},
+        {"worker_registry_id": "other-worker"},
+    ],
+    ids=["stale", "foreign-org", "foreign-adp-org", "misbound-worker"],
+)
+async def test_changed_installed_worker_proof_preserves_pending_outbox(
+    dispatch, proof_change
+):
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    transport.proof_override.update(proof_change)
+    report = await dispatcher.drain_once()
+    assert report.delivered == 0
+    assert report.failed == 1
+    assert transport.proofs == [{"domain": "superplane", "org_id": identity["org_id"]}]
+    assert transport.calls == []
+    async with connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT delivered_at FROM harness_dispatch_outbox WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            is None
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            == "pending"
+        )
 
 
 async def test_workspace_for_another_operation_does_not_unlock_dispatch(dispatch):

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from harness_jobs.facade import OperationFacadeService
 from harness_jobs.identity import OperationRequest, decode_payload
 from harness_jobs.schema import apply
@@ -164,6 +165,8 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
     )
     monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
 
+    proof_override = {}
+
     async def binding_proof(route, payload):
         assert (route, payload) == (
             "/binding-proof",
@@ -177,6 +180,7 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
             "org_id": str(org_id),
             "adp_org_id": "adp-test",
             **binding,
+            **proof_override,
         }
 
     dispatcher = OperationDispatcher(
@@ -373,6 +377,7 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
         org_id,
     )
     context.config, context.document = config, document
+    context.proof_override = proof_override
     try:
         yield context
     finally:
@@ -435,6 +440,101 @@ async def test_continuation_replay_recovers_registration_after_approval_and_arti
                 "SELECT provisioning_operation_id FROM workspaces"
             )
             == first["provisioning_operation_id"]
+        )
+
+
+@pytest.mark.parametrize(
+    "proof_change",
+    [
+        {"checked_at": "2000-01-01T00:00:00+00:00"},
+        {"org_id": "other-organization"},
+        {"adp_org_id": "other-adp-organization"},
+        {"worker_role_arn": "arn:aws:iam::123456789012:role/other-worker"},
+    ],
+    ids=["stale", "foreign-org", "foreign-adp-org", "misbound-worker"],
+)
+async def test_invalid_installed_identity_refuses_before_workspace_write(
+    lifecycle, proof_change
+):
+    lifecycle.proof_override.update(proof_change)
+    with pytest.raises(HTTPException) as refusal:
+        await lifecycle.prepare()
+    assert refusal.value.status_code == 503
+    async with lifecycle.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM workspaces") == 0
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+        assert (
+            await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["expired-approval", "misbound-credential", "lost-authority"]
+)
+async def test_changed_approval_credential_or_authority_refuses_continuation(
+    lifecycle, change
+):
+    _, _, workspace = await lifecycle.prepare()
+    artifact_id = await lifecycle.artifact(workspace)
+    request_id = uuid.uuid4()
+    review = await lifecycle.review(workspace.id, artifact_id, request_id)
+    approval_id = await lifecycle.approve(review)
+    if change == "expired-approval":
+        async with lifecycle.connections.connect() as connection:
+            assert (
+                await connection.execute(
+                    "UPDATE operation_approvals SET expires_at=now()-interval '1 hour' "
+                    "WHERE approval_id=$1",
+                    str(approval_id),
+                )
+                == "UPDATE 1"
+            )
+    elif change == "misbound-credential":
+        lifecycle.document["tenants"][str(lifecycle.org_id)]["credential_references"][
+            "000000000002"
+        ]["credential_id"] = "other-credential"
+        lifecycle.config.write_text(canonical(lifecycle.document))
+    else:
+        async with lifecycle.connections.connect() as connection:
+            assert (
+                await connection.execute(
+                    "UPDATE workspace_grants SET revoked_at=now() WHERE workspace_id=$1",
+                    workspace.id,
+                )
+                != "UPDATE 0"
+            )
+    with pytest.raises(
+        (
+            LifecycleRefused,
+            provisioning.ProvisioningRefused,
+            provisioning.ProvisioningUnavailable,
+        )
+    ) as refusal:
+        await lifecycle.continue_(workspace.id, artifact_id, request_id, approval_id)
+    expected_reason = {
+        "expired-approval": "expired",
+        "misbound-credential": "runtime policy changed",
+        "lost-authority": "authority",
+    }[change]
+    assert expected_reason in str(refusal.value).lower()
+    async with lifecycle.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 1
+        assert (
+            await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 1
         )
 
 

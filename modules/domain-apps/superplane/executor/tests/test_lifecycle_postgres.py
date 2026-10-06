@@ -40,6 +40,8 @@ class Cloud:
         self.leaked_volume = False
         self.launches = 0
         self.sky_account = "123456789012"
+        self.sky_role = "arn:aws:iam::123456789012:role/approved"
+        self.sky_source = "web_identity"
         self.lose_launch_response = False
         # A kill AFTER the durable handle is journalled but BEFORE the launch is
         # observed: the state scoped recovery exists to resolve.
@@ -348,8 +350,8 @@ async def system(pool, tmp_path):
                     "version": 1,
                     "provider": "aws",
                     "account_id": cloud.sky_account,
-                    "role_arn": "arn:aws:iam::123456789012:role/approved",
-                    "credential_source": "web_identity",
+                    "role_arn": cloud.sky_role,
+                    "credential_source": cloud.sky_source,
                     "allocation_tags": ["instance", "volume", "network-interface"],
                     **(
                         {
@@ -625,10 +627,16 @@ async def test_retired_capacity_cannot_be_recreated_by_a_new_admitted_operation(
         )
 
 
-async def test_foreign_backend_identity_refuses_before_launch(system):
+@pytest.mark.parametrize("identity_change", ["account", "role", "credential-source"])
+async def test_foreign_backend_identity_refuses_before_launch(system, identity_change):
     _, admit, server, cloud, _, _, _ = system
     _, token = await admit("provision")
-    cloud.sky_account = "999999999999"
+    if identity_change == "account":
+        cloud.sky_account = "999999999999"
+    elif identity_change == "role":
+        cloud.sky_role = "arn:aws:iam::123456789012:role/other"
+    else:
+        cloud.sky_source = "other_source"
     with pytest.raises(OperationRefused):
         await server.dispatch(
             {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
