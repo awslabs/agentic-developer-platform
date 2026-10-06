@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:14:10.673Z",
+  "updated_at": "2026-10-06T01:20:35.430Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,10 +11,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py",
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_plan.py"
       ],
-      "note": "aac4f18 verifies retained control and paid lineage. Admitted managed retirement revocation remains unwired.",
+      "note": "a3ea318 binds the exact revoke step; admitted runtime execution and durable revocation effects remain unwired.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -27,7 +27,9 @@
         "fab15ef",
         "70801fd",
         "757ae6e",
-        "aac4f18"
+        "aac4f18",
+        "a3ea318",
+        "b277612"
       ]
     },
     {
@@ -40,10 +42,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "65 targeted tests passed; PostgreSQL source proof and doubled revocation are not an allocation-bound production effect test.",
+      "note": "79 targeted tests passed; control-source SQL is real, but the receipt and inner revocation journal are fixture-built.",
       "commits": [
         "b92e027"
       ]
@@ -98,7 +99,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Released-control and stale-authority denial pass in their respective tests; admitted-effect denial remains."
+      "note": "Plan/source denial passes; admitted deletion denial remains."
     },
     {
       "id": "AC-02-c1",
