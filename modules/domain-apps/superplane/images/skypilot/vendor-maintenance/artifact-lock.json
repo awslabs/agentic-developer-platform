@@ -41,10 +41,10 @@
   "wheels": [
     {
       "package": "GitPython",
-      "version": "3.1.60",
-      "file": "gitpython-3.1.60-py3-none-any.whl",
-      "sha256": "39548bffb8fa0f3a548133348868bb4838e79d73283052207dc97781a569b6b4",
-      "url": "https://files.pythonhosted.org/packages/71/63/ba28697918b7c190af9f3f21940d03e8814e25dd4ddd39d6929f3a553995/gitpython-3.1.60-py3-none-any.whl",
+      "version": "3.1.62",
+      "file": "gitpython-3.1.62-py3-none-any.whl",
+      "sha256": "7002251225e10e29d2e1f49e6532613fe5d5d9f0b6f1f02997a52b38fe56899e",
+      "url": "https://files.pythonhosted.org/packages/d6/0b/29d7965215f8ef830a7ca1f42997fe13e5693d85e9edb18f938d063ef5f2/gitpython-3.1.62-py3-none-any.whl",
       "requires_python": ">=3.7",
       "requires_dist": [
         "gitdb<5,>=4.0.1",
