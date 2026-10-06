@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:02:50.088Z",
+  "updated_at": "2026-10-06T00:09:36.048Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t4.",
+      "note": "Previously covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t5.",
+      "note": "Previously covered by AC-01-t5.",
       "commits": [
         "931919f"
       ]
@@ -1882,7 +1882,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t6.",
+      "note": "Previously covered by AC-01-t6.",
       "commits": [
         "f6cf576"
       ]
@@ -1895,11 +1895,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspaces.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Committed as cce8e6c5b; focused transport-double coverage is AC-01-t7. PostgreSQL end-to-end evidence remains AC-01-t1.",
+      "note": "Covered by AC-01-t7 and the PostgreSQL path in AC-01-t1.",
       "commits": [
         "cce8e6c"
       ]
@@ -1914,7 +1912,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "114 worker tests passed locally.",
+      "note": "Previously passed.",
       "commits": [
         "105f0f8",
         "3cede13",
@@ -3772,7 +3770,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "113 tests passed at the prior checkpoint."
+      "note": "Previously passed."
     },
     {
       "id": "AC-01-t6",
@@ -3784,7 +3782,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Previously passed; included in the current focused API run."
+      "note": "Previously passed."
     },
     {
       "id": "AC-01-t7",
@@ -3795,26 +3793,30 @@
       "covers": [
         "AC-01-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_dispatch.py"
-      ],
-      "note": "Added to cover this bounded wiring slice; 130 focused API tests passed locally."
+      "files": [],
+      "note": "Previously passed."
     },
     {
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
       "title": "Run API and native-worker integration tests with transport-only doubles",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1",
         "AC-01-c2",
         "AC-01-c3",
         "AC-01-c-wire"
       ],
-      "files": [],
-      "note": "Next task; PostgreSQL-backed tests skipped without a disposable server."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py"
+      ],
+      "note": "33 API/PostgreSQL and 23 native-worker tests passed at 14f7ccfc0. Go restart test requires an unavailable test binary.",
+      "commits": [
+        "14f7ccf"
+      ]
     },
     {
       "id": "AC-01-t2",
@@ -3828,7 +3830,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Cross-component cases remain."
+      "note": "Cross-component negative cases remain."
     },
     {
       "id": "AC-01-t3",
@@ -3851,7 +3853,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Must avoid first-workspace verification requiring an existing workspace or invented grant."
+      "note": "Must support first-workspace readiness without inventing a grant."
     },
     {
       "id": "AC-02-c2",
@@ -3861,7 +3863,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Distinguish prepared proof while paused from executable proof after activation; coordinate IAM route allowlists and reviewed-release checks."
+      "note": "Prepared and executable binding proofs require distinct checks."
     },
     {
       "id": "AC-02-t1",
@@ -3909,7 +3911,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Full suites and CI remain pending; broader API run had 14 legacy-workspace expectation failures."
+      "note": "Full suites and CI remain pending."
     },
     {
       "id": "AC-04-c1",
@@ -3931,7 +3933,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Remote SHA verified at cce8e6c5b; required checks and handoff remain."
+      "note": "PR head verified at 14f7ccfc0; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
