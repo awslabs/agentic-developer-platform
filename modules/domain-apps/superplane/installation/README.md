@@ -3,6 +3,8 @@
 The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
 This document provides supporting implementation detail or historical evidence;
 its availability statements do not imply that pending design requirements are implemented.
+For the governed workspace lifecycle release gate and evaluator evidence, see
+[the operator handoff](NATIVE-LIFECYCLE-HANDOFF.md).
 
 `modules/domain-apps/superplane/deploy.sh` plans, checks and executes an installation of the API, controller, platform monitor and pinned SkyPilot server on an **existing** ADP installation. It never calls a platform deployment script. Actual installation, database mutation, feature activation and workload operation remain subject to the accepted installation authorization.
 
