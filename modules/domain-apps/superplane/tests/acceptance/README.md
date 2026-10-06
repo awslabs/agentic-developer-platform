@@ -84,6 +84,14 @@ Use new `report.json` for each attempt (the CLI refuses overwrites). A
 `checkpoint.json` may be absent on first preflight; if it exists, it must be
 the original scope's owner-only checkpoint. Preserve it and its `.lock` file
 across retries; never reset an uncertain original request to force a pass.
+New checkpoints use `demo1-checkpoint-v2`, binding the exact HTTPS origin and
+every validated selection field, including target, credentials, principals,
+release, limits, cleanup ownership and survivor baseline. A changed selection
+or a legacy `demo1-checkpoint-v1` file is refused without overwriting the
+checkpoint. Legacy files lack enough bindings for safe automatic migration.
+Retain the file and original request identity for reconciliation by the cleanup
+owner; do not rewrite its version or scope, discard it, or create a replacement
+request to bypass the refusal.
 The command below reads those files but makes **no** browser, broker, AWS,
 provisioning or retirement call:
 
