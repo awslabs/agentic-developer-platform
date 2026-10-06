@@ -250,6 +250,10 @@ def collect_oci(archive, platform_digest):
                 for member, name in zip(entries, names):
                     leaf = posixpath.basename(name)
                     if leaf.startswith(".wh."):
+                        require(
+                            leaf == ".wh..wh..opq" or leaf[4:] not in ("", ".", ".."),
+                            "invalid whiteout target basename",
+                        )
                         validate_parents(files, name)
                         require(
                             member.isfile() and member.size == 0,

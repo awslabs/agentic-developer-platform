@@ -95,6 +95,12 @@ def test_nonempty_whiteout_refused(tmp_path):
         D.collect_oci(*layer_archive(tmp_path, layers))
 
 
+@pytest.mark.parametrize("name", ["tree/.wh.", "tree/.wh..", "tree/.wh..."])
+def test_invalid_whiteout_target_refused(tmp_path, name):
+    with pytest.raises(D.Invalid, match="whiteout target basename"):
+        D.collect_oci(*layer_archive(tmp_path, [tar_bytes([(name, b"")])]))
+
+
 @pytest.mark.parametrize("entry", ["parent/child", "parent/.wh.child"])
 def test_file_parent_for_write_or_whiteout_refused(tmp_path, entry):
     layers = [tar_bytes([("parent", b"file")]), tar_bytes([(entry, b"")])]
