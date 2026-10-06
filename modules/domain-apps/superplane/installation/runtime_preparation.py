@@ -450,6 +450,7 @@ def compose(request, reviewed, env, lock, operator):
     )
     binding = {
         "domain": "superplane",
+        "current_identity_enforced": True,
         "org_id": env["org_id"],
         "adp_org_id": env["adp_org_id"],
         "producer_registry_id": operator["producer_registry_id"],

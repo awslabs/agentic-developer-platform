@@ -187,6 +187,7 @@ def test_contract_reuses_actual_worker_validator_and_fixed_gateway_binding(
     result = compose(selected_request, reviewed, env, lock, operator)
     assert result["status"] == "requires-shared-owner-review"
     assert result["binding_attested"] is False and result["worker_ready"] is False
+    assert result["gateway_binding_proposal"]["current_identity_enforced"] is True
     assert (
         result["gateway_binding_proposal"]["queue_url"]
         == reviewed["resources"]["queue_url"]
