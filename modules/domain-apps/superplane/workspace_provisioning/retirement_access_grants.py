@@ -8,8 +8,78 @@ accounting record.
 
 import asyncio
 
-from .artifacts import canonical
+from .artifacts import canonical, digest
 from .runtime_config import LifecycleRefused
+
+
+def managed_revocation_recipe(plan, access_artifact):
+    """Derive one exact deletion from a read_artifact-verified access row.
+
+    The admitted retirement operation must bind this row and its producer.
+    """
+    from .retirement_access_artifact import validate_access_artifact
+    from .retirement_managed_access import ManagedRetirementAccessPlan
+
+    if (
+        not isinstance(plan, ManagedRetirementAccessPlan)
+        or len(plan.grants) != 1
+        or plan.revocation_order != ("cleaner-entry",)
+        or plan.grants[0].get("key") != "cleaner-entry"
+        or plan.grants[0].get("kind") != "eks-entry"
+    ):
+        raise LifecycleRefused("managed revocation requires its finite EKS entry")
+    identity = validate_access_artifact(access_artifact, plan)["cleaner-entry"]
+    spec = plan.grants[0]
+    return {
+        "revoke-cleaner-entry-"
+        + digest([access_artifact["artifact_id"], identity])[:24]: {
+            "service": "eks",
+            "method": "delete_access_entry",
+            "account_id": plan.cluster_arn.split(":")[4],
+            "arguments": {
+                "clusterName": plan.cluster_arn.rsplit("/", 1)[-1],
+                "principalArn": spec["principal_arn"],
+            },
+        }
+    }
+
+
+async def revoke_managed_access_grant(
+    plan, access_artifact, effects, *, eks, verify_cluster
+):
+    from .retirement_access_artifact import validate_access_artifact
+
+    recipe = managed_revocation_recipe(plan, access_artifact)
+    if canonical(effects.recipe) != canonical(recipe):
+        raise LifecycleRefused("managed revocation differs from its admitted recipe")
+    spec = plan.grants[0]
+    identity = validate_access_artifact(access_artifact, plan)["cleaner-entry"]
+    key, descriptor = next(iter(recipe.items()))
+
+    async def check():
+        await effects.authority()
+        await verify_cluster()
+
+    await check()
+    previous = await effects.intend(key, descriptor)
+    if previous is not None:
+        if previous != identity:
+            raise LifecycleRefused("managed revocation confirmation changed")
+        await check()
+        if await asyncio.to_thread(eks.observe, spec) is not None:
+            raise LifecycleRefused("confirmed managed revocation is still present")
+        return identity
+    await check()
+    observed = await asyncio.to_thread(eks.observe, spec)
+    if observed != identity:
+        raise LifecycleRefused("managed access entry differs from approved readback")
+    await check()
+    await asyncio.to_thread(eks.delete, spec, identity)
+    await check()
+    if await asyncio.to_thread(eks.observe, spec) is not None:
+        raise LifecycleRefused("managed revocation has no provider absence readback")
+    await effects.confirm(key, descriptor, identity)
+    return identity
 
 
 async def establish_access_grants(plan, effects, *, eks, kubernetes, verify_target):

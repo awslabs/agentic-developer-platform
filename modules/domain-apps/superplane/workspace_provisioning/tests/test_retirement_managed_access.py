@@ -659,3 +659,123 @@ def test_managed_control_grant_checks_dormant_group_and_journals_effect(
     assert runtime.cloud.mutations == before + 1
     assert asyncio.run(run()) == recorded
     assert runtime.cloud.mutations == before + 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "none",
+        "lost_reply",
+        "changed_identity",
+        "changed_artifact",
+        "stale_authority",
+        "stale_cluster",
+        "changed_recipe",
+    ],
+)
+def test_managed_revocation_requires_artifact_and_protected_intent(runtime, failure):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from workspace_bootstrap.tests.test_authority_runtime_postgres import Crash
+    from workspace_provisioning.artifacts import canonical, digest
+    from workspace_provisioning.retirement_access_artifact import (
+        access_metadata,
+        access_target,
+    )
+    from workspace_provisioning.retirement_access_grants import (
+        managed_revocation_recipe,
+        revoke_managed_access_grant,
+    )
+
+    from .test_retirement_access_grants import Journal
+
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    eks = arguments["eks"]
+    identity = eks.create(plan.grants[0])
+    row = {
+        "artifact_id": "f" * 64,
+        "org_id": plan.org_id,
+        "workspace_id": plan.workspace_id,
+        "account_id": plan.cluster_arn.split(":")[4],
+        "target_json": canonical(access_target(plan)),
+        "parameters_json": canonical(
+            {
+                "lifecycle_phase": "prepare-retirement-access",
+                "allocation_id": plan.allocation_id,
+                "original_allocation_id": plan.original_allocation_id,
+                "retirement_request_id": plan.retirement_request_id,
+                "retirement_inventory_sha256": plan.inventory_sha256,
+                "retirement_access_plan_sha256": plan.revision,
+                "retirement_access_recipe_sha256": digest(plan.recipe()),
+            }
+        ),
+        "artifact_metadata_json": canonical(
+            access_metadata(plan, {"cleaner-entry": identity})
+        ),
+    }
+    journal = Journal(
+        SimpleNamespace(recipe=lambda: managed_revocation_recipe(plan, row))
+    )
+    verify_cluster = AsyncMock()
+    before = runtime.cloud.mutations
+
+    async def run():
+        return await revoke_managed_access_grant(
+            plan, row, journal, eks=eks, verify_cluster=verify_cluster
+        )
+
+    if failure == "changed_artifact":
+        row["workspace_id"] = "another-workspace"
+        with pytest.raises(LifecycleRefused, match="artifact"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "changed_identity":
+        runtime.cloud.entries[plan.grants[0]["principal_arn"]]["username"] = "replaced"
+        with pytest.raises(LifecycleRefused, match="approved readback"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "stale_cluster":
+        verify_cluster.side_effect = LifecycleRefused("cluster replaced")
+        with pytest.raises(LifecycleRefused, match="cluster replaced"):
+            asyncio.run(run())
+        assert journal.events == {}
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "changed_recipe":
+        journal.recipe = {"unapproved": {}}
+        with pytest.raises(LifecycleRefused, match="admitted recipe"):
+            asyncio.run(run())
+        assert journal.events == {}
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "stale_authority":
+        journal.authority.side_effect = LifecycleRefused("expired cleanup lease")
+        with pytest.raises(LifecycleRefused, match="expired cleanup lease"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "lost_reply":
+        runtime.cloud.crash = ("delete-entry", plan.grants[0]["principal_arn"])
+        with pytest.raises(Crash):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before + 1
+        with pytest.raises(LifecycleRefused, match="ambiguous"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before + 1
+        return
+    assert asyncio.run(run()) == identity
+    assert runtime.cloud.mutations == before + 1
+    assert asyncio.run(run()) == identity
+    assert runtime.cloud.mutations == before + 1
+    assert verify_cluster.await_count > 1
