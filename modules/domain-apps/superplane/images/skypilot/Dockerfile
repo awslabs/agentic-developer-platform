@@ -1,3 +1,5 @@
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 # Official CPython patch release on the same Debian Trixie ABI. Keep SkyPilot's
 # provider packages; do not copy the official image's pip/site-packages tree.
 FROM public.ecr.aws/docker/library/python:3.10.21-slim@sha256:31dd4d9529d02d7436659061cb7564cd4733fc90e5e152709a942d53382ec8d0 AS python-security
@@ -35,3 +37,30 @@ RUN python -m pip check && python -c "import sys, ssl, sqlite3, bz2, lzma, ctype
 # Keep the upstream entrypoint/command and API behavior; deployment supplies
 # the API process command. Health/compatibility tests must use this final image.
 RUN python -c "import sky; import ssl; import OpenSSL; import cryptography; import anyio; assert sky.__version__ == '0.12.3'"
+
+# Preserve all three SSH packages with the reviewed critical/high backports.
+COPY --from=openssh-security /out/ /tmp/adp-openssh-packages/
+RUN python - <<'PYTHON'
+import os, subprocess, shutil
+from pathlib import Path
+root = Path('/tmp/adp-openssh-packages')
+packages = sorted(root.glob('openssh-*.deb'))
+assert len(packages) == 3
+existing = set(Path('/etc/ssh').glob('ssh_host_*'))
+subprocess.run(['dpkg', '--force-confold', '-i', *map(str, packages)], check=True, env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'})
+for path in set(Path('/etc/ssh').glob('ssh_host_*')) - existing:
+    path.unlink()
+for name in ['openssh-client', 'openssh-server', 'openssh-sftp-server']:
+    assert subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', name], text=True) == '1:10.0p1-7+deb13u4+adp.security.2'
+out = Path('/opt/adp-openssh-security')
+out.mkdir(exist_ok=True, parents=True)
+for name in ['source-lock.json', 'NOTICE', 'patched-source-sha256.txt']:
+    shutil.copyfile(root / name, out / name)
+shutil.copytree(root / 'source-authentication', out / 'source-authentication', dirs_exist_ok=True)
+shutil.rmtree(root)
+PYTHON
+
+# Apply after apt upgrades so distribution packages cannot replace the fix.
+COPY --from=curl-security /out/ /tmp/adp-curl/
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
