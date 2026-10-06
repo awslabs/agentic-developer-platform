@@ -186,6 +186,23 @@ def install_infrastructure(scenario):
     ]
 
     class Infrastructure:
+        def get_paginator(self, method):
+            fields = {
+                "describe_instances": "Reservations",
+                "describe_network_interfaces": "NetworkInterfaces",
+                "describe_volumes": "Volumes",
+                "get_resources": "ResourceTagMappingList",
+            }
+            assert method in fields
+            return SimpleNamespace(paginate=lambda **kwargs: [{fields[method]: []}])
+
+        def describe_addresses(self, **kwargs):
+            return {"Addresses": []}
+
+        def describe_vpcs(self, **kwargs):
+            assert kwargs == {"VpcIds": [outputs["vpc_id"]]}
+            return {"Vpcs": [{"VpcId": outputs["vpc_id"]}]}
+
         def get_caller_identity(self):
             return {"Account": identities.ACCOUNT_ID}
 
@@ -322,7 +339,7 @@ def install_infrastructure(scenario):
         def client(self, service, **kwargs):
             return (
                 Infrastructure()
-                if service in {"sts", "eks", "ec2"}
+                if service in {"sts", "eks", "ec2", "resourcegroupstaggingapi"}
                 else super().client(service, **kwargs)
             )
 
@@ -332,6 +349,8 @@ def install_infrastructure(scenario):
 
 def install_canonical_transports(scenario, operation, outputs, tmp_path, monkeypatch):
     cluster = _FakeCluster()
+    # The fresh managed module does not install this adopted-cluster fixture addon.
+    cluster.deployments.pop(("kube-system", "ebs-csi-controller"))
     config, lease = scenario.policy["runtime"], operation.grant.lease
     bridge = AsyncBridgeStore(scenario.harness.connect, asyncio.get_running_loop())
     binding = OperationBinding(
@@ -533,7 +552,25 @@ def test_new_account_reaches_real_canonical_registration_and_terminal_anchor(
             == identities.ACCOUNT_ID
         )
         assert len(scenario.accounts) == 1 and len(scenario.operations) == 5
+        applied = next(
+            operation
+            for operation in scenario.operations.values()
+            if operation.request.parameters.get("lifecycle_phase")
+            == "apply-infrastructure"
+        )
         async with bootstrap_harness.connect() as connection:
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_provider_report WHERE operation_id=$1 AND allocation_id=$2",
+                    applied.grant.lease.operation_id,
+                    applied.request.parameters["allocation_id"],
+                )
+                == 1
+            )
+            assert await connection.fetchval(
+                "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
+                applied.request.parameters["allocation_id"],
+            )
             assert (
                 await connection.fetchval(
                     "SELECT count(*) FROM harness_operations WHERE state='succeeded'"

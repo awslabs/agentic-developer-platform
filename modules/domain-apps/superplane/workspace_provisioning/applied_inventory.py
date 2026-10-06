@@ -115,10 +115,41 @@ def infrastructure_document(rows):
     return {"resource_changes": resources}
 
 
+async def applied_provider_session(operation, context, account_id, region):
+    """Re-establish the same approved account/role chain used by the paid apply."""
+    from dataclasses import asdict
+
+    from .runtime import delivery_session, validate_phase
+
+    config, request, authorization, source, _ = await validate_phase(
+        operation, context, require_fresh=False
+    )
+    if request.region != region or source is None or source["account_id"] != account_id:
+        raise LifecycleRefused("applied census changed its original account or region")
+    if request.mode.value != "new-account-managed":
+        return await delivery_session(operation, context, account_id, region)
+
+    from .account_registration import created_account_registration
+    from .account_runtime import child_session
+
+    management = await delivery_session(
+        operation, context, request.management_account_id, region
+    )
+    registration = await created_account_registration(
+        operation, context, request, authorization, source, management
+    )
+    metadata = json.loads(source["artifact_metadata_json"])
+    if metadata.get("created_account_registration") != asdict(registration):
+        raise LifecycleRefused(
+            "applied census lost its maintained account registration"
+        )
+    return await child_session(
+        operation, context, config, request, source, management, bootstrap=False
+    )
+
+
 async def seal_applied_inventory(operation, context, result):
     """ExecutionRPCServer after-step hook; executes before closing the apply lease."""
-    from .runtime import delivery_session
-
     if result[0].outcome is not CallOutcome.SUCCEEDED:
         return
     current = await current_operation(operation, context)
@@ -169,7 +200,7 @@ async def seal_applied_inventory(operation, context, result):
         or clusters[0].get("name") != outputs["cluster_name"]
     ):
         raise LifecycleRefused("applied state omits the exact managed cluster")
-    session = await delivery_session(
+    session = await applied_provider_session(
         current, context, outputs["account_id"], outputs["aws_region"]
     )
     inventory = RetirementInventory(

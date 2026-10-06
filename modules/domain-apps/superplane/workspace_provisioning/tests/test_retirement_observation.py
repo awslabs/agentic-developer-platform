@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from harness_jobs.effects import CallEffect, call_effect
+from harness_jobs.identity import OperationRefused
 from harness_jobs.inventory import AllocationResource, ResourcePresence
 
 from workspace_provisioning.retirement_observation import (
@@ -151,7 +152,7 @@ def test_bootstrap_allocation_catalog_keeps_ownership_separate_from_paid_state(
     record = replace(
         record, cluster_ownership="adp-created", components=(component("owned"),)
     )
-    with pytest.raises(Exception, match="reviewed state inventory"):
+    with pytest.raises(OperationRefused, match="reviewed state inventory"):
         reader.catalog(record, None, {}, {})
     members = reader.catalog(
         record,

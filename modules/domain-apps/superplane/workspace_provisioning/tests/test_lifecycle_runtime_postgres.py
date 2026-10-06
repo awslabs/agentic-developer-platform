@@ -332,7 +332,11 @@ class Scenario:
                                             "mode": "managed",
                                             "type": "aws_vpc",
                                             "address": "aws_vpc.workspace[0]",
-                                            "values": {"id": "vpc-0123456789abcdef0"},
+                                            "values": {
+                                                "id": scenario.outputs["vpc_id"][
+                                                    "value"
+                                                ]
+                                            },
                                         },
                                         {
                                             "mode": "managed",
