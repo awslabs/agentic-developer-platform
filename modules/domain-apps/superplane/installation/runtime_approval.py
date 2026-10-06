@@ -243,6 +243,20 @@ class GitHubPlanApproval:
                 and type(review.get("user", {}).get("id")) is int,
                 "Invalid GitHub review identity",
             )
+            state = review.get("state")
+            require(
+                state
+                in {
+                    "APPROVED",
+                    "CHANGES_REQUESTED",
+                    "DISMISSED",
+                    "COMMENTED",
+                    "PENDING",
+                },
+                "Unknown GitHub review state",
+            )
+            if state in {"COMMENTED", "PENDING"}:
+                continue
             key = review["user"]["id"]
             if key not in latest or review["id"] > latest[key]["id"]:
                 latest[key] = review

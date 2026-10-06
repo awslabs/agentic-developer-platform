@@ -295,7 +295,7 @@ class FakeTerraform:
         if action == "plan":
             target = Path(args[1].removeprefix("-chdir=")) / "installation.tfplan"
             target.write_text(json.dumps(self.plan, sort_keys=True))
-            target.chmod(0o600)
+            target.chmod(0o644)  # Match real Terraform under the common umask022.
         if action == "show" and args[-1] == "installation.tfplan":
             return SimpleNamespace(stdout=json.dumps(self.plan))
         if action == "show":

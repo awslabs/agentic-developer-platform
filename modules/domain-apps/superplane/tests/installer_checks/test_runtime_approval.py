@@ -109,7 +109,9 @@ def review_setup(tmp_path, environment):
                 (directory / "terraform/installation.tfplan").write_bytes(b"changed")
             return copy.deepcopy(state.get("final_review", state["reviews"][-1]))
         if "/permission" in path:
-            return copy.deepcopy(state["permission"])
+            return copy.deepcopy(
+                state.get("permissions", {}).get(path, state["permission"])
+            )
         raise AssertionError(path)
 
     adapter = GitHubPlanApproval(
@@ -291,3 +293,59 @@ def test_json_boolean_cannot_impersonate_manifest_version(review_setup):
     state["manifest"]["version"] = True
     with pytest.raises(Refusal, match="differs from saved plan"):
         adapter.verify_plan(**args)
+
+
+@pytest.mark.parametrize("nondecision", ["COMMENTED", "PENDING"])
+def test_comments_cannot_erase_an_outstanding_changes_request(
+    review_setup, nondecision
+):
+    adapter, args, state = review_setup
+    blocker = {**state["reviews"][0], "state": "CHANGES_REQUESTED"}
+    state["reviews"] = [
+        blocker,
+        {**blocker, "id": 101, "state": nondecision},
+        {
+            "id": 102,
+            "state": "APPROVED",
+            "commit_id": HEAD,
+            "user": {"id": 3, "login": "second-admin"},
+        },
+    ]
+    state["permissions"] = {
+        "repos/aws-e/adp/collaborators/second-admin/permission": {
+            "permission": "admin",
+            "role_name": "admin",
+            "user": {"id": 3},
+        },
+    }
+    with pytest.raises(Refusal, match="requests changes"):
+        adapter.verify_plan(**args)
+
+
+def test_comment_does_not_erase_approval(review_setup):
+    adapter, args, state = review_setup
+    approved = copy.deepcopy(state["reviews"][0])
+    state["reviews"].append({**approved, "id": 101, "state": "COMMENTED"})
+    state["final_review"] = approved
+    assert adapter.verify_plan(**args)["approved"] is True
+
+
+def test_dismissed_changes_request_allows_another_current_approval(review_setup):
+    adapter, args, state = review_setup
+    state["reviews"].insert(
+        0,
+        {
+            "id": 99,
+            "state": "DISMISSED",
+            "commit_id": HEAD,
+            "user": {"id": 3, "login": "second-admin"},
+        },
+    )
+    state["permissions"] = {
+        "repos/aws-e/adp/collaborators/second-admin/permission": {
+            "permission": "admin",
+            "role_name": "admin",
+            "user": {"id": 3},
+        },
+    }
+    assert adapter.verify_plan(**args)["approved"] is True

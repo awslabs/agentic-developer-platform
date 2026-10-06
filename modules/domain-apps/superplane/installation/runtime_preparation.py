@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import os
 import stat
 import uuid
 
@@ -901,6 +902,25 @@ def inspect_state(state, proposal, inspector):
         "worker_role_id": role_ids["worker"],
         "observer_role_id": role_ids["observer"],
     }
+
+
+def create_saved_plan(path, create):
+    """Make only a newly created owned plan private; never repair a resumed file."""
+    require(
+        not path.exists() and not path.is_symlink(),
+        "Unreceipted runtime plan already exists; use a new private directory",
+    )
+    create()
+    require(
+        not path.is_symlink() and path.is_file(),
+        "New runtime plan is missing or linked",
+    )
+    info = path.stat()
+    require(
+        stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid(),
+        "New runtime plan is not an owned regular file",
+    )
+    path.chmod(0o600)
 
 
 def binary_plan_digest(path):
