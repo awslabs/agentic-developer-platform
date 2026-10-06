@@ -118,7 +118,7 @@ resource "aws_ecr_repository" "superplane" {
 
 # Keep the repositories from growing without bound. Untagged images accumulate on every
 # rebuild of a digest-pinned image, and nothing references them once superseded.
-# SkyPilot and executor retain tagged release/build-input images: pinned S03
+# SkyPilot, executor, API and paid-worker retain tagged release/build-input images: pinned S03
 # and reviewed Python bases must survive later publications. Only untagged
 # cleanup applies to those repositories.
 resource "aws_ecr_lifecycle_policy" "superplane" {
@@ -139,7 +139,7 @@ resource "aws_ecr_lifecycle_policy" "superplane" {
         }
         action = { type = "expire" }
       },
-      ], contains(["adp-superplane-skypilot", "adp-superplane-executor"], each.key) ? [] : [
+      ], contains(["adp-superplane-skypilot", "adp-superplane-executor", "adp-superplane-api", "adp-superplane-paid-worker"], each.key) ? [] : [
       {
         rulePriority = 2
         description  = "Keep the 30 most recent tagged images"
