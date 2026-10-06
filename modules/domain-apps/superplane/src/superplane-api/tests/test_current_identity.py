@@ -349,6 +349,69 @@ async def test_current_identity_and_explicit_grant_apply_same_implications_to_ap
     assert reader.calls == len(Permission)
 
 
+async def test_revoked_workspace_grant_never_restores_first_workspace_authority(client, monkeypatch):
+    import uuid
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.main import app
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from tests.conftest import async_session_test
+    from tests.test_organization_grants import seed
+
+    org_id, _, headers = await seed(monkeypatch)
+    workspace_id = uuid.uuid4()
+    reader = Reader(CurrentIdentity("verified-human", "human", "selected-adp-org", "membership-1", True, True))
+    monkeypatch.setattr(app.state, "current_identity_reader", reader)
+
+    async def worker_resolution(authority, candidate):
+        token = set_acting_principal(ActingPrincipal(
+            "verified-human", str(org_id), str(candidate), adp_org_id="selected-adp-org",
+            membership_id="membership-1", identity_reader=reader,
+        ))
+        try:
+            return await authority.resolve(
+                org_id=str(org_id), workspace_id=str(candidate), permission="workspace:provision",
+            )
+        finally:
+            reset_acting_principal(token)
+
+    authority = GrantBackedAuthority(async_session_test)
+    assert (await client.get("/workspaces", headers=headers)).status_code == 200
+    assert await worker_resolution(authority, workspace_id) is not None
+
+    async with async_session_test() as db:
+        db.add(Workspace(
+            id=workspace_id, org_id=org_id, name="initial", status="Ready", isolation_mode="dedicated",
+        ))
+        await db.flush()
+        db.add(WorkspaceGrantRecord(
+            org_id=org_id, workspace_id=workspace_id, principal="verified-human",
+            principal_type="human", permissions="workspace:provision",
+        ))
+        await db.commit()
+
+    assert (await client.get(f"/workspaces/{workspace_id}", headers=headers)).status_code == 200
+    assert await worker_resolution(authority, workspace_id) is not None
+
+    async with async_session_test() as db:
+        grant = await db.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id,
+        ))
+        grant.revoked_at = datetime.now(UTC)
+        await db.commit()
+
+    assert (await client.get(f"/workspaces/{workspace_id}", headers=headers)).status_code == 403
+    assert await worker_resolution(authority, workspace_id) is None
+    restarted = GrantBackedAuthority(async_session_test)
+    assert await worker_resolution(restarted, workspace_id) is None
+    reader.result = CurrentIdentity("verified-human", "human", "selected-adp-org", "membership-1", False, True)
+    assert await worker_resolution(restarted, uuid.uuid4()) is None
+    assert reader.calls >= 5
+
+
 async def test_identity_readiness_exposes_unconfigured_opt_in(client, monkeypatch):
     from app.config import settings
     from app.main import app
