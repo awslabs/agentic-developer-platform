@@ -76,6 +76,8 @@ def detect(repo, event="push"):
     "paths",
     [
         (INFRA,),
+        ("modules/domain-apps/superplane/infra/provider-authority/main.tf",),
+        ("modules/domain-apps/superplane/infra/provider-authority/main.tf", CODE),
         (INFRA, CODE),
         ("environments/dev/modules/webhook-ingress.tfvars",),
         ("environments/dev/modules/webhook-ingress.tfvars.json", CODE),

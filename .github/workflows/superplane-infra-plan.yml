@@ -48,6 +48,7 @@ on:
       - 'modules/domain-apps/superplane/infra/workspaces/**'
       - 'modules/domain-apps/superplane/infra/domain-runtime/**'
       - 'modules/domain-apps/superplane/infra/lifecycle-foundations/**'
+      - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'modules/domain-apps/superplane/environments/dev/superplane.tfvars'
       - 'modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
@@ -109,6 +110,8 @@ jobs:
             dir: modules/domain-apps/superplane/infra/domain-runtime
           - name: lifecycle-foundations
             dir: modules/domain-apps/superplane/infra/lifecycle-foundations
+          - name: provider-authority
+            dir: modules/domain-apps/superplane/infra/provider-authority
           - name: installer-access
             dir: modules/domain-apps/superplane/infra/installer-access
     # Tests use mocks. Disable normal AWS credential discovery in this job only;

@@ -18,13 +18,15 @@ from fastapi import HTTPException, Response
 from src.domain_proxy import superplane as proxy
 from src.internal import domain_provider_authority as authority
 from src.internal import domain_provider_session as broker
-from src.shared.domain_provider_contract import OWNER, WORKSPACE_NAMESPACE, canonical, digest, handle, reserved, validate
+from src.shared.domain_provider_contract import OWNER, WORKSPACE_NAMESPACE, canonical, digest, handle, managed_policies, reserved, validate
 
 ACCOUNT = "123456789012"
-ROLE = f"arn:aws:iam::{ACCOUNT}:role/adp-dev-superplane-provider"
 ROLE_ID = "AROA" + "A" * 17
 ORG = "12345678-1234-1234-1234-123456789012"
 REQUEST = "87654321-1234-1234-1234-123456789012"
+WORKSPACE = str(uuid.uuid5(WORKSPACE_NAMESPACE, f"{ORG}/{REQUEST}"))
+ROLE_NAME = "adp-dev-spp-" + digest([ORG, WORKSPACE])[:32]
+ROLE = f"arn:aws:iam::{ACCOUNT}:role/{ROLE_NAME}"
 
 
 @dataclass
@@ -61,7 +63,8 @@ def record():
         generation=1,
         status="active",
         expires_at=(datetime.now(UTC) + timedelta(hours=2)).isoformat(),
-        child_boundary_arn=f"arn:aws:iam::{ACCOUNT}:policy/child-boundary",
+        child_boundary_arn=ROLE.replace(":role/", ":policy/") + "-child-boundary",
+        managed_policy_arns=managed_policies(ROLE),
         child_boundary_sha256="c" * 64,
         validation_profile={
             "region": "us-east-1",
@@ -103,7 +106,8 @@ def context(monkeypatch):
     value = record()
     store = Store(value)
     monkeypatch.setenv("BG_ENVIRONMENT", "dev")
-    monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", ACCOUNT)
+    monkeypatch.setenv("ADP_DOMAIN_PROVIDER_ACCOUNT_ID", ACCOUNT)
+    monkeypatch.setenv("BG_SUPERPLANE_ROUTE_BUCKET", f"adp-terraform-state-{ACCOUNT}")
     monkeypatch.setenv("ADP_DOMAIN_PROVIDER_AUTHORITY_TABLE", "adp-dev-superplane-provider-authorities")
     monkeypatch.setenv("ADP_DOMAIN_PROVIDER_EVIDENCE_TABLE", "adp-dev-superplane-provider-evidence")
     monkeypatch.setattr(authority, "aws_client", lambda service: store)
@@ -288,7 +292,7 @@ async def test_governed_broker_checks_paid_authority_and_races(context, monkeypa
     monkeypatch.setattr(authority, "read_report", lambda *args: datetime.now(UTC))
     issued = False
 
-    async def refresh():
+    async def refresh(**kwargs):
         if issued and mutation == "lease":
             raise HTTPException(403, "lease changed")
 
@@ -306,7 +310,7 @@ async def test_governed_broker_checks_paid_authority_and_races(context, monkeypa
             (datetime.now(UTC) + timedelta(seconds=899)).isoformat(),
             "us-east-1",
             "unused",
-            f"arn:aws:sts::{ACCOUNT}:assumed-role/adp-dev-superplane-provider/session",
+            f"arn:aws:sts::{ACCOUNT}:assumed-role/{ROLE_NAME}/session",
             ("AROA" + "B" * 17 if mutation == "role-id" else ROLE_ID) + ":session",
         )
 
@@ -446,3 +450,100 @@ async def test_full_paid_broker_uses_governed_preflight_and_retains_final_fence_
     monkeypatch.setattr(authority, "read_report", changed_fence)
     with pytest.raises(HTTPException):
         await broker.provider_session(None, body, context.db, context.sm, preflight_only=True)
+
+
+@pytest.mark.parametrize("shorten", [False, True])
+async def test_minted_session_near_deadline_uses_actual_expiry_and_still_rechecks_shortening(context, monkeypatch, shorten):
+    from src.internal.sts_assume_service import AssumeRoleResult
+
+    start = datetime.now(UTC)
+    elapsed = [0]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return start + timedelta(seconds=elapsed[0])
+
+    monkeypatch.setattr(broker, "datetime", Clock)
+    deadline = start + timedelta(seconds=901)
+    operation = dict(
+        requester="subject",
+        plan_digest="sealed",
+        approval_id="approval",
+        approval_expires_at=deadline,
+        job_id="job",
+        workspace_id=context.value["workspace_id"],
+        request_payload="sealed",
+    )
+    lease = dict(
+        operation_id="operation",
+        org_id=ORG,
+        workspace_id=context.value["workspace_id"],
+        holder="run#1",
+        attempt_id="run#1",
+        fence_token=1,
+        runtime_deadline=deadline,
+    )
+    state = (Binding(), "run#1", "record", SimpleNamespace(expires_at=deadline), operation, lease)
+    monkeypatch.setattr(broker, "current", AsyncMock(return_value=state))
+    monkeypatch.setattr(broker, "sealed_target", lambda *args: ((handle(ROLE), "aws", context.value["label"]), ACCOUNT))
+    monkeypatch.setattr(authority, "read_report", lambda *args: datetime.now(UTC))
+    monkeypatch.setattr("src.internal.credential_routes._write_audit", AsyncMock())
+
+    def assume(**kwargs):
+        elapsed[0] = 10  # Valid actual session; fewer than another 900 seconds remain.
+        if shorten:
+            operation["approval_expires_at"] = start + timedelta(seconds=899)
+        return AssumeRoleResult(
+            "key",
+            "secret",
+            "token",
+            (start + timedelta(seconds=900)).isoformat(),
+            "us-east-1",
+            "unused",
+            f"arn:aws:sts::{ACCOUNT}:assumed-role/{ROLE_NAME}/session",
+            ROLE_ID + ":session",
+        )
+
+    monkeypatch.setattr(broker, "assume_role", assume)
+    call = broker.provider_session(None, SimpleNamespace(region="us-east-1", operation_id="operation"), context.db, context.sm)
+    if shorten:
+        with pytest.raises(HTTPException):
+            await call
+    else:
+        answer = await call
+        assert datetime.fromisoformat(answer["expiration"]) == start + timedelta(seconds=900)
+
+
+def test_exact_managed_shards_pin_default_versions_and_canonical_documents():
+    from src.shared.domain_provider_contract import policy_identity
+
+    state = {"version": "v1", "document": {"Statement": []}, "attached": managed_policies(ROLE), "inline": []}
+    iam = SimpleNamespace(
+        get_role=lambda **kw: {"Role": {"Arn": ROLE, "RoleId": ROLE_ID, "AssumeRolePolicyDocument": {"Statement": []}}},
+        list_role_policies=lambda **kw: {"PolicyNames": state["inline"]},
+        list_attached_role_policies=lambda **kw: {"AttachedPolicies": [{"PolicyArn": arn} for arn in state["attached"]]},
+        get_policy=lambda **kw: {"Policy": {"DefaultVersionId": state["version"]}},
+        get_policy_version=lambda **kw: {"PolicyVersion": {"Document": state["document"]}},
+    )
+    original = policy_identity(iam, ROLE, managed_policies(ROLE))
+    state["version"] = "v2"
+    assert policy_identity(iam, ROLE, managed_policies(ROLE)) != original
+    state["version"] = "v1"
+    state["document"] = {"Statement": [{"Action": "changed"}]}
+    assert policy_identity(iam, ROLE, managed_policies(ROLE)) != original
+    state["attached"] += ["arn:aws:iam::aws:policy/AdministratorAccess"]
+    with pytest.raises(ValueError):
+        policy_identity(iam, ROLE, managed_policies(ROLE))
+    state["attached"] = managed_policies(ROLE)
+    state["inline"] = ["hidden-policy"]
+    with pytest.raises(ValueError):
+        policy_identity(iam, ROLE, managed_policies(ROLE))
+
+
+async def test_bedrock_account_is_not_installation_authority(context, monkeypatch):
+    monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "000000000000")
+    assert await authority.resolve(context.db, context.sm, handle(ROLE), subject="subject") == context.value
+    monkeypatch.delenv("ADP_DOMAIN_PROVIDER_ACCOUNT_ID")
+    with pytest.raises(HTTPException):
+        await authority.resolve(context.db, context.sm, handle(ROLE), subject="subject")

@@ -143,14 +143,20 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
     entry_arn = getattr(body, "access_entry_arn", None)
     policy, entry_identity = await cleanup_policy(binding, operation, entry_arn)
 
-    async def refresh():
+    session_expiry = None
+
+    async def refresh(*, issued_expiry=None):
         latest = await current(request, body.operation_id)
         if snapshot(latest) != authority:
             raise HTTPException(403, REFUSED)
         if await cleanup_policy(binding, operation, entry_arn) != (policy, entry_identity):
             raise HTTPException(403, REFUSED)
         # A shortened approval or runtime deadline must also constrain the answer.
-        if session_deadline(latest[3], latest[4], latest[5], require_session=not preflight_only) < deadline:
+        actual_expiry = issued_expiry or session_expiry
+        current_deadline = session_deadline(latest[3], latest[4], latest[5], require_session=not preflight_only and actual_expiry is None)
+        if actual_expiry is not None and not datetime.now(UTC) < actual_expiry <= current_deadline:
+            raise HTTPException(403, REFUSED)
+        if current_deadline < deadline:
             raise HTTPException(403, REFUSED)
         return frozenset({DELIVERY_PERMISSION})
 
@@ -258,6 +264,7 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
             session_policy=policy,
         )
         expiry = verify_session(result, role, deadline, issued_at=issued_at)
+        session_expiry = expiry
         await verify_cleanup_session(result, entry_identity, entry_arn, body.region)
         latest, _ = await deliver(preflight=True)
         await db.refresh(latest)
@@ -332,13 +339,18 @@ async def governed_session(
     deadline = min(deadline, datetime.fromisoformat(record["expires_at"]))
     require(datetime.now(UTC) + timedelta(seconds=0 if preflight_only else 900) < deadline)
 
+    expiry = None
+
     async def revalidate():
-        await refresh()
+        await refresh(issued_expiry=expiry)
         require(await resolve(db, sm, credential_id, **args) == record)
         await asyncio.to_thread(read_report, record, None)
         require(await resolve(db, sm, credential_id, **args) == record)
-        await refresh()
-        require(datetime.now(UTC) + timedelta(seconds=0 if preflight_only else 900) < deadline)
+        await refresh(issued_expiry=expiry)
+        if expiry is None:
+            require(datetime.now(UTC) + timedelta(seconds=0 if preflight_only else 900) < deadline)
+        else:
+            require(datetime.now(UTC) < expiry <= deadline)
 
     if preflight_only:
         await revalidate()

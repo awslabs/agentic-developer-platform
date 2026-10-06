@@ -42,7 +42,7 @@ locals {
     ADP_CODEX_PERSONA_CATALOG_FILE = "/app/src/agentauth/codex-github-catalogue.json"
     } : {}, local.domain_operation_enabled ? {
     ADP_DOMAIN_OPERATION_BINDINGS = jsonencode(local.domain_operation_gateway_bindings)
-  } : {})
+  } : {}, var.domain_provider_authority == null ? {} : module.superplane_provider_authority[0].gateway_environment)
 }
 
 resource "kubernetes_config_map" "worker_gateway" {

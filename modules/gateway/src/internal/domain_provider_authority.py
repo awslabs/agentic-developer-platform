@@ -86,18 +86,19 @@ async def resolve(db, sm, credential_id, *, subject, adp_org_id=None, org_id=Non
     record = await asyncio.to_thread(read, credential_id)
     for key, expected in (("adp_org_id", adp_org_id), ("org_id", org_id), ("workspace_id", workspace_id), ("service", service), ("label", label)):
         require(expected is None or record[key] == expected)
-    require(record["account_id"] == os.environ.get("BG_PLATFORM_BEDROCK_ACCOUNT_ID"))
+    require(record["account_id"] == os.environ.get("ADP_DOMAIN_PROVIDER_ACCOUNT_ID"))
     binding = binding_for("superplane", record["org_id"])
     require(binding.adp_org_id == record["adp_org_id"] and digest(asdict(binding)) == record["binding_sha256"])
     await asyncio.to_thread(current_registrations, record, binding)
-    from src.domain_proxy.superplane import registration
+    from src.domain_proxy.superplane import registration, route_bucket
 
+    require(route_bucket() == f'adp-terraform-state-{record["account_id"]}')
     installed = await asyncio.to_thread(registration, fresh=True)
     require(installed.get("installation_id") == record["installation_id"] and installed.get("namespace") == binding.worker_namespace)
     await human(db, record, subject)
     try:
         iam = aws_client("iam")
-        role_id, policy = await asyncio.to_thread(policy_identity, iam, record["role_arn"])
+        role_id, policy = await asyncio.to_thread(policy_identity, iam, record["role_arn"], record["managed_policy_arns"])
         child = await asyncio.to_thread(boundary_identity, iam, record["child_boundary_arn"])
         require((role_id, policy, child) == (record["role_id"], record["policy_sha256"], record["child_boundary_sha256"]))
         require(await asyncio.to_thread(sm.current_version_id, record["secret_arn"]) == record["secret_version"])
@@ -125,6 +126,7 @@ def current_registrations(record, binding):
             entry is not None
             and entry.get("owner") == "webhook-terraform-domain-operations-v1"
             and entry.get("org_id") == record["adp_org_id"]
+            and entry.get("domain_org_id") == record["org_id"]
             and entry.get("scope") == "internal"
             and set(entry.get("credential_scopes", [])) == scopes
         )
@@ -242,7 +244,7 @@ def write_report(record, reading):
 
 
 async def validate_provider(db, sm, credential_id, *, subject, adp_org_id):
-    from src.auth.provider_validation import AwsEc2Validator, AwsValidationProfile
+    from src.auth.provider_validation import AwsEc2Validator, AwsValidationProfile, ValidationUnavailableError
 
     args = {"subject": subject, "adp_org_id": adp_org_id}
     record = await resolve(db, sm, credential_id, **args)
@@ -251,15 +253,18 @@ async def validate_provider(db, sm, credential_id, *, subject, adp_org_id):
     profile = AwsValidationProfile.model_validate(record["validation_profile"])
     require(profile.region == record["region"])
     require(await resolve(db, sm, credential_id, **args) == record)
-    reading = await asyncio.to_thread(
-        AwsEc2Validator(profile).validate,
-        canonical(secret),
-        credential_type="aws_role",
-        user_id=record["user_id"],
-        label=record["label"],
-        expected_role_id=record["role_id"],
-        agent_id="superplane-provider-validation",
-    )
+    try:
+        reading = await asyncio.to_thread(
+            AwsEc2Validator(profile).validate,
+            canonical(secret),
+            credential_type="aws_role",
+            user_id=record["user_id"],
+            label=record["label"],
+            expected_role_id=record["role_id"],
+            agent_id="superplane-provider-validation",
+        )
+    except ValidationUnavailableError:
+        raise HTTPException(503, "domain provider validation unavailable") from None
     require(await resolve(db, sm, credential_id, **args) == record)
     try:
         report = await asyncio.to_thread(write_report, record, reading)

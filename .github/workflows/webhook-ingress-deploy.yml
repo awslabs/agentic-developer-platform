@@ -6,6 +6,7 @@ on:
       - 'modules/domain-apps/cyber/infra/platform-integration/**'
       - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'environments/dev/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-deploy.yml'
       - '.github/scripts/detect-webhook-deploy-changes.sh'
