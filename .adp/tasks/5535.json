@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:16:28.911Z",
+  "updated_at": "2026-10-06T00:21:13.608Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t4.",
+      "note": "Previously completed; covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t5.",
+      "note": "Previously completed; covered by AC-01-t5.",
       "commits": [
         "931919f"
       ]
@@ -1882,7 +1882,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t6.",
+      "note": "Previously completed; covered by AC-01-t6.",
       "commits": [
         "f6cf576"
       ]
@@ -1895,7 +1895,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Covered by AC-01-t7 and AC-01-t1.",
+      "note": "Previously completed; covered by AC-01-t7 and AC-01-t1.",
       "commits": [
         "cce8e6c"
       ]
@@ -3839,12 +3839,8 @@
         "AC-01-c1",
         "AC-01-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/executor/superplane_executor/inventory.py:618",
-        "modules/domain-apps/superplane/executor/tests/test_lifecycle_postgres.py:515",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py:214"
-      ],
-      "note": "46 API/PostgreSQL and 62 worker/recovery tests passed; committed and pushed as 2fa4703c6.",
+      "files": [],
+      "note": "Previously passed at 2fa4703c6.",
       "commits": [
         "2fa4703"
       ]
@@ -3854,10 +3850,16 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Probe compatible real lifecycle and authority dependencies at readiness time",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Next task; must support first-workspace readiness without inventing a grant."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/installation.py"
+      ],
+      "note": "Covered by AC-02-t3; committed and pushed as 930482521.",
+      "commits": [
+        "9304825"
+      ]
     },
     {
       "id": "AC-02-c2",
@@ -3867,7 +3869,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Prepared and executable binding proofs require distinct checks."
+      "note": "Next task; prepared and executable binding proofs require distinct checks."
     },
     {
       "id": "AC-02-t1",
@@ -3880,7 +3882,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": ""
+      "note": "Pending the activation work; the offline packaged check does not establish live worker binding."
     },
     {
       "id": "AC-02-t2",
@@ -3893,7 +3895,21 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": ""
+      "note": "Pending."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test live readiness dependency checks with empty tables and failure cases",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py"
+      ],
+      "note": "Added so AC-02-c1 has independent covering evidence without prematurely completing AC-02-t1. Focused API suite: 110 passed; final touched-file run: 17 passed."
     },
     {
       "id": "AC-03-c1",
@@ -3903,7 +3919,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Pending final integration."
     },
     {
       "id": "AC-03-t1",
@@ -3937,7 +3953,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at 2fa4703c6; checks and handoff remain."
+      "note": "PR head verified at 930482521; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
