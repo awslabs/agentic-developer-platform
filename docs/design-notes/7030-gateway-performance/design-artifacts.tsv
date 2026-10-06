@@ -1,0 +1,14 @@
+path	component	scope
+README.md	epic-design	design-only
+accounting.md	admission-accounting-contract	design-only
+audit.md	source-coverage	design-only
+audit.py	documentation-audit-helper	no-runtime-implementation
+campaigns.md	performance-test-contract	design-only
+design-artifacts.tsv	design-inventory	design-only
+inventory-summary.json	baseline-inventory	design-only
+inventory.tsv	baseline-inventory	design-only
+migrations.tsv	baseline-migration-inventory	design-only
+review-changes.md	review-resolution	design-only
+stories.md	existing-story-backlog	design-only
+validate.py	documentation-validation-helper	no-runtime-implementation
+validation.md	verification-record	design-only
