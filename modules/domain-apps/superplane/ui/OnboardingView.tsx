@@ -500,6 +500,11 @@ export function OnboardingView() {
         />
       ) : (
         <div className="mt-6 space-y-6">
+          {mayOnboard && <Button
+            disabled={createBlocked !== null || receiptProblem !== null || Boolean(pendingReceipt)}
+            onClick={() => setCreating(true)}>
+            Create a workspace
+          </Button>}
           <WorkspaceList
             workspaces={workspaces}
             selectedId={selectedId}

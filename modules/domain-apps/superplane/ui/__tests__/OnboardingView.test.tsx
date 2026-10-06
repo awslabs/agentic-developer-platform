@@ -599,6 +599,23 @@ describe('AC-05: keyboard and accessible structure', () => {
 });
 
 describe('the create flow is reachable and scoped (AC-01/AC-03)', () => {
+  it('opens creation when a peer workspace already exists', async () => {
+    createIsAvailable();
+    listReturns([workspaceRow()]);
+    render(<OnboardingView />);
+    await screen.findByRole('button', { name: /Research/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Create a workspace', exact: true }));
+    expect(await screen.findByRole('region', { name: 'Create a workspace' })).toBeInTheDocument();
+  });
+
+  it('keeps creation disabled with existing workspaces when capability is absent', async () => {
+    createIsAvailable([]);
+    listReturns([workspaceRow()]);
+    render(<OnboardingView />);
+    await screen.findByRole('button', { name: /Research/ });
+    expect(screen.getByRole('button', { name: 'Create a workspace', exact: true })).toBeDisabled();
+  });
+
   it('opens the create flow from the zero-workspace state', async () => {
     createIsAvailable();
     listReturns([]);
