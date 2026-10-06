@@ -1,16 +1,23 @@
 """A distinct approved control admission retains its paid apply allocation."""
 
+import importlib.util
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
+from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
 from harness_jobs.effects import CallEffect, call_effect
+from harness_jobs.execution_rpc import ExecutionGrant, ExecutionRPCServer
 from harness_jobs.identity import ResolvedPrincipal, decode_payload
 from superplane_bootstrap.errors import BootstrapRefused
 
+from workspace_provisioning import retirement_runtime
 from workspace_provisioning.artifacts import canonical, digest
 from workspace_provisioning.retirement_access_artifact import (
     access_metadata,
@@ -21,12 +28,14 @@ from workspace_provisioning.retirement_access_grants import (
     managed_revocation_recipe,
     revoke_managed_access_grant,
 )
+from workspace_provisioning.retirement_adapters import OwnedResourceRemover
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_plan,
     require_managed_control_source,
     require_managed_paid_plan,
 )
 from workspace_provisioning.retirement_plan import REVOKE_GRANT, compose_retirement_plan
+from workspace_provisioning.retirement_runtime import RetirementRuntime
 from workspace_provisioning.runtime_config import LifecycleRefused
 
 from .postgres_bridge import Harness, requires_harness_postgres
@@ -34,6 +43,7 @@ from .test_lifecycle_policy import policy
 from .test_retirement_access_grants import Journal
 from .test_retirement_execution_postgres import (
     _Approves,
+    _Cloud,
     _Ledger,
     _Resolver,
 )
@@ -43,8 +53,157 @@ from .test_retirement_plan import component
 pytestmark = requires_harness_postgres
 
 
+async def _execute_managed_revoke(
+    harness, facade, principal, arguments, plan, artifact, paid_operation_id, monkeypatch, case, cloud
+):
+    output = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}
+    )
+    with Operations.context(context):
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "src/superplane-api/alembic/versions/019_lifecycle_artifacts.py"
+        )
+        spec = importlib.util.spec_from_file_location("retirement_artifacts", path)
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        migration.upgrade()
+    row = {key: value for key, value in artifact.items() if key != "artifact_id"}
+    row.update(
+        producer_holder="approved-control-worker",
+        producer_attempt_id=artifact["source_attempt_id"],
+        producer_fence_token=1,
+        request_revision=json.loads(artifact["parameters_json"])["plan_revision"],
+    )
+    artifact["artifact_id"] = digest(row)
+    columns = tuple(row)
+    async with harness.connect() as connection:
+        await connection.execute(output.getvalue())
+        await connection.execute(
+            "INSERT INTO workspace_lifecycle_artifacts (artifact_id,"
+            + ",".join(columns)
+            + ") VALUES ($1,"
+            + ",".join("$" + str(index) for index in range(2, len(columns) + 2))
+            + ")",
+            artifact["artifact_id"],
+            *row.values(),
+        )
+
+    owned = arguments["inventory"]
+    deletion = compose_retirement_plan(owned, managed_access=(plan, artifact))
+    progress = await facade.open_operation(
+        action="teardown",
+        workspace_id=plan.workspace_id,
+        org_id=plan.org_id,
+        permission=REQUIRED_PERMISSION,
+        parameters={
+            "execution_steps": deletion.encode(),
+            "idempotency_key": "reviewed-managed-retirement",
+            "allocation_id": plan.original_allocation_id,
+            "original_allocation_id": plan.original_allocation_id,
+            "retirement_inventory_sha256": digest(asdict(owned)),
+            "retirement_access_artifact_id": artifact["artifact_id"],
+            "control_allocation_id": plan.allocation_id,
+            "retirement_request_id": plan.retirement_request_id,
+        },
+    )
+    lease = await harness.lease(progress.operation_id, holder="retirement-worker")
+    async with harness.connect() as connection:
+        record = await OperationStore().get(connection, principal, progress.operation_id)
+    operation = SimpleNamespace(
+        grant=SimpleNamespace(lease=lease, principal=principal),
+        request=record.admitted_request(),
+        job_id=record.job_id,
+        plan_digest=record.plan_digest,
+        request_payload=record.request_payload,
+    )
+    monkeypatch.setattr(
+        retirement_runtime,
+        "load_bootstrap_retirement_inventory",
+        lambda **kwargs: owned,
+    )
+    provider = RetirementRuntime(
+        connect=harness.connect,
+        domain_connect=harness.connect,
+        context=AsyncMock(return_value=(operation, "approved-binding")),
+        registration_store=None,
+        removals=OwnedResourceRemover(
+            kubernetes=arguments["kubernetes"], eks=arguments["eks"]
+        ),
+        lifecycle=SimpleNamespace(managed_fence=AsyncMock(return_value=True)),
+        verify_inventory=AsyncMock(),
+        control_access_for=AsyncMock(return_value=(plan, paid_operation_id)),
+        control_verify=AsyncMock(),
+    )
+
+    async def authenticate(token):
+        assert token == "scoped-worker"
+        return ExecutionGrant(
+            ResolvedPrincipal(
+                org_id=plan.org_id,
+                workspace_id=plan.workspace_id,
+                subject=lease.holder,
+                permissions=frozenset({REQUIRED_PERMISSION}),
+            ),
+            lease,
+        )
+
+    prefix = ExecutionRPCServer(
+        connect=harness.connect, provider_call=_Cloud(), authenticate=authenticate
+    )
+    for step in deletion.steps:
+        if step.step_id == "revoke-control-entry":
+            break
+        await prefix.dispatch(
+            {
+                "token": "scoped-worker",
+                "method": "execute_step",
+                "arguments": {"step_id": step.step_id},
+            }
+        )
+    if case == "released":
+        async with harness.connect() as connection:
+            await connection.execute(
+                "UPDATE harness_approval_consumption SET reservation_state='released' "
+                "WHERE operation_id=$1", artifact["source_operation_id"]
+            )
+    elif case == "missing":
+        async with harness.connect() as connection:
+            await connection.execute(
+                "DELETE FROM workspace_lifecycle_artifacts WHERE artifact_id=$1",
+                artifact["artifact_id"],
+            )
+    before = cloud.mutations
+    server = ExecutionRPCServer(
+        connect=harness.connect, provider_call=provider, authenticate=authenticate
+    )
+    request = {
+        "token": "scoped-worker",
+        "method": "execute_step",
+        "arguments": {"step_id": "revoke-control-entry"},
+    }
+    result = await server.dispatch(request)
+    if case == "confirmed":
+        assert result[0]["outcome"] == "succeeded"
+        assert cloud.mutations == before + 1
+        assert arguments["eks"].observe(plan.grants[0]) is None
+        assert await server.dispatch(request) == result
+        assert cloud.mutations == before + 1
+    else:
+        assert result[0]["outcome"] != "succeeded"
+        assert cloud.mutations == before
+        assert arguments["eks"].observe(plan.grants[0]) is not None
+    async with harness.connect() as connection:
+        assert await connection.fetchval(
+            "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
+            plan.original_allocation_id,
+        ) == "reviewed-paid-apply"
+
+
+@pytest.mark.parametrize("admitted_revoke", ["none", "confirmed", "released", "missing"])
 def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
-    runtime, tmp_path_factory, request
+    runtime, tmp_path_factory, request, monkeypatch, admitted_revoke
 ):
     arguments = inputs(runtime)
     arguments["inventory"] = replace(
@@ -239,6 +398,20 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                     arguments["inventory"],
                     managed_access=(plan, {**artifact, "workspace_id": "foreign"}),
                 )
+            if admitted_revoke != "none":
+                await _execute_managed_revoke(
+                    harness,
+                    facade,
+                    principal,
+                    arguments,
+                    plan,
+                    artifact,
+                    paid.operation_id,
+                    monkeypatch,
+                    admitted_revoke,
+                    runtime.cloud,
+                )
+                return
             journal = Journal(
                 SimpleNamespace(
                     recipe=lambda: managed_revocation_recipe(plan, artifact)

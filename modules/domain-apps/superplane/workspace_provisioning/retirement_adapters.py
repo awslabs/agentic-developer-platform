@@ -181,6 +181,22 @@ class OwnedResourceRemover:
             )
         return CallOutcome.SUCCEEDED, "owned component absent", identity["uid"]
 
+    def revoke_control_grant(self, plan, artifact):
+        from .retirement_access_artifact import validate_access_artifact
+        from .retirement_inventory import OwnedGrant
+        from .retirement_managed_access import ManagedRetirementAccessPlan
+
+        if (
+            not isinstance(plan, ManagedRetirementAccessPlan)
+            or len(plan.grants) != 1
+            or plan.grants[0].get("key") != "cleaner-entry"
+            or plan.grants[0].get("kind") != "eks-entry"
+            or plan.revocation_order != ("cleaner-entry",)
+        ):
+            raise BootstrapRefused("managed control grant does not match review")
+        identity = validate_access_artifact(artifact, plan)["cleaner-entry"]
+        return self._grant(OwnedGrant(plan.grants[0], identity))
+
     def _grant(self, grant):
         spec, identity = deepcopy(grant.spec), deepcopy(grant.identity)
         if spec.get("kind") == "kubernetes":

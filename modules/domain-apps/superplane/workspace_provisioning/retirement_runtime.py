@@ -60,6 +60,9 @@ class RetirementRuntime:
         verify_inventory,
         artifact_for=None,
         terraform=None,
+        domain_connect=None,
+        control_access_for=None,
+        control_verify=None,
     ):
         self.connect, self.context, self.registration_store = (
             connect,
@@ -67,11 +70,19 @@ class RetirementRuntime:
             registration_store,
         )
         self.removals, self.lifecycle = removals, lifecycle
-        self.verify_inventory, self.artifact_for, self.terraform = (
+        (
+            self.verify_inventory,
+            self.artifact_for,
+            self.terraform,
+            self.domain_connect,
+        ) = (
             verify_inventory,
             artifact_for,
             terraform,
+            domain_connect,
         )
+        self.control_access_for = control_access_for
+        self.control_verify = control_verify
 
     async def __call__(self, call):
         operation, binding = await self.context(call)
@@ -125,16 +136,15 @@ class RetirementRuntime:
                 or not await self.lifecycle.managed_fence(current, inventory)
             ):
                 raise OperationRefused("managed cluster admission interlock changed")
-            async with self.connect() as connection:
-                async with connection.transaction():
-                    if not await lock_lease(connection, current.grant.lease):
-                        raise OperationRefused("retirement lease expired")
-                    cancelled = await connection.fetchval(
-                        "SELECT cancel_requested_at IS NOT NULL FROM harness_operations WHERE operation_id=$1",
-                        lease.operation_id,
-                    )
-                    if cancelled is not False:
-                        raise OperationRefused("retirement cancellation requested")
+            async with self.connect() as connection, connection.transaction():
+                if not await lock_lease(connection, current.grant.lease):
+                    raise OperationRefused("retirement lease expired")
+                cancelled = await connection.fetchval(
+                    "SELECT cancel_requested_at IS NOT NULL FROM harness_operations WHERE operation_id=$1",
+                    lease.operation_id,
+                )
+                if cancelled is not False:
+                    raise OperationRefused("retirement cancellation requested")
 
         await authorize()
         inventory = await asyncio.to_thread(
@@ -151,8 +161,51 @@ class RetirementRuntime:
         artifact = (
             await self.artifact_for(operation, inventory) if self.artifact_for else None
         )
-        if artifact is not None:
-            plan = compose_retirement_plan(inventory, managed_destroy=artifact)
+        access = None
+        if self.control_access_for is not None:
+            from .artifacts import read_artifact
+            from .retirement_managed_access import (
+                ManagedRetirementAccessPlan,
+                require_managed_control_source,
+            )
+
+            if self.domain_connect is None or self.control_verify is None:
+                raise OperationRefused("managed control provider is not composed")
+            control_plan, paid_operation_id = await self.control_access_for(
+                operation, inventory
+            )
+            if (
+                not isinstance(control_plan, ManagedRetirementAccessPlan)
+                or not parameters.get("retirement_access_artifact_id")
+                or parameters.get("control_allocation_id") != control_plan.allocation_id
+                or parameters.get("retirement_request_id")
+                != control_plan.retirement_request_id
+                or parameters["original_allocation_id"]
+                != control_plan.original_allocation_id
+            ):
+                raise OperationRefused("managed control allocation or receipt changed")
+            access_row = await read_artifact(
+                self.domain_connect,
+                artifact_id=parameters["retirement_access_artifact_id"],
+                org_id=lease.org_id,
+                workspace_id=lease.workspace_id,
+                require_fresh=False,
+            )
+            async with self.connect() as connection:
+                await require_managed_control_source(
+                    connection,
+                    plan=control_plan,
+                    access_artifact=access_row,
+                    paid_operation_id=paid_operation_id,
+                )
+            access = control_plan, access_row, paid_operation_id
+        elif parameters.get("retirement_access_artifact_id"):
+            raise OperationRefused("managed control provider is unavailable")
+        plan = compose_retirement_plan(
+            inventory,
+            managed_destroy=artifact,
+            managed_access=access[:2] if access is not None else None,
+        )
         async with self.connect() as connection:
             record = await OperationStore().get(
                 connection, operation.grant.principal, lease.operation_id
@@ -190,6 +243,76 @@ class RetirementRuntime:
             return await self.lifecycle.status(
                 operation, inventory, "retired", authorize
             )
+        if step.step_id == "revoke-control-entry":
+            from harness_jobs.execution import CallStage, read_call
+            from superplane_bootstrap.eks_grants import EksGrants
+
+            from .retirement_adapters import OwnedResourceRemover
+            from .retirement_managed_access import require_managed_control_source
+
+            if (
+                action != (AWS, REVOKE_GRANT)
+                or access is None
+                or not isinstance(self.removals, OwnedResourceRemover)
+                or not isinstance(self.removals.eks, EksGrants)
+            ):
+                raise OperationRefused("managed control revoke has no pinned provider")
+            destroying = True
+
+            async def authorize_control():
+                await authorize()
+                async with self.connect() as connection:
+                    await require_managed_control_source(
+                        connection,
+                        plan=access[0],
+                        access_artifact=access[1],
+                        paid_operation_id=access[2],
+                    )
+                await self.control_verify(operation, inventory, access[0], access[1])
+                await authorize()
+
+            await authorize_control()
+            async with self.connect() as connection, connection.transaction():
+                if not await lock_lease(connection, lease):
+                    raise OperationRefused("managed revoke lease expired")
+                outer = await read_call(
+                    connection, idempotency_key=call.idempotency_key
+                )
+                if (
+                    outer is None
+                    or outer.stage is not CallStage.INTENDED
+                    or (
+                        outer.operation_id,
+                        outer.org_id,
+                        outer.workspace_id,
+                        outer.job_id,
+                        outer.attempt_id,
+                        outer.fence_token,
+                        outer.provider,
+                        outer.operation_kind,
+                        outer.target,
+                    )
+                    != (
+                        lease.operation_id,
+                        lease.org_id,
+                        lease.workspace_id,
+                        operation.job_id,
+                        lease.attempt_id,
+                        lease.fence_token,
+                        step.provider,
+                        step.operation_kind,
+                        step.target,
+                    )
+                ):
+                    raise OperationRefused(
+                        "managed revoke has no original outer intent"
+                    )
+            await authorize_control()
+            result = await asyncio.to_thread(
+                self.removals.revoke_control_grant, access[0], access[1]
+            )
+            await authorize_control()
+            return result
         if action in {
             (KUBERNETES, DELETE_COMPONENT),
             (KUBERNETES, REVOKE_GRANT),
