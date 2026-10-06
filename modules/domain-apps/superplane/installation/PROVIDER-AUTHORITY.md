@@ -113,3 +113,49 @@ cloud provisioning, spend approval, deployed readiness or a working demo. The
 existing approval contract also requires a second distinct, genuine human with
 current authority; installing provider infrastructure cannot manufacture that
 approval.
+
+## Genuine user draft and enrollment sequence
+
+Use the maintained browser flow for this scoped installation. The existing CLI
+`workspace create` does not yet provide the region, reviewed-plan and approval
+steps needed by this lifecycle path.
+
+1. Sign in as the intended beneficiary and select the actual organization. In
+   **Create a workspace**, enter the final name, managed mode, isolation, exact
+   target account ID (or eventual registered account name), region and budget.
+   Click **Review plan**. The browser's maintained `claimPreviewIdentity` stores
+   the scoped draft and its operation UUID before calling preview. An absent
+   account or authority may refuse preview; this does not erase the real draft.
+2. Retain that real same-user browser receipt and request body. Inspect the
+   persisted `create-workspace` receipt or the actual preview network request;
+   the draft is not currently displayed as a receipt panel. Derive the future
+   workspace UUID with the existing `workspace_id_for(org_id, operation_id)`
+   contract. Do not insert an operation/workspace database row or manufacture an
+   approval. This is a persisted user intent, not an accepted server operation.
+3. The protected owner reviews the actual provider/storage plans and selected
+   installation, then applies only through their maintained state owners. Build,
+   qualify and install the API/worker versions that understand the child boundary.
+   Configure the exact lifecycle target, opaque credential reference and boundary,
+   and conditionally enroll the authority using the original draft operation ID
+   and its derived workspace ID. Complete the owner checks described above.
+4. In the beneficiary's genuine authenticated session, call
+   `POST /superplane/v1/accounts` with `name`, `account_id` and
+   `adp_credential_id` equal to the enrolled opaque handle. The Gateway establishes
+   current Cognito and organization membership against the enrolled beneficiary,
+   checks the installation and provider generations, and constructs the domain
+   account from protected material. Caller-supplied role ARN or ExternalId is not
+   accepted. A tenant administrator cannot substitute another beneficiary.
+5. In that same genuine session, refresh validation with an empty-body
+   `POST /superplane/v1/provider-authorities/{credential_id}/validation`.
+   The server uses the enrolled profile; no client readings or profile are input.
+6. Retry **Review plan** in the original browser with identical inputs. The draft
+   UUID is reused. The API resolves the registered account by exact name/ID and
+   matches its credential reference to the installed lifecycle policy; it does
+   not look for this handle in the personal credential list. Changing draft
+   inputs generates a different request UUID and therefore a different workspace;
+   stop and review a new authority scope instead of reusing the old enrollment.
+7. Review the returned plan and request approval. A second distinct, genuine
+   currently authorized human must approve that exact plan. Only then submit
+   **Create this workspace**, follow its durable operation and lifecycle proposal
+   approvals, and verify live readiness. Enrollment, registration, successful
+   preview and validation alone do not prove workspace creation or demo success.

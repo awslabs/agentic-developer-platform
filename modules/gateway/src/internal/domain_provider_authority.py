@@ -92,7 +92,7 @@ async def resolve(db, sm, credential_id, *, subject, adp_org_id=None, org_id=Non
     await asyncio.to_thread(current_registrations, record, binding)
     from src.domain_proxy.superplane import registration, route_bucket
 
-    require(route_bucket() == f'adp-terraform-state-{record["account_id"]}')
+    require(route_bucket() == f"adp-terraform-state-{record['account_id']}")
     installed = await asyncio.to_thread(registration, fresh=True)
     require(installed.get("installation_id") == record["installation_id"] and installed.get("namespace") == binding.worker_namespace)
     await human(db, record, subject)
