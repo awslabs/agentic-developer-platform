@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:25:38.441Z",
+  "updated_at": "2026-10-06T00:33:14.682Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,13 +11,14 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_inventory.py:379"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py"
       ],
-      "note": "Dormant grants and live ownership verification are pushed; approved control-allocation activation and revocation remain.",
+      "note": "44742a1 adds a dormant, artifact- and UID-bound plan with a PostgreSQL seal guard. Approved control-allocation activation and exact revocation remain unwired.",
       "commits": [
         "c83f065",
         "5a65001",
-        "80b0d00"
+        "80b0d00",
+        "44742a1"
       ]
     },
     {
@@ -30,9 +31,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_inventory.py:196"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
       ],
-      "note": "Ownership and denial tests pass; allocation-bound activation is not implemented or tested."
+      "note": "10 passed, zero skipped; the complete-component positive inventory is synthetic. Actual allocation-bound activation and revocation remain untested."
     },
     {
       "id": "AC-01-c2",
@@ -71,7 +72,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": ""
+      "note": "Not run for the production producer."
     },
     {
       "id": "AC-01-t4",
@@ -84,7 +85,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": ""
+      "note": "Plan-level denial passes; admitted-effect denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -104,7 +105,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Fresh inventory and admission interlock remain."
     },
     {
       "id": "AC-02-c3",
@@ -114,7 +115,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Production removal and separate settlements remain."
     },
     {
       "id": "AC-02-c-wire",
@@ -123,8 +124,14 @@
       "title": "Expose the admitted retirement producer contract",
       "status": "open",
       "covers": [],
-      "files": [],
-      "note": "Coordinate worker registration with #5535."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/retirement.py"
+      ],
+      "note": "886fab6 publishes preview/admission request and prospective receipt models. The admission endpoint still refuses; producer and #5535 worker wiring remain.",
+      "commits": [
+        "3a02dea",
+        "886fab6"
+      ]
     },
     {
       "id": "AC-02-t1",
@@ -138,8 +145,10 @@
         "AC-02-c3",
         "AC-02-c-wire"
       ],
-      "files": [],
-      "note": ""
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_contract.py"
+      ],
+      "note": "Seven API contract/refusal tests passed; no admitted API-to-producer test yet."
     },
     {
       "id": "AC-02-t2",
@@ -152,7 +161,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": ""
+      "note": "Not run against production composition."
     },
     {
       "id": "AC-03-c1",
@@ -162,7 +171,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Workflow enforcement not inspected this turn."
     },
     {
       "id": "AC-03-t1",
@@ -174,7 +183,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Required final-head CI remains."
+      "note": "Local retirement selection passed 208/208 before the final seal test; final-head full suites and CI remain."
     },
     {
       "id": "AC-04-c1",
@@ -184,7 +193,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Evaluator handoff remains."
     },
     {
       "id": "AC-04-t1",
@@ -196,7 +205,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": ""
+      "note": "Public-documentation check and final evidence matrix remain."
     },
     {
       "id": "AC-04-t2",
@@ -208,7 +217,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Foreground owns merge."
+      "note": "Foreground owns review and merge; neither is claimed."
     }
   ]
 }
