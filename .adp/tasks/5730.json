@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-06T00:10:36.643Z",
+  "updated_at": "2026-10-06T00:16:01.824Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -26,7 +26,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Prior frontend evidence; final-head rerun pending."
+      "note": "Prior evidence; final-head rerun pending."
     },
     {
       "id": "AC-02-c1",
@@ -124,7 +124,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Guarded preview exists at b94733b; positive producer contract remains unavailable.",
+      "note": "Guarded preview exists; positive backend producer contract remains unavailable.",
       "commits": [
         "b94733b"
       ]
@@ -255,7 +255,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "7343120 adds principal-scoped receipts and immutable operation lineage.",
+      "note": "Principal-scoped receipts and immutable operation lineage retained.",
       "commits": [
         "7343120"
       ]
@@ -270,7 +270,7 @@
         "AC-03-c4"
       ],
       "files": [],
-      "note": "116 focused tests pass, including scope changes and conflicting identities."
+      "note": "116 focused tests previously passed."
     },
     {
       "id": "AC-04-c1",
@@ -317,7 +317,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "6851867 separates operation states from unverified removal and unknown residual cost.",
+      "note": "Operation states remain distinct from unverified removal and unknown residual cost.",
       "commits": [
         "6851867"
       ]
@@ -332,7 +332,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "72 focused tests pass, including six operation states and no admission."
+      "note": "72 focused tests previously passed."
     },
     {
       "id": "AC-05-c1",
@@ -357,7 +357,7 @@
         "AC-05-c1"
       ],
       "files": [],
-      "note": "Component evidence only."
+      "note": "Component evidence retained."
     },
     {
       "id": "AC-05-t2",
@@ -369,12 +369,8 @@
         "AC-05-c1",
         "AC-05-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py",
-        ".adp/tasks/5730.json"
-      ],
-      "note": "Fixture browser workflow 37392225344 passed on 6e17714; retained 360px screenshot inspected. Board update c277efb. Not live acceptance.",
+      "files": [],
+      "note": "Fixture browser workflow 37392225344 passed; retained 360px screenshot inspected. Not live acceptance.",
       "commits": [
         "194af4a",
         "c277efb",
@@ -411,9 +407,14 @@
       "title": "Expose stable accessible retirement approval, recovery and outcome controls in browser fixture",
       "status": "done",
       "covers": [],
-      "files": ["modules/domain-apps/superplane/ui/RetirementPanel.tsx", "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"],
-      "note": "5580d0b adds accessible retirement approval and outcome regions while preserving unavailable admission; fixture scenarios use original IDs and deny deletion.",
-      "commits": ["5580d0b"]
+      "files": [
+        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "5580d0b adds named approval and outcome regions; approval remains unavailable and removal disabled.",
+      "commits": [
+        "5580d0b"
+      ]
     },
     {
       "id": "AC-05-t4",
@@ -424,8 +425,15 @@
       "covers": [
         "AC-05-c3"
       ],
-      "files": ["modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx", "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py", "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"],
-      "note": "Browser workflow 37392735728 passed on 5580d0b, including 360/1280px re-entry, denial and session-expiry screenshots. 48 frontend and 46 fixture tests, TypeScript and domain lint passed locally; no positive retirement admission claimed."
+      "files": [
+        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx",
+        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Workflow 37392735728 passed on 5580d0b; inspected 360px denial and re-entry screenshots. Local focused tests, TypeScript and lint pass.",
+      "commits": [
+        "e08e3cd"
+      ]
     },
     {
       "id": "AC-06-c1",
@@ -447,7 +455,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "Full final-head local and remote checks pending."
+      "note": "Next task; full final-head suites pending."
     },
     {
       "id": "AC-06-t2",
