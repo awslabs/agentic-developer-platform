@@ -41,7 +41,7 @@ locals {
   gateway_prefix = "arn:aws:execute-api:${var.region}:${var.account_id}:${var.api_id}/${var.api_stage}/POST/internal/v1/controller-execution/"
   worker_routes = [
     "task/acquire", "bootstrap", "task/heartbeat", "renew", "task/ack",
-    "lease", "task/status", "authority", "recovery/scope", "recovery/authority",
+    "lease", "task/status", "authority", "provider-session", "provider-preflight", "recovery/scope", "recovery/authority",
     "recovery/observe", "recovery/inventory", "recovery/lifecycle",
     "recovery/account-creation", "recovery/bootstrap", "recovery/settlement",
   ]

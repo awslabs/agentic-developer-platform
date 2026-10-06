@@ -556,6 +556,8 @@ WORKER_ROUTES = (
     "lease",
     "task/status",
     "authority",
+    "provider-session",
+    "provider-preflight",
     "recovery/scope",
     "recovery/authority",
     "recovery/observe",
