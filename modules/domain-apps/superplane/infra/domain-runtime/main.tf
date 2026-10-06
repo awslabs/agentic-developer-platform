@@ -25,6 +25,7 @@ locals {
   }
   target_verified = (
     data.aws_caller_identity.current.account_id == var.account_id &&
+    startswith(data.aws_caller_identity.current.arn, "arn:aws:sts::${var.account_id}:assumed-role/${trimprefix(var.operator_role_arn, "arn:aws:iam::${var.account_id}:role/")}/") &&
     data.aws_eks_cluster.selected.arn == "arn:aws:eks:${var.region}:${var.account_id}:cluster/${var.cluster_name}" &&
     data.aws_eks_cluster.selected.identity[0].oidc[0].issuer == var.oidc_issuer &&
     data.aws_iam_openid_connect_provider.selected.url == local.issuer &&

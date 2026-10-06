@@ -11,11 +11,12 @@ variables {
   api_id                 = "abcdefghij"
   api_stage              = "prod"
   keda_operator_role_arn = "arn:aws:iam::111122223333:role/existing-keda-operator"
+  operator_role_arn      = "arn:aws:iam::111122223333:role/installation-operator"
 }
 
 override_data {
   target = data.aws_caller_identity.current
-  values = { account_id = "111122223333" }
+  values = { account_id = "111122223333", arn = "arn:aws:sts::111122223333:assumed-role/installation-operator/session" }
 }
 
 override_data {
@@ -76,5 +77,11 @@ run "refuse_different_account" {
 run "refuse_different_cluster_issuer" {
   command = plan
   variables { oidc_issuer = "https://oidc.eks.us-west-2.amazonaws.com/id/different" }
+  expect_failures = [aws_sqs_queue.operations, aws_iam_role.worker, aws_iam_role.observer]
+}
+
+run "refuse_wrong_operator" {
+  command = plan
+  variables { operator_role_arn = "arn:aws:iam::111122223333:role/different-operator" }
   expect_failures = [aws_sqs_queue.operations, aws_iam_role.worker, aws_iam_role.observer]
 }
