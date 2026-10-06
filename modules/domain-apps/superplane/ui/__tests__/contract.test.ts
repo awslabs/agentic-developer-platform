@@ -135,19 +135,19 @@ describe('C1 source-derived workspace lifecycle contract', () => {
     const api = source('main.py');
     const routes = source('routers/retirement.py');
     const policy = source('endpoint_inventory.py');
-    const service = source('services/retirement.py');
+    const service = source('services/managed_retirement.py');
     expect(api).toContain('app.include_router(retirement_router)');
     expect(routes).toMatch(/class RetirementPreview\(BaseModel\):[\s\S]*?operation_id: uuid\.UUID/);
     expect(routes).toMatch(/class RetirementAdmission\(RetirementPreview\):[\s\S]*?plan_revision: str[\s\S]*?approval_id: str/);
-    expect(routes).toContain('@router.post("/workspaces/{workspace_id}/retirement/preview")');
-    expect(routes).toContain('@router.post("/workspaces/{workspace_id}/retirement")');
+    expect(routes).toContain('"/workspaces/{workspace_id}/retirement/preview",');
+    expect(routes).toContain('"/workspaces/{workspace_id}/retirement",');
     expect(policy).toMatch(/\("POST", "\/workspaces\/\{workspace_id\}\/retirement\/preview"\): \([\s\S]*?Scope\.WORKSPACE,[\s\S]*?Permission\.PROVISION/);
     expect(policy).toMatch(/\("POST", "\/workspaces\/\{workspace_id\}\/retirement"\): \([\s\S]*?Scope\.WORKSPACE,[\s\S]*?Permission\.PROVISION/);
     expect(ENDPOINTS.previewRetirement.path).toBe('/workspaces/{workspace_id}/retirement/preview');
     expect(ENDPOINTS.admitRetirement.path).toBe('/workspaces/{workspace_id}/retirement');
-    expect(service).toContain('"admission_available": False');
-    expect(service).toContain('"blocked_reason": "staged_cleanup_access_required"');
-    expect(service).toContain('"approval_request": None');
+    expect(service).toContain('await require_runtime(org_id)');
+    expect(service).toContain('require_managed_control_source');
+    expect(service).toContain('approval.record.approval_id');
     expect(service).toContain('raise ProvisioningUnavailable(');
   });
 });
@@ -235,8 +235,8 @@ describe('unavailability reporting', () => {
     expect(unavailable.detail).toContain('/workspaces/preview');
   });
 
-  it('keeps dormant cleanup-access routes unavailable without hiding composed onboarding', () => {
-    expect(unservedEndpoints()).toEqual(['previewRetirementAccess', 'admitRetirementAccess']);
+  it('serves the composed cleanup routes while runtime readiness stays server controlled', () => {
+    expect(unservedEndpoints()).toEqual([]);
   });
 });
 

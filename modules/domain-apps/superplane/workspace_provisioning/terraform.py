@@ -1,12 +1,12 @@
 """Prepare and consume exact reviewed workspace artifacts in a private worker volume."""
 
-from decimal import Decimal
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
+from decimal import Decimal
+from pathlib import Path
 
 from .artifacts import canonical, digest
 from .runtime_config import LifecycleRefused
@@ -115,7 +115,7 @@ def require_owned_networking(config):
         )
 
 
-def prepare(operation, context, config, request, account_id, process):
+def prepare(operation, context, config, request, account_id, process, *, destroy=False):
     require_owned_networking(config)
     lease = operation.grant.lease
     target = {
@@ -164,12 +164,13 @@ def prepare(operation, context, config, request, account_id, process):
             config["backend"]["lock_table"],
             "--terraform-binary",
             config["binaries"]["terraform"],
+            *(["--destroy"] if destroy else []),
         ],
         timeout=operation.max_runtime_seconds,
     )
     inventory = json.loads((output / "workspace-inventory.json").read_text())
     estimate = json.loads((output / "workspace-estimate.json").read_text())
-    if inventory["destructive_addresses"]:
+    if inventory["destructive_addresses"] and not destroy:
         raise LifecycleRefused(
             "workspace provisioning cannot approve destructive infrastructure changes"
         )
@@ -179,7 +180,7 @@ def prepare(operation, context, config, request, account_id, process):
         * Decimal(24)
         / Decimal(730)
     )
-    if fixed_daily_micros > int(
+    if not destroy and fixed_daily_micros > int(
         operation.request.parameters["lifecycle_allocation_max_cost_micros"]
     ):
         raise LifecycleRefused(
@@ -199,7 +200,7 @@ def prepare(operation, context, config, request, account_id, process):
     if source_digest(module) != source_revision:
         raise LifecycleRefused("workspace source changed while preparing the plan")
     return target, {
-        "next_phase": "apply-infrastructure",
+        "next_phase": "retire-workspace" if destroy else "apply-infrastructure",
         "files": hashes,
         "module_sha256": source_revision,
         "plan_file_sha256": hashes["workspace.tfplan"],
@@ -287,8 +288,13 @@ def apply(operation, context, config, row, process):
     }
     if any(actual[key] != target[key] for key in actual):
         raise LifecycleRefused("Terraform outputs belong to another workspace")
+    from .applied_inventory import identities_from_state
+
+    state = json.loads(process.checked(["terraform", "show", "-json"], cwd=module))
+    applied_resources = identities_from_state(state)
     return target, {
         "next_phase": "bootstrap-workspace",
+        "applied_resources": applied_resources,
         "allocation_source_operation_id": operation.grant.lease.operation_id,
         "outputs": outputs,
         "source_artifact_id": row["artifact_id"],

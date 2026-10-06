@@ -48,6 +48,7 @@ from app.routers.workspaces import create_workspace
 from app.schemas.workspace import CreateWorkspaceRequest
 from app.services import lifecycle_proposals, onboarding, provisioning
 from app.services.operation_approvals import ApprovalService
+from app.services.provisioning import ProvisioningRefused
 from tests.test_operation_budget_ledger_postgres import (
     installation_postgres_url as installation_postgres_url,
     ledger as ledger,
@@ -240,7 +241,9 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
         await session.commit()
 
     class Context:
-        composition = SimpleNamespace(operation_connect=connections.connect)
+        composition = SimpleNamespace(
+            operation_connect=connections.connect, domain_connect=connections.connect
+        )
 
         @contextmanager
         def actor(self, subject="requester", workspace_id=""):
@@ -708,3 +711,45 @@ async def test_capabilities_only_advertise_executable_policy_modes(
     lifecycle_features = {"create-operation-id-v1", "adopt-operation-id-v1"}
     assert features & lifecycle_features == (lifecycle_features if expected else set())
     assert "provider-connection-operation-id-v1" in features
+
+
+async def test_lifecycle_proposals_read_domain_artifacts_with_shared_admission(lifecycle):
+    """A real schema split must still allow list, preview and source verification."""
+    from contextlib import asynccontextmanager
+    from app.routers.onboarding import lifecycle_proposals as list_proposals
+
+    _, _, workspace = await lifecycle.prepare()
+    artifact_id = await lifecycle.artifact(workspace)
+    artifact_schema = "artifacts_" + uuid.uuid4().hex[:16]
+    async with lifecycle.connections.connect() as connection:
+        shared_schema = await connection.fetchval("SELECT current_schema()")
+        await connection.execute(f'CREATE SCHEMA "{artifact_schema}"')
+        await connection.execute(
+            f'ALTER TABLE "{shared_schema}".workspace_lifecycle_artifacts SET SCHEMA "{artifact_schema}"'
+        )
+
+    @asynccontextmanager
+    async def domain_connect():
+        async with lifecycle.connections.connect() as connection, connection.transaction():
+            await connection.execute(f'SET LOCAL search_path TO "{artifact_schema}"')
+            yield connection
+
+    lifecycle.composition.domain_connect = domain_connect
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(trust_composition=lifecycle.composition)))
+    try:
+        with lifecycle.actor(workspace_id=workspace.id):
+            async with lifecycle.sessions() as session:
+                result = await list_proposals(workspace.id, request, lifecycle.org_id, session)
+        assert [row["artifact_id"] for row in result["proposals"]] == [artifact_id]
+        review = await lifecycle.review(workspace.id, artifact_id, uuid.uuid4())
+        assert review["phase"] == "apply-infrastructure"
+        async with lifecycle.connections.connect() as connection:
+            await connection.execute("UPDATE harness_operations SET state='failed' WHERE operation_id=$1", workspace.provisioning_operation_id)
+        with pytest.raises(ProvisioningRefused, match="has not completed"):
+            await lifecycle.review(workspace.id, artifact_id, uuid.uuid4())
+    finally:
+        async with lifecycle.connections.connect() as connection:
+            await connection.execute(
+                f'ALTER TABLE "{artifact_schema}".workspace_lifecycle_artifacts SET SCHEMA "{shared_schema}"'
+            )
+            await connection.execute(f'DROP SCHEMA "{artifact_schema}"')

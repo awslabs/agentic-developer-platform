@@ -41,8 +41,10 @@ class DomainBinding:
     repo: str
     observation_url: str
     observation_credential_secret_id: str
-    current_identity_enforced: bool = False
     worker_scaled_job: str = "superplane-paid-worker"
+    current_identity_enforced: bool = False
+    domain_database_secret_id: str = ""
+    domain_database_schema: str = ""
 
     @property
     def domain_org_id(self):
@@ -68,6 +70,14 @@ def bindings() -> tuple[DomainBinding, ...]:
                 or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) for digest in value.worker_image_digests)
             ):
                 raise ValueError("unsafe configured binding")
+            if value.domain_database_secret_id or value.domain_database_schema:
+                if (
+                    not value.domain_database_secret_id
+                    or value.domain_database_secret_id == value.database_secret_id
+                    or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value.domain_database_schema)
+                    or value.domain_database_schema in {"public", value.database_schema}
+                ):
+                    raise ValueError("domain and execution stores must be separate")
             if any((b.domain, b.org_id) == (value.domain, value.org_id) for b in result):
                 raise ValueError("ambiguous configured binding")
             result.append(value)
@@ -133,6 +143,55 @@ async def operation_connect(binding):
     finally:
         if connection is not None:
             await connection.close()
+
+
+async def domain_database_dsn(binding):
+    """Resolve the separate domain port; never fall back to shared credentials."""
+    if (
+        not binding.domain_database_secret_id
+        or binding.domain_database_secret_id == binding.database_secret_id
+        or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", binding.domain_database_schema)
+        or binding.domain_database_schema in {"public", binding.database_schema}
+    ):
+        raise HTTPException(503, "separate domain database binding unavailable")
+    from dataclasses import replace
+
+    return await database_dsn(replace(binding, database_secret_id=binding.domain_database_secret_id))
+
+
+@asynccontextmanager
+async def domain_connect(binding):
+    connection = None
+    try:
+        connection = await asyncpg.connect(
+            await domain_database_dsn(binding),
+            ssl=database_ssl(),
+            timeout=10,
+            command_timeout=20,
+            server_settings={"search_path": binding.domain_database_schema + ",public"},
+        )
+        if await connection.fetchval("SELECT current_schema()") != binding.domain_database_schema:
+            raise HTTPException(503, "domain database schema differs")
+        yield connection
+    finally:
+        if connection is not None:
+            await connection.close()
+
+
+@asynccontextmanager
+async def domain_session(binding):
+    dsn = (await domain_database_dsn(binding)).replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+asyncpg://", 1)
+    engine = create_async_engine(
+        dsn,
+        connect_args={"ssl": database_ssl(), "server_settings": {"search_path": binding.domain_database_schema + ",public"}, "command_timeout": 20},
+        pool_size=1,
+        max_overflow=0,
+    )
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            yield session
+    finally:
+        await engine.dispose()
 
 
 @asynccontextmanager

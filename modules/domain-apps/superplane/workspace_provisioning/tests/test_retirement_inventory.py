@@ -6,8 +6,12 @@ from uuid import uuid4
 import pytest
 
 from superplane_bootstrap.errors import BootstrapRefused
+from superplane_bootstrap.eks_grants import EksGrants
+from superplane_bootstrap.kube_grants import KubeGrants
 from workspace_provisioning.retirement_inventory import (
     load_bootstrap_retirement_inventory,
+    retained_cleanup_capability,
+    require_dormant_cleanup_group,
 )
 
 
@@ -190,3 +194,164 @@ def test_canonical_drift_cannot_delete_the_previous_registered_target(runtime, c
         db.execute(query, {})
     with pytest.raises(BootstrapRefused, match="canonical"):
         load(runtime)
+
+
+def test_new_dedicated_cleanup_capability_binds_original_allocation(runtime):
+    runtime.factory.original_allocation_id = "original-allocation"
+    assert runtime.run().ready
+    inventory = load(runtime)
+    capability = retained_cleanup_capability(
+        inventory,
+        original_allocation_id="original-allocation",
+        release=runtime.factory.release,
+        principals=runtime.clients.principals,
+        controller_mode="legacy",
+        kubernetes=KubeGrants(runtime.clients.supervisor_kubernetes, runtime.target),
+    )
+    assert len(capability.grants) == 6
+    assert capability.group.endswith(":cleanup")
+    assert capability.original_allocation_id == "original-allocation"
+    assert all(
+        capability.group not in entry["kubernetesGroups"]
+        for entry in runtime.cloud.entries.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "allocation",
+        "role",
+        "uid",
+        "digest",
+        "rules",
+        "generation",
+        "adopted",
+        "duplicate",
+    ],
+)
+def test_cleanup_capability_refuses_missing_or_changed_bootstrap_evidence(
+    runtime, changed
+):
+    runtime.factory.original_allocation_id = "original-allocation"
+    assert runtime.run().ready
+    inventory = load(runtime)
+    if changed == "adopted":
+        inventory = replace(inventory, cluster_ownership="adopted")
+    elif changed != "allocation":
+        grant = next(
+            item
+            for item in inventory.grants
+            if item.spec.get("key") == "cleanup-cluster-role"
+        )
+        spec, identity = dict(grant.spec), dict(grant.identity)
+        if changed == "role":
+            grants = tuple(item for item in inventory.grants if item is not grant)
+        elif changed == "duplicate":
+            grants = (*inventory.grants, grant)
+        else:
+            if changed in {"uid", "digest", "generation"}:
+                identity[changed] = "substituted"
+            else:
+                from copy import deepcopy
+
+                spec["body"] = deepcopy(spec["body"])
+                spec["body"]["rules"][0]["verbs"].append("create")
+            grants = tuple(
+                replace(grant, spec=spec, identity=identity) if item is grant else item
+                for item in inventory.grants
+            )
+        inventory = replace(inventory, grants=grants)
+    with pytest.raises(BootstrapRefused, match="original|cleanup"):
+        retained_cleanup_capability(
+            inventory,
+            original_allocation_id=(
+                "another-allocation"
+                if changed == "allocation"
+                else "original-allocation"
+            ),
+            release=runtime.factory.release,
+            principals=runtime.clients.principals,
+            controller_mode="legacy",
+            kubernetes=KubeGrants(
+                runtime.clients.supervisor_kubernetes, runtime.target
+            ),
+        )
+
+
+def test_adopted_cleanup_grant_phase_cannot_authorize_removal(runtime):
+    runtime.factory.original_allocation_id = "original-allocation"
+    assert runtime.run().ready
+    db = runtime.store.store
+    rows = db.execute(
+        "SELECT generation,progress_json FROM workspace_bootstrap_authority", {}
+    )
+    progress = json.loads(rows[0]["progress_json"])
+    progress["cleanup-cluster-role"]["phase"] = "adopted"
+    with db.transaction():
+        db.execute(
+            "UPDATE workspace_bootstrap_authority SET progress_json=:progress WHERE generation=:generation",
+            {"progress": json.dumps(progress), "generation": rows[0]["generation"]},
+        )
+    with pytest.raises(BootstrapRefused, match="not created by this bootstrap"):
+        load(runtime)
+
+
+@pytest.mark.parametrize("changed", ["uid", "rules", "subjects"])
+def test_live_cleanup_grant_drift_refuses_activation(runtime, changed):
+    runtime.factory.original_allocation_id = "original-allocation"
+    assert runtime.run().ready
+    inventory = load(runtime)
+    kind = "ClusterRoleBinding" if changed == "subjects" else "ClusterRole"
+    body = next(
+        resource
+        for (resource_kind, _, name), resource in runtime.cloud.objects.items()
+        if resource_kind == kind and name.endswith("cleanup-cluster")
+    )
+    if changed == "uid":
+        body["metadata"]["uid"] = "replacement-uid"
+    elif changed == "rules":
+        body["rules"][0]["verbs"].append("create")
+    else:
+        body["subjects"][0]["name"] = "another-group"
+    with pytest.raises(BootstrapRefused, match="live UID or body"):
+        retained_cleanup_capability(
+            inventory,
+            original_allocation_id="original-allocation",
+            release=runtime.factory.release,
+            principals=runtime.clients.principals,
+            controller_mode="legacy",
+            kubernetes=KubeGrants(
+                runtime.clients.supervisor_kubernetes, runtime.target
+            ),
+        )
+
+
+def test_control_activation_refuses_existing_cleanup_mapping(runtime):
+    runtime.factory.original_allocation_id = "original-allocation"
+    assert runtime.run().ready
+    capability = retained_cleanup_capability(
+        load(runtime),
+        original_allocation_id="original-allocation",
+        release=runtime.factory.release,
+        principals=runtime.clients.principals,
+        controller_mode="legacy",
+        kubernetes=KubeGrants(runtime.clients.supervisor_kubernetes, runtime.target),
+    )
+    eks = EksGrants(
+        runtime.cloud, runtime.target, entry_client=runtime.cloud.entry_client
+    )
+    require_dormant_cleanup_group(capability, eks)
+    with pytest.raises(BootstrapRefused, match="outside the original cluster"):
+        require_dormant_cleanup_group(replace(capability, grants=()), eks)
+    with pytest.raises(BootstrapRefused, match="outside the original cluster"):
+        require_dormant_cleanup_group(replace(capability, workspace_id="other"), eks)
+    principal = f"arn:aws:iam::{runtime.target.account_id}:role/unattributed"
+    runtime.cloud.entries[principal] = {
+        "principalArn": principal,
+        "kubernetesGroups": [capability.group],
+    }
+    before = list(runtime.cloud.events)
+    with pytest.raises(BootstrapRefused, match="unapproved EKS mapping"):
+        require_dormant_cleanup_group(capability, eks)
+    assert runtime.cloud.events == before

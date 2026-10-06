@@ -151,8 +151,11 @@ async def test_native_lifecycle_refuses_unsupported_or_incomplete_phase_before_p
 
 
 @pytest.mark.asyncio
-async def test_native_retirement_access_dispatches_only_approved_phase(monkeypatch):
-    from workspace_provisioning import retirement_access_runtime
+@pytest.mark.parametrize("phase", ["prepare-retirement-access", "retire-workspace"])
+async def test_native_retirement_access_dispatches_only_approved_phase(
+    monkeypatch, phase
+):
+    from workspace_provisioning import retirement_access_runtime, retirement_composer
 
     monkeypatch.setenv("SUPERPLANE_PAID_WORKER_MODE", "native-lifecycle")
     monkeypatch.setenv("SUPERPLANE_LIFECYCLE_POLICY_FILE", "/run/policy/lifecycle.json")
@@ -163,7 +166,7 @@ async def test_native_retirement_access_dispatches_only_approved_phase(monkeypat
             lease=SimpleNamespace(org_id="org", workspace_id="workspace")
         ),
         request=SimpleNamespace(
-            parameters={"lifecycle_phase": "prepare-retirement-access"}
+            parameters={"lifecycle_phase": phase, "runtime_config_sha256": "a" * 64}
         ),
     )
     transport = SimpleNamespace(
@@ -176,7 +179,12 @@ async def test_native_retirement_access_dispatches_only_approved_phase(monkeypat
         task_worker, "pools", AsyncMock(return_value=(domain, execution))
     )
     run_access = AsyncMock()
-    monkeypatch.setattr(retirement_access_runtime, "run_retirement_access", run_access)
+    if phase == "retire-workspace":
+        monkeypatch.setattr(retirement_composer, "run_retirement", run_access)
+    else:
+        monkeypatch.setattr(
+            retirement_access_runtime, "run_retirement_access", run_access
+        )
     await task_worker.execute(
         transport,
         {

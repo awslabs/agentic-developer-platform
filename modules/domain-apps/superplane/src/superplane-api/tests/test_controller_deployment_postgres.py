@@ -347,7 +347,11 @@ async def test_registered_workload_dispatches_without_replacing_bootstrap_or_lif
     workload,
 ):
     transport = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
-    dispatcher = OperationDispatcher(workload.connections.connect, transport)
+    dispatcher = OperationDispatcher(
+        workload.connections.connect,
+        transport,
+        domain_connect=workload.connections.connect,
+    )
     lost = await workload.admit_workload(commit=False)
     assert (await dispatcher.drain_once()).handled == 0
     assert transport.calls == []
@@ -372,7 +376,11 @@ async def test_changed_canonical_target_cannot_dispatch_registered_workload(work
             "UPDATE deployments SET namespace='replacement-namespace'"
         )
     transport = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
-    dispatcher = OperationDispatcher(workload.connections.connect, transport)
+    dispatcher = OperationDispatcher(
+        workload.connections.connect,
+        transport,
+        domain_connect=workload.connections.connect,
+    )
     assert (await dispatcher.drain_once()).delivered == 0
     assert transport.calls == []
 
@@ -888,7 +896,11 @@ async def worker_runtime(workload, tmp_path):
     sky_token.write_text("test-only-provider-token-" + "a" * 32)
     sky = SkyPilot("https://sky.example.invalid", sky_token, http)
     gateway = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
-    dispatcher = OperationDispatcher(workload.connections.connect, gateway)
+    dispatcher = OperationDispatcher(
+        workload.connections.connect,
+        gateway,
+        domain_connect=workload.connections.connect,
+    )
 
     async def publish(result, *, continuation=False):
         # Both paths use the real paid dispatcher and original admission.

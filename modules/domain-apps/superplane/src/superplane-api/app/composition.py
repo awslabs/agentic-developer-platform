@@ -59,7 +59,7 @@ HARNESS_PORTS: tuple[str, ...] = (
 # configured, so a failing preflight names the setting to change rather than only
 # reporting that something is missing.
 _NO_OPERATION_STORE = (
-    "no PostgreSQL operation store is configured: set DATABASE_URL. The harness "
+    "no PostgreSQL operation store is configured: set SUPERPLANE_OPERATION_DATABASE_URL. The harness "
     "operation store backs this port"
 )
 
@@ -93,6 +93,7 @@ class Composition:
     _closeables: list[Any] = field(default_factory=list)
     _installed: dict[str, Any] = field(default_factory=dict)
     _connections: Any = None
+    _domain_connections: Any = None
     ledger: Any = None
     dispatcher: Any = None
     identity_reader: Any = None
@@ -112,6 +113,12 @@ class Composition:
         if self._connections is None:
             raise RuntimeError("operation authority is not configured")
         return self._connections.connect
+
+    @property
+    def domain_connect(self) -> Any:
+        if self._domain_connections is None:
+            raise RuntimeError("domain authority is not configured")
+        return self._domain_connections.connect
 
     @property
     def installed(self) -> frozenset[str]:
@@ -158,6 +165,9 @@ class Composition:
         try:
             await connections.open()
             await connections.ensure_ready()
+            if self._domain_connections is not None:
+                await self._domain_connections.open()
+                await self._domain_connections.ensure_ready()
         except Exception:
             # No message and no repr: a DSN carries a password, and a schema
             # mismatch names a deployment version. `harness_connection` has
@@ -169,6 +179,8 @@ class Composition:
                 exc_info=False,
             )
             await connections.aclose()
+            if self._domain_connections is not None:
+                await self._domain_connections.aclose()
 
     async def aclose(self) -> None:
         """Release the adapters and transports **this** composition installed.
@@ -240,6 +252,7 @@ class Composition:
                     exc_info=False,
                 )
         self._connections = None
+        self._domain_connections = None
         self.ledger = None
         self.dispatcher = None
 
@@ -347,7 +360,10 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     for the same stated reason: "a package that could mint the credential it checks
     is a package whose authority check is decorative."
     """
-    from app.adapters.harness_connection import build_harness_connections
+    from app.adapters.harness_connection import (
+        build_domain_connections,
+        build_harness_connections,
+    )
 
     outstanding = [port for port in HARNESS_PORTS if not _preexisting(port, result)]
     if not outstanding:
@@ -380,18 +396,24 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     from app.database import async_session_factory
 
     connect = connections.connect
+    domain_connections = build_domain_connections(settings)
+    domain_connect = domain_connections.connect
     store = OperationStore()
     authority_source = GrantBackedAuthority(async_session_factory)
     ledger = OperationBudgetLedger(
-        connect, limits_for=authority_source.budget_limits_for
+        domain_connect, limits_for=authority_source.budget_limits_for
     )
-    execution = HarnessExecutionAuthority(connect, store=store)
+    execution = HarnessExecutionAuthority(
+        connect, store=store, domain_connect=domain_connect
+    )
 
     # The pool is owned by the composition, not by any one adapter: three adapters
     # share it, so the *last* of them closing it would close it under the other
     # two. `aclose` releases it once, after every port is released.
     result._connections = connections
     result._closeables.append(connections)
+    result._domain_connections = domain_connections
+    result._closeables.append(domain_connections)
     result.ledger = ledger
     result.dispatch_enabled = (
         getattr(settings, "superplane_operation_dispatch_enabled", True) is True
@@ -405,6 +427,7 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
 
         result.dispatcher = OperationDispatcher(
             connect,
+            domain_connect=domain_connect,
             transport=ProducerTransport(
                 endpoint, getattr(settings, "superplane_operation_gateway_region", "")
             ),

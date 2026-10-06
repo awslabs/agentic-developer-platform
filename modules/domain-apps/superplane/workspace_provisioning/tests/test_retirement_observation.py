@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from harness_jobs.effects import CallEffect, call_effect
+from harness_jobs.identity import OperationRefused
 from harness_jobs.inventory import AllocationResource, ResourcePresence
 
 from workspace_provisioning.retirement_observation import (
@@ -144,6 +145,29 @@ def test_descriptor_reference_is_bounded_and_recoverable_from_original_journal(
     assert reader.observe(record, saved).presence is ResourcePresence.ABSENT
 
 
+def test_bootstrap_allocation_catalog_keeps_ownership_separate_from_paid_state(
+    observer,
+):
+    reader, record, _ = observer
+    record = replace(
+        record, cluster_ownership="adp-created", components=(component("owned"),)
+    )
+    with pytest.raises(OperationRefused, match="reviewed state inventory"):
+        reader.catalog(record, None, {}, {})
+    members = reader.catalog(
+        record,
+        None,
+        {},
+        {},
+        frozenset({"original-bootstrap"}),
+        include_infrastructure=False,
+    )
+    assert len(members) == 1
+    member = next(iter(members.values()))
+    assert member.kind == "bootstrap-component"
+    assert member.operation_keys == frozenset({"original-bootstrap"})
+
+
 def test_terminated_instances_are_absent_but_stopped_instances_still_cost(observer):
     reader, record, clients = observer
     state = "stopped"
@@ -226,3 +250,55 @@ def test_fresh_discovery_retains_detached_volume_after_it_leaves_provider_listin
         reader.observe(record, subsequent["vol-leaked"]).presence
         is ResourcePresence.ABSENT
     )
+
+
+@pytest.mark.parametrize(
+    "kind,method,key,argument,missing",
+    [
+        (
+            "aws_default_security_group",
+            "describe_security_groups",
+            "SecurityGroups",
+            "GroupIds",
+            "InvalidGroup.NotFound",
+        ),
+        (
+            "aws_vpc_endpoint",
+            "describe_vpc_endpoints",
+            "VpcEndpoints",
+            "VpcEndpointIds",
+            "InvalidVpcEndpointId.NotFound",
+        ),
+        (
+            "aws_vpc_security_group_ingress_rule",
+            "describe_security_group_rules",
+            "SecurityGroupRules",
+            "SecurityGroupRuleIds",
+            "InvalidSecurityGroupRuleId.NotFound",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "code,presence",
+    [
+        (None, ResourcePresence.PRESENT),
+        ("missing", ResourcePresence.ABSENT),
+        ("UnauthorizedOperation", ResourcePresence.UNKNOWN),
+    ],
+)
+def test_managed_network_resources_require_exact_provider_observation(
+    observer, kind, method, key, argument, missing, code, presence
+):
+    reader, record, clients = observer
+
+    def read(**kwargs):
+        assert kwargs == {argument: ["original-id"]}
+        if code:
+            raise ProviderError(missing if code == "missing" else code)
+        return {key: [{"id": "original-id"}]}
+
+    clients["ec2"] = SimpleNamespace(**{method: read})
+    item = resource(
+        reader, "terraform-resource", resource_type=kind, identity={"id": "original-id"}
+    )
+    assert reader.observe(record, item).presence is presence

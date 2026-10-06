@@ -170,7 +170,9 @@ jobs:
       - name: Install classifier test dependency
         run: python3 -m pip install pytest pyyaml boto3 ruff
       - name: Test CI scope selection
-        run: python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
+        run: |
+          python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py \
+            .github/scripts/tests/test_superplane_postgres_gate.py -q
       - name: Verify shared lifecycle integration offline
         if: ${{ matrix.component == 'lifecycle' }}
         run: |
@@ -258,6 +260,7 @@ jobs:
         env:
           # Account-create fencing and recovery require the real PostgreSQL fixture.
           ACCOUNT_PROVISIONING_REQUIRE_POSTGRES: '1'
+          WORKSPACE_PROVISIONING_REQUIRE_POSTGRES: '1'
         run: |
           set -euo pipefail
           # Scoped to the module ROOT, not modules/domain-apps/superplane/tests/ alone.
@@ -268,10 +271,15 @@ jobs:
           # since "no tests ran" and "tests passed" share an exit code.
           if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
             # Real-environment acceptance runs separately with explicit target/evidence inputs.
-            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short
+            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short \
+              --junitxml="$RUNNER_TEMP/superplane-domain.xml"
           else
             echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
           fi
+
+      - name: Require retirement PostgreSQL evidence
+        if: ${{ matrix.component == 'domain' }}
+        run: python3 .github/scripts/superplane_postgres_gate.py "$RUNNER_TEMP/superplane-domain.xml"
 
       - name: Run migration, placement and handover tests with coverage
         if: ${{ matrix.component == 'domain' }}

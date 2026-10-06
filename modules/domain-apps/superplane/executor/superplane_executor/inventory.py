@@ -14,13 +14,13 @@ from botocore.exceptions import ClientError
 from harness_jobs.execution import disposition_for, read_call
 from harness_jobs.execution_plan import PlanProgress, confirmed_plan_progress
 from harness_jobs.identity import OperationRefused
-from harness_jobs.leases import lock_lease
 from harness_jobs.inventory import (
     AllocationResource,
     InventoryAuthority,
     ResourceObservation,
     ResourcePresence,
 )
+from harness_jobs.leases import lock_lease
 from harness_jobs.store import OperationStore
 
 from .plan import Plan
@@ -574,9 +574,13 @@ class Finalizer:
                 )
             if not complete:
                 return
-            attempt = await self.authority.begin_provider_enumeration(
-                connection, lease, provider="aws"
-            )
+            providers = await self.listing_providers(operation)
+            attempts = {
+                provider: await self.authority.begin_provider_enumeration(
+                    connection, lease, provider=provider
+                )
+                for provider in providers
+            }
         listing_returned = False
         try:
             # A fresh listing after begin, not a reused pre-intent snapshot.
@@ -590,13 +594,24 @@ class Finalizer:
                     present.add(reference)
             listing_returned = True
             async with self.provider.execution_pool.acquire() as connection:
-                await self.authority.record_provider_enumeration(
-                    connection,
-                    lease,
-                    provider="aws",
-                    provider_references=frozenset(present),
-                    attempt=attempt,
-                )
+                # Wrapper providers have no separate physical handles only when
+                # the domain's explicit listing contract has verified that fact.
+                if set(await self.listing_providers(operation)) != set(attempts):
+                    raise OperationRefused(
+                        "inventory provider set changed during listing"
+                    )
+                for provider, attempt in attempts.items():
+                    await self.authority.record_provider_enumeration(
+                        connection,
+                        lease,
+                        provider=provider,
+                        provider_references=frozenset(
+                            fresh[ref].provider_reference
+                            for ref in present
+                            if fresh[ref].provider == provider
+                        ),
+                        attempt=attempt,
+                    )
                 await self.authority.seal_allocation(connection, lease)
                 observations = await self.authority.observe_report(connection, lease)
                 await self.authority.publish_report(
@@ -613,9 +628,7 @@ class Finalizer:
             await self.persist(operation, target, calls, assessment)
             if not assessment.inventory or not assessment.inventory.complete:
                 raise OperationRefused("complete allocation accounting unavailable")
-            from .cleanup_snapshot import capture
-
-            await capture(self, operation, target, plan, assessment)
+            await self.capture_cleanup(operation, target, plan, assessment)
             if record.action == "teardown" and not assessment.may_mark_released:
                 raise OperationRefused("teardown retains resource exposure")
             return assessment
@@ -625,14 +638,23 @@ class Finalizer:
                 # Cancellation is a BaseException and deliberately leaves the
                 # durable in-progress marker for the successor to recover.
                 async with self.provider.execution_pool.acquire() as connection:
-                    await self.authority.fail_provider_enumeration(
-                        connection, lease, attempt=attempt
-                    )
+                    for attempt in attempts.values():
+                        await self.authority.fail_provider_enumeration(
+                            connection, lease, attempt=attempt
+                        )
             # No release is published on an uncertain listing. Shared receipts,
             # capacity records and prior resource handles remain durable.
             raise OperationRefused(
                 "allocation reconciliation requires recovery"
             ) from None
+
+    async def listing_providers(self, operation):
+        return ("aws",)
+
+    async def capture_cleanup(self, operation, target, plan, assessment):
+        from .cleanup_snapshot import capture
+
+        await capture(self, operation, target, plan, assessment)
 
     def token_for(self, operation):
         return next(

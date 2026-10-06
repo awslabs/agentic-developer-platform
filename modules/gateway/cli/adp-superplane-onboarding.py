@@ -92,6 +92,8 @@ STATE = "superplane_onboarding"
 ENDPOINTS = {
     "listWorkspaces": {"method": "GET", "path": "/workspaces", "served": True},
     "getWorkspace": {"method": "GET", "path": "/workspaces/{workspace_id}", "served": True},
+    "getWorkspaceAccess": {"method": "GET", "path": "/workspaces/{workspace_id}/access/v1/me", "served": True},
+    "grantWorkspaceAccess": {"method": "POST", "path": "/workspaces/{workspace_id}/access/v1/grants", "served": True},
     "createWorkspace": {"method": "POST", "path": "/workspaces", "served": True},
     # Shared route vocabulary for the browser's operational surface. A served
     # route does not install a CLI command or establish workload readiness.
@@ -190,13 +192,13 @@ ENDPOINTS = {
     "previewRetirementAccess": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/retirement/access/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing separate cleanup access for workspace removal",
     },
     "admitRetirementAccess": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/retirement/access",
-        "served": False,
+        "served": True,
         "capability": "requesting approved cleanup access for workspace removal",
     },
     "adoptWorkspace": {

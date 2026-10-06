@@ -36,7 +36,7 @@ removed. Account closure is not a step here in either mode; it is separately gat
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from superplane_bootstrap.errors import BootstrapRefused
 
@@ -91,6 +91,7 @@ class RetirementPlan:
     components_authorized: bool = True
     owned_namespace_remaining: bool = False
     cluster_rbac_remaining: bool = False
+    managed_destroy_planned: bool = False
 
     @property
     def preserves_cluster(self) -> bool:
@@ -108,7 +109,7 @@ class RetirementPlan:
         """
         return (
             self.components_authorized
-            and self.preserves_cluster
+            and (self.preserves_cluster or self.managed_destroy_planned)
             and not self.owned_namespace_remaining
             and not self.cluster_rbac_remaining
         )
@@ -156,6 +157,8 @@ def _target(payload: dict) -> str:
 
 def _component_steps(
     inventory: RetirementInventory,
+    *,
+    managed_destroy=False,
 ) -> tuple[list[ExecutionStep], list[str]]:
     """Deletion steps for owned controller objects; preservation for adopted ones.
 
@@ -184,6 +187,8 @@ def _component_steps(
         kind = body.get("kind", "")
         name = body.get("metadata", {}).get("name", "")
         if kind in {"ClusterRole", "ClusterRoleBinding"}:
+            if managed_destroy and component.owned:
+                continue
             preserved.append(
                 f"{kind}/{name} (owned cluster-scoped controller RBAC; independent "
                 "exact-name cleanup authority is required; teardown remains incomplete)"
@@ -218,6 +223,8 @@ def _component_steps(
 
 def _grant_steps(
     inventory: RetirementInventory,
+    *,
+    managed_destroy=False,
 ) -> tuple[list[ExecutionStep], list[str]]:
     """Revocation steps for retained grants, keyed by their immutable identity."""
     steps: list[ExecutionStep] = []
@@ -235,7 +242,14 @@ def _grant_steps(
         else:
             body = spec.get("body", {})
             metadata = body.get("metadata", {})
-            if body.get("kind") in {"ClusterRole", "ClusterRoleBinding"}:
+            if body.get("kind") in {
+                "ClusterRole",
+                "ClusterRoleBinding",
+                "ValidatingAdmissionPolicy",
+                "ValidatingAdmissionPolicyBinding",
+            }:
+                if managed_destroy:
+                    continue
                 # Cluster scope does not imply shared ownership. In particular,
                 # supervisor-cluster grants are unique to a bootstrap generation.
                 # Namespaced cleanup authority cannot remove them, and preserving
@@ -281,6 +295,19 @@ def _prerequisite_steps(
     steps: list[ExecutionStep] = []
     preserved: list[str] = []
     for index, prerequisite in enumerate(inventory.prerequisites):
+        if prerequisite.kind == "EksPublicEndpoint":
+            if (
+                prerequisite.removable
+                or prerequisite.identifier != inventory.cluster_arn
+            ):
+                raise BootstrapRefused(
+                    "public endpoint cannot grant separate deletion authority"
+                )
+            preserved.append(
+                f"{prerequisite.kind}/{prerequisite.identifier} (no separate bootstrap deletion; "
+                "the reviewed cluster lifecycle controls this endpoint)"
+            )
+            continue
         if not prerequisite.removable:
             preserved.append(
                 f"{prerequisite.kind}/{prerequisite.identifier} (adopted; owned by a "
@@ -306,7 +333,7 @@ def _prerequisite_steps(
 
 
 def compose_retirement_plan(
-    inventory: RetirementInventory, *, managed_destroy=None
+    inventory: RetirementInventory, *, managed_destroy=None, managed_access=None
 ) -> RetirementPlan:
     """Order the durable ownership record into an approvable deletion plan.
 
@@ -351,7 +378,9 @@ def compose_retirement_plan(
     ]
     preserved: list[str] = []
 
-    component_steps, component_preserved = _component_steps(inventory)
+    component_steps, component_preserved = _component_steps(
+        inventory, managed_destroy=managed_destroy is not None
+    )
     steps.extend(component_steps)
     preserved.extend(component_preserved)
 
@@ -367,30 +396,83 @@ def compose_retirement_plan(
                 "plan a delete identified only by name, because a namespace with "
                 "this name may be a different object than the one created here"
             )
-        preserved.append(
-            f"Namespace/{inventory.namespace} (ADP-created, uid {inventory.namespace_uid}; "
-            "retained because component ownership cannot authorize a cascading deletion "
-            "or fence unrelated namespace contents; teardown remains incomplete)"
-        )
+        if managed_destroy is None:
+            preserved.append(
+                f"Namespace/{inventory.namespace} (ADP-created, uid {inventory.namespace_uid}; "
+                "retained because component ownership cannot authorize a cascading deletion "
+                "or fence unrelated namespace contents; teardown remains incomplete)"
+            )
     else:
         preserved.append(
             f"Namespace/{inventory.namespace} (adopted, not created by this "
             "bootstrap; may hold unrelated workloads)"
         )
 
-    grant_steps, grant_preserved = _grant_steps(inventory)
+    grant_steps, grant_preserved = _grant_steps(
+        inventory, managed_destroy=managed_destroy is not None
+    )
     steps.extend(grant_steps)
     preserved.extend(grant_preserved)
 
     prerequisite_steps, prerequisite_preserved = _prerequisite_steps(inventory)
-    steps.extend(prerequisite_steps)
+    if managed_destroy is None:
+        steps.extend(prerequisite_steps)
     preserved.extend(prerequisite_preserved)
 
+    if managed_access is not None:
+        from .artifacts import digest
+        from .retirement_access_artifact import validate_access_artifact
+        from .retirement_managed_access import ManagedRetirementAccessPlan
+
+        if (
+            not isinstance(managed_access, tuple)
+            or len(managed_access) != 2
+            or not isinstance(managed_access[0], ManagedRetirementAccessPlan)
+            or not isinstance(managed_access[1], dict)
+        ):
+            raise BootstrapRefused(
+                "managed revocation requires its immutable access receipt"
+            )
+        access, artifact = managed_access
+        if (
+            inventory.preserve_cluster
+            or inventory.cluster_ownership != "adp-created"
+            or access.cluster_arn != inventory.cluster_arn
+            or access.namespace_uid != inventory.namespace_uid
+            or (access.org_id, access.workspace_id)
+            != (inventory.org_id, inventory.workspace_id)
+            or access.inventory_sha256 != digest(asdict(inventory))
+            or access.revocation_order != ("cleaner-entry",)
+            or len(access.grants) != 1
+            or access.grants[0].get("kind") != "eks-entry"
+            or access.grants[0].get("key") != "cleaner-entry"
+        ):
+            raise BootstrapRefused("managed revocation changed its owned inventory")
+        identity = validate_access_artifact(artifact, access)["cleaner-entry"]
+        steps.append(
+            ExecutionStep(
+                step_id="revoke-control-entry",
+                provider=AWS,
+                operation_kind=REVOKE_GRANT,
+                target=_target(
+                    {
+                        "artifact_id": artifact["artifact_id"],
+                        "control_allocation_id": access.allocation_id,
+                        "original_allocation_id": access.original_allocation_id,
+                        "access_plan_revision": access.revision,
+                        "cluster_arn": access.cluster_arn,
+                        "principal_arn": access.grants[0]["principal_arn"],
+                        "entry_arn": identity["arn"],
+                    }
+                ),
+            )
+        )
     if managed_destroy is not None:
+        from .retirement_destroy_producer import DestroyPlanReference
         from .retirement_terraform import ReviewedDestroy
 
         if (
-            not isinstance(managed_destroy, ReviewedDestroy)
+            not isinstance(managed_destroy, (ReviewedDestroy, DestroyPlanReference))
             or inventory.preserve_cluster
         ):
             raise BootstrapRefused(
@@ -403,7 +485,21 @@ def compose_retirement_plan(
             raise BootstrapRefused(
                 "reviewed destroy artifact describes another workspace"
             )
+        # Namespaced cleanup grants also remain until the cluster is destroyed.
+        # EKS destruction removes Kubernetes objects; independent AWS grants and
+        # network prerequisites are revoked after that authoritative operation.
+        retained = [s for s in steps if s.operation_kind == REVOKE_GRANT]
+        steps = [s for s in steps if s.operation_kind != REVOKE_GRANT]
         steps.append(managed_destroy.step())
+        steps.extend(s for s in retained if s.provider == AWS)
+        steps.extend(prerequisite_steps)
+        # Keep the exact cleaner mapping alive while the persistent fence and
+        # complete workload inventory are rechecked throughout Terraform. Once
+        # the cluster is absent, its access mapping is independently observed.
+        control_steps = [s for s in steps if s.step_id == "revoke-control-entry"]
+        steps = [
+            s for s in steps if s.step_id != "revoke-control-entry"
+        ] + control_steps
 
     # The cluster and its network. Never deleted by this plan in either mode: an
     # ADP-created cluster's lifecycle belongs to its Terraform state, and a supplied
@@ -451,16 +547,22 @@ def compose_retirement_plan(
         steps=tuple(steps),
         preserved=tuple(preserved),
         components_authorized=inventory.components_complete,
-        owned_namespace_remaining=inventory.remove_namespace,
-        cluster_rbac_remaining=any(
-            grant.spec.get("body", {}).get("kind")
-            in {"ClusterRole", "ClusterRoleBinding"}
-            for grant in inventory.grants
-        )
-        or any(
-            component.owned
-            and component.desired.get("kind") in {"ClusterRole", "ClusterRoleBinding"}
-            for component in inventory.components
+        owned_namespace_remaining=inventory.remove_namespace
+        and managed_destroy is None,
+        managed_destroy_planned=managed_destroy is not None,
+        cluster_rbac_remaining=managed_destroy is None
+        and (
+            any(
+                grant.spec.get("body", {}).get("kind")
+                in {"ClusterRole", "ClusterRoleBinding"}
+                for grant in inventory.grants
+            )
+            or any(
+                component.owned
+                and component.desired.get("kind")
+                in {"ClusterRole", "ClusterRoleBinding"}
+                for component in inventory.components
+            )
         ),
     )
     encoded = plan.encode()

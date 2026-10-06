@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
     # by this driver). Empty preserves the existing database-owned search_path.
     superplane_db_schema: str = ""
+    # Shared Harness credentials never inherit the domain ORM connection.
+    superplane_operation_database_url: str = ""
+    superplane_operation_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
     # Deployment-owned tenant/target policy; never accepted from HTTP input.

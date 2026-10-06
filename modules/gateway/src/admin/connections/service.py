@@ -714,6 +714,13 @@ async def install_callback(
         org_id=resolved_org_id,
     )
 
+    # End the callback's claim/secret/routing transaction before bot seeding
+    # opens its own session. Personal installs and an idempotent org append
+    # can still hold the organization FOR UPDATE lock here; the seed's separate
+    # transaction needs that same row when creating the canonical bot user.
+    # Keep the existing guarded writes ahead of this boundary.
+    await db.commit()
+
     # Seed the platform App's own bot identity so the webhook Lambda
     # recognizes its sender (e.g. the agent editing its own status comment)
     # instead of 403'ing as unknown_user. Best-effort — never blocks install.

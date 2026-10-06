@@ -39,7 +39,7 @@ async def verified_proposal(composition, org_id, workspace_id, artifact_id):
     from workspace_provisioning.artifacts import read_artifact
 
     artifact = await read_artifact(
-        composition.operation_connect,
+        composition.domain_connect,
         artifact_id=artifact_id,
         org_id=str(org_id),
         workspace_id=str(workspace_id),

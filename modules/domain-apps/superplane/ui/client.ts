@@ -418,10 +418,65 @@ export function getWorkspace(
   return call(guard, 'getWorkspace', { workspace_id: workspaceId }, undefined, parseWorkspace);
 }
 
+export interface HumanWorkspaceAccess {
+  workspace_id: string;
+  grant_id: string;
+  revision: number;
+  principal_type: 'human';
+  subject: string;
+  effective_permissions: string[];
+  source: 'explicit_assignment' | 'preexisting_grant';
+  granted_by: string | null;
+  reason: string | null;
+  request_id: string | null;
+}
+
+function parseHumanWorkspaceAccess(raw: unknown): HumanWorkspaceAccess | null {
+  if (!isRecord(raw) || typeof raw.workspace_id !== 'string' ||
+      typeof raw.grant_id !== 'string' || !Number.isInteger(raw.revision) ||
+      (raw.revision as number) < 1 || raw.principal_type !== 'human' ||
+      typeof raw.subject !== 'string' || !Array.isArray(raw.effective_permissions) ||
+      !raw.effective_permissions.every((permission) => typeof permission === 'string' &&
+        ['workspace:read', 'workspace:spend', 'workspace:provision', 'workspace:renew_credential', 'workspace:administer'].includes(permission)) ||
+      !['explicit_assignment', 'preexisting_grant'].includes(raw.source as string) ||
+      (raw.granted_by !== null && typeof raw.granted_by !== 'string') ||
+      (raw.reason !== null && typeof raw.reason !== 'string') ||
+      (raw.request_id !== null && typeof raw.request_id !== 'string')) return null;
+  return raw as unknown as HumanWorkspaceAccess;
+}
+
+export function getWorkspaceAccess(guard: ScopeGuard, workspaceId: string): Promise<Outcome<HumanWorkspaceAccess>> {
+  return call(guard, 'getWorkspaceAccess', { workspace_id: workspaceId }, undefined,
+    (raw) => {
+      const parsed = parseHumanWorkspaceAccess(raw);
+      return parsed?.workspace_id === workspaceId ? parsed : null;
+    });
+}
+
+export function grantWorkspaceAccess(
+  guard: ScopeGuard, workspaceId: string, targetSubject: string, requestId: string,
+): Promise<Outcome<HumanWorkspaceAccess>> {
+  return call(guard, 'grantWorkspaceAccess', { workspace_id: workspaceId }, {
+    target_subject: targetSubject, principal_type: 'human', permissions: ['workspace:read'],
+    reason: 'approver_setup', expected_revision: 0, request_id: requestId,
+  }, (raw) => {
+    const parsed = parseHumanWorkspaceAccess(raw);
+    return parsed?.workspace_id === workspaceId && parsed.subject === targetSubject &&
+      parsed.request_id === requestId && parsed.principal_type === 'human' &&
+      parsed.effective_permissions.includes('workspace:read') ? parsed : null;
+  });
+}
+
 export function parseRetirementReview(raw: unknown): RetirementReview | null {
-  if (!isRecord(raw) || raw.admission_available !== false ||
-      raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null ||
+  if (!isRecord(raw) || typeof raw.admission_available !== 'boolean' ||
       !Array.isArray(raw.steps) || !Array.isArray(raw.preserved)) return null;
+  if (raw.admission_available
+    ? (!parseApprovalRequest(raw.approval_request) || raw.blocked_reason !== null)
+    : (raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null)) return null;
+  if (raw.admission_available && (!isRecord(raw.approval_request) ||
+      raw.approval_request.workspace_id !== raw.workspace_id ||
+      raw.approval_request.idempotency_key !== raw.request_id ||
+      raw.approval_request.action !== 'teardown')) return null;
   const fields = [
     'request_id', 'workspace_id', 'source_operation_id', 'source_payload_digest',
     'lifecycle_artifact_id', 'account_id', 'region', 'inventory_sha256',
@@ -481,6 +536,22 @@ export function previewRetirementAccess(
     return review?.workspace_id === workspaceId && review.retirement_request_id === request.operation_id
       ? review : null;
   });
+}
+
+export function submitRetirement(
+  guard: ScopeGuard, workspaceId: string,
+  body: { operation_id: string; plan_revision: string; approval_id: string },
+  preparation = false,
+): Promise<Outcome<OperationReceipt>> {
+  return call(guard, preparation ? 'admitRetirementAccess' : 'admitRetirement',
+    { workspace_id: workspaceId }, body, (raw) => {
+      if (!isRecord(raw) || raw.workspace_id !== workspaceId || raw.retirement_complete !== false ||
+          (preparation ? raw.retirement_request_id : raw.request_id) !== body.operation_id ||
+          typeof raw[preparation ? 'control_operation_id' : 'operation_id'] !== 'string') return null;
+      return parseOperationReceipt({ ...raw,
+        provisioning_operation_id: raw[preparation ? 'control_operation_id' : 'operation_id'],
+      });
+    });
 }
 
 /**
