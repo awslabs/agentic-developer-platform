@@ -75,6 +75,65 @@ async def capabilities_async() -> dict[str, bool]:
     return capabilities_from(await capability_details())
 
 
+async def runtime_dependencies(composition) -> dict[str, bool]:
+    """Check live store and authority contracts without minting any workspace grant.
+
+    The image-local capability preflight is offline; this check only runs inside
+    the serving API. Worker binding remains a separate per-organization check.
+    """
+    from app.adapters.harness_operation_facade import HarnessOperationFacade
+    from app.database import engine
+    from app.services.provisioning import get_operation_facade
+
+    result = {
+        "operation_store": False,
+        "authority": False,
+        "lifecycle_registry": False,
+    }
+    connections = getattr(composition, "_connections", None)
+    facade = get_operation_facade()
+    if (
+        connections is None
+        or not connections.opened
+        or not isinstance(facade, HarnessOperationFacade)
+        or getattr(composition, "_installed", {}).get("operation_facade") is not facade
+    ):
+        return result
+    try:
+        await asyncio.wait_for(connections.ensure_ready(), timeout=10)
+        result["operation_store"] = True
+        async with engine.connect() as connection:
+            for table, column in (
+                ("organization_grants", "org_id, principal, permissions, revoked_at"),
+                (
+                    "workspace_grants",
+                    "org_id, workspace_id, principal, permissions, revoked_at",
+                ),
+                (
+                    "operation_approvals",
+                    "org_id, workspace_id, requester, plan_digest, expires_at, revoked",
+                ),
+            ):
+                await asyncio.wait_for(
+                    connection.execute(text(f"SELECT {column} FROM {table} LIMIT 0")),
+                    timeout=10,
+                )
+            result["authority"] = True
+            await asyncio.wait_for(
+                connection.execute(
+                    text(
+                        "SELECT operation_id, org_id, workspace_id, phase, plan_digest "
+                        "FROM workspace_lifecycle_control_operations LIMIT 0"
+                    )
+                ),
+                timeout=10,
+            )
+            result["lifecycle_registry"] = True
+    except Exception:
+        return result
+    return result
+
+
 def capabilities() -> dict[str, bool]:
     """The capability booleans, for synchronous callers (the CLI).
 

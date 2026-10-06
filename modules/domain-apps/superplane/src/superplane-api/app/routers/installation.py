@@ -8,7 +8,7 @@ from superplane_contracts import Submitter
 
 from app.config import settings
 from app.database import get_session
-from app.installation import capabilities_async
+from app.installation import capabilities_async, runtime_dependencies
 from app.management import management_only
 from app.middleware.auth import get_current_org
 from app.routers.heartbeat import _authenticated_submitter
@@ -20,6 +20,18 @@ router = APIRouter(prefix="/internal")
 async def installation_readiness(
     request: Request, submitter: Submitter = Depends(_authenticated_submitter)
 ):
+    dependencies = await runtime_dependencies(
+        getattr(request.app.state, "trust_composition", None)
+    )
+    capabilities = await capabilities_async()
+    for port, dependency in (
+        ("provider_authority", "operation_store"),
+        ("allocation_inventory", "operation_store"),
+    ):
+        capabilities[port] = capabilities[port] and dependencies[dependency]
+    capabilities["operation_facade"] = capabilities["operation_facade"] and all(
+        dependencies.values()
+    )
     return {
         "release_id": os.environ.get("SUPERPLANE_RELEASE_ID"),
         "source_revision": os.environ.get("SUPERPLANE_SOURCE_REVISION"),
@@ -34,7 +46,8 @@ async def installation_readiness(
         # response, and an adapter's refusal message is the one place a provider
         # error or another tenant's identifier could have been interpolated. The
         # image-local CLI is where that detail belongs.
-        "capabilities": await capabilities_async(),
+        "capabilities": capabilities,
+        "dependencies": dependencies,
         "observations": {
             key: value
             for key, value in getattr(

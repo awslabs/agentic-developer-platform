@@ -112,3 +112,143 @@ def test_image_contract_is_offline_without_database_or_shared_credentials():
     assert report["authority_verified"] is False
     assert report["production_ready"] is False
     assert "capabilities" not in report
+
+
+async def test_runtime_dependencies_read_empty_authority_and_lifecycle_tables(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app import database
+    from app.adapters.harness_operation_facade import HarnessOperationFacade
+    from app.services import provisioning
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(database, "engine", engine)
+    facade = object.__new__(HarnessOperationFacade)
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+
+    class Connections:
+        opened = True
+
+        async def ensure_ready(self):
+            return None
+
+    composition = SimpleNamespace(
+        _connections=Connections(), _installed={"operation_facade": facade}
+    )
+    try:
+        async with engine.begin() as connection:
+            for table, column in (
+                ("organization_grants", "org_id, principal, permissions, revoked_at"),
+                (
+                    "workspace_grants",
+                    "org_id, workspace_id, principal, permissions, revoked_at",
+                ),
+                (
+                    "operation_approvals",
+                    "org_id, workspace_id, requester, plan_digest, expires_at, revoked",
+                ),
+                (
+                    "workspace_lifecycle_control_operations",
+                    "operation_id, org_id, workspace_id, phase, plan_digest",
+                ),
+            ):
+                columns = ", ".join(
+                    f"{name.strip()} text" for name in column.split(",")
+                )
+                await connection.execute(text(f"CREATE TABLE {table} ({columns})"))
+        assert await installation.runtime_dependencies(composition) == {
+            "operation_store": True,
+            "authority": True,
+            "lifecycle_registry": True,
+        }
+        composition._installed["operation_facade"] = object()
+        assert not any((await installation.runtime_dependencies(composition)).values())
+        composition._installed["operation_facade"] = facade
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DROP TABLE workspace_lifecycle_control_operations")
+            )
+        assert await installation.runtime_dependencies(composition) == {
+            "operation_store": True,
+            "authority": True,
+            "lifecycle_registry": False,
+        }
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP TABLE organization_grants"))
+        assert await installation.runtime_dependencies(composition) == {
+            "operation_store": True,
+            "authority": False,
+            "lifecycle_registry": False,
+        }
+
+        async def wrong_schema():
+            raise RuntimeError("incompatible harness schema")
+
+        composition._connections.ensure_ready = wrong_schema
+        assert not any((await installation.runtime_dependencies(composition)).values())
+        composition._connections.opened = False
+        assert not any((await installation.runtime_dependencies(composition)).values())
+    finally:
+        await engine.dispose()
+
+
+async def test_runtime_dependencies_do_not_trust_an_uninstalled_facade(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import provisioning
+
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: object())
+    composition = SimpleNamespace(_connections=SimpleNamespace(opened=True))
+    assert not any((await installation.runtime_dependencies(composition)).values())
+    assert not any((await installation.runtime_dependencies(None)).values())
+
+
+@pytest.mark.parametrize(
+    "missing", ("operation_store", "authority", "lifecycle_registry")
+)
+async def test_installation_readiness_masks_offline_capabilities_without_live_dependencies(
+    monkeypatch,
+    missing,
+):
+    from types import SimpleNamespace
+
+    from app.routers import installation as router
+
+    async def dependencies(_composition):
+        return {
+            key: key != missing
+            for key in ("operation_store", "authority", "lifecycle_registry")
+        }
+
+    async def capabilities():
+        return dict.fromkeys(
+            (
+                "credential_evidence",
+                "operation_facade",
+                "provider_authority",
+                "allocation_inventory",
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(router, "runtime_dependencies", dependencies)
+    monkeypatch.setattr(router, "capabilities_async", capabilities)
+    app = SimpleNamespace(
+        state=SimpleNamespace(trust_composition=None, domain_policy=object())
+    )
+    response = await router.installation_readiness(
+        SimpleNamespace(app=app), SimpleNamespace(workspaces=[])
+    )
+    assert response["capabilities"] == {
+        "credential_evidence": True,
+        "operation_facade": False,
+        "provider_authority": missing != "operation_store",
+        "allocation_inventory": missing != "operation_store",
+    }
+    assert response["dependencies"][missing] is False
+    assert response["observations"] == {}
