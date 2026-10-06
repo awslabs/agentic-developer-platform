@@ -363,3 +363,128 @@ def test_managed_request_binds_original_artifact_and_separate_allocation(
         assert request.parameters["allocation_id"] == plan.allocation_id
         assert request.parameters["allocation_id"] != plan.original_allocation_id
         assert list(plan.recipe()) == ["cleaner-entry"]
+
+
+def test_confirmed_cleanup_entry_has_one_exact_mapping_and_can_be_revoked(runtime):
+    from workspace_provisioning.retirement_inventory import (
+        require_cleanup_group_mapping,
+        require_dormant_cleanup_group,
+        retained_cleanup_capability,
+    )
+
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    capability = retained_cleanup_capability(
+        arguments["inventory"],
+        original_allocation_id=arguments["original_allocation_id"],
+        release=arguments["release"],
+        principals=arguments["principals"],
+        controller_mode=arguments["controller_mode"],
+        kubernetes=arguments["kubernetes"],
+    )
+    eks = arguments["eks"]
+    grant = plan.grants[0]
+    identity = eks.create(grant)
+    require_cleanup_group_mapping(capability, eks, spec=grant, identity=identity)
+    with pytest.raises(BootstrapRefused, match="unapproved EKS mapping"):
+        require_dormant_cleanup_group(capability, eks)
+    with pytest.raises(BootstrapRefused, match="confirmed entry"):
+        require_cleanup_group_mapping(
+            capability, eks, spec=grant, identity={**identity, "arn": "substituted"}
+        )
+    other = f"arn:aws:iam::{runtime.target.account_id}:role/foreign"
+    runtime.cloud.entries[other] = {
+        "principalArn": other,
+        "kubernetesGroups": [capability.group],
+    }
+    with pytest.raises(BootstrapRefused, match="unapproved EKS mapping"):
+        require_cleanup_group_mapping(capability, eks, spec=grant, identity=identity)
+    runtime.cloud.entries.pop(other)
+    eks.delete(grant, identity)
+    require_dormant_cleanup_group(capability, eks)
+
+
+@pytest.mark.parametrize(
+    "failure", ["none", "lost_reply", "foreign_mapping", "changed_grant"]
+)
+def test_managed_control_grant_checks_dormant_group_and_journals_effect(
+    runtime, failure
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from workspace_bootstrap.tests.test_authority_runtime_postgres import Crash
+    from workspace_provisioning.retirement_access_grants import establish_access_grants
+
+    from .test_retirement_access_grants import Journal
+
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    journal = Journal(plan)
+    eks = arguments["eks"]
+    kubernetes = arguments["kubernetes"]
+    before = runtime.cloud.mutations
+
+    async def run():
+        return await establish_access_grants(
+            plan,
+            journal,
+            eks=eks,
+            kubernetes=kubernetes,
+            verify_target=AsyncMock(),
+        )
+
+    if failure == "foreign_mapping":
+        principal = f"arn:aws:iam::{runtime.target.account_id}:role/unattributed"
+        runtime.cloud.entries[principal] = {
+            "principalArn": principal,
+            "kubernetesGroups": [plan.cleanup_group],
+        }
+        with pytest.raises(BootstrapRefused, match="unapproved EKS mapping"):
+            asyncio.run(run())
+        assert journal.events == {"cleaner-entry": None}
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "changed_grant":
+        retained = next(
+            item
+            for item in plan.retained_grants
+            if item["spec"]["key"] == "cleanup-cluster-role"
+        )
+        body = retained["spec"]["body"]
+        resource = runtime.cloud.objects[(body["kind"], None, body["metadata"]["name"])]
+        resource["metadata"]["uid"] = "replaced"
+        with pytest.raises(LifecycleRefused, match="retained cleanup grant changed"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "lost_reply":
+        runtime.cloud.crash = ("create-entry", plan.grants[0]["principal_arn"])
+        with pytest.raises(Crash):
+            asyncio.run(run())
+        assert journal.events == {"cleaner-entry": None}
+        assert runtime.cloud.mutations == before + 1
+        with pytest.raises(LifecycleRefused, match="ambiguous"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before + 1
+        return
+    recorded = asyncio.run(run())
+    assert recorded == journal.events
+    assert set(recorded) == {"cleaner-entry"}
+    assert runtime.cloud.mutations == before + 1
+    assert asyncio.run(run()) == recorded
+    assert runtime.cloud.mutations == before + 1

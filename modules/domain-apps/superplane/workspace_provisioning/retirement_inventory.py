@@ -480,7 +480,7 @@ def retained_cleanup_capability(
     )
 
 
-def require_dormant_cleanup_group(capability, eks):
+def require_cleanup_group_mapping(capability, eks, *, spec=None, identity=None):
     from superplane_bootstrap.eks_grants import EksGrants, _pages
 
     if (
@@ -493,6 +493,19 @@ def require_dormant_cleanup_group(capability, eks):
         raise BootstrapRefused(
             "cleanup EKS observation is outside the original cluster"
         )
+    if spec is not None or identity is not None:
+        if (
+            not isinstance(spec, dict)
+            or not isinstance(identity, dict)
+            or spec.get("key") != "cleaner-entry"
+            or spec.get("kind") != "eks-entry"
+            or spec.get("cluster_arn") != capability.cluster_arn
+            or spec.get("groups") != [capability.group]
+            or eks.observe(spec) != identity
+        ):
+            raise BootstrapRefused("cleanup mapping differs from confirmed entry")
+        eks.verify(spec, identity)
+    matches = []
     for principal in _pages(
         eks.client,
         "list_access_entries",
@@ -508,4 +521,10 @@ def require_dormant_cleanup_group(capability, eks):
         ):
             raise BootstrapRefused("cleanup EKS access inventory is unanswered")
         if capability.group in entry.get("kubernetesGroups", []):
-            raise BootstrapRefused("cleanup group has an unapproved EKS mapping")
+            matches.append(principal)
+    if matches != ([spec["principal_arn"]] if spec is not None else []):
+        raise BootstrapRefused("cleanup group has an unapproved EKS mapping")
+
+
+def require_dormant_cleanup_group(capability, eks):
+    require_cleanup_group_mapping(capability, eks)

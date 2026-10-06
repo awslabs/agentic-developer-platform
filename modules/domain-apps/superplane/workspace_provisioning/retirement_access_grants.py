@@ -17,12 +17,37 @@ async def establish_access_grants(plan, effects, *, eks, kubernetes, verify_targ
     if canonical(recipe) != canonical(effects.recipe):
         raise LifecycleRefused("cleanup grant journal differs from the approved plan")
 
-    async def call(method, *arguments):
+    async def call(method, *arguments, **options):
         await effects.authority()
         await verify_target()
-        result = await asyncio.to_thread(method, *arguments)
+        result = await asyncio.to_thread(method, *arguments, **options)
         await effects.authority()
         return result
+
+    from .retirement_inventory import (
+        OwnedGrant,
+        RetainedCleanupCapability,
+        require_cleanup_group_mapping,
+        require_dormant_cleanup_group,
+    )
+    from .retirement_managed_access import ManagedRetirementAccessPlan
+
+    capability = None
+    if isinstance(plan, ManagedRetirementAccessPlan):
+        if len(plan.grants) != 1 or len(plan.retained_grants) != 6:
+            raise LifecycleRefused("managed access has an incomplete finite grant set")
+        original = tuple(
+            OwnedGrant(item["spec"], item["identity"]) for item in plan.retained_grants
+        )
+        capability = RetainedCleanupCapability(
+            org_id=plan.org_id,
+            workspace_id=plan.workspace_id,
+            cluster_arn=plan.cluster_arn,
+            group=plan.cleanup_group,
+            generation=original[0].spec["generation"],
+            original_allocation_id=plan.original_allocation_id,
+            grants=original,
+        )
 
     observed = {}
     for spec in plan.grants:
@@ -32,6 +57,15 @@ async def establish_access_grants(plan, effects, *, eks, kubernetes, verify_targ
         # evidence raises here; provider observation in recovery has a distinct
         # authority path and must not be confused with permission to replay.
         previous = await effects.intend(key, recipe[key])
+        if capability is not None and previous is None:
+            for original in capability.grants:
+                current_grant = await call(kubernetes.observe, original.spec)
+                if current_grant != original.identity:
+                    raise LifecycleRefused(
+                        "retained cleanup grant changed before mapping"
+                    )
+                kubernetes.verify(original.spec, current_grant)
+            await call(require_dormant_cleanup_group, capability, eks)
         current = await call(adapter.observe, spec)
         if previous is not None:
             if current != previous:
@@ -61,4 +95,17 @@ async def establish_access_grants(plan, effects, *, eks, kubernetes, verify_targ
         if current != recorded[spec["key"]]:
             raise LifecycleRefused("cleanup grant changed before artifact publication")
         adapter.verify(spec, current)
+    if capability is not None:
+        for original in capability.grants:
+            current_grant = await call(kubernetes.observe, original.spec)
+            if current_grant != original.identity:
+                raise LifecycleRefused("retained cleanup grant changed after mapping")
+            kubernetes.verify(original.spec, current_grant)
+        await call(
+            require_cleanup_group_mapping,
+            capability,
+            eks,
+            spec=plan.grants[0],
+            identity=recorded["cleaner-entry"],
+        )
     return recorded
