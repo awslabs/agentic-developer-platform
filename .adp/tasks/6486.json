@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-06T00:38:08.396Z",
+  "updated_at": "2026-10-06T02:32:57.819Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -30,7 +30,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted contract tests pass."
+      "note": "Mounted contract passes locally and in exact-head API CI."
     },
     {
       "id": "AC-02-c1",
@@ -57,9 +57,9 @@
         "AC-02-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Mounted denial tests pass."
+      "note": "Mounted denial and PostgreSQL cases passed."
     },
     {
       "id": "AC-02-t2",
@@ -73,7 +73,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted substitution tests pass."
+      "note": "Mounted and PostgreSQL cases passed."
     },
     {
       "id": "AC-03-c1",
@@ -101,10 +101,9 @@
         "AC-03-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Seven grant PostgreSQL tests passed on preceding head; exact-head rerun remains AC-05-t1.",
+      "note": "All seven grant PostgreSQL cases passed at the final head.",
       "commits": [
         "4bca57f",
         "844bab9"
@@ -120,7 +119,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Atomic audit now has a workspace path for the existing scoped event stream; covered by AC-04-t1 at 6e40fc0.",
+      "note": "Covered by AC-04-t1.",
       "commits": [
         "8f80c64",
         "6e40fc0"
@@ -136,10 +135,9 @@
         "AC-04-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Mounted SQLite audit visibility and denial pass at 6e40fc0; PostgreSQL audit rollback passed on preceding head. Exact-head PostgreSQL rerun pending under AC-05-t1.",
+      "note": "Audit failure, retry and scoped visibility passed locally and in PostgreSQL CI.",
       "commits": [
         "fb12a2b"
       ]
@@ -149,15 +147,19 @@
       "kind": "code",
       "criterion": "AC-05",
       "title": "Wire grant routes into maintained API and endpoint inventory",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
+        "modules/domain-apps/superplane/releases/superplane.lock.yaml",
+        "modules/domain-apps/superplane/installation/config.py"
       ],
-      "note": "Routes registered; final integration proof pending.",
+      "note": "Routes and consumer contracts match; migration 043 is reflected in the observed lock and strict installer pin without promoting the release.",
       "commits": [
         "26adc79",
-        "d25f89c"
+        "d25f89c",
+        "f628186",
+        "0f14935"
       ]
     },
     {
@@ -165,14 +167,19 @@
       "kind": "test",
       "criterion": "AC-05",
       "title": "Run mounted PostgreSQL integration and final relevant suites",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-05-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py",
+        "modules/domain-apps/superplane/tests/installer_checks/test_complete_command.py"
       ],
-      "note": "Exact-head domain CI pending; no validation infrastructure provisioned."
+      "note": "Exact-head Domain CI and Gateway CI passed; locally, focused API 299, installer/lock 485, Superplane UI 341, and gateway proxy/CLI 180 passed. No validation infrastructure was provisioned.",
+      "commits": [
+        "067bd89",
+        "cad01d7"
+      ]
     }
   ]
 }
