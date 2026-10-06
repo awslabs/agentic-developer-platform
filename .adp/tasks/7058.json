@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7058,
-  "updated_at": "2026-10-06T00:15:43.047Z",
+  "updated_at": "2026-10-06T00:21:23.086Z",
   "tasks": [
     {
       "id": "PREP01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit a31f930; identity checks tightened in later commits.",
+      "note": "Closed input, selected-identity checks and collision refusal; a31f930.",
       "commits": [
         "a31f930"
       ]
@@ -30,7 +30,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "Focused fixtures pass."
+      "note": "Included in the passing offline installer suite."
     },
     {
       "id": "PREP02-c1",
@@ -43,7 +43,7 @@
         "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
         ".github/workflows/superplane-infra-plan.yml"
       ],
-      "note": "Commit c82cd9a; exact operator-role verification added in 42df143.",
+      "note": "Separate state, pinned provider and CI test leg; c82cd9a.",
       "commits": [
         "c82cd9a"
       ]
@@ -60,7 +60,7 @@
       "files": [
         "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
       ],
-      "note": "Terraform validates; four mock-provider tests pass; CI coverage fixture passes."
+      "note": "Terraform validation and formatting passed; 4 mock-provider tests passed."
     },
     {
       "id": "PREP03-c1",
@@ -72,7 +72,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit e58437c; missing shared-owner routes documented in the #7058 integration checkpoint.",
+      "note": "Proposal-only owner contract and published integration gap; e58437c.",
       "commits": [
         "e58437c"
       ]
@@ -87,7 +87,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "The composer calls the existing validator; actual installer wiring belongs to the foreground owner."
+      "note": "Composer uses the existing worker validator; foreground retains installer/deploy wiring ownership."
     },
     {
       "id": "PREP03-t1",
@@ -102,7 +102,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "Gateway field shape, Terraform variables and paused worker projection checked."
+      "note": "Gateway field shape, Terraform inputs and paused worker projection pass offline."
     },
     {
       "id": "PREP03-t2",
@@ -116,7 +116,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "Offline missing-configuration refusals checked; actual service availability not verified."
+      "note": "Missing-configuration refusals pass; actual shared-service availability was not checked."
     },
     {
       "id": "PREP04-c1",
@@ -128,7 +128,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit 42df143; private receipt, exact-plan approval and state/live-identity reconciliation.",
+      "note": "Private receipt, saved-plan checks and state/live reconciliation; 42df143.",
       "commits": [
         "42df143"
       ]
@@ -145,7 +145,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
       ],
-      "note": "Synthetic successful and ambiguous lost-response paths tested without a second apply."
+      "note": "Synthetic recovery tests pass without a second apply."
     },
     {
       "id": "PREP04-t2",
@@ -159,33 +159,37 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
       ],
-      "note": "Synthetic destructive-plan, role recreation, changed source and fabricated-readiness refusals tested."
+      "note": "Destructive plan, changed identity/source and fabricated-readiness refusals pass."
     },
     {
       "id": "PREP05-c1",
       "kind": "code",
       "criterion": "PREP05",
       "title": "Document exact foreground entry point, owner gaps and safe installation handoff",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md"
+        "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md",
+        "modules/domain-apps/superplane/installation/README.md"
       ],
-      "note": "Next task: private inputs, separate approver, disabled readiness and owner boundaries."
+      "note": "Private inputs, approval boundary, recovery and remaining owner gates documented; 1d9d062.",
+      "commits": [
+        "1d9d062"
+      ]
     },
     {
       "id": "PREP05-t1",
       "kind": "test",
       "criterion": "PREP05",
       "title": "Run public-docs check and full relevant local suites",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP05-c1"
       ],
       "files": [
         "scripts/check-public-docs.py"
       ],
-      "note": "Local only; no cloud, database or registry mutation."
+      "note": "462 offline installer/release tests, 5 executor tests and 4 Terraform tests passed; public-docs check found 0 findings. PostgreSQL fixture excluded under no-test-infrastructure instruction."
     }
   ]
 }
