@@ -90,6 +90,7 @@ EXPECTED_INTERNAL_ROUTES = {
     # access to release-promotion state.
     ("/internal/v1/credential-delivery/preflight", "POST"),
     ("/internal/v1/controller-execution/authority", "POST"),
+    ("/internal/v1/controller-execution/current-identity", "POST"),
     ("/internal/v1/controller-execution/producer-readiness", "POST"),
     ("/internal/v1/controller-execution/dispatch", "POST"),
     ("/internal/v1/controller-execution/task/acquire", "POST"),
