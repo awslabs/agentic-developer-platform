@@ -102,9 +102,9 @@ async def _register(composition, db, workspace, record, request):
 async def admit_access(
     composition, db, org_id, workspace_id, retirement_request_id, revision, approval_id
 ):
-    from app.operation_activation import require_admission_enabled
+    from app.operation_activation import require_installed_lifecycle_binding
 
-    require_admission_enabled(lifecycle=True)
+    await require_installed_lifecycle_binding(str(org_id))
     workspace, _ = await _workspace(db, org_id, workspace_id)
     # Serialize against other lifecycle requests, including API replicas whose
     # shared admission committed but whose domain transaction was interrupted.

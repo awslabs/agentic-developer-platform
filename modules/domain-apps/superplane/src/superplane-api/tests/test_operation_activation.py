@@ -4,13 +4,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pydantic import ValidationError
-
 from app.adapters.harness_operation_facade import HarnessOperationFacade
 from app.adapters.operation_dispatch import OperationDispatcher
 from app.composition import Composition
 from app.config import Settings, settings
 from app.services.provisioning import ProvisioningUnavailable
+from pydantic import ValidationError
 
 
 @pytest.mark.parametrize("value", ["yes", "1", "TRUE", 1, None, [], {}])
@@ -161,7 +160,7 @@ def test_paid_worker_mode_is_closed(value):
 @pytest.mark.asyncio
 async def test_native_mode_refuses_lifecycle_before_domain_reads_or_writes(monkeypatch):
     from app.routers.workspaces import create_workspace, delete_workspace
-    from app.services import lifecycle_proposals, retirement_access, provisioning
+    from app.services import lifecycle_proposals, provisioning, retirement_access
     from fastapi import HTTPException
 
     monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
@@ -230,3 +229,343 @@ async def test_native_mode_reaches_existing_admission_for_native_actions(
             parameters={"deployment_id": "native"},
         )
     service.open_operation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_native_lifecycle_rechecks_exact_installed_binding_before_shared_admission(
+    monkeypatch, tmp_path
+):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.operation_activation import expected_lifecycle_binding
+
+    expected = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "arn:aws:iam::123456789012:role/paid-worker",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:paid-operations",
+    }
+    binding_file = tmp_path / "reviewed-binding.json"
+    binding_file.write_text(json.dumps(expected))
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    proof = {
+        "version": 1,
+        "installed": True,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "domain": "superplane",
+        "org_id": "org",
+        "adp_org_id": "tenant",
+        **expected,
+    }
+    transport = SimpleNamespace(post=AsyncMock(return_value=proof))
+    dispatcher = OperationDispatcher(
+        Mock(), transport, policy_for=lambda _: SimpleNamespace(adp_org_id="tenant")
+    )
+    service = SimpleNamespace(
+        open_operation=AsyncMock(side_effect=RuntimeError("reached shared admission"))
+    )
+    facade = HarnessOperationFacade(
+        service,
+        lifecycle_verify=dispatcher.binding_ready,
+        activation_verify=AsyncMock(return_value=True),
+    )
+    request = {
+        "action": "provision",
+        "workspace_id": "workspace",
+        "org_id": "org",
+        "permission": "workspace:provision",
+        "parameters": {
+            "runtime_config_sha256": "a" * 64,
+            "lifecycle_phase": "prepare-infrastructure",
+        },
+    }
+
+    assert expected_lifecycle_binding() == expected
+    with pytest.raises(ProvisioningUnavailable, match="could not establish an outcome"):
+        await facade.open_operation(**request)
+    service.open_operation.assert_awaited_once()
+    transport.post.assert_awaited_with(
+        "/binding-proof", {"domain": "superplane", "org_id": "org"}
+    )
+    service.open_operation.reset_mock()
+
+    for change in (
+        {"worker_role_arn": "arn:aws:iam::123456789012:role/replaced"},
+        {"adp_org_id": "another-tenant"},
+        {"checked_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat()},
+        {"installed": False},
+    ):
+        transport.post.return_value = {**proof, **change}
+        with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+            await facade.open_operation(**request)
+        service.open_operation.assert_not_called()
+
+    transport.post.side_effect = OSError("gateway unreachable")
+    with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+        await facade.open_operation(**request)
+    service.open_operation.assert_not_called()
+    binding_file.unlink()
+    with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+        await facade.open_operation(**request)
+    service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_public_lifecycle_admission_refuses_lost_binding_before_domain_reads(
+    monkeypatch,
+):
+    from app.routers.workspaces import create_workspace, delete_workspace
+    from app.services import lifecycle_proposals, provisioning, retirement_access
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding", lambda: {"key": "value"}
+    )
+    verifier = AsyncMock(return_value=False)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()),
+        lifecycle_verify=verifier,
+        activation_verify=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+    for call in (
+        lifecycle_proposals.continue_lifecycle(
+            None, None, "org", None, None, None, None
+        ),
+        retirement_access.admit_access(None, None, "org", None, None, None, None),
+    ):
+        with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+            await call
+    with pytest.raises(HTTPException) as error:
+        await create_workspace(None, "org", None)
+    assert error.value.status_code == 503
+    with pytest.raises(HTTPException) as error:
+        await delete_workspace(None, "org", None)
+    assert error.value.status_code == 503
+    assert "teardown phase" in error.value.detail
+    assert verifier.await_count == 3
+    facade._service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_public_lifecycle_admission_verifies_before_domain_read(monkeypatch):
+    from app.services import lifecycle_proposals, provisioning
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding", lambda: {"key": "value"}
+    )
+    verifier = AsyncMock(return_value=True)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()),
+        lifecycle_verify=verifier,
+        activation_verify=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+
+    async def workspace_scope(*_):
+        verifier.assert_awaited_once_with("org", {"key": "value"})
+        raise RuntimeError("domain read reached after live proof")
+
+    monkeypatch.setattr(lifecycle_proposals, "workspace_scope", workspace_scope)
+    with pytest.raises(RuntimeError, match="domain read reached after live proof"):
+        await lifecycle_proposals.continue_lifecycle(
+            None, None, "org", None, None, None, None
+        )
+
+
+@pytest.mark.asyncio
+async def test_native_teardown_never_opens_an_unsupported_worker_task(monkeypatch):
+    from app.services import provisioning
+
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    service = SimpleNamespace(open_operation=AsyncMock())
+    monkeypatch.setattr(
+        provisioning, "get_operation_facade", lambda: HarnessOperationFacade(service)
+    )
+    with pytest.raises(ProvisioningUnavailable, match="approved teardown phase"):
+        await provisioning.start_teardown(
+            operation_id="request",
+            workspace_id="workspace",
+            org_id="org",
+            workspace_name="name",
+        )
+    service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_native_lifecycle_refuses_missing_composed_proof_without_admission(
+    monkeypatch, tmp_path
+):
+    import json
+
+    binding_file = tmp_path / "binding.json"
+    binding_file.write_text(
+        json.dumps(
+            {
+                "producer_registry_id": "producer",
+                "worker_registry_id": "worker",
+                "worker_namespace": "domain-system",
+                "worker_service_account": "paid-worker",
+                "worker_role_arn": "role",
+                "worker_image_digest": "digest",
+                "operation_schema": "schema",
+                "queue_arn": "queue",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    service = SimpleNamespace(open_operation=AsyncMock())
+    with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+        await HarnessOperationFacade(
+            service, activation_verify=AsyncMock(return_value=True)
+        ).open_operation(
+            action="provision",
+            workspace_id="workspace",
+            org_id="org",
+            permission="workspace:provision",
+            parameters={"lifecycle_phase": "prepare-retirement-access"},
+        )
+    service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_installed_binding_cannot_admit_when_dependencies_are_lost(monkeypatch):
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding", lambda: {"key": "value"}
+    )
+    dependencies = AsyncMock(return_value=True)
+    installed_proof = AsyncMock(return_value=True)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()),
+        activation_verify=dependencies,
+        lifecycle_verify=installed_proof,
+    )
+    await facade._require_lifecycle_binding("org")
+    installed_proof.assert_awaited_once_with("org", {"key": "value"})
+    dependencies.return_value = False
+    with pytest.raises(ProvisioningUnavailable, match="dependencies are unavailable"):
+        await facade._require_lifecycle_binding("org")
+    dependencies.side_effect = OSError("private endpoint unavailable")
+    with pytest.raises(ProvisioningUnavailable, match="dependencies are unavailable"):
+        await facade._require_lifecycle_binding("org")
+    installed_proof.assert_awaited_once()
+    facade._service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_dependency_verifier_cannot_admit_with_valid_worker_proof(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    installed_proof = AsyncMock(return_value=True)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()), lifecycle_verify=installed_proof
+    )
+    with pytest.raises(ProvisioningUnavailable, match="dependencies are unavailable"):
+        await facade._require_lifecycle_binding("org")
+    installed_proof.assert_not_awaited()
+    facade._service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prepared_binding_is_not_executable_installed_proof(
+    monkeypatch, tmp_path
+):
+    from app import installation
+    from app.services import provisioning
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    binding = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "worker-role",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "queue",
+    }
+    import json
+
+    binding_file = tmp_path / "binding.json"
+    binding_file.write_text(json.dumps(binding))
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    dispatcher = OperationDispatcher(
+        Mock(), SimpleNamespace(post=AsyncMock(side_effect=AssertionError("no proof")))
+    )
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()),
+        lifecycle_verify=dispatcher.binding_ready,
+    )
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+    composition = SimpleNamespace(dispatcher=dispatcher)
+    available = dict.fromkeys(
+        ("operation_store", "authority", "lifecycle_registry"), True
+    )
+    assert await installation.prepared_lifecycle_binding(composition, available)
+    dispatcher.transport.post.assert_not_awaited()
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-controller")
+    assert not await installation.prepared_lifecycle_binding(composition, available)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    available["authority"] = False
+    assert not await installation.prepared_lifecycle_binding(composition, available)
+    available["authority"] = True
+    binding_file.unlink()
+    assert not await installation.prepared_lifecycle_binding(composition, available)
+    dispatcher.transport.post.assert_not_awaited()

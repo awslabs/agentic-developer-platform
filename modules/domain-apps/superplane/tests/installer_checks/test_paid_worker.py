@@ -15,10 +15,32 @@ from installation.runner import Installer
 def native(environment, release):
     account, region = environment["account_id"], environment["region"]
     environment["api_adapters"] = {
+        "vault": {
+            "url": "http://gateway.gateway.svc.cluster.local:80",
+            "secret_key_ref": {"name": "existing-vault-evidence", "key": "key"},
+            "transport": {
+                "namespace": "gateway",
+                "service": "gateway",
+                "port": 80,
+                "target_port": 8080,
+                "selector": {"app": "gateway"},
+                "security": "reviewed-cluster-http",
+            },
+        },
         "dispatcher": {
             "role_arn": f"arn:aws:iam::{account}:role/producer",
             "endpoint": f"https://abcdefghij.execute-api.{region}.amazonaws.com/dev",
-        }
+            "api_id": "abcdefghij",
+            "region": region,
+            "stage": "dev",
+        },
+        "verification": {
+            "workspace_id": environment["workspace_id"],
+            "connection_id": "50000000-0000-0000-0000-000000000005",
+            "credential_id": "existing-credential",
+            "service": "aws",
+            "label": "existing",
+        },
     }
     environment["paid_worker"] = {
         "mode": "native-controller",
@@ -119,6 +141,24 @@ def test_native_source_projection_is_paused_without_lifecycle_mounts(native):
         mount["name"] == "task" for mount in pod["initContainers"][0]["volumeMounts"]
     )
     assert paid_worker.preparation_report(env, lock)["activation_available"] is False
+
+
+def test_valid_native_installer_plan_remains_preparation_only(native, tmp_path):
+    env, lock = native
+    commands = Mock()
+    installer = Installer(env, lock, tmp_path, commands)
+    scaled = next(doc for doc in installer.docs if doc["kind"] == "ScaledJob")
+    assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
+    assert scaled["spec"]["maxReplicaCount"] == 0
+    report = paid_worker.preparation_report(installer.env, lock)
+    assert report["paid_worker_image"].endswith(
+        "@" + lock["images"][paid_worker.COMPONENT]
+    )
+    assert report["activation_available"] is False
+    assert report["shared_binding_verified"] is False
+    with pytest.raises(Refusal, match=paid_worker.UNAVAILABLE):
+        installer.preflight()
+    commands.call.assert_not_called()
 
 
 def test_preflight_refuses_missing_shared_contract_before_tools(native):
