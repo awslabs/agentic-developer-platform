@@ -13,6 +13,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--environment", required=True, type=Path)
     parser.add_argument("--release-lock", type=Path)
+    parser.add_argument(
+        "--prepare-paid-build",
+        action="store_true",
+        help="Prepare only dedicated paid-worker build infrastructure, without image builds or runtime activation",
+    )
     parser.add_argument("--output", required=True, type=Path)
     # Control-plane-only mode: install the management surface without a workspace.
     # Workspace fields (workspace_cluster, workspace_namespace, workspace_id,
@@ -52,6 +57,56 @@ def main(argv=None):
         environment["control_plane_only"] = control_plane_only
         if args.apply_preparation and not args.prepare_database:
             raise Refusal("--apply-preparation requires --prepare-database")
+
+        if args.prepare_paid_build:
+            from .build_preparation import BuildPreparation
+
+            if (
+                args.prepare_database
+                or args.apply_preparation
+                or args.rollback
+                or args.cleanup
+            ):
+                raise Refusal(
+                    "Paid build preparation supports only plan, preflight, execute and lock recovery"
+                )
+            if args.release_lock is None:
+                raise Refusal("Paid build preparation requires --release-lock")
+            with local_lock(args.output):
+                previous_path = args.output / "receipt.json"
+                if previous_path.exists() and not args.resume:
+                    raise Refusal(
+                        "Preparation output exists; use --resume or a new directory"
+                    )
+                if args.resume and not previous_path.exists():
+                    raise Refusal("Preparation resume requires the existing receipt")
+                previous = load(previous_path) if args.resume else None
+                preparation = BuildPreparation(
+                    environment,
+                    load(args.release_lock),
+                    args.output.resolve(),
+                    previous=previous,
+                )
+                if not previous:
+                    preparation.plan()
+                if args.preflight:
+                    preparation.preflight()
+                elif args.execute:
+                    preparation.execute(args.approved_plan_sha256)
+                elif args.recover_lock:
+                    if not args.resume:
+                        raise Refusal("Preparation lock recovery requires --resume")
+                    preparation.recover_lock(args.confirm_stopped)
+                print(
+                    json.dumps(
+                        {
+                            "status": preparation.receipt["status"],
+                            "receipt": str(preparation.receipt_path),
+                            "plan_sha256": preparation.receipt.get("plan_sha256"),
+                        }
+                    )
+                )
+            return 0
 
         if args.prepare_database:
             # Validate only the environment inputs (no release lock, no workspace fields).

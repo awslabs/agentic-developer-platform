@@ -80,10 +80,8 @@ run "gateway_route_grant_is_owned_by_superplane" {
   command = plan
 
   assert {
-    condition = toset(keys(module.image_builds.project_names)) == toset([
-      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
-    ])
-    error_message = "The Superplane root must own exactly its four declared image build jobs."
+    condition     = length(module.image_builds.project_names) == 0
+    error_message = "An ordinary installation must preserve the current owner of existing build lanes."
   }
 
   assert {
@@ -440,5 +438,16 @@ run "all_resource_names_are_domain_prefixed" {
   assert {
     condition     = length(aws_ecr_repository.superplane) >= 3
     error_message = "the three Superplane image repositories from releases/superplane.lock.yaml must be created here; an empty set would satisfy the prefix check vacuously."
+  }
+}
+
+run "reviewed_builder_enrollment_is_explicit" {
+  command = plan
+  variables { manage_image_builds = true }
+  assert {
+    condition = toset(keys(module.image_builds.project_names)) == toset([
+      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
+    ])
+    error_message = "Explicit enrollment retains the same four lane keys and excludes the separate paid builder."
   }
 }

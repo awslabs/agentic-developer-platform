@@ -84,25 +84,26 @@ locals {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region              = var.aws_region
+  allowed_account_ids = [var.account_id]
 
   default_tags {
     tags = local.common_tags
   }
 }
 
-# Superplane image builders are installed from the Superplane state, alongside
-# the repositories and runtime roles they serve.
+# Existing build lanes remain with their current state owner. Enable this only
+# after the separately reviewed ownership migration, never during installation.
 module "image_builds" {
   source                     = "../../../shared/infra/codebuild-projects"
   domain_app                 = "superplane"
-  projects                   = jsondecode(file("${path.module}/../../codebuild/projects.json"))
+  projects                   = var.manage_image_builds ? jsondecode(file("${path.module}/../../codebuild/projects.json")) : {}
   name_prefix                = "adp-${var.environment}"
   account_id                 = data.aws_caller_identity.current.account_id
   aws_region                 = var.aws_region
   state_bucket               = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-  security_scans_bucket_name = data.terraform_remote_state.platform.outputs.security_scans_bucket_name
-  permissions_boundary_arn   = data.terraform_remote_state.platform.outputs.codebuild_boundary_arn
+  security_scans_bucket_name = try(data.terraform_remote_state.platform.outputs.security_scans_bucket_name, "")
+  permissions_boundary_arn   = try(data.terraform_remote_state.platform.outputs.codebuild_boundary_arn, "")
   common_tags                = local.common_tags
   allowed_artifact_writes    = []
 }
