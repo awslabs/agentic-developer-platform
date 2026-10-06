@@ -24,7 +24,9 @@ def installed(tmp_path):
         producer_registry_id="producer",
         worker_registry_id="worker",
         database_secret_id="domain-db",
-        database_schema="superplane",
+        database_schema="superplane_operations",
+        domain_database_secret_id="domain-port",
+        domain_database_schema="superplane",
         queue_url=queue,
         worker_namespace="domain-system",
         worker_service_account="superplane-paid-worker",
@@ -68,7 +70,7 @@ def installed(tmp_path):
     }
     config = {
         "metadata": {"name": "superplane-paid-worker-config", "namespace": binding.worker_namespace},
-        "data": {"SUPERPLANE_OPERATION_SCHEMA": binding.database_schema},
+        "data": {"SUPERPLANE_OPERATION_SCHEMA": binding.database_schema, "SUPERPLANE_DOMAIN_SCHEMA": binding.domain_database_schema},
     }
     responses = {"scaledjobs": job, "serviceaccounts": account, "configmaps": config}
     calls = []
@@ -109,7 +111,7 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
     }
     store = SimpleNamespace(table="authority-table", client=SimpleNamespace(describe_table=lambda **_: {"Table": {"TableStatus": "ACTIVE"}}))
     queue = SimpleNamespace(get_queue_attributes=lambda **_: {"Attributes": {"QueueArn": "arn:aws:sqs:us-east-1:123456789012:paid-operations"}})
-    monkeypatch.setattr(proof, "operation_connect", connect)
+    monkeypatch.setattr(proof, "domain_connect", connect)
     monkeypatch.setattr(proof, "bootstrap_store", lambda: store)
     monkeypatch.setattr(proof, "runtime_for", lambda _binding: runtime)
     monkeypatch.setattr(proof, "get_agent_registry_service", lambda: registry)
@@ -218,3 +220,39 @@ def test_proof_route_requires_internal_iam_authentication():
     from src.internal.auth_deps import verify_internal_or_irsa
 
     assert any(dependency.call is verify_internal_or_irsa for dependency in proof.router.routes[0].dependant.dependencies)
+
+
+
+def test_prepared_worker_is_attested_only_while_paused(installed):
+    binding, responses, _, runtime = installed
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "prepared")
+    job = responses["scaledjobs"]
+    job["metadata"]["annotations"] = {"autoscaling.keda.sh/paused": "true"}
+    job["spec"]["maxReplicaCount"] = 0
+    assert proof.installed_worker(binding, runtime, "prepared")[0] == binding.worker_image_digests[0]
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "executable")
+    responses["configmaps"]["data"]["SUPERPLANE_DOMAIN_SCHEMA"] = binding.database_schema
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "prepared")
+
+
+@pytest.mark.asyncio
+async def test_prepared_proof_refuses_existing_shared_work_before_workload_reads(installed, monkeypatch):
+    binding, _, calls, _ = installed
+    monkeypatch.setattr(proof, "producer", lambda *_: binding)
+    @asynccontextmanager
+    async def domain(_):
+        async def mapped(*_): return binding.adp_org_id
+        yield SimpleNamespace(fetchval=mapped)
+    @asynccontextmanager
+    async def shared(_):
+        async def outstanding(*_): return True
+        yield SimpleNamespace(fetchval=outstanding)
+    monkeypatch.setattr(proof, "domain_connect", domain)
+    monkeypatch.setattr(proof, "operation_connect", shared)
+    with pytest.raises(HTTPException) as refused:
+        await proof.binding_proof(proof.BindingProofRequest(domain="superplane", org_id=binding.org_id, state="prepared"), Mock())
+    assert refused.value.status_code == 409
+    assert calls == []

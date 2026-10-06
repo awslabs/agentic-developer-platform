@@ -32,7 +32,7 @@ from src.internal.domain_operation_runtime import (
     validate_paid_execution,
     worker_binding,
 )
-from src.internal.domain_operation_store import aws_client, binding_for, harness, operation_connect, secret
+from src.internal.domain_operation_store import aws_client, binding_for, domain_connect, harness, operation_connect, secret
 from src.shared.database import get_db
 
 
@@ -184,7 +184,7 @@ async def current_identity_readiness(body: DomainScope, request: Request, db: As
 @router.post("/producer-readiness")
 async def producer_readiness(body: DomainScope, request: Request):
     binding = producer(request, body)
-    async with operation_connect(binding) as connection:
+    async with domain_connect(binding) as connection:
         mapped = await connection.fetchval("SELECT adp_org_id FROM organizations WHERE id::text=$1", binding.org_id)
     if mapped != binding.adp_org_id:
         raise HTTPException(503, "domain tenant mapping unavailable")
