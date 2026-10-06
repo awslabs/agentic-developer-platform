@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-05T23:59:44.773Z",
+  "updated_at": "2026-10-06T00:24:56Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -433,14 +433,14 @@
       "kind": "test",
       "criterion": "AC-03",
       "title": "Run affected domain and applicable final-head remote checks for live-driver source",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c-browser",
         "AC-02-c-provider",
         "AC-02-c-live-cli"
       ],
       "files": [],
-      "note": "Next task: full domain and applicable remote checks at the new PR head; 178 focused tests passed."
+      "note": "Source head 563a298: remote run 37391572253 passed the Superplane / domain and Superplane domain tests checks; selector skipped unrelated browser, controller and persona jobs. Local Python 3.12 full offline domain: 6625 passed, 11 manifest skips, 4 live deselected, 12 subtests passed with the system CA bundle, venv pip and PATH; no live run."
     },
     {
       "id": "AC-04-c1",
