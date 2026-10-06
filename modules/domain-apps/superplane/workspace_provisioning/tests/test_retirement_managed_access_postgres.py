@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
+from harness_jobs.effects import CallEffect, call_effect
 from harness_jobs.identity import ResolvedPrincipal, decode_payload
+from superplane_bootstrap.errors import BootstrapRefused
 
 from workspace_provisioning.artifacts import canonical, digest
 from workspace_provisioning.retirement_access_artifact import (
@@ -24,6 +26,7 @@ from workspace_provisioning.retirement_managed_access import (
     require_managed_control_source,
     require_managed_paid_plan,
 )
+from workspace_provisioning.retirement_plan import REVOKE_GRANT, compose_retirement_plan
 from workspace_provisioning.runtime_config import LifecycleRefused
 
 from .postgres_bridge import Harness, requires_harness_postgres
@@ -209,6 +212,33 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                 )
                 == control.operation_id
             )
+            deletion = compose_retirement_plan(
+                arguments["inventory"], managed_access=(plan, artifact)
+            )
+            control_steps = [
+                step
+                for step in deletion.steps
+                if step.step_id == "revoke-control-entry"
+            ]
+            assert len(control_steps) == 1
+            assert control_steps[0].operation_kind == REVOKE_GRANT
+            assert (
+                call_effect(REVOKE_GRANT, provider=control_steps[0].provider)
+                is CallEffect.REMOVES
+            )
+            assert control_steps[0] in deletion.deletion_steps()
+            assert deletion.steps.index(control_steps[0]) < len(deletion.steps) - 1
+            assert not deletion.completes_teardown
+            with pytest.raises(BootstrapRefused, match="owned inventory"):
+                compose_retirement_plan(
+                    replace(arguments["inventory"], workspace_id="foreign-workspace"),
+                    managed_access=(plan, artifact),
+                )
+            with pytest.raises(LifecycleRefused, match="artifact"):
+                compose_retirement_plan(
+                    arguments["inventory"],
+                    managed_access=(plan, {**artifact, "workspace_id": "foreign"}),
+                )
             journal = Journal(
                 SimpleNamespace(
                     recipe=lambda: managed_revocation_recipe(plan, artifact)

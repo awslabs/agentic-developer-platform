@@ -36,7 +36,7 @@ removed. Account closure is not a step here in either mode; it is separately gat
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from superplane_bootstrap.errors import BootstrapRefused
 
@@ -306,7 +306,7 @@ def _prerequisite_steps(
 
 
 def compose_retirement_plan(
-    inventory: RetirementInventory, *, managed_destroy=None
+    inventory: RetirementInventory, *, managed_destroy=None, managed_access=None
 ) -> RetirementPlan:
     """Order the durable ownership record into an approvable deletion plan.
 
@@ -386,6 +386,54 @@ def compose_retirement_plan(
     steps.extend(prerequisite_steps)
     preserved.extend(prerequisite_preserved)
 
+    if managed_access is not None:
+        from .artifacts import digest
+        from .retirement_access_artifact import validate_access_artifact
+        from .retirement_managed_access import ManagedRetirementAccessPlan
+
+        if (
+            not isinstance(managed_access, tuple)
+            or len(managed_access) != 2
+            or not isinstance(managed_access[0], ManagedRetirementAccessPlan)
+            or not isinstance(managed_access[1], dict)
+        ):
+            raise BootstrapRefused(
+                "managed revocation requires its immutable access receipt"
+            )
+        access, artifact = managed_access
+        if (
+            inventory.preserve_cluster
+            or inventory.cluster_ownership != "adp-created"
+            or access.cluster_arn != inventory.cluster_arn
+            or access.namespace_uid != inventory.namespace_uid
+            or (access.org_id, access.workspace_id)
+            != (inventory.org_id, inventory.workspace_id)
+            or access.inventory_sha256 != digest(asdict(inventory))
+            or access.revocation_order != ("cleaner-entry",)
+            or len(access.grants) != 1
+            or access.grants[0].get("kind") != "eks-entry"
+            or access.grants[0].get("key") != "cleaner-entry"
+        ):
+            raise BootstrapRefused("managed revocation changed its owned inventory")
+        identity = validate_access_artifact(artifact, access)["cleaner-entry"]
+        steps.append(
+            ExecutionStep(
+                step_id="revoke-control-entry",
+                provider=AWS,
+                operation_kind=REVOKE_GRANT,
+                target=_target(
+                    {
+                        "artifact_id": artifact["artifact_id"],
+                        "control_allocation_id": access.allocation_id,
+                        "original_allocation_id": access.original_allocation_id,
+                        "access_plan_revision": access.revision,
+                        "cluster_arn": access.cluster_arn,
+                        "principal_arn": access.grants[0]["principal_arn"],
+                        "entry_arn": identity["arn"],
+                    }
+                ),
+            )
+        )
     if managed_destroy is not None:
         from .retirement_terraform import ReviewedDestroy
 
