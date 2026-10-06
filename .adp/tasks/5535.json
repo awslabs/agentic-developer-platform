@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:43:39.625Z",
+  "updated_at": "2026-10-06T01:58:21.032Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -3807,7 +3807,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed; separate Go restart test requires a test binary.",
+      "note": "Previously passed; the Go-backed restart test also passed in final-head CI.",
       "commits": [
         "14f7ccf"
       ]
@@ -3853,7 +3853,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-02-t3.",
+      "note": "Previously completed.",
       "commits": [
         "9304825"
       ]
@@ -3866,7 +3866,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-02-t2. Installer projection remains paused.",
+      "note": "Previously completed; installer projection remains paused.",
       "commits": [
         "b154e68"
       ]
@@ -3882,7 +3882,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Previously passed; offline checks do not establish live binding.",
+      "note": "391 offline and 9 PostgreSQL installer checks passed at the final application-code revision; not live-binding evidence.",
       "commits": [
         "851851d"
       ]
@@ -3910,21 +3910,26 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Previously passed."
+      "note": "Previously passed in test fixtures; not a deployed-target check."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
       "title": "Keep changed API, worker, installer, and Gateway packages buildable",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/executor/tests/test_cost_evidence_postgres.py"
+        ".github/workflows/superplane-domain-ci.yml",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspaces.py"
       ],
-      "note": "Four wheels built and cost-evidence test corrected in pushed commit ad9b739c3. Must remain open until covering AC-03-t1 passes.",
+      "note": "Four wheels built; PostgreSQL fixture and route regressions corrected; the isolated Go CI environment now installs worker-image dependencies. Pushed through dfc2add14.",
       "commits": [
-        "ad9b739"
+        "ad9b739",
+        "dfc2add",
+        "bbc3051",
+        "9d66951",
+        "c0c6175"
       ]
     },
     {
@@ -3932,12 +3937,20 @@
       "kind": "test",
       "criterion": "AC-03",
       "title": "Run affected full domain and Gateway suites on final PR head",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c1"
       ],
-      "files": [],
-      "note": "Changed-file suites pass. Full API and broader Gateway sweeps stopped on unrelated failures; Go restart binary unavailable locally. Final-head CI is queued."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_deployment_replay_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspaces.py"
+      ],
+      "note": "Local API: 2,429 passed, 11 skipped, 2 xfailed; worker: 586 passed; installer: 391 plus 9 PostgreSQL passed; affected Gateway: 737 passed, 98 skipped. Final-head API/domain/worker checks, all eight repository-wide Gateway shards, and Go-backed restart passed in CI.",
+      "commits": [
+        "33b64c6",
+        "851d83f"
+      ]
     },
     {
       "id": "AC-04-c1",
@@ -3947,7 +3960,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "PR #7047 is ready and current; evaluator handoff remains."
+      "note": "Ready PR #7047 is current at dfc2add14; exact evaluator handoff remains."
     },
     {
       "id": "AC-04-t1",
@@ -3959,7 +3972,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Head verified at ad9b739c3; required checks and handoff remain."
+      "note": "Remote head verified and all 30 reported checks pass; acceptance-to-evidence and operator handoff remain."
     },
     {
       "id": "AC-04-c2",
@@ -3969,7 +3982,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Foreground-owned; developer must not merge."
+      "note": "Foreground/#5540 owns review and merge; developer must not merge."
     },
     {
       "id": "AC-04-t2",
@@ -3981,7 +3994,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "deployed-target: foreground/#5540 owns release and live verification; no deployment authorized."
+      "note": "deployed-target: foreground/#5540 owns release and live verification; no deployment is authorized."
     }
   ]
 }
