@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-06T01:39:29.115Z",
+  "updated_at": "2026-10-06T02:06:18.616Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously verified behavior is unchanged by this base update."
+      "note": "Verified behavior retained; Superplane content is unchanged by the prepared base merge."
     },
     {
       "id": "R5.1-t1",
@@ -23,7 +23,7 @@
         "R5.1-c1"
       ],
       "files": [],
-      "note": "Prior 201-test authorization run remains applicable; tested Superplane content is unchanged.",
+      "note": "Prior 201-test authorization run remains applicable; supplied API CI passed on 6dacbca3.",
       "commits": [
         "d72fb72"
       ]
@@ -135,7 +135,7 @@
         "R5.5-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator needs a named configured API and approved access. Deferred outside this PR's merge scope, not a pre-merge validation gap."
+      "note": "deployed-target: #5540 evaluator needs a named configured API and approved access. Deferred outside this PR's merge scope."
     },
     {
       "id": "R5.5-t2",
@@ -187,7 +187,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "#6127/#6485/#5535 own identity, grant consumption and runtime composition outside this reconciliation slice; not a pre-merge validation gap."
+      "note": "#6127/#6485/#5535 own identity, grant consumption and runtime composition outside this reconciliation slice."
     },
     {
       "id": "R5.7-c1",
@@ -311,7 +311,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "#6127/#6484/#6485 own production identity and grant contracts outside this reconciliation slice; not a pre-merge validation gap."
+      "note": "#6127/#6484/#6485 own production identity and grant contracts outside this reconciliation slice."
     },
     {
       "id": "R6.4-c1",
@@ -343,22 +343,34 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "No production API/service changes relative to the new base. Prior 461 passing focused tests remain applicable because Superplane content is unchanged."
+      "note": "No production API/service changes in this PR. Prior 461 passing focused tests and supplied API CI on 6dacbca3 support unchanged behavior."
     },
     {
       "id": "COV-85-t1",
       "kind": "test",
       "criterion": "COV-85",
       "title": "Measure coverage and run relevant API suites",
+      "status": "done",
+      "covers": [
+        "COV-85-c1"
+      ],
+      "files": [],
+      "note": "Verified controller-supplied successful API and stable Domain checks on 6dacbca3255f22ca87045dd041f66365410c1b46, run 37400272592. Inspected workflow runs the full API tests directory. API evidence: https://github.com/aws-e/adp/actions/runs/37400272592/job/112066611497 ; Domain evidence: https://github.com/aws-e/adp/actions/runs/37400272592/job/112071666295 . Prior local 201 authorization and 260 account/migration/model tests remain applicable. No changed production-logic coverage denominator; prior 84% existing-module measurement is not a changed-line pass. Skipped browser, controller and persona jobs are not reported as passes.",
+      "commits": [
+        "b1d59b6"
+      ]
+    },
+    {
+      "id": "COV-85-t2",
+      "kind": "test",
+      "criterion": "COV-85",
+      "title": "Verify required API and Domain checks on the final base-integrated head",
       "status": "open",
       "covers": [
         "COV-85-c1"
       ],
       "files": [],
-      "note": "Local evidence retained: 201 authorization tests and 260 account, migration and model tests passed under Python 3.12 with CI-pinned FastAPI. The new base changes only reviewer tooling; unchanged suites were not rerun. Required API/Domain CI and final published-head inspection remain pending. No changed production-logic coverage denominator; prior 84% existing-module coverage is not a changed-line pass.",
-      "commits": [
-        "b1d59b6"
-      ]
+      "note": "Added to distinguish completed validation on published 6dacbca3 from required validation after the newly prepared b01cebc6 base merge. The merge is conflict-free and Superplane tree 695e0cb2d04ea15042ac4c1f4b31a9dd09634dea is unchanged. Controller publication, exact-head checks and final inspection remain pending."
     },
     {
       "id": "U14-L1-c1",
@@ -380,7 +392,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator needs a named API, approved configuration and test identities. Deferred outside this PR's merge scope, not a pre-merge validation gap."
+      "note": "deployed-target: #5540 evaluator needs a named API, approved configuration and test identities. Deferred outside this PR's merge scope."
     },
     {
       "id": "U14-L1-t2",
@@ -394,7 +406,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py:2755"
       ],
-      "note": "Offline results remain separate from live and identity-integration obligations. The supplied validation-gap-4 and validation-gap-5 describe deferred work, not blockers for this bounded PR. Wider story remains open.",
+      "note": "Offline results remain separate from live and identity-integration obligations owned by #5540 and #6127/#6484/#6485/#5535. Those deferred tasks are not pre-merge validation gaps; the wider story remains open.",
       "commits": [
         "f0e8c6e"
       ]
