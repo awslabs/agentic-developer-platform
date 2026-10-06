@@ -8,6 +8,7 @@ on:
       - modules/agent-factory/infra/**
       - modules/agent-factory/runner-infra/**
       - platform/automation-infra/**
+      - modules/domain-apps/superplane/infra/automation/**
       - platform/infra/modules/codebuild/**
       - modules/domain-apps/cyber/image-builder/**
       - modules/domain-apps/cyber/ci/**
