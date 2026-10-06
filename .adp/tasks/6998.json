@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6998,
-  "updated_at": "2026-10-05T18:57:41.290Z",
+  "updated_at": "2026-10-06T05:53:32Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Source mapping pushed; original private SARIF requires separate authorized scan-reader access; previous discovery failed, current cross-account access not yet checked.",
+      "note": "Source selectors and build consumers mapped; selected customer role assumed and CodeBuild list worked, but frozen SARIF HeadObject returned 403 Forbidden. Scan-reader access still required.",
       "commits": [
         "19c9252"
       ]
@@ -30,7 +30,7 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Published selectors passed local checks; original report hash and severity remain unverified."
+      "note": "Four selector/catalog tests pass; original report hash and severity remain unverified after frozen SARIF HeadObject returned 403 Forbidden."
     },
     {
       "id": "AC-02-c1",
@@ -188,7 +188,7 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Prior run pushed provisional evidence at 7049c2e; all 18 unresolved pending original report and durable raw-result retention.",
+      "note": "Prior run pushed provisional evidence at 7049c2e; all 18 remain unresolved. Frozen report denied and prior worker-local candidate SARIF unavailable this run.",
       "commits": [
         "7049c2e"
       ]
@@ -205,7 +205,7 @@
       "files": [
         ".github/scripts/issue_6998_candidate.py"
       ],
-      "note": "Current-registry candidate mapped 18; exact scan-time rule and original SARIF not yet compared."
+      "note": "Prior current-registry candidate mapped 18; exact scan-time rule and original SARIF cannot be compared without separate scan-reader access; raw SARIF not recovered."
     },
     {
       "id": "AC-04-c-wire",
@@ -217,9 +217,9 @@
       "files": [
         "data/security/issue-6998-http-destinations.json"
       ],
-      "note": "Handoff pushed at 23dab9f; ready PR #7023 opened. Awaiting covering full-suite test.",
+      "note": "Handoff refreshed at 1847414e5; ready PR #7023 updated. Covering full agent and reviewer suites have unchanged fixture failures; no merged/image claim.",
       "commits": [
-        "23dab9f"
+        "23dab9f", "1847414e5"
       ]
     },
     {
@@ -234,29 +234,29 @@
       "files": [
         ".github/scripts/tests/test_issue_6998_http_destinations.py"
       ],
-      "note": "Prior checkpoint: installs/builds passed; agent 2856/2859, harness 156/156, reviewer 196/198; handoff catalog tests passed. Requires rerun."
+      "note": "npm ci/builds passed; agent minimal-env 2859/2862 (three existing experience-save-hook failures), harness 156/156, reviewer 196/198 (two installed-skill fixture failures); focused agent token 50/50 and HTTP 68/68, reviewer GitHub 45/45, catalog 4/4 passed. Full suites not green."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
       "title": "Confirm merged composition and transfer verification to the epic coordinator",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Pending merge and epic-coordinator handoff; no deployed-artifact claim."
+      "note": "Post-merge: epic coordinator owns composed artifact verification; PR #7023 remains unmerged and this worker must not merge or claim deployment."
     },
     {
       "id": "AC-04-t2",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Repeat affected checks on the final composed artifact",
-      "status": "open",
+      "status": "blocked",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Post-merge verification owned by epic coordinator; production rollout separate."
+      "note": "Post-merge: epic coordinator repeats affected checks on final composed artifact; production rollout needs separate approval."
     }
   ]
 }
