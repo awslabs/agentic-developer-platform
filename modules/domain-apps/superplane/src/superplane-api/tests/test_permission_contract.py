@@ -21,6 +21,9 @@ from harness_jobs.approval import (
 )
 from harness_jobs.identity import OperationRequest, ResolvedPrincipal
 
+from app import auth
+from app.config import settings
+from app.current_identity import MappedProducerIdentityReader
 from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
     DOMAIN_ROUTES,
@@ -36,6 +39,7 @@ from app.models.workspace_grant import WorkspaceGrantRecord
 from superplane_auth.policy import (
     AuthorizationDeniedError,
     DomainPrincipal,
+    DomainTokenPolicy,
     Permission,
     expand_permissions,
     permissions_for_adp_role,
@@ -479,14 +483,14 @@ def test_role_labels_do_not_supply_domain_grants():
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 @pytest.mark.asyncio
-async def test_named_tenant_and_principal_grant_cases(case):
+async def test_named_tenant_and_principal_grant_cases(case, client, monkeypatch):
     assert ACCESS["version"] == 1
     org_ids = {name: uuid.uuid4() for name in ("O1", "O2")}
     workspace_ids = {name: uuid.uuid4() for name in ("W1", "W2")}
     workspace_owner = "O2" if case["grant_org"] == "O2" else "O1"
     async with async_session_test() as db:
         for name, org_id in org_ids.items():
-            db.add(Organization(id=org_id, name=f"contract-{name}", billing_plan="free"))
+            db.add(Organization(id=org_id, name=f"contract-{name}", billing_plan="free", adp_org_id=name))
         for name, workspace_id in workspace_ids.items():
             owner = workspace_owner if name == case["workspace"] else "O1"
             db.add(Workspace(id=workspace_id, org_id=org_ids[owner], name=f"contract-{name}", isolation_mode="shared", status="active"))
@@ -508,6 +512,47 @@ async def test_named_tenant_and_principal_grant_cases(case):
     except AuthorizationDeniedError:
         allowed = False
     if not case["active"]:
-        assert allowed, "fixture must expose the missing ADP active-membership gate"
-        pytest.xfail("#6127: active ADP membership/disabled-principal check not yet consumed by domain ingress")
+        assert allowed, "a durable grant alone must not establish current identity"
+        monkeypatch.setattr(auth, "verify_access_token", lambda token: {
+            "sub": case["subject"], "custom:org_id": case["org"],
+            "custom:account_type": case["principal_type"], "custom:role": case["adp_role"],
+            "token_use": "access", "iss": "https://issuer.example", "client_id": "test-client",
+        })
+        monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(
+            allowed_client_ids=["test-client"], expected_issuer="https://issuer.example",
+        ))
+        monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+        class IdentityProducer:
+            active = True
+            enabled = True
+            calls = 0
+
+            async def post(self, path, body, *, distinguish_denial=False):
+                assert path == "/current-identity"
+                assert distinguish_denial is True
+                assert body == {
+                    "domain": "superplane", "org_id": str(org_ids[case["org"]]),
+                    "subject": case["subject"], "principal_type": case["principal_type"],
+                }
+                self.calls += 1
+                return {
+                    "version": 1, "subject": case["subject"], "principal_type": case["principal_type"],
+                    "adp_org_id": case["org"], "membership_id": "contract-membership",
+                    "active": self.active, "enabled": self.enabled,
+                }
+
+        producer = IdentityProducer()
+        monkeypatch.setattr(app.state, "current_identity_reader", MappedProducerIdentityReader(
+            producer, async_session_test,
+        ), raising=False)
+        path = f"/workspaces/{workspace_ids[case['workspace']]}"
+        headers = {"Authorization": "Bearer contract-token"}
+        assert (await client.get(path, headers=headers)).status_code == 200
+        for producer.active, producer.enabled in ((False, True), (True, False)):
+            response = await client.get(path, headers=headers)
+            assert response.status_code == 403
+            assert response.json()["detail"] == "current ADP identity required"
+        assert producer.calls == 3
+        allowed = response.status_code == 200
     assert allowed is case["allow"]
