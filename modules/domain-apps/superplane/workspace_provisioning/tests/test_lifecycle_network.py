@@ -146,6 +146,65 @@ def test_only_api_rule_is_created_and_untagged_private_sts_is_retained(monkeypat
     assert len(values[4]["creates"]) == 1
 
 
+def test_public_path_observes_nat_and_tls_without_cross_vpc_rule(monkeypatch):
+    values = setup(monkeypatch)
+    operation, outputs, config, session, state, _, responses = values
+    config.update(
+        workspace_variables={
+            "cluster_endpoint_public_access": True,
+            "cluster_endpoint_public_access_cidrs": ["52.22.137.37/32"],
+        },
+        management_public_access={
+            "vpc_id": "vpc-0123456789abcdef0",
+            "nat_gateway_ids": ["nat-0123456789abcdef0"],
+        },
+    )
+    outputs.update(
+        cluster_endpoint_public_access=True,
+        cluster_endpoint_public_access_cidrs=["52.22.137.37/32"],
+    )
+    responses["describe_cluster"]["cluster"]["resourcesVpcConfig"].update(
+        endpointPublicAccess=True,
+        endpointPrivateAccess=True,
+        publicAccessCidrs=["52.22.137.37/32"],
+    )
+    session.describe_nat_gateways = lambda **arguments: {
+        "NatGateways": [
+            {
+                "NatGatewayId": "nat-0123456789abcdef0",
+                "VpcId": "vpc-0123456789abcdef0",
+                "State": "available",
+                "ConnectivityType": "public",
+                "NatGatewayAddresses": [
+                    {
+                        "PublicIp": "52.22.137.37",
+                        "AllocationId": "eipalloc-0123456789abcdef0",
+                    }
+                ],
+            }
+        ]
+    }
+
+    async def current(selected, context):
+        assert selected is operation
+        if state["revoked"]:
+            raise LifecycleRefused("revoked")
+        return operation
+
+    monkeypatch.setattr("workspace_provisioning.authority.current_operation", current)
+    monkeypatch.setattr(
+        "workspace_provisioning.public_network.probe_public_path",
+        lambda *args: "52.22.137.37",
+    )
+    evidence = run(values)
+    assert set(evidence) == {"public-api-endpoint", "private-sts-rule"}
+    assert evidence["public-api-endpoint"]["tls_verified"] is True
+    assert state["creates"] == [] and state["effects"] == {}
+    state["revoked"] = True
+    with pytest.raises(LifecycleRefused, match="revoked"):
+        run(values)
+
+
 def test_lost_ingress_reply_never_dispatches_a_second_create(monkeypatch):
     values = setup(monkeypatch)
     values[4]["lose_reply"] = True

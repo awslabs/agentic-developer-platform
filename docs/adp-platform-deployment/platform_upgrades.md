@@ -315,6 +315,34 @@ an error; only a positively identified missing function, absent from gateway
 state, is eligible for installation. A live engine outside Terraform state needs
 review and import, not replacement.
 
+Worker security is also an upgrade prerequisite. If webhook state still reports
+legacy worker admission, the compatibility preflight stops before gateway code,
+model agreements, network access or Terraform resources change. Complete the
+[staged worker migration](../security/terraform-worker-rollout.md#stages) first:
+pause admission through a reviewed Terraform apply, reconcile queued work and
+drain running legacy jobs, qualify the protected runtimes, isolate the source
+role, and retire its administrator grants. Readiness settings are assertions
+backed by private evidence, not switches to bypass the preflight. An ordinary
+upgrade does not perform or certify this migration. Gateway-only upgrades also
+check installed webhook state because authentication changes affect its workers.
+
+An already paused deployment can receive a direct maintenance update during the
+staged migration. A release requires the completed migration and enabled
+admission; final acceptance rejects KEDA pause annotations or a reported paused
+condition even when worker images and Ready conditions look correct. Resume
+rechecks current state rather than trusting the original upgrade snapshot.
+The saved-plan gate also rejects an implicit admission pause or protected-identity
+downgrade, including with `--confirm-destructive`.
+
+The reviewed shared-caller-identity migration retires only the obsolete SSM
+`/adp/<environment>/gateway/internal-api-key` mirror. The plan gate checks its
+exact resource address, target ARN, SecureString type and provenance tags, and
+requires paused or protected admission in the plan. It does not authorize deletion
+of the Secrets Manager source, other parameters, databases or clusters. The
+associated exact rollout-script hash transition replaces a Terraform marker
+and runs a bounded gateway rollout; the marker has no destroy provisioner.
+Future script changes still require review.
+
 When the engine is missing, the platform stage creates its build prerequisites,
 then the gateway image is built and resolved to an immutable digest **before**
 the first gateway plan. The engine is created with its schedule disabled. All

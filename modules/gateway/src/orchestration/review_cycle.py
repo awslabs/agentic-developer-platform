@@ -170,7 +170,9 @@ class ReviewCycleHandler:
             recover = getattr(services, "recovery_snapshot", None)
             recovered = await recover(session, context, node, binding, dispatches) if recover else None
             if recovered is not None:
-                waiting = await services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
+                await services.recheck(session, context, node, binding, recovered)
+                readiness = getattr(services, "dispatch_readiness", None)
+                waiting = await readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW) if readiness else None
                 return waiting or CycleObservation(ObservationKind.READY, snapshot=recovered)
             facts = await services.facts(session, context, node, binding, dispatches)
             if not facts["worker_complete"]:

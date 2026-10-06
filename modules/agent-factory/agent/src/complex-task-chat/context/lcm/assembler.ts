@@ -14,7 +14,7 @@ export interface AssembleResult {
 }
 
 export async function resolveContextItems(
-  store: ContextStore,
+  store: Pick<ContextStore, 'getMessagesByIds' | 'getSummaryById'>,
   sessionId: string,
   items: ContextItem[],
   tokens: TokenEstimator,

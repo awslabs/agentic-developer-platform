@@ -4,7 +4,9 @@ This rebuild retains the Kubernetes v1.31.4 command source at commit
 `a78aa47129b8539636eb86a9d00e31b2720fe06b`, while replacing vulnerable Go and
 library dependencies. `dependencies.patch` contains the complete reviewed module
 change; the build never runs `go get` or resolves floating versions. The binary
-reports `v1.31.4+adp.security.1` and a modified tree.
+reports `v1.31.4+adp.security.2` and a modified tree. The second downstream
+revision pins `golang.org/x/oauth2` v0.27.0, including the upstream fix for
+CVE-2025-22868. The module and checksum changes are retained in the patch.
 
 The workspace API still permits Kubernetes 1.31 through 1.35. Replacing its sole
 1.31 client with 1.35 would lose supported skew for existing 1.31/1.32 inputs.

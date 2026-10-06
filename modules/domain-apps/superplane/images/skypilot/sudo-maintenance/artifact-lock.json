@@ -1,0 +1,11 @@
+{
+  "base_platform": "sha256:dc1726e771bc250fec18d1f4ccc9c13014d18815704054b6f37f0809889414a3",
+  "base_config": "sha256:66d57cb8362d26f47ec8bf44f37f3ee6b7a193c06fdf638079d601905cd75536",
+  "package": "sudo",
+  "from_version": "1.9.16p2-3+deb13u2",
+  "version": "1.9.16p2-3+deb13u2+adp1",
+  "architecture": "amd64",
+  "filename": "sudo_1.9.16p2-3+deb13u2+adp1_amd64.deb",
+  "sha256": "a78591f9d33082190e1305a03dca8bf15d2caba684b7b55a91de6f812c7c27aa",
+  "size": 2086640
+}

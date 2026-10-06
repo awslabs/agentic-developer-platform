@@ -64,7 +64,13 @@ on:
       - '!**/CHANGELOG*'
       - '!**/CONTRIBUTING*'
       - '!**/*.rst'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      python_image:
+        description: 'Reviewed digest-pinned Python 3.12 base (empty uses the maintained default)'
+        type: string
+        required: false
+        default: ''
 
 env:
   AWS_REGION: us-east-1
@@ -86,7 +92,21 @@ jobs:
       id-token: write
       contents: read
 
+    env:
+      PYTHON_IMAGE: ${{ inputs.python_image }}
+
     steps:
+      - name: Validate optional Python base before build authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry_tag="$GITHUB_SHA"
+          if [[ -n "$PYTHON_IMAGE" ]]; then
+            [[ "$PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "::error::Python base must be digest-pinned"; exit 1; }
+            registry_tag="$GITHUB_SHA-py-${PYTHON_IMAGE##*@sha256:}"
+          fi
+          echo "ECR_IMAGE_TAG=$registry_tag" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
 
       # ARC's system Python is PEP 668 externally managed. Use the same managed
@@ -203,6 +223,7 @@ jobs:
             "name=SOURCE_PATH,value=${{ env.SOURCE_PATH }}"
             "name=SUPERPLANE_SOURCE_DIR,value=${{ env.SUPERPLANE_SOURCE_DIR }}"
             "name=IMAGE_TAG,value=${{ github.sha }}"
+            "name=PYTHON_IMAGE,value=${{ env.PYTHON_IMAGE }}"
 
       # ── 5. Report the digest that was actually produced ────────────────
       # The digest is read back from ECR rather than assumed, so the value that reaches the
@@ -214,7 +235,7 @@ jobs:
           set -euo pipefail
           DIGEST=$(aws ecr describe-images \
             --repository-name "${ECR_REPO}" \
-            --image-ids "imageTag=${{ github.sha }}" \
+            --image-ids "imageTag=${ECR_IMAGE_TAG}" \
             --region "${AWS_REGION}" \
             --query 'imageDetails[0].imageDigest' --output text)
           {
@@ -223,7 +244,9 @@ jobs:
             echo "- **Built from**: \`${SUPERPLANE_SOURCE_DIR}\` (maintained in this repository)"
             echo "- **ADP commit**: \`${{ github.sha }}\`"
             echo "- **Origin provenance**: \`${ORIGIN_REPOSITORY}\` @ \`${ORIGIN_REVISION}\`"
+            echo "- **Selected Python base**: \`${PYTHON_IMAGE:-maintained Dockerfile default}\`"
             echo "- **ECR repository**: \`${ECR_REPO}\`"
+            echo "- **Registry tag**: \`${ECR_IMAGE_TAG}\`"
             echo "- **Digest**: \`${DIGEST}\`"
             echo ""
             echo "Update \`images.${LOCK_IMAGE}\` in the release lock to this digest and"

@@ -82,6 +82,11 @@ on:
         description: 'Deployment environment.'
         required: false
         default: 'dev'
+      adp_approved_revision:
+        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        required: false
+        type: string
+        default: ''
 
 env:
   AWS_REGION: us-east-1
@@ -298,6 +303,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read  # Resolve the last successfully deployed revision for the assistant guard
     steps:
       - uses: actions/checkout@v7
         with:
@@ -306,6 +312,34 @@ jobs:
         run: |
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+      # The shared worker image carries the assistant/chat surfaces. Building it
+      # is unguarded (build-only); rolling the digest onto agent-scaledjob is a
+      # live mutation and must satisfy the assistant rollout boundary first.
+      - name: Resolve last successfully deployed revision
+        id: deployed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A run is only a deployment when the rollout job actually ran and
+          # succeeded; runs where it was skipped do not count.
+          baseline=""
+          while read -r run_id head_sha; do
+            deployed=$(gh api "repos/${{ github.repository }}/actions/runs/${run_id}/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.name == "Roll out Agent Runtime Image" and .conclusion == "success")] | length')
+            if [ "$deployed" -gt 0 ]; then baseline="$head_sha"; break; fi
+          done < <(gh api "repos/${{ github.repository }}/actions/workflows/agent-worker-image.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
+          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
+      - name: Guard assistant auto-deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: agent-worker
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-worker-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+          ADP_DEPLOYED_BASELINE: ${{ steps.deployed.outputs.baseline }}
+        run: bash scripts/check-assistant-deploy-boundary.sh
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
         with:

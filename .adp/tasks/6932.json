@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "issue": 6932,
+  "updated_at": "2026-10-05T09:49:52.433Z",
+  "tasks": [
+    {
+      "id": "DEPLOY-c1",
+      "kind": "code",
+      "criterion": "DEPLOY",
+      "title": "Publish the push-workflow inventory for every changed component (gateway, chat worker, agent-worker image, frontend) with the guard decision per workflow",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "docs/architecture/assistant-deploy-boundary.md"
+      ],
+      "note": "",
+      "commits": [
+        "af11d56"
+      ]
+    },
+    {
+      "id": "DEPLOY-c2",
+      "kind": "code",
+      "criterion": "DEPLOY",
+      "title": "Guard agent-worker-image.yml: refuse unapproved assistant changes before the worker digest rollout",
+      "status": "done",
+      "covers": [],
+      "files": [
+        ".github/workflows/agent-worker-image.yml",
+        "scripts/check-assistant-deploy-boundary.sh"
+      ],
+      "note": "",
+      "commits": [
+        "b43c660"
+      ]
+    },
+    {
+      "id": "DEPLOY-c3",
+      "kind": "code",
+      "criterion": "DEPLOY",
+      "title": "Remove the unconditional workflow_dispatch bypass: a dispatch must carry an approved revision for the target",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "scripts/check-assistant-deploy-boundary.sh"
+      ],
+      "note": "",
+      "commits": [
+        "b43c660"
+      ]
+    },
+    {
+      "id": "DEPLOY-c4",
+      "kind": "code",
+      "criterion": "DEPLOY",
+      "title": "Scope the unset-approval refusal to candidates that actually change assistant paths; unrelated hotfixes continue",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "scripts/check-assistant-deploy-boundary.sh"
+      ],
+      "note": "",
+      "commits": [
+        "b43c660"
+      ]
+    },
+    {
+      "id": "DEPLOY-t1",
+      "kind": "test",
+      "criterion": "DEPLOY",
+      "title": "Behavioural guard tests: dispatch without approval refused, unrelated change passes with no approval vars, agent-worker component protected paths, inventory lists every push workflow touching changed paths",
+      "status": "done",
+      "covers": [
+        "DEPLOY-c2",
+        "DEPLOY-c3",
+        "DEPLOY-c4",
+        "DEPLOY-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/orchestration/test_assistant_deploy_boundary.py"
+      ],
+      "note": "",
+      "commits": [
+        "b43c660"
+      ]
+    },
+    {
+      "id": "DATA01-c1",
+      "kind": "code",
+      "criterion": "DATA01",
+      "title": "Cursor binding excludes historyVersion so an append by the owner does not invalidate outstanding pages",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_history_store.py"
+      ],
+      "note": "",
+      "commits": [
+        "beb8a09"
+      ]
+    },
+    {
+      "id": "DATA01-c2",
+      "kind": "code",
+      "criterion": "DATA01",
+      "title": "Missing, forged or expired capability returns 401 (refresh/bootstrap) while resource lookups keep the non-enumerating 404",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_data_routes.py"
+      ],
+      "note": "",
+      "commits": [
+        "beb8a09"
+      ]
+    },
+    {
+      "id": "DATA01-t1",
+      "kind": "test",
+      "criterion": "DATA01",
+      "title": "Paging continues across a concurrent owner append; 401 vs 404 distinction asserted; existing owner-path suites still pass",
+      "status": "done",
+      "covers": [
+        "DATA01-c1",
+        "DATA01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_history_store.py",
+        "modules/gateway/tests/agentauth/test_chat_data_routes.py"
+      ],
+      "note": "",
+      "commits": [
+        "beb8a09"
+      ]
+    },
+    {
+      "id": "DATA02-c1",
+      "kind": "code",
+      "criterion": "DATA02",
+      "title": "Owner-only share/revoke operation writes aclUserIds with current-membership and same-tenant checks; revocation takes effect on the next read",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_data_routes.py",
+        "modules/gateway/src/agentauth/chat_history_store.py"
+      ],
+      "note": "",
+      "commits": [
+        "beb8a09"
+      ]
+    },
+    {
+      "id": "DATA02-t1",
+      "kind": "test",
+      "criterion": "DATA02",
+      "title": "A1 shares with A2: A2 reads; A1 revokes: A2 404; B1 and non-member same-tenant users never read; non-owner cannot share; model-supplied owner headers ignored",
+      "status": "done",
+      "covers": [
+        "DATA02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_history_routes.py"
+      ],
+      "note": "",
+      "commits": [
+        "beb8a09"
+      ]
+    },
+    {
+      "id": "DATA03-c1",
+      "kind": "code",
+      "criterion": "DATA03",
+      "title": "Migration writes a durable quarantine report (record ids and reasons) and scans tables in pages instead of materialising them",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/orchestration/chat_data_migration.py",
+        "modules/gateway/scripts/chat-data-migration.py"
+      ],
+      "note": "",
+      "commits": [
+        "ea5618f"
+      ]
+    },
+    {
+      "id": "DATA03-t1",
+      "kind": "test",
+      "criterion": "DATA03",
+      "title": "Quarantine report lists seeded missing-owner and conflicting-owner ids with reasons; counts preserved across dry-run, apply and rerun; paged scan exercised",
+      "status": "done",
+      "covers": [
+        "DATA03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/orchestration/test_chat_data_migration.py"
+      ],
+      "note": "",
+      "commits": [
+        "ea5618f"
+      ]
+    },
+    {
+      "id": "DATA04-c1",
+      "kind": "code",
+      "criterion": "DATA04",
+      "title": "Worker chat-data client maps 429 to rate_limited with Retry-After and 5xx to unavailable; never invalid_request",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts"
+      ],
+      "note": "",
+      "commits": [
+        "9fbf715",
+        "026978f"
+      ]
+    },
+    {
+      "id": "DATA04-t1",
+      "kind": "test",
+      "criterion": "DATA04",
+      "title": "Client error-class tests for 429 with Retry-After, 500, 503, and that denied/empty/partial stay distinct",
+      "status": "done",
+      "covers": [
+        "DATA04-c1"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.test.ts"
+      ],
+      "note": "",
+      "commits": [
+        "9fbf715",
+        "026978f"
+      ]
+    },
+    {
+      "id": "WIRE-c1",
+      "kind": "code",
+      "criterion": "WIRE",
+      "title": "Live worker constructs ChatDataClient from the workload token file and passes it to the context, memory, artifact and draft factories when ADP_CHAT_DATA_ENABLED=true; fails closed when enabled and misconfigured",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/draft/factory.ts"
+      ],
+      "note": "",
+      "commits": [
+        "0181f4c"
+      ]
+    },
+    {
+      "id": "WIRE-c2",
+      "kind": "code",
+      "criterion": "WIRE",
+      "title": "Chat ScaledJob manifest carries the scoped-data switch (ADP_CHAT_DATA_ENABLED default false) and gateway strategy values documented for enablement",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/k8s/chat-scaledjob.yaml"
+      ],
+      "note": "",
+      "commits": [
+        "9890eaf"
+      ]
+    },
+    {
+      "id": "WIRE-t1",
+      "kind": "test",
+      "criterion": "WIRE",
+      "title": "Factory wiring tests: enabled selects gateway ports for all four stores through the agent entry; disabled keeps the current stores; enabled without token or strategy throws before any model call",
+      "status": "done",
+      "covers": [
+        "WIRE-c1",
+        "WIRE-c2"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.test.ts"
+      ],
+      "note": "",
+      "commits": [
+        "0181f4c"
+      ]
+    },
+    {
+      "id": "LIVE-c1",
+      "kind": "code",
+      "criterion": "LIVE",
+      "title": "Live owner/cross-scope/revocation/download cases with issued sandbox credentials in the qualification target",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "deployed-target: owner #6937 (final live qualification); repository tests cannot prove credential isolation"
+    },
+    {
+      "id": "LIVE-c2",
+      "kind": "code",
+      "criterion": "LIVE",
+      "title": "Remove the worker direct DynamoDB/S3 permissions once gateway ports are verified live",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "deployed-target: coordinate with #6931 (isolation story); flipping IAM before live verification would break production chat"
+    },
+    {
+      "id": "EVID-c1",
+      "kind": "code",
+      "criterion": "EVID",
+      "title": "PR description carries the criterion-to-evidence table at the final head with blocked live rows attributed to #6937/#6931",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": ""
+    }
+  ]
+}

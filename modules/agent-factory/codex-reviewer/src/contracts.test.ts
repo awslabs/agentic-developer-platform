@@ -34,8 +34,7 @@ test("rejects a non-standard dedicated reviewer envelope", () => {
   assert.throws(() => parseEnvelope(JSON.stringify(envelope)), /unsupported/);
 });
 
-test("accepts the standard worker envelope selected by persona name", () => {
-  const envelope = {
+const standardPrEnvelope = {
     version: "1.0",
     channel: "github",
     message_id: "m-2",
@@ -59,13 +58,27 @@ test("accepts the standard worker envelope selected by persona name", () => {
         html_url: "https://github.com/aws-e/adp/pull/5460",
       },
     },
-  };
-  const parsed = parseEnvelope(JSON.stringify(envelope));
+};
+
+test("accepts the standard worker envelope selected by persona name without a comment", () => {
+  const parsed = parseEnvelope(JSON.stringify(standardPrEnvelope));
   assert.equal(parsed.kind, "codex_pr_review");
   if (parsed.kind !== "codex_pr_review") throw new Error("expected PR envelope");
   assert.equal(parsed.repository, "aws-e/adp");
   assert.equal(parsed.installation_id, 10);
   assert.equal(parsed.pull_request.number, 5460);
+  assert.equal(parsed.pull_request.triggering_comment, undefined);
+});
+
+test("preserves the exact multiline instruction in a PR mention", () => {
+  const instruction = "@agent-codex-reviewer Review this bounded PR.\n\nDefer broad policy work to another issue.\n  Keep current-head CI required.\n";
+  const parsed = parseEnvelope(JSON.stringify({
+    ...standardPrEnvelope,
+    payload: { ...standardPrEnvelope.payload, comment: { body: instruction } },
+  }));
+  assert.equal(parsed.kind, "codex_pr_review");
+  if (parsed.kind !== "codex_pr_review") throw new Error("expected PR envelope");
+  assert.equal(parsed.pull_request.triggering_comment, instruction);
 });
 
 test("accepts the standard issue mention envelope", () => {

@@ -68,6 +68,36 @@ async function fixture(t: test.TestContext, trackedLearning = false) {
   return { directory, workspace, remote, git, sha, pr, envelope, runtime, github };
 }
 
+test("PR mention presents explicit deferred work to the engine without blocking a bounded approval", async t => {
+  const state = await fixture(t);
+  const instruction = "@agent-codex-reviewer Review this bounded PR.\n\nDefer broad policy work to another issue.\nKeep CI required.";
+  let merges = 0;
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url, triggering_comment: instruction } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => ({ ready: true, total: 1, failing: [], pending: [],
+        observations: [{ name: "unit", status: "completed", conclusion: "success" }] }),
+      commentOnce: async () => true,
+      merge: async (_number, head) => { assert.equal(head, state.sha); merges++; return "b".repeat(40); },
+    },
+    review: async prompt => {
+      const data = prompt.match(/<story-data>(.*?)<\/story-data>/s)?.[1];
+      assert.ok(data, "engine prompt contains story data");
+      const story = JSON.parse(data) as { issue: { body: string }; acceptedScope?: string };
+      assert.equal(story.issue.body, "Valid input succeeds");
+      assert.match(story.acceptedScope ?? "", /^Human PR review request \(context only/);
+      assert.ok(story.acceptedScope?.endsWith(instruction), "scope preserves the exact multiline comment");
+      assert.match(prompt, /not design approval or permission to bypass/);
+      assert.match(prompt, /human triggering comment in acceptedScope is/);
+      return approved;
+    },
+    fix: async () => assert.fail("Deferred work alone must not start repair"),
+  });
+  assert.equal(result.status, "merged");
+  assert.equal(merges, 1);
+});
+
 test("engine envelope selects its bound PR without a webhook payload or agent branch", () => {
   const raw = { version: "1.0", persona: "agent-codex-reviewer", message_id: "run", arrived_at: "now", tenant_id: "tenant",
     source_ref: { repo: "org/repo", issue: 42, installation_id: 1 }, intent: { trigger: "engine_review_cycle" },
@@ -357,6 +387,169 @@ function checkObservation(head: string, state: "passed" | "pending" | "failed" =
   return { head_sha: head, base_sha: base, state, open: true, merged: false, base_repair_required: false,
     reasons: state === "passed" ? [] : [`required_check_${state}`], checks: [], failures: state === "failed" ? [{ name: "unit", details: "Expected 2, received 1" }] : [] };
 }
+
+for (const edit of [false, true]) test(`CI handoff waits and revalidates the published head (${edit ? "repair" : "validation only"})`, async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, waits = 0, reviews = 0, observations = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async prompt => {
+      reviews++;
+      if (reviews <= 2) return { ...approved, validationGaps: ["Browser CI must validate the published repair"] };
+      const published = await state.git("--git-dir", state.remote, "rev-parse", "story");
+      assert.match(prompt, new RegExp(`exact commit ${published}`));
+      assert.match(prompt, /controller-ci-evidence/);
+      assert.match(prompt, /onboarding-browser/);
+      assert.match(prompt, /success/);
+      assert.equal(waits, 2);
+      return approved;
+    },
+    fix: async () => {
+      assert.equal(++repairs, 1, "CI waiting must not spend repair turns");
+      if (edit) await writeFile(join(state.workspace, "code.txt"), "reviewed repair awaiting browser CI\n");
+      return { outcome: "awaiting_ci", summary: "Publish and validate browser CI", remainingWork: ["Browser evidence"] };
+    },
+    checks: async head => {
+      assert.equal(head, await state.git("--git-dir", state.remote, "rev-parse", "story"));
+      observations++;
+      return { ...checkObservation(head, observations === 2 ? "pending" : "passed", state.sha),
+        checks: observations === 1 ? [] : [{ name: "onboarding-browser", status: observations < 3 ? "in_progress" : "completed",
+          conclusion: observations < 3 ? null : "success" }] };
+    },
+    wait: async () => { waits++; assert.equal(reviews, 2, "polling must not invoke the model"); },
+    deliver: async result => {
+      assert.equal(reviews, 3, "CI evidence must be inspected before approval");
+      assert.equal(result.report.verdict, "approve");
+      assert.equal(result.sha, await state.git("--git-dir", state.remote, "rev-parse", "story"));
+      return { state: "merged" };
+    },
+  });
+  assert.equal(result.merged, true);
+  assert.equal(result.sha === state.sha, !edit);
+});
+
+test("CI handoff repairs failures and waits for the replacement commit", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, observations = 0, waits = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async prompt => prompt.includes("<controller-ci-evidence>") ? approved
+      : { ...approved, validationGaps: ["Await final CI"] },
+    fix: async prompt => {
+      if (repairs) assert.match(prompt, /Expected 2, received 1/);
+      await writeFile(join(state.workspace, "code.txt"), `repair ${++repairs}\n`);
+      return { outcome: "awaiting_ci", summary: "Await CI", remainingWork: ["CI"] };
+    },
+    checks: async head => {
+      observations++;
+      return { ...checkObservation(head, observations === 1 || observations === 3 ? "pending"
+        : observations === 2 ? "failed" : "passed", state.sha), checks: [{ name: "unit", conclusion: "success" }] };
+    },
+    wait: async () => { waits++; },
+    deliver: async result => {
+      assert.equal(repairs, 2);
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(result.merged, true);
+  assert.equal(waits, 2);
+  assert.equal(result.repair_base_sha, state.sha);
+  assert.equal(await state.git("rev-parse", "HEAD~2"), state.sha);
+});
+
+test("green CI does not clear unrelated review findings", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0, reviews = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => { reviews++; return blocked; },
+    fix: async () => ++repairs === 1
+      ? { outcome: "awaiting_ci", summary: "Await CI", remainingWork: ["CI"] }
+      : { outcome: "blocked", summary: "External contract decision missing", remainingWork: ["Owner decision"] },
+    checks: async head => ({ ...checkObservation(head, "passed", state.sha), checks: [{ name: "unit", conclusion: "success" }] }),
+    deliver: async () => assert.fail("green CI cannot waive a review finding"),
+  });
+  assert.equal(result.merged, false);
+  assert.ok(reviews >= 3, "published evidence must be reviewed without automatically approving");
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /External contract decision/);
+});
+
+test("CI handoff honors the delivery deadline without extra model turns", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let now = 0, reviews = 0, repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github, now: () => now, deliveryTimeoutMs: 120000,
+    review: async () => { reviews++; return { ...approved, validationGaps: ["Required CI"] }; },
+    fix: async () => { repairs++; return { outcome: "awaiting_ci", summary: "Await CI", remainingWork: ["Required CI"] }; },
+    checks: async head => checkObservation(head, "pending", state.sha),
+    wait: async ms => { now += ms; },
+    deliver: async () => assert.fail("pending CI must never merge"),
+  });
+  assert.equal(repairs, 1);
+  assert.equal(reviews, 2);
+  assert.equal(now, 120000);
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /deadline exceeded/);
+});
+
+test("CI handoff refuses a changed PR head", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => ({ ...approved, validationGaps: ["Required CI"] }),
+    fix: async () => ({ outcome: "awaiting_ci", summary: "Await CI", remainingWork: ["Required CI"] }),
+    checks: async () => checkObservation("f".repeat(40), "passed", state.sha),
+    deliver: async () => assert.fail("another head must never merge"),
+  });
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /PR head changed/);
+});
+
+test("PR mention carries named CI evidence through publication, waiting and merge", async t => {
+  const state = await fixture(t);
+  let reviews = 0, polls = 0, waits = 0;
+  const comments: string[] = [];
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url, triggering_comment: "Keep final-head CI required." } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => {
+        polls++;
+        return { ready: polls > 1, total: 1, failing: [], pending: polls === 1 ? ["browser"] : [],
+          observations: [{ name: "browser", status: polls === 1 ? "in_progress" : "completed",
+            conclusion: polls === 1 ? null : "success", details_url: "https://github.com/org/repo/actions/runs/123" }] };
+      },
+      commentOnce: async (_number, _marker, body) => { comments.push(body); return true; },
+      merge: async (_number, head) => {
+        assert.equal(head, await state.git("--git-dir", state.remote, "rev-parse", "story"));
+        assert.equal(reviews, 3);
+        return "b".repeat(40);
+      },
+    },
+    review: async prompt => {
+      assert.match(prompt, /Keep final-head CI required/);
+      if (++reviews <= 2) return { ...approved, validationGaps: ["Browser evidence for published head"] };
+      assert.match(prompt, /controller-ci-evidence/);
+      assert.match(prompt, /"name":"browser"/);
+      assert.match(prompt, /actions\/runs\/123/);
+      assert.match(prompt, /"conclusion":"success"/);
+      return approved;
+    },
+    fix: async () => {
+      await writeFile(join(state.workspace, "code.txt"), "fixed behavior awaiting browser\n");
+      return { outcome: "awaiting_ci", summary: "Need browser evidence", remainingWork: ["browser"] };
+    },
+    wait: async () => { waits++; },
+  });
+  assert.equal(result.status, "merged");
+  assert.equal(waits, 1);
+  assert.equal(comments.length, 1);
+  assert.doesNotMatch(comments[0]!, /REQUEST CHANGES|unpublished/);
+});
 
 test("reviewer-owned project without CI finishes without waiting or extra review", async t => {
   const state = await fixture(t);
@@ -702,7 +895,8 @@ for (const failure of ["semantic", "ci", "validation"] as const) {
     const comments: string[] = [];
     const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
       pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
-        expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+        expected_head_sha: state.sha, html_url: state.pr.html_url,
+        triggering_comment: "Defer broad policy work outside this PR; still repair real code and CI failures." } }, state.runtime, {
       github: { ...state.github,
         checks: async () => ({ ready: repairs > 0, total: failure === "semantic" ? 0 : 1,
           failing: failure === "ci" && repairs === 0 ? ["tests: valid input rejected"] : [], pending: [] }),
@@ -715,7 +909,8 @@ for (const failure of ["semantic", "ci", "validation"] as const) {
           return "b".repeat(40);
         },
       },
-      review: async () => {
+      review: async prompt => {
+        assert.match(prompt, /Defer broad policy work outside this PR/);
         reviews++;
         if (repairs) return approved;
         if (failure === "semantic") return blocked;
@@ -753,6 +948,27 @@ test("PR mention reports a genuine no-progress blocker without merging", async t
   assert.equal(result.status, "changes_requested");
   assert.equal(comments.length, 1);
   assert.ok(repairs <= 2);
+});
+
+test("PR mention refuses failing CI without a successful repair despite deferred scope", async t => {
+  const state = await fixture(t);
+  let repairs = 0;
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url,
+      triggering_comment: "Defer unrelated policy work; keep required CI." } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => ({ ready: false, total: 1, failing: ["unit: failed"], pending: [],
+        observations: [{ name: "unit", status: "completed", conclusion: "failure" }] }),
+      commentOnce: async () => true,
+      merge: async () => assert.fail("Failing CI must not merge"),
+    },
+    review: async prompt => { assert.match(prompt, /Defer unrelated policy work/); return approved; },
+    fix: async () => { repairs++; },
+  });
+  assert.equal(result.status, "changes_requested");
+  assert.ok(repairs > 0, "failed CI reaches the repair loop");
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
 
@@ -799,6 +1015,11 @@ test("repair milestone results are coerced to an honest outcome with warnings; o
   const clean = parseRepairMilestone(JSON.stringify({ outcome: "checkpoint", summary: "Parser repaired", remainingWork: ["Add coverage"] }));
   assert.equal(clean.outcome, "checkpoint");
   assert.deepEqual(clean.warnings, []);
+  const waiting = parseRepairMilestone(JSON.stringify({ outcome: "awaiting_ci", summary: "Browser CI required",
+    remainingWork: ["Browser evidence"], tasks: [] }));
+  assert.equal(waiting.outcome, "awaiting_ci");
+  assert.deepEqual(waiting.remainingWork, ["Browser evidence"]);
+  assert.deepEqual(waiting.warnings, []);
 });
 
 for (const ownedDelivery of [false, true]) {
@@ -891,6 +1112,51 @@ async function seedBoardFile(state: Awaited<ReturnType<typeof fixture>>, tasks: 
 const boardTask = (id: string, kind: Task["kind"], status: Task["status"], covers: string[] = []): Task =>
   ({ id, kind, status, covers, criterion: id.split("-")[0]!, title: `${kind} ${id}`, files: [], note: "" });
 
+for (const failedSink of ['none', 'file', 'pr', 'progress', 'closure'] as const) {
+test(`merged delivery survives ${failedSink} reporting failure and preserves deferred work`, async t => {
+  const state = await fixture(t);
+  const tasks = [boardTask('AC1-c1', 'code', 'done'), boardTask('AC1-t1', 'test', 'open', ['AC1-c1']),
+    { ...boardTask('AC1-live', 'test', 'blocked', ['AC1-c1']), note: 'Separate live qualification' }];
+  const head = await seedBoardFile(state, tasks);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let merged = false;
+  let boardText = '', report: import('./closure-report.js').ClosureReport | undefined;
+  const result = await runEngineReview(state.envelope, { ...state.runtime, observer: {
+    explanation() {}, activity() {}, session() {}, async finish() {}, async fail() {},
+    progress(text) { assert.equal(merged, true); if (failedSink === 'progress') throw new Error('reporter down'); boardText = text; },
+    closure(value) { assert.equal(merged, true); if (failedSink === 'closure') throw new Error('archive down'); report = value; },
+  } }, {
+    github: { ...state.github, updatePullRequestBody: async (_number, body) => {
+      assert.equal(merged, true);
+      if (failedSink === 'pr') throw new Error('GitHub reporting unavailable');
+      assert.match(body, /PR merged/);
+    } },
+    review: async () => ({ ...approved, closureReport: { completed: ['The UI passed browser validation.'], remaining: ['Live demo remains.'],
+      verifiedTasks: [{ id: 'AC1-t1', evidence: 'Browser check passed' }] } }),
+    fix: async () => assert.fail('reporting must not require another repair'),
+    checks: async sha => checkObservation(sha, 'passed', state.sha),
+    deliver: async () => {
+      merged = true;
+      if (failedSink === 'file') {
+        await rm(join(state.workspace, '.adp/tasks'), { recursive: true });
+        await writeFile(join(state.workspace, '.adp/tasks'), 'not a directory');
+      }
+      return { state: 'merged' };
+    },
+  });
+  assert.equal(result.merged, true);
+  assert.equal(await state.git('rev-parse', 'HEAD'), head, 'no reporting commit or CI restart');
+  const saved = await readTaskBoardFile(state.workspace, 42);
+  if (failedSink !== 'file') assert.deepEqual(saved.tasks?.map(task => task.status), ['done', 'done', 'blocked']);
+  if (failedSink !== 'progress') assert.match(boardText, /test 1\/2/);
+  if (failedSink !== 'closure') {
+    assert.equal(report?.delivery, 'Pull request merged.');
+    assert.match(report!.remaining.join(' '), /Separate live qualification/);
+    if (failedSink !== 'none') assert.match(report!.reporting_notes.join(' '), /could not be updated/);
+  }
+});
+}
+
 test("milestones per publish defaults to three and ignores invalid overrides", t => {
   const previous = process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH;
   t.after(() => { if (previous === undefined) delete process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH; else process.env.CODEX_REVIEWER_MILESTONES_PER_PUBLISH = previous; });
@@ -955,7 +1221,7 @@ test("several repair tasks are finished before one inspection and one publicatio
   assert.equal(await state.git("rev-parse", "HEAD^"), start, "the batch is a single published commit");
   assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1, AC2-t1$/);
   assert.match(prompts[1]!, /Files changed by this repair batch: code.txt/);
-  assert.equal(bodies.length, 1);
+  assert.equal(bodies.length, 2, 'one batch update and one post-merge checklist update');
   assert.match(bodies[0]!, /^Developer prose/);
   assert.doesNotMatch(bodies[0]!, /adp-task-board-data/);
   const published = (await state.git("rev-parse", "HEAD")).slice(0, 7);
@@ -1028,4 +1294,82 @@ test("the reviewer resumes from the branch board file when the developer left on
   const after = await readTaskBoardFile(state.workspace, 42);
   assert.deepEqual(after.tasks?.map(task => task.status), ["done", "done", "done"]);
   assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1$/);
+});
+
+
+test("clean base movement revalidates without repeated publication or spending repair retries", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  const bases = [state.sha];
+  await state.git("checkout", "-b", "main");
+  for (let index = 0; index < 4; index++) {
+    await writeFile(join(state.workspace, `base-${index}.md`), "independent documentation\n");
+    await state.git("add", ".");
+    await state.git("commit", "-m", `base revision ${index}`);
+    bases.push(await state.git("rev-parse", "HEAD"));
+  }
+  await state.git("push", state.remote, "main");
+  await state.git("checkout", "story");
+  let reviews = 0, observations = 0, waits = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async prompt => {
+      assert.match(prompt, new RegExp(`base commit ${state.pr.base.sha}`));
+      assert.equal(await state.git("rev-parse", "HEAD"), state.sha);
+      if (reviews++) assert.match(prompt, /controller-ci-evidence/);
+      return approved;
+    },
+    fix: async () => assert.fail("clean base changes need no source repair"),
+    checks: async head => {
+      observations++;
+      state.pr.base.sha = bases[Math.min(observations, 4)]!;
+      return checkObservation(head, observations === 1 ? "pending" : "passed", state.pr.base.sha);
+    },
+    wait: async () => { waits++; },
+    deliver: async result => {
+      assert.equal(result.reviewed_base_sha, bases[4]);
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(waits, 1);
+  assert.equal(reviews, 4);
+  assert.equal(result.merged, true);
+  assert.equal(result.sha, state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+});
+
+test("canonical strict-base repair still integrates and validates the published child", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  await state.git("checkout", "-b", "main");
+  await writeFile(join(state.workspace, "base.md"), "new base behavior\n");
+  await state.git("add", ".");
+  await state.git("commit", "-m", "base update");
+  const base = await state.git("rev-parse", "HEAD");
+  await state.git("push", state.remote, "main");
+  await state.git("checkout", "story");
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => approved,
+    fix: async prompt => {
+      repairs++;
+      assert.match(prompt, /prepared a merge/);
+      assert.equal(await state.git("rev-parse", "MERGE_HEAD"), base);
+      return { outcome: "complete", summary: "Validated required base integration", remainingWork: [] };
+    },
+    checks: async head => {
+      state.pr.base.sha = base;
+      return { ...checkObservation(head, "passed", base), base_repair_required: repairs === 0 };
+    },
+    deliver: async result => {
+      assert.equal(await state.git("rev-parse", "HEAD^2"), base);
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(repairs, 1);
+  assert.notEqual(result.sha, state.sha);
+  assert.equal(result.merged, true);
 });

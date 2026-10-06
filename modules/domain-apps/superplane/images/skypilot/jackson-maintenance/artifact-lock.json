@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "jackson_version": "2.18.11",
+  "ray_version": "2.58.0",
+  "original_jar_sha256": "ca5ebbea655feb35bb272ead350b39ee280e84acea16accce97625971954e854",
+  "toolchain": "maven@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82",
+  "artifacts": [
+    {
+      "filename": "jackson-core-2.18.11.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11.jar",
+      "sha256": "825fa72dfb9e2f8a642322f1390dbac22c30d15ebd6dc6b3772158821ee124eb",
+      "size": 588755,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "af002b10ee66ca91d7c500ee1ded28180f2b53fe543040cdf9b9a9ff87f5507f7d0652bfbf2cae792c0059ed2c335825f5e2c2b4f37678cd10ec212a608a4709",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11.jar.sha512"
+      }
+    },
+    {
+      "filename": "jackson-core-2.18.11.pom",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11.pom",
+      "sha256": "3978c6909315dedf3b3f245a3de58c099b10dba72391b416bdc627c687dd45c1",
+      "size": 9577,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "fb68199a69b703f2fa18d4b67695dd0092d3b3939eb584be9968921208936334496d728570f44ef346dc72da49e9e2c4970f52eca9d881ba34792dcd4f4c73fa",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11.pom.sha512"
+      }
+    },
+    {
+      "filename": "jackson-core-2.18.11-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11-sources.jar",
+      "sha256": "d635ced1bf37a08aa28a6bd20238fbf4e96dc5bc28770328589c6a070dc2b330",
+      "size": 499630,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "f9acfb409e41ba6abe24cf75ff49347d2945b2dde979c194675a34b837e91aae07c7a5605a754d4f79cd047c1f9143942357c0a2805c7acef0b5f1e6ba316f41",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.18.11/jackson-core-2.18.11-sources.jar.sha512"
+      }
+    },
+    {
+      "filename": "jackson-databind-2.18.11.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11.jar",
+      "sha256": "075ad94a76c3edf83e1972dc26f476361eb6b9d0e260d93fc11105509bc79cab",
+      "size": 1666375,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "171e95ce8d9efda2c6806c05a4d0e62642234c451476d0d1e8b770d88c2992366dbc800729396b01ef4fe891f094005fe7ee5c5dbda7bb4153eb8dc1bf44c5ac",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11.jar.sha512"
+      }
+    },
+    {
+      "filename": "jackson-databind-2.18.11.pom",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11.pom",
+      "sha256": "2ba93f54fedff085c22662ca91949dd8a781032dfde2d1478dfe42fb8123c1c8",
+      "size": 21080,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "af76d1dc26e986d3439b898165ce165d5deb7b29b55d710a4abd3231ad709d03dcf48b80c9221c8589f29f9007ac9016522e3cf4361fac858af672435930fa6d",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11.pom.sha512"
+      }
+    },
+    {
+      "filename": "jackson-databind-2.18.11-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11-sources.jar",
+      "sha256": "831683d1c15cbd9d78b065136dbffbe0575157571b053258e580765c30406eb6",
+      "size": 1241030,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "73a6ed96de7ebb25f260336f853fd1089789b99c88c02cd081a9a529418e74513dcfdb13d7fe5a06e7187c35528d433779fd31486e2a9b0ddf059c6d644ab9f0",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.18.11/jackson-databind-2.18.11-sources.jar.sha512"
+      }
+    },
+    {
+      "filename": "jackson-annotations-2.18.11.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11.jar",
+      "sha256": "9eab0d36da981645392427eedcb087e13be542488e37f935723dc0be50d18a53",
+      "size": 78413,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "13f46940bc3f515610e35816a440a1e17986291a950b2ecc016347ed2908f6f410300b20318a73c7f7c7420fdee228a45d7e673f90fd756ed5d4d223d9d54cfb",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11.jar.sha512"
+      }
+    },
+    {
+      "filename": "jackson-annotations-2.18.11.pom",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11.pom",
+      "sha256": "6e58b363de8ea7218ce980ced01a1ef1f70b03aee21c0db5ca02d9d12b0c6f2d",
+      "size": 6806,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "f3624143d8fd21cb430fb48b5787118e41899020fcdfb6ea01e3a846270946d4a245cc1bce41e6faae368ef3296161af337dfc058884e26806a0b4635a5e1dfe",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11.pom.sha512"
+      }
+    },
+    {
+      "filename": "jackson-annotations-2.18.11-sources.jar",
+      "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11-sources.jar",
+      "sha256": "33b1a053974a129cc695aec5791b225ef199db60ff5c22caf5158f0d151df919",
+      "size": 84120,
+      "publisher_checksum": {
+        "algorithm": "sha512",
+        "value": "dc8bba18d5018a5e404af09c47b10ef2cbaae3effb104c0ab92b076cec0a523b78c487bc61c67ee03aa2200c872ecffa6c8ae822e9533af8477c9c9a3a45f11f",
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.18.11/jackson-annotations-2.18.11-sources.jar.sha512"
+      }
+    }
+  ],
+  "test_toolchains": {
+    "17": "maven@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82",
+    "21": "maven@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237"
+  },
+  "original_ray_record_row": "ray/jars/ray_dist.jar,sha256=3NV7dP1iUXKmo4TkK5STSeF0Xq35GKUsKgemto84WXw,34363570"
+}

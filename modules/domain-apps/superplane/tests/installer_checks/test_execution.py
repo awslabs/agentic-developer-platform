@@ -19,7 +19,20 @@ class ToolProcess:
         self.calls.append((args, kwargs))
         if self.fail and self.fail in args:
             raise Refusal("external stage failed")
-        if "put-object" in args:
+        if "get-caller-identity" in args:
+            value = {
+                "Account": "879318057152",
+                "Arn": "arn:aws:sts::879318057152:assumed-role/test-installer/fixture",
+                "UserId": "AROA" + "A" * 17 + ":fixture",
+            }
+        elif "get-role" in args:
+            value = {
+                "Role": {
+                    "Arn": "arn:aws:iam::879318057152:role/deployment/test-installer",
+                    "RoleId": "AROA" + "A" * 17,
+                }
+            }
+        elif "put-object" in args:
             value = {"ETag": '"conditional-etag"'}
         elif "get-object" in args:
             Path(args[-1]).write_text(json.dumps({"installation_id": "other-machine"}))
@@ -64,9 +77,9 @@ def test_global_lock_is_conditional_and_retained_on_failure(
     with pytest.raises(RuntimeError):
         with installer.exclusive():
             raise RuntimeError("failure")
-    put = tools.calls[0][0]
+    put = tools.calls[2][0]
     assert "--if-none-match" in put and "*" in put
-    assert len(tools.calls) == 1
+    assert len(tools.calls) == 3
     assert installer.receipt["status"] == "recovery-required"
     assert installer.receipt["remote_lock"]["etag"] == '"conditional-etag"'
     assert environment["environment"] + "/modules/superplane/installation.lock" in put
@@ -78,7 +91,7 @@ def test_no_mutation_if_other_machine_holds_lock(tmp_path, environment, release)
     with pytest.raises(Refusal, match="another attempt"):
         with installer.exclusive():
             pytest.fail("entered a held lock")
-    assert len(tools.calls) == 2
+    assert len(tools.calls) == 4
     assert "get-object" in tools.calls[-1][0]
     assert "remote_lock" not in installer.receipt
     assert not any("delete-object" in args for args, _ in tools.calls)

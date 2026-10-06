@@ -175,7 +175,9 @@ tests. Its JUnit guards reject skipped database coverage. Do not run product CLI
 or regression tests against a developer's operator environment.
 
 Build the separate image remotely using this Dockerfile, repository-root context,
-and a reviewed digest-pinned Python 3.12 `PYTHON_IMAGE`. Image approval, credential
+and a reviewed digest-pinned Python 3.12 `PYTHON_IMAGE`. The selected base must
+also support the copied AWS CLI's Python and libc ABI; the final non-root build
+stage runs each tool offline and refuses an incompatible base. Image approval, credential
 scope activation and deployment are separate live gates. No source merge alone
 installs this service or activates spending. Rollback removes assignment publication
 and worker access first; retain shared intents, request handles and reservations

@@ -221,7 +221,7 @@ export function workspaceReading(
     return unknownReading('No workspace selected.');
   }
   const status = workspace.status;
-  if (status !== 'Active' && status !== 'Ready') {
+  if (status !== 'Active' && status !== 'active' && status !== 'Ready') {
     return {
       ready: false,
       reason: `The workspace is "${status}". It cannot run work in this state.`,
@@ -246,6 +246,12 @@ export function workspaceReading(
   }
 
   const health = workspace.cluster_health;
+  if (!health) return {
+    ready: null,
+    reason: 'The workspace has reported recently, but cluster health has not been reported.',
+    freshness,
+    observedAt: workspace.last_heartbeat ?? null,
+  };
   const healthy = health === 'Healthy';
   return {
     ready: healthy,

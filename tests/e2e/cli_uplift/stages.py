@@ -27,6 +27,7 @@ import shlex
 
 from . import (
     assistant_oracles,
+    assistant_provider_sources,
     bundle,
     cases,
     cleanup,
@@ -954,13 +955,23 @@ def journeys_stage(cfg, ports):
                             expected_timestamps=evidence.get("expected_timestamps"),
                             window=evidence.get("window"),
                         )
+                        observations["provider_evidence"] = (
+                            assistant_provider_sources.verify(
+                                evidence.get("provider_response"),
+                                cfg.get("assistant_provider_activity"),
+                                canary=evidence.get("canary"),
+                                canary_check=evidence.get("canary_check"),
+                            )
+                        )
                     detail = {**detail, "assistant_observations": observations}
                 except (assistant_oracles.EvidenceError, TypeError) as exc:
                     evidence = {**evidence, "success": False}
                     detail = {**detail, "oracle_error": str(exc)}
             if case_id == "E50" and evidence.get("success"):
                 if not (
-                    detail.get("protocol") == "webchat-response-v1"
+                    detail.get("protocol") == "webchat-worker-response-v2"
+                    and detail.get("worker_completion_verified") is True
+                    and detail.get("persona") == "intent-refinement"
                     and detail.get("phase") == "completed"
                     and detail.get("history_verified") is True
                     and all(

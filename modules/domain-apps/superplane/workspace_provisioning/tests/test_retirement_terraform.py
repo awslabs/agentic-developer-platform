@@ -1,8 +1,8 @@
 """Saved-artifact binding and deletion-only effect classification."""
 
-from dataclasses import replace
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 from harness_jobs.effects import CallEffect, call_effect
@@ -119,3 +119,87 @@ def test_removal_authority_cannot_apply_creating_or_replacement_plan(reviewed, a
     artifact.authorization.write_text(json.dumps(document))
     with pytest.raises(OperationRefused, match="creating or replacement"):
         artifact.read(record, parameters)
+
+
+@pytest.mark.asyncio
+async def test_native_destroy_runs_guard_with_isolated_renewable_credentials(
+    reviewed, monkeypatch, tmp_path
+):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from harness_jobs.execution import CallOutcome
+
+    from workspace_provisioning.process import WorkerProcesses
+    from workspace_provisioning.retirement_terraform import TerraformDestroy
+
+    artifact, record, parameters = reviewed
+    marker = tmp_path / "guard-ran"
+    guard = tmp_path / "guard.py"
+    guard.write_text(
+        "import os,pathlib\n"
+        "assert 'AWS_ACCESS_KEY_ID' not in os.environ\n"
+        "assert 'AWS_PROFILE' not in os.environ\n"
+        "assert os.environ['AWS_EC2_METADATA_DISABLED']=='true'\n"
+        "assert os.environ['AWS_CONTAINER_CREDENTIALS_FULL_URI'].startswith('http://127.0.0.1:')\n"
+        f"pathlib.Path({str(marker)!r}).write_text('verified')\n"
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ambient-must-not-leak")
+    monkeypatch.setenv("AWS_PROFILE", "ambient-profile")
+    process = WorkerProcesses(
+        binaries={"python": sys.executable},
+        directory=tmp_path,
+        session=SimpleNamespace(),
+        region="us-east-1",
+        verify=lambda: None,
+    )
+    destroy = TerraformDestroy(
+        python_binary=sys.executable,
+        guard_script=guard,
+        terraform_binary=sys.executable,
+        process=process,
+    )
+    authorize = AsyncMock()
+    result = await destroy.execute(
+        artifact, record, {**parameters, "max_runtime_seconds": "10"}, authorize
+    )
+    assert result[0] is CallOutcome.SUCCEEDED
+    assert marker.read_text() == "verified"
+    assert authorize.await_count >= 3
+
+
+@pytest.mark.asyncio
+async def test_native_destroy_stops_before_child_when_current_authority_is_revoked(
+    reviewed, tmp_path
+):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from workspace_provisioning.process import WorkerProcesses
+    from workspace_provisioning.retirement_terraform import TerraformDestroy
+
+    artifact, record, parameters = reviewed
+    marker = tmp_path / "must-not-exist"
+    guard = tmp_path / "guard.py"
+    guard.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+    process = WorkerProcesses(
+        binaries={"python": sys.executable},
+        directory=tmp_path,
+        session=SimpleNamespace(),
+        region="us-east-1",
+        verify=lambda: None,
+    )
+    destroy = TerraformDestroy(
+        python_binary=sys.executable,
+        guard_script=guard,
+        terraform_binary=sys.executable,
+        process=process,
+    )
+    authorize = AsyncMock(side_effect=OperationRefused("fence revoked"))
+    with pytest.raises(OperationRefused, match="revoked"):
+        await destroy.execute(
+            artifact, record, {**parameters, "max_runtime_seconds": "10"}, authorize
+        )
+    assert not marker.exists()

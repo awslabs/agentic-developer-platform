@@ -67,6 +67,7 @@ def descriptor_document():
             "expected": asdict(expected),
         },
     }
+    descriptor["network"]["expected"].pop("public_access_cidrs")
     doc.update(version=2, shared_dependencies=descriptor)
     return doc, specs, template
 
@@ -83,6 +84,8 @@ def descriptor_document():
         "owner",
         "protocol",
         "projection",
+        "empty-public-extension",
+        "public-extension",
     ],
 )
 def test_dependency_authority_contract_preserves_v1_renewal_and_requires_exact_v2(
@@ -106,7 +109,11 @@ def test_dependency_authority_contract_preserves_v1_renewal_and_requires_exact_v
         doc["shared_dependencies"]["observation_protocol"] = "future-unreviewed"
     elif change == "projection":
         doc["shared_dependencies"]["controller"]["namespace_uid"] = "other-namespace"
-    if change in {None, "v1"}:
+    elif change in {"empty-public-extension", "public-extension"}:
+        doc["shared_dependencies"]["network"]["expected"]["public_access_cidrs"] = (
+            [] if change == "empty-public-extension" else ["8.8.8.8/32"]
+        )
+    if change in {None, "v1", "empty-public-extension"}:
         assert Authority.read(str(uuid4()), json.dumps(doc)).document == doc
     else:
         with pytest.raises(BootstrapRefused):

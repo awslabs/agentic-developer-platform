@@ -106,6 +106,7 @@ from app.adapters.operation_authority_source import (
     set_acting_principal,
 )
 from app.current_identity import (
+    IdentityDenied,
     IdentityUnavailable,
     identity_checks_enabled,
     require_current_identity,
@@ -220,6 +221,8 @@ async def _authorize(
     # Step 4 — domain routes.
     policy = getattr(request.app.state, "domain_policy", None)
     if policy is None:
+        if identity_checks_enabled():
+            raise HTTPException(503, "current ADP authorization policy unavailable")
         # Enforcement is off: the legacy org-scoped JWT path in
         # app/middleware/auth.py remains authoritative, and this guard has still
         # done its structural job (the route was classified). With enforcement ON
@@ -230,6 +233,8 @@ async def _authorize(
 
     scope, permission = requirement  # type: ignore[misc]
     caller = await domain_auth.require_verified_caller(request, credentials)
+    if identity_checks_enabled() and caller.principal.account_type != "human":
+        raise HTTPException(403, "human domain identity required")
     # Signature/policy verification established the actor even if tenant binding
     # or the later grant check refuses this request. Never publish an unbound tenant.
     request.state.audit_principal = caller.principal.subject
@@ -245,8 +250,10 @@ async def _authorize(
                 principal_type=caller.principal.account_type,
                 adp_org_id=caller.source_org_id,
             )
-        except IdentityUnavailable:
+        except IdentityDenied:
             raise HTTPException(403, "current ADP identity required") from None
+        except IdentityUnavailable:
+            raise HTTPException(503, "current ADP identity unavailable") from None
         caller = replace(caller, identity_evidence=identity.membership_id)
     request.state.caller = caller
 
