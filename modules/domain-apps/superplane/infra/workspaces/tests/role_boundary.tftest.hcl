@@ -64,7 +64,7 @@ run "boundary_reaches_every_created_role" {
   command = plan
   variables {
     workspace_role_permissions_boundary_arn = "arn:aws:iam::111122223333:policy/owner/workspace-services"
-    workspace_admin_automation_role_arns = ["arn:aws:iam::111122223333:role/approved-provider"]
+    workspace_admin_automation_role_arns    = ["arn:aws:iam::111122223333:role/approved-provider"]
   }
   assert {
     condition = alltrue([
@@ -76,15 +76,15 @@ run "boundary_reaches_every_created_role" {
     error_message = "Every created workspace role must carry the exact reviewed boundary."
   }
   assert {
-    condition = length(aws_default_security_group.workspace) == 0
+    condition     = length(aws_default_security_group.workspace) == 0
     error_message = "Governed mode must not claim an initially untagged AWS default security group."
   }
   assert {
-    condition = jsondecode(jsondecode(aws_eks_addon.vpc_cni.configuration_values).env.ADDITIONAL_ENI_TAGS).WorkspaceId == var.workspace_id && jsondecode(jsondecode(aws_eks_addon.vpc_cni.configuration_values).env.ADDITIONAL_ENI_TAGS).OrgId == var.org_id
+    condition     = jsondecode(jsondecode(aws_eks_addon.vpc_cni.configuration_values).env.ADDITIONAL_ENI_TAGS).WorkspaceId == var.workspace_id && jsondecode(jsondecode(aws_eks_addon.vpc_cni.configuration_values).env.ADDITIONAL_ENI_TAGS).OrgId == var.org_id
     error_message = "CNI-created interfaces need both immutable ownership tags at creation."
   }
   assert {
-    condition = length([for specification in aws_launch_template.node.tag_specifications : specification if specification.resource_type == "network-interface" && specification.tags.OrgId == var.org_id && specification.tags.WorkspaceId == var.workspace_id]) == 1
+    condition     = length([for specification in aws_launch_template.node.tag_specifications : specification if specification.resource_type == "network-interface" && specification.tags.OrgId == var.org_id && specification.tags.WorkspaceId == var.workspace_id]) == 1
     error_message = "Primary node interfaces need ownership before CNI may tag or change them."
   }
 }
@@ -92,7 +92,7 @@ run "boundary_reaches_every_created_role" {
 run "existing_external_account_config_is_unchanged" {
   command = plan
   assert {
-    condition = aws_iam_role.cluster.permissions_boundary == null && aws_iam_role.node.permissions_boundary == null && aws_iam_role.vpc_cni.permissions_boundary == null
+    condition     = aws_iam_role.cluster.permissions_boundary == null && aws_iam_role.node.permissions_boundary == null && aws_iam_role.vpc_cni.permissions_boundary == null
     error_message = "Omitting the boundary must preserve existing external-account configurations."
   }
 }
