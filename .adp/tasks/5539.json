@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-06T00:47:52.952Z",
+  "updated_at": "2026-10-06T01:32:12Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -471,24 +471,27 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Publish new ready PR and updated operator invocation without asserting live acceptance",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Next task: update the operator handoff without claiming an executable lifecycle journey."
+      "note": "63e9cdd publishes the exact guarded preflight invocation and evaluator handoff on ready PR #7052; it always reports BLOCKED and performs no lifecycle effects. Covered by AC-04-t2.",
+      "commits": [
+        "63e9cdd"
+      ]
     },
     {
       "id": "AC-04-t2",
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify published revision, required checks and criterion-specific evaluator handoff",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Final PR-head summary check and handoff verification pending; foreground owns review/merge."
+      "note": "The documented command ran with fictional private inputs and returned exit 2/BLOCKED; 179 acceptance tests, Ruff and public-doc checker passed. Full local offline domain: 6626 passed, 11 manifest skips, 4 live deselected, 12 subtests. Remote run 37396009738 passed domain job and Superplane domain tests on source head 63e9cdd; next metadata-only head may start its own CI. Foreground review/merge and live evaluation remain separate."
     }
   ]
 }
