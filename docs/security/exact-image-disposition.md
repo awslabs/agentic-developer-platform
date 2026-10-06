@@ -158,8 +158,10 @@ decision; the tool enforces byte identity, required evidence and decision scope.
 No wildcard, risk-acceptance, affected or under-investigation dispositions are
 supported. Unreviewed occurrences remain active. Decisions cannot transfer to a
 new image, source, file inventory, SBOM, scanner/config/database or raw report
-without a new exact observation and approval. Non-Debian packages remain active;
-their disposition support is outside this implementation's scope.
+without a new exact observation and approval. Non-Debian packages remain active by default. The explicit opt-in
+[Python component extension](exact-image-python-components.md) uses separate v2
+observation/review schemas and strict component provenance; it does not broaden
+v1 Debian or embedded/shared-rule eligibility.
 
 ## Derive, verify and gate
 

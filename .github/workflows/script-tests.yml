@@ -121,6 +121,7 @@ on:
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
       - 'codebuild/exact_image_disposition.py'
+      - 'codebuild/exact_image_components.py'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -245,6 +246,7 @@ on:
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
       - 'codebuild/exact_image_disposition.py'
+      - 'codebuild/exact_image_components.py'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -376,4 +378,5 @@ jobs:
           pytest \
             codebuild/tests/test_security_image_scan.py \
             codebuild/tests/test_exact_image_disposition.py \
+            codebuild/tests/test_exact_image_components.py \
             -v --tb=short --timeout=60
