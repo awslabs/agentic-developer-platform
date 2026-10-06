@@ -622,7 +622,10 @@ async function runEngineReviewLoop(
         return { ...finish(), delivery_blocked: "Merge queue observation unavailable" };
       }
     }
-    if (checks.base_sha !== result.reviewed_base_sha) checks = { ...checks, base_repair_required: true };
+    // Moving main alone does not require a source edit. The canonical observer
+    // separately requires integration for conflicts or strict behind checks.
+    // Reinspect a clean new base against the same published head once CI passes.
+    const baseChanged = checks.base_sha !== result.reviewed_base_sha;
     // Immediately after push GitHub can report no checks yet. An explicit CI
     // handoff requires evidence; do not treat that discovery window as green.
     const awaitingCheckDiscovery = result.awaiting_ci && checks.state === "passed" && checks.checks.length === 0;
@@ -632,10 +635,10 @@ async function runEngineReviewLoop(
       await wait(60000);
       continue;
     }
-    if (checks.state === "passed" && !checks.base_repair_required && result.awaiting_ci) {
-      // CI waiting is not an external blocker or a repair attempt. Reconcile
-      // the actual published revision with the retained inspection before any
-      // approval; passing checks never erase semantic findings automatically.
+    if (checks.state === "passed" && !checks.base_repair_required && (result.awaiting_ci || baseChanged)) {
+      // CI waiting and clean base revalidation are not source repair attempts.
+      // Reconcile the published revision and current base with the retained
+      // inspection; passing checks never erase semantic findings automatically.
       const validationStarted = now();
       const previous = result;
       result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,

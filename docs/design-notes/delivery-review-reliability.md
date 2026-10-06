@@ -116,3 +116,11 @@ Historical failures without the new metadata remain subject to the old gates.
 These changes do not prove every historical error has one cause. The live test
 must verify deployed transport compatibility, actual model access, token renewal,
 CI/merge and final story/dependency transitions before broader flow resumption.
+
+A clean target-branch advance during CI is revalidated by the retained reviewer
+against the same published PR head. It does not manufacture another source
+repair or consume a repair retry. Pending CI still waits, and passing CI only
+supplies evidence to the reviewer; it never erases findings automatically.
+Conflicts and provider-required strict-base integration still enter the repair
+path. Merge delivery continues to require the exact reviewed head and current
+base, and rechecks the target immediately before the provider mutation.
