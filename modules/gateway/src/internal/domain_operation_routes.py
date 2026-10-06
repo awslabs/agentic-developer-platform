@@ -489,3 +489,38 @@ async def settlement(body: SettlementRequest, request: Request):
     if result != {"receipt_id": body.receipt_id}:
         raise HTTPException(503, "settlement acknowledgement unavailable")
     return result
+
+
+class ProviderSessionRequest(OperationRequest):
+    region: str = Field(min_length=1, max_length=32)
+    access_entry_arn: str | None = Field(default=None, max_length=2048)
+
+
+from src.internal.credential_routes import get_secrets_manager  # noqa: E402
+from src.shared.database import get_db  # noqa: E402
+
+
+@router.post("/provider-session")
+async def provider_session_route(body: ProviderSessionRequest, request: Request, db=Depends(get_db), sm=Depends(get_secrets_manager)):
+    from src.auth.vault_delivery import DeliveryRefusedError
+    from src.internal.domain_provider_session import provider_session
+    from src.internal.sts_assume_service import STSAssumeError
+
+    try:
+        result = await provider_session(request, body, db, sm)
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except (DeliveryRefusedError, STSAssumeError, ValueError, KeyError, TypeError):
+        raise HTTPException(403, "paid provider session refused") from None
+
+
+@router.post("/provider-preflight")
+async def provider_preflight_route(body: ProviderSessionRequest, request: Request, db=Depends(get_db), sm=Depends(get_secrets_manager)):
+    from src.auth.vault_delivery import DeliveryRefusedError
+    from src.internal.domain_provider_session import provider_session
+
+    try:
+        return await provider_session(request, body, db, sm, preflight_only=True)
+    except (DeliveryRefusedError, ValueError, KeyError, TypeError):
+        raise HTTPException(403, "paid provider preflight refused") from None
