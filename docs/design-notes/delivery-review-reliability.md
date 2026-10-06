@@ -116,3 +116,15 @@ Historical failures without the new metadata remain subject to the old gates.
 These changes do not prove every historical error has one cause. The live test
 must verify deployed transport compatibility, actual model access, token renewal,
 CI/merge and final story/dependency transitions before broader flow resumption.
+
+## Owner recovery for protected reviewers
+
+The existing node `review-recovery/preview` and `review-recovery/accept` endpoints
+also support protected-worker plans. The authenticated policy owner may request
+another review after the current protected reviewer records a terminal failure.
+The preview binds the current plan, claim, attempt, PR head and terminal receipt;
+acceptance records an append-only `protected_review_recovery` decision. It does
+not mark delivery successful, change a failed worker receipt, reset attempts or
+increase spending authority. The normal dispatcher rechecks authorization,
+remaining allowance, ownership, head and terminal evidence before starting a
+new reviewer. A later failure needs a separate owner recovery decision.

@@ -308,6 +308,11 @@ class ReviewCycleServices:
             raise CycleBlockedError("worker_start_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE)
         return status == "completed"
 
+    async def recovery_snapshot(self, session, context, node, binding, dispatches):
+        from .protected_review_recovery import recovery_snapshot
+
+        return await recovery_snapshot(session, context, node, binding, self, dispatches)
+
     async def facts(self, session, context, node, binding, dispatches):
         active = continuation_run_id(dispatches[-1].operation_key) if dispatches else attempt_run_id(node.id, node.attempts)
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
@@ -501,6 +506,19 @@ class ReviewCycleServices:
                     # Explicit review-only policies retain read-only contents
                     # access. The persona itself cannot grant repair authority.
                     pass
+            if detail.get("protected_recovery_decision_id"):
+                from .protected_review_recovery import verified_decision
+
+                await verified_decision(
+                    session,
+                    decision_id=detail["protected_recovery_decision_id"],
+                    context=context,
+                    node=node,
+                    binding=binding,
+                    services=self,
+                    prior_run_id=detail["active_run_id"],
+                    head_sha=detail["head_sha"],
+                )
             bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_retryable_bootstrap_failure(raw)
             review_retry = detail.get("review_retry_of") == detail["active_run_id"] and failed_review(raw)
             if (
