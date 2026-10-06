@@ -270,6 +270,13 @@ class RetirementRuntime:
                     )
                 await self.control_verify(operation, inventory, access[0], access[1])
                 await authorize()
+                async with self.connect() as connection:
+                    await require_managed_control_source(
+                        connection,
+                        plan=access[0],
+                        access_artifact=access[1],
+                        paid_operation_id=access[2],
+                    )
 
             await authorize_control()
             async with self.connect() as connection, connection.transaction():
@@ -347,9 +354,14 @@ class RetirementRuntime:
 
 
 class RetirementRecoveryObserver:
-    """Observe an original deletion under a new, authenticated recovery claim."""
+    """Observe an original deletion under a new, authenticated recovery claim.
 
-    def __init__(self, *, connect, principal, resolve):
+    Managed receipts require the trusted lifecycle control_context, including its
+    separate execution/domain connections and deployment-owned policy. It permits
+    lineage reconstruction and provider reads, never replay or allocation release.
+    """
+
+    def __init__(self, *, connect, principal, resolve, control_context=None):
         from harness_jobs.identity import ResolvedPrincipal
 
         if (
@@ -358,6 +370,32 @@ class RetirementRecoveryObserver:
         ):
             raise OperationRefused("retirement recovery requires current scope")
         self.connect, self.principal, self.resolve = connect, principal, resolve
+        self.control_context = control_context
+
+    async def _managed_access(self, grant, record, inventory):
+        from types import SimpleNamespace
+
+        from .artifacts import read_artifact
+        from .retirement_control import resolve_managed_control
+
+        parameters = record.admitted_request().parameters
+        if not parameters.get("retirement_access_artifact_id"):
+            return None
+        if self.control_context is None:
+            raise OperationRefused("managed recovery has no control source context")
+        plan, _paid_operation_id = await resolve_managed_control(
+            SimpleNamespace(grant=grant, request=record.admitted_request()),
+            inventory,
+            self.control_context,
+        )
+        artifact = await read_artifact(
+            self.control_context.domain_connect,
+            artifact_id=parameters["retirement_access_artifact_id"],
+            org_id=grant.lease.org_id,
+            workspace_id=grant.lease.workspace_id,
+            require_fresh=False,
+        )
+        return plan, artifact
 
     async def __call__(self, lease, key, provider, operation_kind, target):
         from harness_jobs.execution import CallStage, read_call
@@ -374,7 +412,8 @@ class RetirementRecoveryObserver:
                 connection, self.principal, lease.operation_id
             )
             if (
-                call.stage is not CallStage.INTENDED
+                call is None
+                or call.stage is not CallStage.INTENDED
                 or call.operation_id != lease.operation_id
                 or (call.org_id, call.workspace_id)
                 != (lease.org_id, lease.workspace_id)
@@ -408,18 +447,48 @@ class RetirementRecoveryObserver:
             await asyncio.to_thread(
                 artifact.read, inventory, record.admitted_request().parameters
             )
+        access = await self._managed_access(grant, record, inventory)
         if [
             (step.step_id, step.provider, step.operation_kind, step.target)
             for step in compose_retirement_plan(
-                inventory, managed_destroy=artifact
+                inventory, managed_destroy=artifact, managed_access=access
             ).steps
         ] != [
             (step.step_id, step.provider, step.operation_kind, step.target)
             for step in admitted_steps(record)
         ]:
             raise OperationRefused("retirement recovery inventory changed")
+        async with self.connect() as connection, connection.transaction():
+            if not await lock_recovery_grant(connection, grant):
+                raise OperationRefused("retirement recovery claim expired")
         step = matched[0]
-        if (step.provider, step.operation_kind) in {
+        if step.step_id == "revoke-control-entry":
+            from superplane_bootstrap.eks_grants import EksGrants
+
+            from .retirement_access_artifact import validate_access_artifact
+
+            if (
+                access is None
+                or not isinstance(removals.eks, EksGrants)
+                or (
+                    removals.eks.target.org_id,
+                    removals.eks.target.workspace_id,
+                    removals.eks.target.cluster_arn,
+                )
+                != (inventory.org_id, inventory.workspace_id, inventory.cluster_arn)
+            ):
+                raise OperationRefused("managed recovery has no scoped EKS reads")
+            plan, access_artifact = access
+            identity = validate_access_artifact(access_artifact, plan)["cleaner-entry"]
+            observed = await asyncio.to_thread(removals.eks.observe, plan.grants[0])
+            result = (
+                CallOutcome.SUCCEEDED if observed is None else CallOutcome.UNKNOWN,
+                "managed control grant absent"
+                if observed is None
+                else "managed control grant still present",
+                identity["arn"],
+            )
+        elif (step.provider, step.operation_kind) in {
             (KUBERNETES, DELETE_COMPONENT),
             (KUBERNETES, REVOKE_GRANT),
             (AWS, REVOKE_GRANT),
@@ -431,6 +500,8 @@ class RetirementRecoveryObserver:
             result = await asyncio.to_thread(removals.observe, admitted, inventory)
         else:
             result = CallOutcome.UNKNOWN, "no authoritative absence observation", None
+        if access != await self._managed_access(grant, record, inventory):
+            raise OperationRefused("managed recovery control source changed")
         async with self.connect() as connection, connection.transaction():
             if not await lock_recovery_grant(connection, grant):
                 raise OperationRefused("retirement recovery claim expired")

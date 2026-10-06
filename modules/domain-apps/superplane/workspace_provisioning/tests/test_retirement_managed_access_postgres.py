@@ -136,7 +136,7 @@ async def _execute_managed_revoke(
         "load_bootstrap_retirement_inventory",
         lambda **kwargs: owned,
     )
-    if case == "legacy-denied":
+    if case == "legacy-denied" or case.startswith("deny-"):
         trusted_context = SimpleNamespace(
             connect=harness.connect,
             domain_connect=harness.connect,
@@ -144,8 +144,8 @@ async def _execute_managed_revoke(
             policy_fixture=True,
         )
 
-        def access_for(current, inventory):
-            return resolve_managed_control(current, inventory, trusted_context)
+        async def access_for(current, inventory):
+            return await resolve_managed_control(current, inventory, trusted_context)
     else:
         access_for = AsyncMock(return_value=(plan, paid_operation_id))
     if case == "confirmed":
@@ -204,6 +204,42 @@ async def _execute_managed_revoke(
                 "arguments": {"step_id": step.step_id},
             }
         )
+    if case.startswith("deny-"):
+        from .managed_denial_case import exercise_managed_denial
+
+        await exercise_managed_denial(
+            harness,
+            facade,
+            operation,
+            provider,
+            plan,
+            artifact,
+            deletion,
+            authenticate,
+            cloud,
+            monkeypatch,
+            case,
+        )
+        return
+    if case.startswith(("cancel-", "incomplete-")):
+        from .managed_cancellation_case import exercise_managed_cancellation
+
+        await exercise_managed_cancellation(
+            harness,
+            facade,
+            operation,
+            owned,
+            provider,
+            plan,
+            artifact,
+            deletion,
+            authenticate,
+            deployment,
+            cloud,
+            monkeypatch,
+            case,
+        )
+        return
     if case == "released":
         async with harness.connect() as connection:
             await connection.execute(
@@ -218,8 +254,17 @@ async def _execute_managed_revoke(
                 artifact["artifact_id"],
             )
     before = cloud.mutations
+
+    async def deliver(call):
+        if case == "recovery-present":
+            raise TimeoutError("delete delivery unanswered")
+        result = await provider(call)
+        if case.startswith("recovery-"):
+            raise TimeoutError("delete reply lost")
+        return result
+
     server = ExecutionRPCServer(
-        connect=harness.connect, provider_call=provider, authenticate=authenticate
+        connect=harness.connect, provider_call=deliver, authenticate=authenticate
     )
     request = {
         "token": "scoped-worker",
@@ -227,6 +272,24 @@ async def _execute_managed_revoke(
         "arguments": {"step_id": "revoke-control-entry"},
     }
     result = await server.dispatch(request)
+    if case.startswith("recovery-"):
+        from .managed_recovery_case import recover_managed_revoke
+
+        assert result[0]["outcome"] != "succeeded"
+        assert cloud.mutations == before + (case != "recovery-present")
+        await recover_managed_revoke(
+            harness,
+            operation,
+            owned,
+            provider.removals,
+            plan,
+            artifact,
+            deployment,
+            cloud,
+            monkeypatch,
+            case,
+        )
+        return
     if case == "confirmed":
         assert result[0]["outcome"] == "succeeded"
         assert cloud.mutations == before + 1
@@ -248,7 +311,37 @@ async def _execute_managed_revoke(
 
 
 @pytest.mark.parametrize(
-    "admitted_revoke", ["none", "confirmed", "released", "missing", "legacy-denied"]
+    "admitted_revoke",
+    [
+        "none",
+        "confirmed",
+        "released",
+        "missing",
+        "legacy-denied",
+        "recovery-absent",
+        "recovery-present",
+        "recovery-replaced",
+        "recovery-control-released",
+        "recovery-released-during-read",
+        "recovery-artifact-missing",
+        "recovery-expired",
+        "recovery-unreadable",
+        "cancel-before-intent",
+        "cancel-before-delete",
+        "cancel-after-delete",
+        "incomplete-delete",
+        "incomplete-inventory",
+        "deny-no-intent",
+        "deny-unapproved-target",
+        "deny-foreign-workspace",
+        "deny-stale-fence",
+        "deny-expired-lease",
+        "deny-released-before-delete",
+        "deny-replaced-entry",
+        "deny-broadened-entry",
+        "deny-unapproved-policy",
+        "deny-interlock",
+    ],
 )
 def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
     runtime, tmp_path_factory, request, monkeypatch, admitted_revoke
@@ -261,7 +354,12 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
             component("fixture-controller", namespace=arguments["inventory"].namespace),
         ),
     )
-    plan = compile_managed_access_plan(**arguments)
+    if admitted_revoke.startswith(("recovery-", "cancel-", "incomplete-", "deny-")):
+        from .managed_recovery_case import management_plan
+
+        plan = management_plan(arguments)
+    else:
+        plan = compile_managed_access_plan(**arguments)
     account_id, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
     deployment = policy()
     deployment["runtime"] = arguments["runtime"]

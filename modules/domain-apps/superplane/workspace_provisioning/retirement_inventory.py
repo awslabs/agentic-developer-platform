@@ -548,6 +548,14 @@ def require_cleanup_group_mapping(capability, eks, *, spec=None, identity=None):
         ):
             raise BootstrapRefused("cleanup mapping differs from confirmed entry")
         eks.verify(spec, identity)
+        if _pages(
+            eks.client,
+            "list_associated_access_policies",
+            "associatedAccessPolicies",
+            clusterName=eks.target.cluster_name,
+            principalArn=spec["principal_arn"],
+        ):
+            raise BootstrapRefused("cleanup entry has unapproved EKS access policies")
     matches = []
     for principal in _pages(
         eks.client,
