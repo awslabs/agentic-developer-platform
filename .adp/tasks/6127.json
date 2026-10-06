@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T00:17:59.532Z",
+  "updated_at": "2026-10-06T00:19:42.412Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -90,7 +90,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
       ],
-      "note": "Commit 2c3280a; existing migration 036 reused.",
+      "note": "Commit 2c3280a; migration 036 reused.",
       "commits": [
         "2c3280a"
       ]
@@ -152,7 +152,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
       ],
-      "note": "Commit c3589f7; operation resolution distinguishes current identity denial from outage and checks the stored binding. Protected execution/renewal requester and approver checks remain AC-04; production composition remains AC-05.",
+      "note": "Commit c3589f7; protected execution and renewal checks remain AC-04.",
       "commits": [
         "c3589f7"
       ]
@@ -170,14 +170,14 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "DB-backed API and worker matrix passed for all five grant kinds and their implication sets; adjacent local suites: 244 passed."
+      "note": "DB-backed API/worker permission matrix passed."
     },
     {
       "id": "AC-03-t2",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Reject revoked workspace grants and first-workspace fallback in API/worker tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c1",
         "AC-03-c2"
@@ -185,7 +185,10 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": ""
+      "note": "Commit 819594e; zero-workspace bootstrap allowed, revoked workspace denied before and after authority restart, withdrawn membership denied. Adjacent local suites: 245 passed.",
+      "commits": [
+        "819594e"
+      ]
     },
     {
       "id": "AC-03-t3",
@@ -310,7 +313,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Route exists; actual signed composition remains to be proven."
+      "note": "Route exists; signed composition remains unproven."
     },
     {
       "id": "AC-05-t1",
