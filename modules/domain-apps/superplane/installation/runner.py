@@ -2539,7 +2539,10 @@ class Installer:
                 if self.env.get("api_adapters"):
                     from .adapter_staging import require_quiescent
 
-                    self.phase("adapter-quiescence", lambda: require_quiescent(self))
+                    self.phase(
+                        "adapter-quiescence",
+                        lambda: require_quiescent(self, shared=False),
+                    )
                 self.phase(
                     "infrastructure",
                     lambda: self.commands.call(
@@ -2558,6 +2561,13 @@ class Installer:
 
                     self.phase(
                         "api-producer-role-verified", lambda: verify_applied(self)
+                    )
+                from . import lifecycle_worker
+
+                if lifecycle_worker.enabled(self.env):
+                    self.phase(
+                        "shared-execution-quiescence",
+                        lambda: lifecycle_worker.quiescence_job(self),
                     )
                 self.phase("foundations", self.foundations)
                 self.phase("migration", self.migrate)

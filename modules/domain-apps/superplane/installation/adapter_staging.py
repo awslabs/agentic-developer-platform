@@ -484,11 +484,18 @@ if __name__ == "__main__":
 """
 
 
-def require_quiescent(installer):
+def require_quiescent(installer, *, shared=True):
     """Refuse to disable an API with admitted/active work; never cancel it."""
     from .config import LABEL
 
+    from . import lifecycle_worker
+
     current = installer.existing(api_document(installer))
+    if shared and lifecycle_worker.enabled(installer.env):
+        if current is None:
+            lifecycle_worker.quiescence_job(installer)
+        else:
+            lifecycle_worker.proof(installer, "quiescent")
     if current is None:
         installer.receipt["adapter_quiescence"] = {
             "api_absent": True,
@@ -500,10 +507,6 @@ def require_quiescent(installer):
         "Cannot stage a foreign API Deployment",
     )
 
-    from . import lifecycle_worker
-
-    if lifecycle_worker.enabled(installer.env):
-        lifecycle_worker.proof(installer, "quiescent")
     counts = installer.json(
         installer.kube(
             "exec",
@@ -530,7 +533,8 @@ def require_quiescent(installer):
     )
     installer.receipt["adapter_quiescence"] = {
         "counts": counts,
-        "active_work_verified": True,
+        "active_work_verified": shared or not lifecycle_worker.enabled(installer.env),
+        "domain_work_verified": True,
         "observed_at": datetime.now(UTC).isoformat(),
     }
     installer.save()

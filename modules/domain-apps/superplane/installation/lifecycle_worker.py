@@ -9,9 +9,9 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from .config import LABEL, require
+from .config import LABEL, image, require
 from .paid_worker import COMPONENT, WORKER
 
 
@@ -288,6 +288,11 @@ def proof(installer, state):
             ),
         )
     )
+    return validate_proof(installer, value, state)
+
+
+def validate_proof(installer, value, state):
+    env = installer.env
     try:
         checked = datetime.fromisoformat(value["checked_at"])
         current = checked.tzinfo is not None and datetime.now(UTC) - timedelta(
@@ -360,3 +365,167 @@ def activate(installer):
 
 def pause(installer):
     installer.apply(worker_documents(installer))
+
+
+def quiescence_job(installer):
+    """Use the reviewed image, independent of an old or absent API process.
+
+    This runs after the approved producer-role plan and before any worker
+    resource is changed. Only namespace, producer SA, verifier network policy
+    and a non-consuming bounded Job are created through the existing owner.
+    """
+    from .adapter_staging import role_identity
+
+    env = installer.env
+    if not enabled(env):
+        return
+    cluster = installer.json(
+        installer.aws("eks", "describe-cluster", "--name", env["cluster"])
+    )["cluster"]
+    identity = role_identity(installer, cluster)
+    prerequisites = [
+        copy.deepcopy(d)
+        for d in installer.docs
+        if (d["kind"] == "Namespace" and d["metadata"]["name"] == env["namespace"])
+        or (
+            d["kind"] == "ServiceAccount"
+            and d["metadata"]["name"] == "superplane-api"
+            and d["metadata"].get("namespace") == env["namespace"]
+        )
+    ]
+    require(
+        {d["kind"] for d in prerequisites} == {"Namespace", "ServiceAccount"},
+        "native verifier namespace and producer identity unavailable",
+    )
+    label = {"app.kubernetes.io/name": "superplane-binding-check"}
+    metadata = {
+        "namespace": env["namespace"],
+        "labels": {LABEL: installer.owner, **label},
+    }
+    policy = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {**metadata, "name": "superplane-binding-check"},
+        "spec": {
+            "podSelector": {"matchLabels": label},
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [],
+            "egress": [
+                {
+                    "to": [
+                        {"ipBlock": {"cidr": env["paid_worker"]["egress"][key]["cidr"]}}
+                    ],
+                    "ports": [
+                        {
+                            "protocol": "TCP",
+                            "port": env["paid_worker"]["egress"][key]["port"],
+                        }
+                    ],
+                }
+                for key in ("gateway", "sts")
+            ]
+            + [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": "kube-system"
+                                }
+                            },
+                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                        }
+                    ],
+                    "ports": [
+                        {"protocol": protocol, "port": 53}
+                        for protocol in ("TCP", "UDP")
+                    ],
+                }
+            ],
+        },
+    }
+    dispatcher = env["api_adapters"]["dispatcher"]
+    name = "superplane-binding-check-" + uuid4().hex[:12]
+    program = PROOF_PROGRAM.replace(
+        "import asyncio,json,sys", "import asyncio,json,sys,os"
+    ).replace(
+        "v=json.load(sys.stdin)",
+        'v=json.loads(os.environ["SUPERPLANE_INSTALLATION_PROOF"])',
+    )
+    job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {**metadata, "name": name},
+        "spec": {
+            "backoffLimit": 0,
+            "activeDeadlineSeconds": min(env["timeout_seconds"], 300),
+            "ttlSecondsAfterFinished": 3600,
+            "template": {
+                "metadata": {"labels": {LABEL: installer.owner, **label}},
+                "spec": {
+                    "serviceAccountName": "superplane-api",
+                    "automountServiceAccountToken": False,
+                    "restartPolicy": "Never",
+                    "securityContext": {
+                        "runAsNonRoot": True,
+                        "runAsUser": 65532,
+                        "seccompProfile": {"type": "RuntimeDefault"},
+                    },
+                    "containers": [
+                        {
+                            "name": "verify",
+                            "image": image(installer.lock, "superplane-api"),
+                            "command": ["python", "-c", program],
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "readOnlyRootFilesystem": True,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                            "resources": {
+                                "requests": {"cpu": "50m", "memory": "128Mi"},
+                                "limits": {"cpu": "1", "memory": "512Mi"},
+                            },
+                            "env": [
+                                {"name": k, "value": v}
+                                for k, v in {
+                                    "SUPERPLANE_OPERATION_GATEWAY_URL": dispatcher[
+                                        "endpoint"
+                                    ],
+                                    "SUPERPLANE_OPERATION_GATEWAY_REGION": env[
+                                        "region"
+                                    ],
+                                    "AWS_REGION": env["region"],
+                                    "AWS_EC2_METADATA_DISABLED": "true",
+                                    "AWS_STS_REGIONAL_ENDPOINTS": "regional",
+                                    "SUPERPLANE_INSTALLATION_PROOF": json.dumps(
+                                        {
+                                            "domain": "superplane",
+                                            "org_id": env["org_id"],
+                                            "state": "quiescent",
+                                        }
+                                    ),
+                                }.items()
+                            ],
+                        }
+                    ],
+                },
+            },
+        },
+    }
+    installer.apply([*prerequisites, policy, job])
+    installer.wait_job(job)
+    value = installer.json(
+        installer.kube("logs", "job/" + name, "-c", "verify", "-n", env["namespace"])
+    )
+    report = validate_proof(installer, value, "quiescent")
+    require(
+        role_identity(installer, cluster) == identity,
+        "native verifier producer identity changed",
+    )
+    installer.receipt["shared_execution_quiescence"] = {
+        "proof": report,
+        "producer": identity,
+        "job": name,
+    }
+    installer.save()
+    return report

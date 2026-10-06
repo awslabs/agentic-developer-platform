@@ -50,3 +50,14 @@ inline recipe while preserving the role ARN, immutable RoleId, trust and all oth
 authority. Arbitrary policy changes and role replacement remain refused.
 
 Controller-only mode retains its inert projection and unavailable activation gate.
+
+For upgrades, shared quiescence cannot depend on the old API image (and API absence
+is not evidence of an empty shared store). After the reviewed producer IAM plan is
+applied and verified, but before any worker object changes, the installer runs a
+bounded verification Job from the new immutable API image. It uses the exact
+producer service account, has no database or provider Secret mounts, and calls only
+the protected non-consuming quiescence route. Its network policy admits only the
+reviewed Gateway and STS endpoints plus cluster DNS. The response must be fresh,
+and the producer identity is checked again afterward. Failure prevents worker
+foundations or rollout. This Job and its minimal Namespace/service-account/network
+prerequisites use the same owner apply, wait and receipt paths as installation Jobs.

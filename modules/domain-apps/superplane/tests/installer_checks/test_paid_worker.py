@@ -460,3 +460,138 @@ def test_api_admission_waits_for_executable_worker_and_restores_on_failure(
         with pytest.raises(Refusal, match="executable proof failed"):
             adapter_staging.activate(installer)
         assert events == ["worker executable proof", "restore disabled"]
+
+
+def test_shared_quiescence_uses_new_image_without_old_api_or_worker_mutation(
+    native, monkeypatch
+):
+    from datetime import UTC, datetime
+    from installation import adapter_staging, lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    env["timeout_seconds"] = 120
+    role = {
+        "role_arn": env["api_adapters"]["dispatcher"]["role_arn"],
+        "role_id": "AROAEXACT",
+    }
+    monkeypatch.setattr(adapter_staging, "role_identity", lambda *_: role)
+    docs = [
+        {
+            "kind": "Namespace",
+            "metadata": {"name": env["namespace"], "labels": {LABEL: "owned"}},
+        },
+        {
+            "kind": "ServiceAccount",
+            "metadata": {
+                "name": "superplane-api",
+                "namespace": env["namespace"],
+                "labels": {LABEL: "owned"},
+                "annotations": {"eks.amazonaws.com/role-arn": role["role_arn"]},
+            },
+        },
+    ]
+    report = {
+        "version": 1,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "installed": False,
+        "state": "quiescent",
+        "quiescent": True,
+        "domain": "superplane",
+        "org_id": env["org_id"],
+        "adp_org_id": env["adp_org_id"],
+    }
+    installer = SimpleNamespace(
+        env=env,
+        lock=lock,
+        owner="owned",
+        docs=docs,
+        receipt={},
+        aws=Mock(return_value={"cluster": {}}),
+        json=lambda v: v,
+        kube=Mock(return_value=report),
+        apply=Mock(),
+        wait_job=Mock(),
+        save=Mock(),
+        existing=Mock(side_effect=AssertionError("old API must not be used")),
+    )
+    assert lifecycle_worker.quiescence_job(installer) == report
+    rendered = installer.apply.call_args.args[0]
+    assert {d["kind"] for d in rendered} == {
+        "Namespace",
+        "ServiceAccount",
+        "NetworkPolicy",
+        "Job",
+    }
+    job = next(d for d in rendered if d["kind"] == "Job")
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "superplane-api"
+    assert pod["containers"][0]["image"].endswith(
+        "@" + lock["images"]["superplane-api"]
+    )
+    assert not pod.get("volumes")
+    assert not pod["containers"][0].get("envFrom")
+    assert all("DATABASE" not in e["name"] for e in pod["containers"][0]["env"])
+    assert installer.kube.call_args.args[0] == "logs"
+    assert (
+        installer.receipt["shared_execution_quiescence"]["proof"]["installed"] is False
+    )
+
+
+def test_absent_api_does_not_skip_shared_quiescence(native, monkeypatch):
+    from installation import adapter_staging, lifecycle_worker
+
+    env, _ = native
+    lifecycle_config(env)
+    installer = SimpleNamespace(env=env, receipt={}, existing=lambda _: None)
+    monkeypatch.setattr(adapter_staging, "api_document", lambda _: {})
+    check = Mock(side_effect=Refusal("shared active operations"))
+    monkeypatch.setattr(lifecycle_worker, "quiescence_job", check)
+    with pytest.raises(Refusal, match="shared active operations"):
+        adapter_staging.require_quiescent(installer)
+    check.assert_called_once_with(installer)
+    assert "adapter_quiescence" not in installer.receipt
+
+
+def test_upgrade_checks_shared_store_after_role_plan_before_worker_resources(
+    native, monkeypatch, tmp_path
+):
+    from contextlib import nullcontext
+    from installation import adapter_staging, lifecycle_worker
+
+    env, _ = native
+    lifecycle_config(env)
+    events = []
+    monkeypatch.setattr(
+        adapter_staging,
+        "require_quiescent",
+        lambda _, **kwargs: events.append(("domain-check", kwargs)),
+    )
+
+    def shared(_):
+        events.append(("shared-new-image-check", {}))
+        raise Refusal("existing shared operation")
+
+    monkeypatch.setattr(lifecycle_worker, "quiescence_job", shared)
+    installer = SimpleNamespace(
+        env=env,
+        receipt={"plan_sha256": "reviewed", "completed": []},
+        preflight=Mock(),
+        exclusive=nullcontext,
+        disable_route=Mock(),
+        directory=tmp_path,
+        commands=SimpleNamespace(
+            call=lambda *a, **k: events.append(("approved-role-plan", {}))
+        ),
+        foundations=Mock(),
+        save=Mock(),
+    )
+    installer.phase = lambda name, function: function()
+    with pytest.raises(Refusal, match="existing shared operation"):
+        Installer.execute(installer, "reviewed", "private-token")
+    assert events == [
+        ("domain-check", {"shared": False}),
+        ("approved-role-plan", {}),
+        ("shared-new-image-check", {}),
+    ]
+    installer.foundations.assert_not_called()
