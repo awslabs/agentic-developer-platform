@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T01:00:08.591Z",
+  "updated_at": "2026-10-06T01:07:50.424Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -256,7 +256,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "b8ad6cd; domain tests passed; new Gateway PostgreSQL cases await exact-head execution.",
+      "note": "b8ad6cd; new Gateway PostgreSQL cases await exact-head execution.",
       "commits": [
         "b8ad6cd"
       ]
@@ -280,13 +280,8 @@
       "title": "Compose signed reader and signer-aware readiness",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/main.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/health.py"
-      ],
-      "note": "2938dd9; covered by AC-05-t5. Remote provider qualification remains AC-05-c-wire.",
+      "files": [],
+      "note": "2938dd9; covered by AC-05-t5.",
       "commits": [
         "2938dd9"
       ]
@@ -296,10 +291,17 @@
       "kind": "code",
       "criterion": "AC-05",
       "title": "Wire registered-producer transport to domain consumers",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Next task; prove authenticated remote provider behavior."
+      "files": [
+        "modules/gateway/src/internal/domain_operation_routes.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/health.py"
+      ],
+      "note": "50b4bcf; covered by AC-05-t6. Registered-organization enforcement closes a cross-org query path.",
+      "commits": [
+        "50b4bcf"
+      ]
     },
     {
       "id": "AC-05-t1",
@@ -312,7 +314,7 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": ""
+      "note": "Next task; broader real composition remains unverified."
     },
     {
       "id": "AC-05-t2",
@@ -351,22 +353,35 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: supervisor/live-acceptance owner; this source-only assignment prohibits deployment and paid execution."
+      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
     },
     {
       "id": "AC-05-t5",
       "kind": "test",
       "criterion": "AC-05",
-      "title": "Test startup composition, organization mapping and signer-aware readiness",
+      "title": "Test startup composition and signer-aware readiness",
       "status": "done",
       "covers": [
         "AC-05-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_composition.py"
+      "files": [],
+      "note": "Prior focused suites passed."
+    },
+    {
+      "id": "AC-05-t6",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test signed registered-producer identity transport and scoped readiness",
+      "status": "done",
+      "covers": [
+        "AC-05-c-wire"
       ],
-      "note": "Added to cover the AC-05-c1 startup slice before the broader integration task. Focused suites: 75 passed, 32 PostgreSQL cases skipped locally."
+      "files": [
+        "modules/gateway/tests/internal/test_domain_current_identity.py",
+        "modules/gateway/tests/orchestration/test_internal_plane_guard.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": "Added to cover the wiring slice before AC-05-t1’s broader composition. Gateway 114 passed, 39 PostgreSQL skipped; domain 76 passed, 32 PostgreSQL skipped. Changed-file lint, format and diff checks passed."
     }
   ]
 }
