@@ -14,6 +14,12 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("scan_directory", type=Path)
 parser.add_argument("--output", type=Path, required=True)
+parser.add_argument(
+    "--runtime",
+    choices=["python", "node"],
+    default="python",
+    help="Interpreter already present in the candidate",
+)
 args = parser.parse_args()
 source = Path(__file__).resolve().parent
 repo = source.parents[2]
@@ -41,6 +47,10 @@ for package,binary in [('curl','/usr/bin/curl'),('libcurl4t64','/usr/lib/x86_64-
  version=subprocess.check_output(['dpkg-query','-W','-f=${Version}',package],text=True)
  rows.append({'package':package,'version':version,'binary':binary.lstrip('/'),'sha256':hashlib.sha256(Path(binary).read_bytes()).hexdigest(),'source_lock':json.loads(Path('/opt/adp-curl-security',package,'adp-source-lock.json').read_text())})
 print(json.dumps(rows))"""
+if args.runtime == "node":
+    script = r"""const fs=require('fs'),cp=require('child_process'),crypto=require('crypto');
+const rows=[['curl','/usr/bin/curl'],['libcurl4t64','/usr/lib/x86_64-linux-gnu/libcurl.so.4.0.0'],['libcurl3t64-gnutls','/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.0.0']].map(([packageName,binary])=>({package:packageName,version:cp.execFileSync('dpkg-query',['-W','-f=${Version}',packageName],{encoding:'utf8'}),binary:binary.slice(1),sha256:crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'),source_lock:JSON.parse(fs.readFileSync('/opt/adp-curl-security/'+packageName+'/adp-source-lock.json','utf8'))}));
+console.log(JSON.stringify(rows));"""
 observed = json.loads(
     subprocess.check_output(
         [
@@ -51,9 +61,9 @@ observed = json.loads(
             "none",
             "--read-only",
             "--entrypoint",
-            "python",
+            args.runtime,
             image,
-            "-c",
+            "-e" if args.runtime == "node" else "-c",
             script,
         ],
         text=True,
