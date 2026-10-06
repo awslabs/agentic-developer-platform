@@ -495,6 +495,10 @@ async def test_composed_reader_readiness_checks_signed_transport_and_shutdown(cl
     from app.config import settings
     from app.current_identity import MappedProducerIdentityReader
     from app.main import app
+    from app.models.organization import Organization
+    from tests.conftest import async_session_test
+    from unittest.mock import AsyncMock
+    import uuid
 
     configuration = SimpleNamespace(
         adp_gateway_internal_url="", adp_gateway_internal_api_key="", database_url="",
@@ -503,6 +507,15 @@ async def test_composed_reader_readiness_checks_signed_transport_and_shutdown(cl
     )
     composition = compose(configuration)
     assert isinstance(composition.identity_reader, MappedProducerIdentityReader)
+    organization_id = uuid.uuid4()
+    async with async_session_test() as db:
+        db.add(Organization(id=organization_id, name="ready-org", adp_org_id="O1"))
+        await db.commit()
+    composition.identity_reader.session_factory = async_session_test
+    post = AsyncMock(return_value={
+        "version": 1, "domain": "superplane", "org_id": str(organization_id), "adp_org_id": "O1"
+    })
+    monkeypatch.setattr(composition.identity_reader.transport, "post", post)
     monkeypatch.setattr(settings, "current_identity_enforced", True)
     monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
     monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: False)
@@ -513,7 +526,14 @@ async def test_composed_reader_readiness_checks_signed_transport_and_shutdown(cl
         assert (await client.get("/health")).json()["current_identity_reader_configured"] is False
         monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: True)
         assert (await client.get("/readyz")).status_code == 200
+        post.assert_awaited_once_with(
+            "/current-identity/readiness",
+            {"domain": "superplane", "org_id": str(organization_id)},
+            distinguish_denial=True,
+        )
         assert (await client.get("/health")).json()["current_identity_reader_configured"] is True
+        post.side_effect = RuntimeError("offline")
+        assert (await client.get("/readyz")).status_code == 503
         monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: False)
         assert (await client.get("/readyz")).status_code == 503
     finally:
@@ -562,3 +582,39 @@ async def test_producer_transport_readiness_requires_actual_sigv4_credentials():
             transport.can_sign()
     finally:
         await transport.aclose()
+
+
+async def test_producer_readiness_verifies_each_mapped_organization():
+    import uuid
+
+    from app.current_identity import MappedProducerIdentityReader
+    from app.models.organization import Organization
+    from tests.conftest import async_session_test
+
+    organizations = [(uuid.uuid4(), "O1"), (uuid.uuid4(), "O2")]
+    async with async_session_test() as db:
+        db.add_all([
+            Organization(id=domain_id, name=f"ready-{adp_id}", adp_org_id=adp_id)
+            for domain_id, adp_id in organizations
+        ])
+        await db.commit()
+    authorized = {str(domain_id): adp_id for domain_id, adp_id in organizations}
+    calls = []
+
+    class Producer:
+        def can_sign(self):
+            return True
+
+        async def post(self, route, payload, *, distinguish_denial=False):
+            assert route == "/current-identity/readiness" and distinguish_denial
+            calls.append(payload["org_id"])
+            return {
+                "version": 1, "domain": "superplane", "org_id": payload["org_id"],
+                "adp_org_id": authorized[payload["org_id"]],
+            }
+
+    reader = MappedProducerIdentityReader(Producer(), async_session_test)
+    assert await reader.upstream_ready() is True
+    assert set(calls) == set(authorized)
+    authorized[str(organizations[1][0])] = "substituted"
+    assert await reader.upstream_ready() is False

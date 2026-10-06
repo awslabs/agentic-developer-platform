@@ -17,10 +17,13 @@ router = APIRouter()
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:
         await db.execute(text("SELECT 1"))
-        if settings.current_identity_enforced and not await composed_identity_reader_ready(
-            getattr(request.app.state, "current_identity_reader", None)
-        ):
-            raise ValueError("current ADP identity reader unavailable")
+        if settings.current_identity_enforced:
+            reader = getattr(request.app.state, "current_identity_reader", None)
+            if (
+                not await composed_identity_reader_ready(reader)
+                or not await reader.upstream_ready()
+            ):
+                raise ValueError("current ADP identity reader unavailable")
         if (
             management_only()
             and getattr(request.app.state, "domain_policy", None) is None

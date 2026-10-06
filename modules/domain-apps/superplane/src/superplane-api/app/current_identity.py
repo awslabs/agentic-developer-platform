@@ -69,11 +69,7 @@ class MappedProducerIdentityReader:
         self.transport = transport
         self.session_factory = session_factory
 
-    async def read(
-        self, *, subject: str, principal_type: str, adp_org_id: str
-    ) -> CurrentIdentity:
-        if principal_type != "human" or not adp_org_id:
-            raise IdentityDenied("current ADP identity organization or type refused")
+    async def _mapped_organization(self, adp_org_id: str) -> str:
         from app.models.organization import Organization
 
         try:
@@ -93,14 +89,53 @@ class MappedProducerIdentityReader:
                         raise IdentityDenied(
                             "ADP organization has ambiguous domain bindings"
                         )
-                domain_org_id = str(organization.id)
+                return str(organization.id)
         except IdentityDenied:
             raise
         except Exception:
             raise IdentityUnavailable("domain organization mapping unavailable") from None
+
+    async def read(
+        self, *, subject: str, principal_type: str, adp_org_id: str
+    ) -> CurrentIdentity:
+        if principal_type != "human" or not adp_org_id:
+            raise IdentityDenied("current ADP identity organization or type refused")
+        domain_org_id = await self._mapped_organization(adp_org_id)
         return await ProducerIdentityReader(
             self.transport, domain_org_id=domain_org_id, adp_org_id=adp_org_id
         ).read(subject=subject, principal_type=principal_type, adp_org_id=adp_org_id)
+
+    async def upstream_ready(self) -> bool:
+        if not await composed_identity_reader_ready(self):
+            return False
+        from app.models.organization import Organization
+
+        try:
+            async with self.session_factory() as db:
+                selected = (await db.scalars(
+                    select(Organization.adp_org_id)
+                    .where(Organization.adp_org_id.is_not(None))
+                    .limit(65)
+                )).all()
+            if not selected or len(selected) > 64:
+                return False
+            for adp_org_id in selected:
+                domain_org_id = await self._mapped_organization(adp_org_id)
+                response = await self.transport.post(
+                    "/current-identity/readiness",
+                    {"domain": "superplane", "org_id": domain_org_id},
+                    distinguish_denial=True,
+                )
+                if response != {
+                    "version": 1,
+                    "domain": "superplane",
+                    "org_id": domain_org_id,
+                    "adp_org_id": adp_org_id,
+                }:
+                    return False
+            return True
+        except Exception:
+            return False
 
 
 async def composed_identity_reader_ready(reader: CurrentIdentityReader | None) -> bool:

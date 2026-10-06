@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 
 from src.internal import (
@@ -61,16 +61,21 @@ async def identity_client(db_session, monkeypatch):
     }
     monkeypatch.setattr(domain_current_identity, "cognito_user_pool_id", lambda: "pool-test")
     monkeypatch.setattr(domain_current_identity, "aws_client", lambda service: cognito)
+    monkeypatch.setattr(domain_operation_routes, "aws_client", lambda service: cognito)
     monkeypatch.setattr(
         domain_operation_routes,
         "binding_for",
-        lambda domain, org_id: SimpleNamespace(adp_org_id=org_id, producer_registry_id="registered"),
+        lambda domain, org_id: SimpleNamespace(domain=domain, org_id=org_id, adp_org_id=org_id, producer_registry_id="registered"),
     )
     monkeypatch.setattr(domain_operation_routes, "current_registry", lambda request, scope: state["registry"])
 
     app = FastAPI()
     app.include_router(domain_operation_routes.router)
-    app.dependency_overrides[verify_internal_or_irsa] = lambda: None
+
+    async def registered(request: Request):
+        request.state.token_context = SimpleNamespace(org_id=state["selected"])
+
+    app.dependency_overrides[verify_internal_or_irsa] = registered
 
     async def database():
         yield db_session
@@ -104,7 +109,7 @@ async def test_selected_organization_only_and_switch_does_not_revoke_membership(
     assert result.status_code == 200 and result.json()["membership_id"] == second.id
     assert not second.is_active
     assert (await client.post(endpoint, json=payload())).status_code == 403
-    assert cognito.admin_get_user.call_count == 4
+    assert cognito.admin_get_user.call_count == 2
 
 
 @pytest.mark.parametrize("change", ["revoked", "disabled", "no-membership", "service", "substituted", "registry", "absent-pool", "unavailable"])
@@ -286,3 +291,183 @@ async def test_recovery_worker_rechecks_persisted_humans_before_a_protected_call
             allow_terminal=True,
         )
     ) == (binding, original, operation)
+
+
+async def test_identity_provider_readiness_requires_registered_producer(identity_client, monkeypatch):
+    client, state, _, _, cognito = identity_client
+    route = "/internal/v1/controller-execution/current-identity/readiness"
+    monkeypatch.setattr(domain_operation_routes, "cognito_user_pool_id", lambda: "pool-test")
+    original_binding = domain_operation_routes.binding_for
+
+    def selected_binding(domain, org_id):
+        if (domain, org_id) != ("superplane", "O1"):
+            raise HTTPException(503, "domain operation binding unavailable")
+        return original_binding(domain, org_id)
+
+    monkeypatch.setattr(domain_operation_routes, "binding_for", selected_binding)
+    response = await client.post(route, json={"domain": "superplane", "org_id": "O1"})
+    assert response.status_code == 200
+    assert response.json() == {"version": 1, "domain": "superplane", "org_id": "O1", "adp_org_id": "O1"}
+    assert (await client.post(route, json={"domain": "superplane", "org_id": "O2"})).status_code == 503
+    state["registry"] = "different"
+    assert (await client.post(route, json={"domain": "superplane", "org_id": "O1"})).status_code == 403
+    state["registry"] = "registered"
+    cognito.list_users.side_effect = RuntimeError("upstream offline")
+    assert (await client.post(route, json={"domain": "superplane", "org_id": "O1"})).status_code == 503
+    cognito.list_users.side_effect = None
+    monkeypatch.setattr(domain_operation_routes, "cognito_user_pool_id", lambda: "")
+    assert (await client.post(route, json={"domain": "superplane", "org_id": "O1"})).status_code == 503
+
+
+async def test_signed_domain_reader_reaches_registered_gateway_identity(identity_client, monkeypatch):
+    import hmac
+    import json
+    from dataclasses import asdict, replace
+    from pathlib import Path
+
+    import botocore.auth
+    import botocore.awsrequest
+    import httpx
+    from botocore.credentials import Credentials
+
+    from src.internal import domain_operation_store
+    from src.internal.domain_operation_runtime import current_registry
+
+    modules = Path(__file__).resolve().parents[3]
+    for dependency in (
+        "harness/jobs",
+        "domain-apps/superplane/contracts",
+        "domain-apps/superplane/auth",
+        "domain-apps/superplane/src/superplane-api",
+    ):
+        monkeypatch.syspath_prepend(str(modules / dependency))
+    from app.adapters.operation_dispatch import ProducerTransport
+    from app.current_identity import IdentityDenied, ProducerIdentityReader, require_current_identity
+
+    client, state, first, _, cognito = identity_client
+    gateway_app = client._transport.app
+    gateway_app.dependency_overrides.pop(verify_internal_or_irsa)
+    monkeypatch.setattr(domain_operation_routes, "binding_for", domain_operation_store.binding_for)
+    monkeypatch.setattr(domain_operation_routes, "current_registry", current_registry)
+    monkeypatch.setattr(domain_operation_routes, "cognito_user_pool_id", lambda: "pool-test")
+
+    binding = domain_operation_store.DomainBinding(
+        "superplane",
+        "domain-one",
+        "O1",
+        "registered",
+        "worker",
+        "secret",
+        "superplane",
+        "https://sqs.us-east-1.amazonaws.com/123456789012/fixture",
+        "namespace",
+        "service",
+        "worker",
+        ("sha256:" + "a" * 64,),
+        "org/repo",
+        "https://domain.example",
+        "observer-secret",
+    )
+    monkeypatch.setenv(
+        "ADP_DOMAIN_OPERATION_BINDINGS",
+        json.dumps(
+            [
+                asdict(binding),
+                asdict(replace(binding, org_id="domain-two", adp_org_id="O2")),
+            ]
+        ),
+    )
+    role = "arn:aws:iam::123456789012:role/registered-producer"
+    entry = {
+        "agent_id": "registered",
+        "role_arn": role,
+        "agent_name": "producer",
+        "org_id": "O1",
+        "team_id": "team",
+        "scope": "internal",
+        "status": "active",
+        "credential_scopes": ["domain:operation-producer"],
+    }
+
+    class Registry:
+        def get_agent_by_role_arn(self, requested_role):
+            return entry if entry["status"] == "active" and requested_role == role else None
+
+        def get_current_agent(self, agent_id, requested_role):
+            return self.get_agent_by_role_arn(requested_role) if agent_id == "registered" else None
+
+    monkeypatch.setattr("src.auth.agent_registry.get_agent_registry_service", lambda: Registry())
+    settings = SimpleNamespace(trust_apigw_headers=True, apigw_provenance_secret="edge-proof", internal_api_key="")
+    monkeypatch.setattr("src.internal.auth_deps.get_settings", lambda: settings)
+    monkeypatch.setattr("src.auth.middleware.get_settings", lambda: settings)
+    credentials = Credentials("fixture-access", "fixture-signing")
+    forwarded = []
+    backend = AsyncClient(transport=ASGITransport(app=gateway_app), base_url="https://gateway.example")
+
+    async def trusted_edge(request):
+        expected = botocore.awsrequest.AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
+        )
+        timestamp = request.headers.get("X-Amz-Date")
+        if not timestamp:
+            return httpx.Response(403)
+        expected.context["timestamp"] = timestamp
+        signer = botocore.auth.SigV4Auth(credentials, "execute-api", "us-east-1")
+        signer._modify_request_before_signing(expected)
+        digest = signer.signature(signer.string_to_sign(expected, signer.canonical_request(expected)), expected)
+        if not hmac.compare_digest(request.headers.get("Authorization", "").split("Signature=")[-1], digest):
+            return httpx.Response(403)
+        forwarded.append(request.url.path)
+        result = await backend.post(
+            request.url.path,
+            content=request.content,
+            headers={
+                "Content-Type": "application/json",
+                "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/registered-producer/pod",
+                "X-Adp-Edge-Provenance": "edge-proof",
+            },
+        )
+        return httpx.Response(result.status_code, content=result.content)
+
+    producer = ProducerTransport(
+        "https://gateway.example",
+        "us-east-1",
+        session=SimpleNamespace(get_credentials=lambda: credentials),
+        client=AsyncClient(transport=httpx.MockTransport(trusted_edge)),
+    )
+    try:
+        reader_one = ProducerIdentityReader(producer, domain_org_id="domain-one", adp_org_id="O1")
+        assert (
+            await require_current_identity(reader_one, subject="immutable-sub", principal_type="human", adp_org_id="O1")
+        ).membership_id == first.id
+        assert await producer.post("/current-identity/readiness", {"domain": "superplane", "org_id": "domain-one"}, distinguish_denial=True) == {
+            "version": 1,
+            "domain": "superplane",
+            "org_id": "domain-one",
+            "adp_org_id": "O1",
+        }
+        state["selected"] = "O2"
+        with pytest.raises(IdentityDenied):
+            await require_current_identity(reader_one, subject="immutable-sub", principal_type="human", adp_org_id="O1")
+        reader_two = ProducerIdentityReader(producer, domain_org_id="domain-two", adp_org_id="O2")
+        before = cognito.admin_get_user.call_count
+        with pytest.raises(IdentityDenied):
+            await require_current_identity(reader_two, subject="immutable-sub", principal_type="human", adp_org_id="O2")
+        assert cognito.admin_get_user.call_count == before
+        state["selected"] = "O1"
+        entry["status"] = "revoked"
+        with pytest.raises(IdentityDenied):
+            await require_current_identity(reader_one, subject="immutable-sub", principal_type="human", adp_org_id="O1")
+        assert len(forwarded) == 5
+        forged = await producer.client.post(
+            "https://gateway.example/internal/v1/controller-execution/current-identity",
+            json={"domain": "superplane", "org_id": "domain-one"},
+        )
+        assert forged.status_code == 403
+        assert len(forwarded) == 5
+    finally:
+        await producer.aclose()
+        await backend.aclose()
