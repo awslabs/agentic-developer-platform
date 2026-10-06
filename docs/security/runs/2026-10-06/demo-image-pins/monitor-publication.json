@@ -1,0 +1,13 @@
+{
+  "record_type": "sanitized-publication-summary",
+  "registry_identity": "Illustrative only; exact operational evidence remains private.",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:0b62e74cb32b93519476f85a6f7d10792c7084315f9b046ff1c21765bef32792",
+  "digest": "sha256:0b62e74cb32b93519476f85a6f7d10792c7084315f9b046ff1c21765bef32792",
+  "config_digest": "sha256:2a3e5a226f6d16e5917d92c85e757eea1ef0711b6858b50a44484a00ec5f3a37",
+  "source_revision": "59958880d617996614c43207435fafe799815887",
+  "build_context_tree": "65f35889b0e4e02089f92ae688305ed5727a5c0d",
+  "source_reuse_checked_against": "a7b50c90da7df1e9ae8a7251234bae09fd0f6792",
+  "manifest_byte_identity_verified": true,
+  "config_byte_identity_verified": true,
+  "scope": "Existing immutable publication read back unchanged. Packaged runtime and prior image qualification are retained; no new scan, rebuild or live deployment is claimed."
+}
