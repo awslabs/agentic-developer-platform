@@ -826,7 +826,7 @@ clean-looking "nothing found". So none of them can pass here:
   downloaded `.zip` must hash to that digest, and then every field is cross-checked
   against a fact established independently: the account STS resolves to now, the
   selected environment and region, the Terraform state bucket and key derived from
-  `environments/<env>/modules/superplane-backend.tfvars` at the deployed revision
+  the app-owned `environments/<env>/superplane-backend.tfvars` at the deployed revision (or the historical repository-root layout selected by that revision’s authenticated app-directory metadata)
   (with its deliberate `ACCOUNT_ID` placeholder resolved from the STS account), the
   run identity and revision already verified, the cluster and cluster ARN for
   Kubernetes lanes, and the derived resource identities carrying the plan action that

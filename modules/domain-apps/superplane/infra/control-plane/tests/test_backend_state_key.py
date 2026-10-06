@@ -22,7 +22,7 @@ no stronger form available.
 ## What is asserted
 
 * the `backend "s3"` block declares no bucket, key, region or lock table inline;
-* every `environments/*/modules/superplane-backend.tfvars` names a key whose leading
+* every `environments/*/superplane-backend.tfvars` names a key whose leading
   segment is its own environment directory;
 * the bucket is the `ACCOUNT_ID` placeholder, not a resolved account;
 * no 12-digit literal appears anywhere in those files.
@@ -40,11 +40,11 @@ import pytest
 
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO_ROOT = CONTROL_PLANE.parents[4]
-ENVIRONMENTS = REPO_ROOT / "environments"
+ENVIRONMENTS = CONTROL_PLANE.parents[1] / "environments"
 
-BACKEND_TFVARS_GLOB = "*/modules/superplane-backend.tfvars"
+BACKEND_TFVARS_GLOB = "*/superplane-backend.tfvars"
 
-# The key shape acceptance criterion 1 requires, and the one deploy-all.sh writes.
+# Preserve the deployed key shape when moving app-owned environment configuration.
 EXPECTED_KEY_TEMPLATE = "{environment}/modules/superplane/terraform.tfstate"
 
 ACCOUNT_ID_RE = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
@@ -125,7 +125,7 @@ def test_backend_block_declares_no_state_location() -> None:
         assert not re.search(rf"^\s*{setting}\s*=", body, re.MULTILINE), (
             f"versions.tf hardcodes `{setting}` in the backend block. The state location "
             "must be supplied by -backend-config from "
-            "environments/<env>/modules/superplane-backend.tfvars, or the "
+            "modules/domain-apps/superplane/environments/<env>/superplane-backend.tfvars, or the "
             "per-environment-state property depends on editing committed Terraform. This "
             "is the upstream defect (bucket = superplane-terraform-state-605440105851, "
             "key = control-plane/terraform.tfstate)."
@@ -136,7 +136,7 @@ def test_backend_block_declares_no_state_location() -> None:
     )
 
 
-@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.parent.name)
+@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.name)
 def test_state_key_is_scoped_to_its_own_environment(tfvars: Path) -> None:
     """The key's leading segment must be the environment directory that contains it.
 
@@ -145,7 +145,7 @@ def test_state_key_is_scoped_to_its_own_environment(tfvars: Path) -> None:
     convention that only the first environment is tested against is one that the second
     environment breaks.
     """
-    environment = tfvars.parent.parent.name
+    environment = tfvars.parent.name
     body = _strip_comments(tfvars.read_text())
 
     match = re.search(r'^\s*key\s*=\s*"([^"]+)"', body, re.MULTILINE)
@@ -159,7 +159,7 @@ def test_state_key_is_scoped_to_its_own_environment(tfvars: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.parent.name)
+@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.name)
 def test_bucket_uses_the_account_placeholder(tfvars: Path) -> None:
     """The bucket must carry the ACCOUNT_ID placeholder, never a resolved account.
 
@@ -175,7 +175,7 @@ def test_bucket_uses_the_account_placeholder(tfvars: Path) -> None:
     bucket = match.group(1)
     assert "ACCOUNT_ID" in bucket, (
         f"{tfvars} declares bucket {bucket!r}, which does not use the ACCOUNT_ID "
-        "placeholder. bootstrap.sh and deploy-all.sh substitute the account the operator "
+        "placeholder. The Superplane workflows substitute the account the operator "
         "is actually authenticated to; a literal here overrides that silently."
     )
 
@@ -184,7 +184,7 @@ def test_bucket_uses_the_account_placeholder(tfvars: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.parent.name)
+@pytest.mark.parametrize("tfvars", BACKEND_TFVARS, ids=lambda p: p.parent.name)
 def test_state_is_locked_and_encrypted(tfvars: Path) -> None:
     """Locking and encryption are part of "two applies cannot collide", not extras.
 

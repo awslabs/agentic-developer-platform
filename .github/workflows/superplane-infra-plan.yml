@@ -47,8 +47,8 @@ on:
       - 'modules/domain-apps/superplane/infra/workspaces/**'
       - 'modules/domain-apps/superplane/infra/domain-runtime/**'
       - 'modules/domain-apps/superplane/infra/lifecycle-foundations/**'
-      - 'environments/dev/modules/superplane.tfvars'
-      - 'environments/dev/modules/superplane-backend.tfvars'
+      - 'modules/domain-apps/superplane/environments/dev/superplane.tfvars'
+      - 'modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
       # config.tf derives the digest-pinned SkyPilot image. A lock change alters the plan,
       # so it must be able to trigger the lane that shows the plan.
@@ -72,8 +72,8 @@ env:
   TF_VAR_environment: dev
   MODULE_NAME: superplane
   TF_WORKING_DIR: modules/domain-apps/superplane/infra/control-plane
-  BACKEND_CONFIG: environments/dev/modules/superplane-backend.tfvars
-  VAR_FILE: environments/dev/modules/superplane.tfvars
+  BACKEND_CONFIG: modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars
+  VAR_FILE: modules/domain-apps/superplane/environments/dev/superplane.tfvars
 
 jobs:
   # ---------------------------------------------------------------------------

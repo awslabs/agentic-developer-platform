@@ -77,7 +77,7 @@ class CheckpointTests(unittest.TestCase):
     def test_prepared_account_placeholders_resume_but_operator_edits_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / 'environments/dev/modules/superplane.tfvars'
+            config = root / 'environments/dev/modules/gateway.tfvars'
             config.parent.mkdir(parents=True)
             config.write_text('role = "arn:aws:iam::ACCOUNT_ID:role/test"\nsize = 2\n')
             subprocess.run(['git', 'init', '-q', str(root)], check=True)

@@ -509,6 +509,7 @@ class RevisionSources:
         self._github, self._sha = github, sha
         self._cache: dict[str, str] = {}
         self.hashes: dict[str, str] = {}
+        self._directory_cache: dict[str, dict[str, str]] = {}
 
     def read(self, path: str) -> str:
         """Fetch one repository-relative path at this revision."""
@@ -567,6 +568,63 @@ class RevisionSources:
             f"BLOCKED: {directory} contains no files at the deployed revision",
         )
         return sorted(names)
+
+    def has_directory(self, directory: str, name: str) -> bool:
+        """Inspect a directory entry without changing recorded file-source hashes."""
+        __tracebackhide__ = True
+        if directory not in self._directory_cache:
+            try:
+                entries = self._github(f"contents/{directory}?ref={self._sha}")
+            except EvidenceError:
+                raise EvidenceError(
+                    f"BLOCKED: {directory} could not be listed at the deployed revision"
+                ) from None
+            require(
+                type(entries) is list
+                and bool(entries)
+                and all(
+                    type(entry) is dict
+                    and type(entry.get("type")) is str
+                    and entry["type"] in {"file", "dir", "symlink", "submodule"}
+                    and type(entry.get("name")) is str
+                    and entry["name"] not in {"", ".", ".."}
+                    and "/" not in entry["name"]
+                    for entry in entries
+                ),
+                f"BLOCKED: {directory} returned malformed directory metadata at the deployed revision",
+            )
+            names = {entry["name"]: entry["type"] for entry in entries}
+            require(
+                len(names) == len(entries),
+                "BLOCKED: duplicate deployed directory entries",
+            )
+            self._directory_cache[directory] = names
+        entries = self._directory_cache[directory]
+        require(
+            name not in entries or entries[name] == "dir",
+            f"BLOCKED: {directory}/{name} is not a directory at the deployed revision",
+        )
+        return name in entries
+
+
+def environment_source(
+    sources: RevisionSources, environment: str, filename: str
+) -> str:
+    """Select the input layout from authenticated directory metadata at the deployed SHA.
+
+    A valid listing with no app environments directory identifies the historical layout.
+    Failed listings and failed selected-file reads never trigger a fallback. Directory
+    metadata does not add a file hash, preserving authentic historical receipt contracts.
+    """
+    require(
+        filename in {"superplane.tfvars", "superplane-backend.tfvars"},
+        "BLOCKED: unsupported Superplane environment input",
+    )
+    if sources.has_directory(MODULE_PATH, "environments"):
+        path = f"{MODULE_PATH}/environments/{environment}/{filename}"
+    else:
+        path = f"environments/{environment}/modules/{filename}"
+    return sources.read(path)
 
 
 class DerivedNamesAtRevision:
@@ -641,9 +699,7 @@ class DerivedNamesAtRevision:
             ),
             "BLOCKED: optional producer role creation condition cannot be derived",
         )
-        inputs = self._sources.read(
-            f"environments/{environment}/modules/superplane.tfvars"
-        )
+        inputs = environment_source(self._sources, environment, "superplane.tfvars")
         # This evidence path supports literal lane inputs only, never evaluates HCL.
         assignments = re.findall(
             r"^\s*api_producer_role\s*=\s*(null|\{[^}]*\})\s*(?:#[^\n]*)?$",
@@ -714,9 +770,7 @@ def _tfvars_value(sources: RevisionSources, tf_environment: str, variable: str) 
     """
     __tracebackhide__ = True
     try:
-        source = sources.read(
-            f"environments/{tf_environment}/modules/superplane.tfvars"
-        )
+        source = environment_source(sources, tf_environment, "superplane.tfvars")
     except EvidenceError:
         raise EvidenceError(
             f"BLOCKED: environment '{tf_environment}' has no superplane.tfvars at the "
@@ -1705,8 +1759,9 @@ def backend_state_location(
 ) -> tuple[str, str]:
     """The backend bucket and state key the lanes initialise, at the deployed revision.
 
-    Both lanes pass `-backend-config=environments/<env>/modules/superplane-backend.tfvars`, and
-    that file is where the state object's identity is written. Reading it here means the state key
+    Both lanes pass the app-owned environment backend configuration. Historical deployed
+    revisions may contain the former repository-root layout instead; pinned directory
+    metadata selects the layout. Reading the selected file means the state key
     an attestation claims is compared against the deploy's own configuration rather than against a
     literal restated in this module, and reading it at the deployed revision means a later edit to
     the key cannot retroactively change what the check accepts.
@@ -1715,9 +1770,8 @@ def backend_state_location(
     substitute, so it is resolved the same way here.
     """
     __tracebackhide__ = True
-    path = f"environments/{tf_environment}/modules/superplane-backend.tfvars"
     try:
-        source = sources.read(path)
+        source = environment_source(sources, tf_environment, "superplane-backend.tfvars")
     except EvidenceError:
         raise EvidenceError(
             f"BLOCKED: environment {tf_environment!r} has no superplane-backend.tfvars at the "

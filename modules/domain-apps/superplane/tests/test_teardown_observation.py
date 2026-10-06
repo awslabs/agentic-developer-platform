@@ -60,7 +60,7 @@ MODULE_ROOT = Path(t.MODULE_ROOT)
 REPOSITORY_ROOT = MODULE_ROOT.parents[2]
 VERIFIER_PATH = f"{MODULE_PATH}/superplane_acceptance/teardown.py"
 
-# The state object `environments/dev/modules/superplane-backend.tfvars` names, with the
+# The state object `modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars` names, with the
 # repository-wide ACCOUNT_ID placeholder resolved the way the deploy scripts resolve it.
 STATE_BUCKET = f"adp-terraform-state-{ACCOUNT}"
 STATE_KEY = "dev/modules/superplane/terraform.tfstate"
@@ -78,12 +78,12 @@ SOURCE_FILES = (
         if path.name not in {"main.tf", "config.tf", "irsa.tf"}
     ),
     f"{MODULE_PATH}/releases/superplane.lock.yaml",
-    "environments/dev/modules/superplane.tfvars",
+    "modules/domain-apps/superplane/environments/dev/superplane.tfvars",
     # U3's lifecycle contract: which rendered objects a teardown deletes and which it keeps.
     f"{MODULE_PATH}/k8s/rollback.sh",
     # Where the Terraform lanes' state object is named, so an attestation's claimed state key is
     # compared against the deploy's own backend configuration (F1).
-    "environments/dev/modules/superplane-backend.tfvars",
+    "modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars",
 )
 
 
@@ -96,9 +96,8 @@ def _contents(path: str, sha: str):
     target = REPOSITORY_ROOT / path
     if target.is_dir():
         return [
-            {"name": child.name, "type": "file"}
+            {"name": child.name, "type": "dir" if child.is_dir() else "file"}
             for child in sorted(target.iterdir())
-            if child.is_file()
         ]
     if not target.is_file():
         raise EvidenceError("BLOCKED: GitHub metadata/source request failed")
@@ -2593,7 +2592,7 @@ def test_the_state_object_is_read_from_the_environments_own_backend_configuratio
         STATE_KEY,
     )
     # Read at the deployed revision, and from the file the lanes actually pass to `-backend-config`.
-    assert "environments/dev/modules/superplane-backend.tfvars" in sources.hashes, (
+    assert "modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars" in sources.hashes, (
         sorted(sources.hashes)
     )
 
@@ -3966,7 +3965,7 @@ def test_the_named_live_command_fails_without_inputs_and_does_not_skip(tmp_path)
 def test_revision_inventory_resolves_optional_producer_from_deployed_inputs(
     selection, enabled
 ):
-    path = "environments/dev/modules/superplane.tfvars"
+    path = "modules/domain-apps/superplane/environments/dev/superplane.tfvars"
     actual = github_runs()
 
     def github(query):
@@ -3993,7 +3992,7 @@ def test_revision_inventory_resolves_optional_producer_from_deployed_inputs(
     ],
 )
 def test_revision_inventory_refuses_ambiguous_optional_producer(selection):
-    path = "environments/dev/modules/superplane.tfvars"
+    path = "modules/domain-apps/superplane/environments/dev/superplane.tfvars"
     actual = github_runs()
 
     def github(query):
@@ -4009,3 +4008,91 @@ def test_revision_inventory_refuses_ambiguous_optional_producer(selection):
         t.DerivedNamesAtRevision(t.RevisionSources(github, DEPLOY_SHA)).iam_role_names(
             "dev"
         )
+
+
+@pytest.mark.parametrize("historical", [False, True], ids=["app-owned", "historical"])
+def test_environment_layout_uses_pinned_directory_metadata_without_new_source_hashes(
+    historical,
+):
+    """A source relocation preserves old state identity and exact receipt file hashes."""
+    calls = []
+    app_prefix = f"{MODULE_PATH}/environments/dev/"
+    old_prefix = "environments/dev/modules/"
+
+    def github(path):
+        calls.append(path)
+        assert path.endswith(f"?ref={DEPLOY_SHA}")
+        name = path.removeprefix("contents/").split("?ref=", 1)[0]
+        if name == MODULE_PATH:
+            entries = _contents(name, DEPLOY_SHA)
+            return [e for e in entries if not historical or e["name"] != "environments"]
+        selected = old_prefix if historical else app_prefix
+        assert name.startswith(
+            selected
+        ), "must not probe another layout after selecting one"
+        return _contents(name.replace(old_prefix, app_prefix), DEPLOY_SHA)
+
+    sources = t.RevisionSources(github, DEPLOY_SHA)
+    assert t.backend_state_location(sources, "dev", ACCOUNT) == (
+        STATE_BUCKET,
+        STATE_KEY,
+    )
+    assert t._tfvars_value(sources, "dev", "namespace") == "superplane"
+    expected = old_prefix if historical else app_prefix
+    assert set(sources.hashes) == {
+        expected + "superplane.tfvars",
+        expected + "superplane-backend.tfvars",
+    }
+    assert calls.count(f"contents/{MODULE_PATH}?ref={DEPLOY_SHA}") == 1
+
+
+@pytest.mark.parametrize(
+    "payload", [None, {"encoding": "base64", "content": "invalid-base64!"}]
+)
+def test_unreadable_app_environment_never_falls_back_to_a_legacy_copy(payload):
+    calls = []
+
+    def github(path):
+        calls.append(path)
+        if path.startswith(f"contents/{MODULE_PATH}/environments/"):
+            if payload is None:
+                raise EvidenceError("BLOCKED: configuration unavailable")
+            return payload
+        if path.startswith("contents/environments/"):
+            pytest.fail("an app input failure must not select legacy configuration")
+        return github_runs()(path)
+
+    with pytest.raises(EvidenceError, match="has no superplane-backend.tfvars"):
+        t.backend_state_location(t.RevisionSources(github, DEPLOY_SHA), "dev", ACCOUNT)
+    assert any(f"contents/{MODULE_PATH}/environments/" in path for path in calls)
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        None,
+        [],
+        {},
+        [{"name": "environments", "type": "file"}],
+        [
+            {"name": "environments", "type": "dir"},
+            {"name": "environments", "type": "dir"},
+        ],
+        [{"name": "../environments", "type": "dir"}],
+        [{"name": "environments", "type": "unknown"}],
+        [{"name": "environments", "type": []}],
+    ],
+)
+def test_indeterminate_directory_metadata_never_selects_legacy_environment(listing):
+    def github(path):
+        assert (
+            path == f"contents/{MODULE_PATH}?ref={DEPLOY_SHA}"
+        ), "must not fetch any configuration after indeterminate layout"
+        if listing is None:
+            raise EvidenceError("BLOCKED: source listing denied")
+        return listing
+
+    sources = t.RevisionSources(github, DEPLOY_SHA)
+    with pytest.raises(EvidenceError, match="BLOCKED"):
+        t.environment_source(sources, "dev", "superplane.tfvars")
+    assert sources.hashes == {}
