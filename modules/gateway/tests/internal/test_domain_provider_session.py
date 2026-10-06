@@ -197,6 +197,7 @@ async def test_preflight_checks_current_connection_without_sts(context):
 def test_maintained_sts_preserves_sdk_identity_and_applies_narrow_policy(monkeypatch):
     import boto3
     from botocore.stub import Stubber
+
     from src.internal import sts_assume_service
 
     client = boto3.client("sts", region_name="us-east-1", aws_access_key_id="key", aws_secret_access_key="secret")
