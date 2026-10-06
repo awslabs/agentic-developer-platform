@@ -258,14 +258,27 @@ class SecurityGroupRules:
         if account != self.target.account_id or account != self.expected.account_id:
             raise BootstrapRefused("network retirement provider account changed")
         ec2 = self.session.client("ec2", region_name=self.target.region)
-        cluster = self.session.client(
-            "eks", region_name=self.target.region
-        ).describe_cluster(name=inventory.cluster_arn.rsplit("/", 1)[-1])["cluster"]
-        if (
-            cluster["arn"] != inventory.cluster_arn
-            or cluster["endpoint"] != self.target.endpoint
-        ):
-            raise BootstrapRefused("network retirement cluster identity changed")
+        try:
+            cluster = self.session.client(
+                "eks", region_name=self.target.region
+            ).describe_cluster(name=inventory.cluster_arn.rsplit("/", 1)[-1])["cluster"]
+        except Exception as error:
+            if (
+                inventory.cluster_ownership != "adp-created"
+                or self.target.cluster_ownership != "adp-created"
+                or getattr(error, "response", {}).get("Error", {}).get("Code")
+                != "ResourceNotFoundException"
+            ):
+                raise
+            # Managed ordering retains transport until EKS destruction. Absence
+            # does not authorize arbitrary network removal: original exact rule
+            # ID, account, VPC, attribution, and specification are checked below.
+        else:
+            if (
+                cluster["arn"] != inventory.cluster_arn
+                or cluster["endpoint"] != self.target.endpoint
+            ):
+                raise BootstrapRefused("network retirement cluster identity changed")
 
         def read():
             try:

@@ -163,3 +163,28 @@ def test_metadata_rejects_changed_or_duplicate_workload_inventory():
     changed["managed_workload_inventory_sha256"] = digest(rows + rows)
     with pytest.raises(LifecycleRefused, match="digest"):
         validate_fence_metadata(changed)
+
+
+def test_retirement_snapshot_rejects_new_uid_even_with_forged_owner_reference(
+    monkeypatch,
+):
+    from superplane_bootstrap import workload_inventory
+    from workspace_provisioning.retirement_fence import snapshot
+
+    original = body("Deployment", "coredns", "d1")
+    forged = body(
+        "Pod", "coredns-foreign", "foreign", owner=("Deployment", "coredns", "d1")
+    )
+    inventory = SimpleNamespace(
+        cluster_arn="cluster",
+        components=(),
+        system_workload_baseline={
+            "cluster_arn": "cluster",
+            "objects": [{"identity": ["Deployment", "kube-system", "coredns", "d1"]}],
+        },
+    )
+    monkeypatch.setattr(workload_inventory, "read", lambda grants: [original])
+    assert snapshot(None, inventory) == [("Deployment", "kube-system", "coredns", "d1")]
+    monkeypatch.setattr(workload_inventory, "read", lambda grants: [original, forged])
+    with pytest.raises(LifecycleRefused, match="producer-sealed UID"):
+        snapshot(None, inventory)

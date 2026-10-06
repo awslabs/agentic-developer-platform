@@ -242,7 +242,8 @@ def test_unimplemented_actions_are_not_given_sealed_allocation_authority():
         assert call_effect(action, provider=provider) is CallEffect.UNRECOGNIZED
 
 
-def test_network_removal_uses_owned_rule_id_and_provider_absence(owned):
+@pytest.mark.parametrize("cluster_absent", [False, True])
+def test_network_removal_uses_owned_rule_id_and_provider_absence(owned, cluster_absent):
     from superplane_bootstrap.inventory import OwnedPrerequisite
     from superplane_bootstrap.prerequisites import ExpectedPrerequisites
 
@@ -296,6 +297,16 @@ def test_network_removal_uses_owned_rule_id_and_provider_absence(owned):
             }
         ),
     }
+    if cluster_absent:
+
+        class ClusterAbsent(Exception):
+            response = {"Error": {"Code": "ResourceNotFoundException"}}
+
+        def missing_cluster(**kwargs):
+            raise ClusterAbsent()
+
+        clients["eks"].describe_cluster = missing_cluster
+
     network = SecurityGroupRules(
         session=SimpleNamespace(client=lambda name, **_: clients[name]),
         target=target,

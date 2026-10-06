@@ -115,8 +115,8 @@ def verify(grants, inventory, metadata):
 
 
 def snapshot(grants, inventory):
-    """Original producer UIDs plus proven controller descendants, never adoption."""
-    from superplane_bootstrap.workload_inventory import ownership_closure, read
+    """Only producer-sealed exact UIDs; caller-set ownerReferences confer nothing."""
+    from superplane_bootstrap.workload_inventory import read, key
 
     baseline = inventory.system_workload_baseline
     if (
@@ -124,8 +124,8 @@ def snapshot(grants, inventory):
         or baseline.get("cluster_arn") != inventory.cluster_arn
     ):
         raise LifecycleRefused("original system workload ownership is unavailable")
-    roots = [item["identity"] for item in baseline["objects"]]
-    roots += [
+    roots = {tuple(item["identity"]) for item in baseline["objects"]}
+    roots.update(
         (
             item.desired["kind"],
             item.desired["metadata"].get("namespace", ""),
@@ -134,8 +134,11 @@ def snapshot(grants, inventory):
         )
         for item in inventory.components
         if item.owned
-    ]
-    return ownership_closure(read(grants), roots)
+    )
+    bodies = read(grants)
+    if any(key(body) not in roots for body in bodies):
+        raise LifecycleRefused("workload lacks an original producer-sealed UID")
+    return sorted(key(body) for body in bodies)
 
 
 def validate_fence_metadata(value):
