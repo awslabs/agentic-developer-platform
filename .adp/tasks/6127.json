@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T00:11:06.412Z",
+  "updated_at": "2026-10-06T00:14:43.126Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -46,7 +46,7 @@
         "modules/gateway/tests/internal/test_domain_current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "Local Gateway 9 passed; domain identity and binding suites passed."
+      "note": "Local Gateway and domain identity tests passed."
     },
     {
       "id": "AC-01-t2",
@@ -61,7 +61,7 @@
       "files": [
         "modules/gateway/tests/internal/test_domain_current_identity.py"
       ],
-      "note": "A nonrevoked membership remains valid after a workspace switch; outage remains distinct from denial."
+      "note": "Nonrevoked membership remains valid after a workspace switch."
     },
     {
       "id": "AC-01-t3",
@@ -75,7 +75,7 @@
       "files": [
         "modules/gateway/tests/orchestration/test_internal_plane_guard.py"
       ],
-      "note": "Added after exact-head Gateway CI exposed the missing allowlist entry. Commit e243ee4; focused local suite 110 passed. Updated-head Gateway CI is queued.",
+      "note": "Commit e243ee4; focused local Gateway suite passed 110 tests. Final-head CI pending.",
       "commits": [
         "e243ee4"
       ]
@@ -90,7 +90,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
       ],
-      "note": "Commit 2c3280a; covered by AC-02-t2. Existing migration 036 reused.",
+      "note": "Commit 2c3280a; existing migration 036 reused.",
       "commits": [
         "2c3280a"
       ]
@@ -108,7 +108,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py",
         "modules/domain-apps/superplane/executor/IDENTITY-ALIGNMENT.md"
       ],
-      "note": "Domain CI run 37390584089 at 528c407 succeeded: four PostgreSQL identity tests passed, 2,396 API tests passed overall. Documentation/evidence commit e497897; updated-head CI remains queued.",
+      "note": "Domain CI run 37390584089 at 528c407 passed all four PostgreSQL identity tests; updated-head CI remains pending.",
       "commits": [
         "e497897"
       ]
@@ -125,19 +125,22 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
       ],
-      "note": "Local identity/binding suite 20 passed."
+      "note": "Local binding tests passed."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
       "title": "Require current scoped identity alongside explicit workspace grants on mapped API requests",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": ""
+      "note": "Commit 3b87cc0; missing policy cannot bypass enabled identity enforcement. Covered by AC-03-t4.",
+      "commits": [
+        "3b87cc0"
+      ]
     },
     {
       "id": "AC-03-c2",
@@ -164,7 +167,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": ""
+      "note": "Worker portion and complete implication matrix remain."
     },
     {
       "id": "AC-03-t2",
@@ -195,6 +198,20 @@
         "modules/domain-apps/superplane/src/superplane-api/tests"
       ],
       "note": "Use #6048's authoritative membership contract."
+    },
+    {
+      "id": "AC-03-t4",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run mapped API requests for missing-policy refusal, disjoint grants and repeated current-identity checks",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
+      ],
+      "note": "Added to verify the API slice independently of AC-03-t1's unfinished worker scope; four adjacent suites passed 238 tests locally."
     },
     {
       "id": "AC-04-c1",
@@ -290,7 +307,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Route exists; actual signed composition remains to be proven."
+      "note": "Route exists; signed composition remains to be proven."
     },
     {
       "id": "AC-05-t1",
