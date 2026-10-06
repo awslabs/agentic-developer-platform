@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:32:02.399Z",
+  "updated_at": "2026-10-06T00:43:39.625Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -3807,7 +3807,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed; separate Go restart test still requires a test binary.",
+      "note": "Previously passed; separate Go restart test requires a test binary.",
       "commits": [
         "14f7ccf"
       ]
@@ -3866,7 +3866,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-02-t2. Installer native-controller projection remains paused.",
+      "note": "Previously completed; covered by AC-02-t2. Installer projection remains paused.",
       "commits": [
         "b154e68"
       ]
@@ -3881,11 +3881,8 @@
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py",
-        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
-      ],
-      "note": "Committed and pushed as 851851dde. API installation/composition: 61 passed; installer checks: 391 passed; PostgreSQL installer checks with SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt: 9 passed. Offline checks do not establish live binding.",
+      "files": [],
+      "note": "Previously passed; offline checks do not establish live binding.",
       "commits": [
         "851851d"
       ]
@@ -3922,8 +3919,13 @@
       "title": "Keep changed API, worker, installer, and Gateway packages buildable",
       "status": "open",
       "covers": [],
-      "files": [],
-      "note": "Next task; final integration remains pending."
+      "files": [
+        "modules/domain-apps/superplane/executor/tests/test_cost_evidence_postgres.py"
+      ],
+      "note": "Four wheels built and cost-evidence test corrected in pushed commit ad9b739c3. Must remain open until covering AC-03-t1 passes.",
+      "commits": [
+        "ad9b739"
+      ]
     },
     {
       "id": "AC-03-t1",
@@ -3935,7 +3937,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Full suites and CI remain pending."
+      "note": "Changed-file suites pass. Full API and broader Gateway sweeps stopped on unrelated failures; Go restart binary unavailable locally. Final-head CI is queued."
     },
     {
       "id": "AC-04-c1",
@@ -3945,7 +3947,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "PR #7047 is ready at 851851dde; evaluator handoff remains."
+      "note": "PR #7047 is ready and current; evaluator handoff remains."
     },
     {
       "id": "AC-04-t1",
@@ -3957,7 +3959,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at 851851dde; required checks and handoff remain."
+      "note": "Head verified at ad9b739c3; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
