@@ -17,9 +17,11 @@ from workspace_provisioning.retirement_plan import (
 from workspace_provisioning.retirement_runtime import RetirementRecoveryObserver
 
 from .postgres_bridge import Harness, requires_harness_postgres
-from .test_retirement_adapters import owned as ownership_fixture
+from .test_retirement_adapters import owned as _owned
 from .test_retirement_execution_postgres import _Cloud, _open, _principal, _Worker
-from .test_retirement_terraform import reviewed
+from .test_retirement_terraform import reviewed as reviewed
+
+ownership_fixture = _owned
 
 pytestmark = requires_harness_postgres
 

@@ -293,6 +293,28 @@ def test_the_admission_module_reads_no_configuration():
         )
 
 
+def _production_domain_sources(component):
+    for path in component.rglob("*.py"):
+        parts = path.relative_to(component).parts
+        # Adversarial test fixtures intentionally corrupt disposable shared rows.
+        # Only the component's root test tree is exempt; nested production paths
+        # named tests are still checked, as are all scripts and migrations.
+        if "vendor" not in parts and parts[0] != "tests":
+            yield path
+
+
+def test_domain_owner_scan_keeps_production_and_excludes_test_fixtures(tmp_path):
+    included = {"app/store.py", "alembic/versions/001.py", "scripts/tests/write.py"}
+    excluded = {"tests/test_corruption.py", "vendor/harness_jobs/schema.py"}
+    for name in included | excluded:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("DELETE FROM harness_approval_consumption")
+    assert {
+        str(path.relative_to(tmp_path)) for path in _production_domain_sources(tmp_path)
+    } == included
+
+
 def test_the_gate_lives_in_the_harness_and_not_in_the_domain_app():
     """#5524 §3.4: admission tables belong to the harness, not to the domain API.
 
@@ -353,9 +375,7 @@ def test_the_gate_lives_in_the_harness_and_not_in_the_domain_app():
         "add_column",
     )
     offenders = []
-    for path in component.rglob("*.py"):
-        if "vendor" in path.relative_to(component).parts:
-            continue
+    for path in _production_domain_sources(component):
         text = path.read_text(errors="ignore")
         if "harness_approval_consumption" not in text:
             continue
