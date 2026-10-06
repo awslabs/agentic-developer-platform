@@ -675,11 +675,15 @@ def test_managed_control_grant_checks_dormant_group_and_journals_effect(
         "changed_recipe",
     ],
 )
-def test_managed_revocation_requires_artifact_and_protected_intent(runtime, failure):
+def test_managed_revocation_requires_artifact_and_protected_intent(
+    runtime, monkeypatch, failure
+):
     import asyncio
+    from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
 
     from workspace_bootstrap.tests.test_authority_runtime_postgres import Crash
+    from workspace_provisioning import retirement_managed_access
     from workspace_provisioning.artifacts import canonical, digest
     from workspace_provisioning.retirement_access_artifact import (
         access_metadata,
@@ -727,7 +731,15 @@ def test_managed_revocation_requires_artifact_and_protected_intent(runtime, fail
     journal = Journal(
         SimpleNamespace(recipe=lambda: managed_revocation_recipe(plan, row))
     )
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
     verify_producer = AsyncMock()
+    monkeypatch.setattr(
+        retirement_managed_access, "require_managed_control_source", verify_producer
+    )
     verify_cluster = AsyncMock()
     before = runtime.cloud.mutations
 
@@ -738,7 +750,8 @@ def test_managed_revocation_requires_artifact_and_protected_intent(runtime, fail
             journal,
             eks=eks,
             verify_cluster=verify_cluster,
-            verify_producer=verify_producer,
+            connect=connect,
+            paid_operation_id="fixture-paid-apply",
         )
 
     if failure == "changed_artifact":

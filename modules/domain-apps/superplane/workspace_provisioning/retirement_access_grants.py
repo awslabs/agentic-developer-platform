@@ -45,9 +45,10 @@ def managed_revocation_recipe(plan, access_artifact):
 
 
 async def revoke_managed_access_grant(
-    plan, access_artifact, effects, *, eks, verify_cluster, verify_producer
+    plan, access_artifact, effects, *, eks, verify_cluster, connect, paid_operation_id
 ):
     from .retirement_access_artifact import validate_access_artifact
+    from .retirement_managed_access import require_managed_control_source
 
     recipe = managed_revocation_recipe(plan, access_artifact)
     if canonical(effects.recipe) != canonical(recipe):
@@ -59,7 +60,13 @@ async def revoke_managed_access_grant(
     async def check():
         await effects.authority()
         await verify_cluster()
-        await verify_producer()
+        async with connect() as connection:
+            await require_managed_control_source(
+                connection,
+                plan=plan,
+                access_artifact=access_artifact,
+                paid_operation_id=paid_operation_id,
+            )
 
     await check()
     previous = await effects.intend(key, descriptor)

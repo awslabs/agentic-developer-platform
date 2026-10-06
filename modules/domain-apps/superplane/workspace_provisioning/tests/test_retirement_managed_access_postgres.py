@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
@@ -14,6 +15,10 @@ from workspace_provisioning.retirement_access_artifact import (
     access_target,
 )
 from workspace_provisioning.retirement_access_authority import access_request
+from workspace_provisioning.retirement_access_grants import (
+    managed_revocation_recipe,
+    revoke_managed_access_grant,
+)
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_plan,
     require_managed_control_source,
@@ -23,6 +28,7 @@ from workspace_provisioning.runtime_config import LifecycleRefused
 
 from .postgres_bridge import Harness, requires_harness_postgres
 from .test_lifecycle_policy import policy
+from .test_retirement_access_grants import Journal
 from .test_retirement_execution_postgres import (
     _Approves,
     _Ledger,
@@ -175,13 +181,7 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                 connection, principal, control.operation_id
             )
             grant = plan.grants[0]
-            identity = {
-                "arn": plan.cluster_arn.replace(":cluster/", ":access-entry/")
-                + "/role/installer/id/created",
-                "generation": plan.generation,
-                "groups": sorted(grant["groups"]),
-                "username": grant["username"],
-            }
+            identity = arguments["eks"].create(grant)
             artifact = {
                 "artifact_id": "f" * 64,
                 "source_operation_id": control.operation_id,
@@ -209,6 +209,26 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                 )
                 == control.operation_id
             )
+            journal = Journal(
+                SimpleNamespace(
+                    recipe=lambda: managed_revocation_recipe(plan, artifact)
+                )
+            )
+            before = runtime.cloud.mutations
+            assert (
+                await revoke_managed_access_grant(
+                    plan,
+                    artifact,
+                    journal,
+                    eks=arguments["eks"],
+                    verify_cluster=AsyncMock(),
+                    connect=harness.connect,
+                    paid_operation_id=paid.operation_id,
+                )
+                == identity
+            )
+            assert runtime.cloud.mutations == before + 1
+            assert journal.events == {next(iter(journal.recipe)): identity}
             with pytest.raises(LifecycleRefused, match="original scope"):
                 await require_managed_control_source(
                     connection,
@@ -263,6 +283,17 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                     paid_operation_id=paid.operation_id,
                 )
             assert approval["reservation_state"] == "confirmed"
+            with pytest.raises(LifecycleRefused, match="no longer retained"):
+                await revoke_managed_access_grant(
+                    plan,
+                    artifact,
+                    journal,
+                    eks=arguments["eks"],
+                    verify_cluster=AsyncMock(),
+                    connect=harness.connect,
+                    paid_operation_id=paid.operation_id,
+                )
+            assert runtime.cloud.mutations == before + 1
             assert approval["plan_digest"] == control.plan_digest
             seal = await connection.fetchval(
                 "SELECT sealed_revision FROM harness_allocation_seal "
