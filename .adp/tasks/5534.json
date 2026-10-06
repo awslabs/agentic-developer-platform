@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:38:43.096Z",
+  "updated_at": "2026-10-06T00:43:48.186Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,17 +11,18 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_authority.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py",
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_inventory.py"
       ],
-      "note": "1e0168e fixes paid-apply lineage; protected activation and exact revocation remain unwired.",
+      "note": "bc6d025 adds pre-create and post-readback mapping guards. Allocation-bound production activation and exact revocation remain unwired.",
       "commits": [
         "c83f065",
         "5a65001",
         "80b0d00",
         "44742a1",
         "1e0168e",
-        "46ba891"
+        "46ba891",
+        "bc6d025"
       ]
     },
     {
@@ -36,7 +37,7 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
       ],
-      "note": "17 managed-plan tests passed, zero skipped; no production activation/revocation test yet."
+      "note": "22 managed tests passed with zero skips; effect tests use a doubled EKS transport and in-memory journal, not admitted PostgreSQL control execution."
     },
     {
       "id": "AC-01-c2",
@@ -88,7 +89,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Request-level denial passes; admitted-effect denial remains."
+      "note": "Offline mapping denial passes; admitted-effect denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -128,12 +129,13 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/retirement.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/retirement_access.py"
       ],
-      "note": "HTTP request and prospective receipt models are published; producer and worker wiring remain.",
+      "note": "007a599 publishes unmounted access preview and receipt models; managed producer and worker wiring remain.",
       "commits": [
         "3a02dea",
-        "886fab6"
+        "886fab6",
+        "007a599"
       ]
     },
     {
@@ -148,8 +150,10 @@
         "AC-02-c3",
         "AC-02-c-wire"
       ],
-      "files": [],
-      "note": "Adopted-access API tests passed 7/7; no admitted managed API-to-producer test."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_contract.py"
+      ],
+      "note": "Access contract and adopted-access API selection passed 10/10; no admitted managed API-to-producer test."
     },
     {
       "id": "AC-02-t2",
