@@ -424,7 +424,6 @@ async def run_retirement(operation, context):
             lease.org_id,
             lease.workspace_id,
             lease.operation_id,
-            create=True,
         )
         process = WorkerProcesses(
             binaries=config["binaries"],

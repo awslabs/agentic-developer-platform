@@ -19,13 +19,19 @@ def open_cleanup_client(operation, context, config, session, target, outputs, ve
     actor = assume_session(session, role_arn=role, region=target.region, verify=verify)
     canonical_role_identity(actor, session, role, verify=verify)
     lease = operation.grant.lease
-    directory = operation_directory(
-        context.state_root,
-        lease.org_id,
-        lease.workspace_id,
-        lease.operation_id,
-        create=True,
-    ) / ("cleanup-client-" + uuid.uuid4().hex)
+    try:
+        root = operation_directory(
+            context.state_root,
+            lease.org_id,
+            lease.workspace_id,
+            lease.operation_id,
+            create=True,
+        )
+    except FileExistsError:
+        root = operation_directory(
+            context.state_root, lease.org_id, lease.workspace_id, lease.operation_id
+        )
+    directory = root / ("cleanup-client-" + uuid.uuid4().hex)
     directory.mkdir(mode=0o700)
     process = WorkerProcesses(
         binaries=config["binaries"],
