@@ -83,6 +83,7 @@ class CanonicalScenario(AccountScenario):
             management_security_group_id=identities.MANAGEMENT_SG_ID,
             bootstrap_credential_reference_id=identities.CREDENTIAL_ID,
         )
+        self.parameters["credential_id"] = identities.CREDENTIAL_ID
         self.revise()
         describe = self.management.describe_create_account_status
 

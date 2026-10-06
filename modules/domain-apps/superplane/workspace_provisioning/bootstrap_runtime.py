@@ -90,6 +90,20 @@ def bootstrap(
             shared_runtime,
         )
 
+    # Registration must retain the actual operation-bound vault reference.
+    # A deployment-authored nonempty label is not evidence that a credential
+    # exists or that the original human can use it for this workspace.
+    credential_reference = operation.request.parameters.get("credential_id")
+    if (
+        not isinstance(credential_reference, str)
+        or not credential_reference.strip()
+        or config["bootstrap_credential_reference_id"] != credential_reference
+    ):
+        raise LifecycleRefused(
+            "bootstrap registration credential differs from the admitted vault reference"
+        )
+    verify()
+
     from superplane_bootstrap.adapters import (
         AwsObserver,
         AwsPrerequisiteAccess,
@@ -330,7 +344,7 @@ def bootstrap(
             cluster_ownership=request.cluster_ownership.value,
             namespace=release.namespace,
             enforce_version=release.enforce_version,
-            credential_reference_id=config["bootstrap_credential_reference_id"],
+            credential_reference_id=credential_reference,
             contract_version="v1",
             screen=assert_no_secret_material,
             controller_name=release.controller,

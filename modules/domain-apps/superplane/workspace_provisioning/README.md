@@ -209,3 +209,10 @@ managed/adopt phase handoffs, persisted artifacts and network intents; its boots
 boundary refuses and never fabricates readiness. `test_bootstrap_runtime_postgres.py`
 separately executes the production bootstrap composer, real read-token issuance,
 grant journal and canonical registration against stateful transport doubles.
+
+Dedicated bootstrap requires `runtime.bootstrap_credential_reference_id` to equal
+`credential_id` from the admitted operation. The reference is resolved and
+revalidated through the existing paid credential broker; a separate configured
+label cannot stand in for an authorized vault connection. Canonical registration
+retains that exact reference. Shared membership credential delivery remains bound
+to its separate generation.

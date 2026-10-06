@@ -129,7 +129,8 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             grant=grant,
             request=SimpleNamespace(
                 parameters={
-                    "lifecycle_inputs": json.dumps({"cluster_placement": "dedicated"})
+                    "lifecycle_inputs": json.dumps({"cluster_placement": "dedicated"}),
+                    "credential_id": identities.CREDENTIAL_ID,
                 }
             ),
         )
