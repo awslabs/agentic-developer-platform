@@ -6,6 +6,7 @@ import { beforeEach, expect, it } from 'vitest';
 import { server } from '@/mocks/server';
 import { ApproverAccessControl } from '@superplane-ui/ApproverAccessControl';
 import { ScopeGuard } from '@superplane-ui/client';
+import { WorkspaceDetails } from '@superplane-ui/WorkspaceDetails';
 
 const path = '/api/superplane/v1/workspaces/workspace-1/access/v1';
 const administrator = {
@@ -37,6 +38,10 @@ it('grants only read access to a selected distinct immutable human subject', asy
   const user = userEvent.setup();
   render(<ApproverAccessControl workspaceId="workspace-1" guard={new ScopeGuard()} sessionToken="test-token" />);
   await user.type(await screen.findByLabelText(/immutable ADP subject/), 'human-approver');
+  expect(screen.getByRole('region', { name: 'Share workspace read access' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Share workspace read access' })).toBeInTheDocument();
+  expect(screen.getByText(/does not make the recipient an approver or grant organization access/)).toBeInTheDocument();
+  expect(screen.queryByText(/approval setup|set up.*approver/i)).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Grant read access' }));
   await waitFor(() => expect(sent).not.toBeNull());
   expect(sent).toMatchObject({
@@ -45,6 +50,25 @@ it('grants only read access to a selected distinct immutable human subject', asy
   });
   expect(sent?.request_id).toMatch(/^[0-9a-f-]{36}$/);
   expect(await screen.findByText(/Read access granted to human-approver/)).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Approval authority and organization access were not granted.');
+});
+
+it('offers read sharing rather than approver setup from workspace details', async () => {
+  server.use(
+    http.get('/api/superplane/v1/workspaces/workspace-1', () => HttpResponse.json({
+      id: 'workspace-1', org_id: 'org-1', name: 'research', display_name: 'Research',
+      isolation_mode: 'dedicated', status: 'Active', is_default: false,
+      created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z',
+    })),
+    http.get(`${path}/me`, () => HttpResponse.json(administrator)),
+  );
+  const user = userEvent.setup();
+  render(<WorkspaceDetails workspaceId="workspace-1" guard={new ScopeGuard()} sessionToken="test-token"
+    scope={{ orgId: 'org-1', deploymentId: 'test-deployment' }} now={Date.now()} />);
+  await user.click(await screen.findByRole('button', { name: 'Share workspace read access' }));
+  expect(await screen.findByLabelText(/immutable ADP subject/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /approver/i })).not.toBeInTheDocument();
+  expect(screen.getByText(/does not make the recipient an approver or grant organization access/)).toBeInTheDocument();
 });
 
 it('does not display a grant form for a viewer or a mismatched workspace', async () => {
