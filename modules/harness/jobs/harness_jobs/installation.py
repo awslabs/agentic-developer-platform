@@ -74,6 +74,9 @@ async def prepare(connection, request: dict, passwords: dict) -> dict:
     schema, owner = request["schema"], request["owner_role"]
     marker = request["marker"]
     async with connection.transaction():
+        operator = await connection.fetchval("SELECT current_user")
+        if operator in [owner, *runtimes, *request["forbidden_roles"]]:
+            raise ValueError("Separate database installation operator required")
         await connection.execute("SET LOCAL lock_timeout = '10s'")
         await connection.execute("SET LOCAL statement_timeout = '60s'")
         if (
@@ -136,6 +139,10 @@ async def prepare(connection, request: dict, passwords: dict) -> dict:
                     passwords[role],
                 )
                 await connection.execute(statement)
+        # RDS administrators are not PostgreSQL superusers. The explicitly
+        # supplied installation operator needs SET ROLE for this newly owned,
+        # NOLOGIN migration principal; no runtime or domain role receives it.
+        await connection.execute(f"GRANT {identifier(owner)} TO {identifier(operator)}")
         existing_schema = await connection.fetchrow(
             "SELECT n.oid, pg_get_userbyid(n.nspowner) AS owner, "
             "obj_description(n.oid, 'pg_namespace') AS marker "
@@ -244,19 +251,37 @@ async def prepare(connection, request: dict, passwords: dict) -> dict:
                 schema,
             ):
                 raise ValueError("Domain role can reach shared store")
-        # Reject unexpected direct grants, including PUBLIC table access. We do
-        # not silently remove someone else's grants to make preparation pass.
+        # Reject unexpected grantees AND capabilities. Being an allowed runtime
+        # identity does not permit TRUNCATE, CREATE, or delegation to others.
         allowed = [owner, *runtimes]
         if await connection.fetchval(
             "SELECT EXISTS (SELECT 1 FROM pg_namespace n "
             "CROSS JOIN LATERAL aclexplode(n.nspacl) a WHERE n.nspname=$1 "
-            "AND (a.grantee=0 OR pg_get_userbyid(a.grantee)<>ALL($2::text[]))) "
+            "AND (a.grantee=0 OR pg_get_userbyid(a.grantee)<>ALL($2::text[]) "
+            "OR (pg_get_userbyid(a.grantee)<>$3 AND "
+            "(a.privilege_type<>'USAGE' OR a.is_grantable)))) "
             "OR EXISTS (SELECT 1 FROM pg_class c "
             "JOIN pg_namespace n ON n.oid=c.relnamespace "
             "CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE n.nspname=$1 "
-            "AND (a.grantee=0 OR pg_get_userbyid(a.grantee)<>ALL($2::text[])))",
+            "AND (a.grantee=0 OR pg_get_userbyid(a.grantee)<>ALL($2::text[]) "
+            "OR (pg_get_userbyid(a.grantee)<>$3 AND (a.is_grantable "
+            "OR a.privilege_type<>ALL(CASE WHEN c.relkind='S' "
+            "THEN ARRAY['USAGE','SELECT'] ELSE "
+            "ARRAY['SELECT','INSERT','UPDATE','DELETE'] END))))) "
+            "OR EXISTS (SELECT 1 FROM pg_default_acl d "
+            "CROSS JOIN LATERAL aclexplode(d.defaclacl) a "
+            "WHERE pg_get_userbyid(d.defaclrole)=$3 "
+            "AND (d.defaclnamespace=0 OR d.defaclnamespace="
+            "(SELECT oid FROM pg_namespace WHERE nspname=$1)) "
+            "AND (a.grantee=0 OR pg_get_userbyid(a.grantee)<>ALL($2::text[]) "
+            "OR (pg_get_userbyid(a.grantee)<>$3 AND (a.is_grantable "
+            "OR a.privilege_type<>ALL(CASE WHEN d.defaclobjtype='S' "
+            "THEN ARRAY['USAGE','SELECT'] WHEN d.defaclobjtype='r' "
+            "THEN ARRAY['SELECT','INSERT','UPDATE','DELETE'] "
+            "ELSE ARRAY[]::text[] END)))))",
             schema,
             allowed,
+            owner,
         ):
             raise ValueError("Shared store has unexpected grants")
     return {

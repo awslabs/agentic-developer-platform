@@ -8,6 +8,11 @@ and distinct Gateway/worker login roles. The API runtime, migration and SkyPilot
 roles must have no access to the shared schema. Shared runtime roles must have no
 access to either domain schema. Existing unmarked resources, changed privileges,
 unknown grants and a newer shared schema refuse instead of being adopted.
+The supplied database installation operator receives membership only in the
+owned NOLOGIN migration role so a non-superuser RDS administrator can execute
+the migration. Runtime/domain roles receive no such membership. Runtime ACLs
+allow only table read/write and sequence read/use, with no grant option; extra
+direct or default privileges are refused rather than silently removed.
 
 Use the selected deployment connection, an exact clean merged checkout and a
 qualified release lock containing the paid-worker image built from that source.

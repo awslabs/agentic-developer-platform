@@ -137,7 +137,18 @@ def test_closed_identity_contract():
         validate({"sql": "arbitrary"})
 
 
-@pytest.mark.parametrize("drift", ["create", "public", "membership", "domain"])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "create",
+        "public",
+        "membership",
+        "domain",
+        "truncate",
+        "grant_option",
+        "default_grant",
+    ],
+)
 async def test_privilege_drift_is_refused_and_preserved(target, drift):
     connection, request, passwords = target
     await prepare(connection, request, passwords)
@@ -148,10 +159,44 @@ async def test_privilege_drift_is_refused_and_preserved(target, drift):
         statement = f'GRANT USAGE ON SCHEMA "{schema}" TO PUBLIC'
     elif drift == "membership":
         statement = f'GRANT "{request["forbidden_roles"][0]}" TO "{role}"'
-    else:
+    elif drift == "domain":
         statement = (
             f'GRANT USAGE ON SCHEMA "{request["forbidden_schemas"][0]}" TO "{role}"'
+        )
+    elif drift == "truncate":
+        statement = (
+            f'GRANT TRUNCATE ON "{schema}".harness_jobs_schema_version TO "{role}"'
+        )
+    elif drift == "grant_option":
+        statement = (
+            f'GRANT SELECT ON "{schema}".harness_jobs_schema_version '
+            f'TO "{role}" WITH GRANT OPTION'
+        )
+    else:
+        statement = (
+            f'ALTER DEFAULT PRIVILEGES FOR ROLE "{request["owner_role"]}" '
+            f'IN SCHEMA "{schema}" GRANT TRUNCATE ON TABLES TO "{role}"'
         )
     await connection.execute(statement)
     with pytest.raises(ValueError):
         await prepare(connection, request, passwords)
+
+
+async def test_non_superuser_database_operator_can_prepare_and_reconcile(target):
+    connection, request, passwords = target
+    operator = "operator_" + uuid.uuid4().hex[:12]
+    await connection.execute(f'CREATE ROLE "{operator}" LOGIN CREATEROLE')
+    await connection.execute(
+        f'GRANT CREATE ON DATABASE "{request["database"]}" TO "{operator}"'
+    )
+    admin = await asyncpg.connect(postgres_url(), user=operator)
+    try:
+        assert not await admin.fetchval(
+            "SELECT rolsuper FROM pg_roles WHERE rolname=current_user"
+        )
+        assert (await prepare(admin, request, passwords))["status"] == "prepared"
+        assert (await prepare(admin, request, passwords))["status"] == "prepared"
+    finally:
+        await admin.close()
+        await connection.execute(f'DROP OWNED BY "{operator}"')
+        await connection.execute(f'DROP ROLE "{operator}"')
