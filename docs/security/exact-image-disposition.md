@@ -50,11 +50,33 @@ registry identities in SBOM metadata.
 
 The effective config must equal the native report's descriptor configuration.
 Generate native JSON and SARIF with the same scanner version/config/database.
-Every native occurrence must map uniquely to SARIF through advisory namespace,
-exact package PURL and package/version/type/severity metadata, and the native
-package must match the SBOM artifact. The tool refuses missing, duplicate or
-ambiguous results, unexplained SARIF suppressions and native ignored matches.
-It currently requires a single Grype SARIF 2.1.0 run.
+Every reviewed Debian occurrence must map uniquely to SARIF through advisory
+namespace, exact package PURL and package/version/type/severity metadata, and
+the native package must match the SBOM artifact. The tool refuses missing
+results, duplicate native bytes, unexplained SARIF suppressions and native
+ignored matches. It requires one Grype **0.119.0** SARIF 2.1.0 run; another
+presenter version requires separate review.
+
+Grype 0.119.0 shares a rule across matches with the same advisory/package name,
+including system/virtual-environment copies or different package versions, but
+emits one result for every native match. Shared rules are retained as complete
+unresolved groups. The collector binds every native member and validates the
+complete multiset of image path/layer logical locations against the results.
+All shared groups remain active and **ineligible for disposition**, even when
+individual locations differ. Rule metadata must describe a real group member;
+it is never transferred to every other member. Effective gate severity must
+cover every member's native severity, so shared metadata cannot hide a native
+High/Critical finding behind a lower band.
+
+The pinned presenter's `severityText` function renders native Negligible and
+Unknown as SARIF low. This behavior is retained explicitly for active/ineligible
+entries only; the original native bands remain in accounting. An annotation
+still requires exact native/effective severity equality on a unique Debian
+occurrence. Summaries expose `native_raw`, `sarif_raw`, `native_active`, native
+severity counts and shared-rule group count separately; no group-wide
+suppression is supported. These semantics follow the version-matched upstream
+[SARIF presenter](https://github.com/anchore/grype/blob/v0.119.0/grype/presenter/sarif/presenter.go)
+and [Syft location model](https://github.com/anchore/syft/blob/v1.52.0/syft/file/location.go).
 
 OCI collection verifies manifest/config/compressed layer hashes and sizes plus
 config diffIDs. It reconstructs a file inventory in memory without extracting

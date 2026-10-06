@@ -467,7 +467,221 @@ def test_ambiguous_native_result_denied(bundle):
         "raw_json",
         lambda d: d["matches"].append(copy.deepcopy(d["matches"][0])),
     )
-    with pytest.raises(D.Invalid, match="ambiguous"):
+    with pytest.raises(D.Invalid, match="duplicate native occurrence"):
+        observed(bundle)
+
+
+def add_shared_python_rule(
+    bundle,
+    versions=("1.0", "1.0"),
+    severities=("Medium", "Medium"),
+    rendered="medium",
+    same_locations=False,
+):
+    root, inputs, _, _ = bundle
+    sbom, native, sarif = [
+        D.parse((root / inputs[key]).read_bytes())
+        for key in ("sbom", "raw_json", "raw_sarif")
+    ]
+    image_input = "synthetic-image.oci.tar"
+    for report in (sbom, native):
+        report["source"]["metadata"]["userInput"] = image_input
+    run = sarif["runs"][0]
+    rule_id = "CVE-2000-0100-pip"
+    for index, (version, severity) in enumerate(zip(versions, severities)):
+        location_index = 0 if same_locations else index
+        path = ["/usr/local/lib/pip/METADATA", "/opt/venv/lib/pip/METADATA"][
+            location_index
+        ]
+        layer = "sha256:" + str(location_index + 1) * 64
+        location = {"path": path, "accessPath": path, "layerID": layer}
+        artifact = {
+            "id": "pip-" + str(index),
+            "name": "pip",
+            "type": "python",
+            "version": version,
+            "purl": "pkg:pypi/pip@" + version,
+            "locations": [location],
+        }
+        sbom["artifacts"].append(artifact)
+        native["matches"].append(
+            {
+                "artifact": artifact,
+                "vulnerability": {
+                    "id": "CVE-2000-0100",
+                    "namespace": "github:language:python",
+                    "severity": severity,
+                },
+            }
+        )
+        run["results"].append(
+            {
+                "ruleId": rule_id,
+                "message": {"text": "Synthetic shared rule"},
+                "locations": [
+                    {
+                        "physicalLocation": {"artifactLocation": {"uri": path}},
+                        "logicalLocations": [
+                            {
+                                "name": path,
+                                "fullyQualifiedName": image_input
+                                + "@"
+                                + layer
+                                + ":"
+                                + path,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    run["tool"]["driver"]["rules"].append(
+        {
+            "id": rule_id,
+            "help": {
+                "text": "Vulnerability CVE-2000-0100\nSeverity: "
+                + rendered
+                + "\nPackage: pip\nVersion: "
+                + versions[0]
+                + "\nType: python\nData Namespace: github:language:python"
+            },
+            "properties": {
+                "purls": ["pkg:pypi/pip@" + versions[0]],
+                "security-severity": "0.0",
+            },
+        }
+    )
+    for key, report in [("sbom", sbom), ("raw_json", native), ("raw_sarif", sarif)]:
+        (root / inputs[key]).write_bytes(D.canonical(report))
+
+
+@pytest.mark.parametrize(
+    "versions,same_locations",
+    [(("1.0", "1.0"), False), (("1.0", "2.0"), False), (("1.0", "1.0"), True)],
+)
+def test_shared_rules_remain_active_and_keep_all_native_members(
+    bundle, versions, same_locations
+):
+    add_shared_python_rule(bundle, versions=versions, same_locations=same_locations)
+    observation = observed(bundle)
+    original = D.parse((bundle[0] / bundle[1]["raw_sarif"]).read_bytes())
+    record = receipt(bundle, observation)
+    output, summary = derive(bundle, record, observation)
+    assert summary["native_raw"] == summary["sarif_raw"] == 4
+    assert summary["native_active"] == summary["active"] == 3
+    assert summary["shared_rule_groups"] == 1
+    assert summary["native_raw_severities"] == {"High": 2, "Medium": 2}
+    assert output["runs"][0]["results"][2:] == original["runs"][0]["results"][2:]
+    assert all(
+        not item["disposition_eligible"] for item in observation["occurrences"][2:]
+    )
+
+
+def test_shared_native_member_cannot_be_dispositioned(bundle):
+    add_shared_python_rule(bundle)
+    observation = observed(bundle)
+    record = receipt(bundle, observation)
+    record["decisions"][0]["native_sha256"] = observation["occurrences"][2][
+        "native_members"
+    ][0]["native_sha256"]
+    with pytest.raises(D.Invalid, match="ineligible"):
+        derive(bundle, record, observation)
+
+
+@pytest.mark.parametrize("severity", ["High", "Critical"])
+def test_shared_rule_cannot_understate_native_high_or_critical(bundle, severity):
+    add_shared_python_rule(bundle, severities=("Medium", severity))
+    with pytest.raises(D.Invalid, match="understates native severity"):
+        observed(bundle)
+
+
+def test_unknown_rendered_low_preserves_native_unknown_and_remains_ineligible(bundle):
+    add_shared_python_rule(bundle, severities=("Unknown", "Unknown"), rendered="low")
+    observation = observed(bundle)
+    _, summary = derive(bundle, receipt(bundle, observation), observation)
+    assert summary["native_raw_severities"]["Unknown"] == 2
+    assert summary["native_active_severities"]["Unknown"] == 2
+    assert all(
+        not item["disposition_eligible"] and item["gate_severity"] == "low"
+        for item in observation["occurrences"][2:]
+    )
+
+
+def test_negligible_debian_rendered_low_cannot_be_dispositioned(bundle):
+    change_json(
+        bundle,
+        "raw_json",
+        lambda report: report["matches"][1]["vulnerability"].update(
+            severity="Negligible"
+        ),
+    )
+
+    def mutate(report):
+        rule = report["runs"][0]["tool"]["driver"]["rules"][1]
+        rule["help"]["text"] = rule["help"]["text"].replace(
+            "Severity: high", "Severity: low"
+        )
+
+    change_json(bundle, "raw_sarif", mutate)
+    observation = observed(bundle)
+    record = receipt(bundle, observation)
+    _, summary = derive(bundle, record, observation)
+    assert summary["native_active_severities"] == {"Negligible": 1}
+    record["decisions"][0]["native_sha256"] = observation["occurrences"][1][
+        "native_sha256"
+    ]
+    with pytest.raises(D.Invalid, match="ineligible"):
+        derive(bundle, record, observation)
+
+
+def test_shared_rule_missing_native_member_result_denied(bundle):
+    add_shared_python_rule(bundle)
+    change_json(bundle, "raw_sarif", lambda report: report["runs"][0]["results"].pop())
+    with pytest.raises(D.Invalid, match="occurrence count mismatch"):
+        observed(bundle)
+
+
+def test_shared_rule_location_layer_mismatch_denied(bundle):
+    add_shared_python_rule(bundle)
+
+    def mutate(report):
+        location = report["runs"][0]["results"][2]["locations"][0]["logicalLocations"][
+            0
+        ]
+        location["fullyQualifiedName"] = location["fullyQualifiedName"].replace(
+            "sha256:", "different-layer:"
+        )
+
+    change_json(bundle, "raw_sarif", mutate)
+    with pytest.raises(D.Invalid, match="location multiset mismatch"):
+        observed(bundle)
+
+
+def test_native_sbom_shared_locations_must_agree(bundle):
+    add_shared_python_rule(bundle)
+    change_json(
+        bundle,
+        "raw_json",
+        lambda report: report["matches"][2]["artifact"]["locations"][0].update(
+            path="/different"
+        ),
+    )
+    with pytest.raises(D.Invalid, match="native/SBOM locations mismatch"):
+        observed(bundle)
+
+
+def test_unknown_presenter_version_requires_separate_review(bundle):
+    change_json(
+        bundle,
+        "raw_json",
+        lambda report: report["descriptor"].update(version="0.120.0"),
+    )
+    change_json(
+        bundle,
+        "raw_sarif",
+        lambda report: report["runs"][0]["tool"]["driver"].update(version="0.120.0"),
+    )
+    with pytest.raises(D.Invalid, match="unsupported SARIF presenter version"):
         observed(bundle)
 
 

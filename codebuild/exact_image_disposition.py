@@ -475,6 +475,45 @@ def help_field(text, field):
     return values[0]
 
 
+def rendered_severity(match):
+    # Grype 0.119.0 presenter/sarif.severityText preserves these three bands
+    # and renders all remaining native bands (including Unknown) as low.
+    severity = match["vulnerability"]["severity"].lower()
+    return severity if severity in {"critical", "high", "medium"} else "low"
+
+
+def native_locations(match, image_input):
+    locations = match["artifact"].get("locations", [])
+    require(locations and image_input, "shared rule requires complete image locations")
+    return tuple(
+        sorted(
+            (
+                location["path"],
+                image_input
+                + "@"
+                + location["layerID"]
+                + ":/"
+                + (location.get("accessPath") or location["path"])
+                .removeprefix("./")
+                .lstrip("/"),
+            )
+            for location in locations
+        )
+    )
+
+
+def sarif_locations(result):
+    locations = result.get("locations", [])
+    require(len(locations) == 1, "shared rule requires single SARIF physical location")
+    logical = locations[0].get("logicalLocations", [])
+    require(logical, "shared rule requires logical locations")
+    return tuple(
+        sorted(
+            (location["name"], location["fullyQualifiedName"]) for location in logical
+        )
+    )
+
+
 def map_findings(sbom, native, sarif):
     require(
         sarif.get("version") == "2.1.0" and len(sarif.get("runs", [])) == 1,
@@ -483,14 +522,16 @@ def map_findings(sbom, native, sarif):
     run = sarif["runs"][0]
     require(run["tool"]["driver"]["name"].lower() == "grype", "not Grype SARIF")
     require(
-        run["tool"]["driver"].get("version") == native["descriptor"]["version"],
-        "scanner version mismatch",
+        run["tool"]["driver"].get("version")
+        == native["descriptor"]["version"]
+        == "0.119.0",
+        "scanner version mismatch or unsupported SARIF presenter version",
     )
     artifacts = {}
     for item in sbom["artifacts"]:
         require(item["id"] not in artifacts, "duplicate SBOM artifact id")
         artifacts[item["id"]] = item
-    by_key = {}
+    groups, native_hashes = {}, set()
     for match in native["matches"]:
         artifact = match["artifact"]
         require(
@@ -499,66 +540,147 @@ def map_findings(sbom, native, sarif):
             == package_identity(artifacts[artifact["id"]]),
             "native/SBOM package identity mismatch",
         )
-        vulnerability = match["vulnerability"]
-        key = (vulnerability["id"], vulnerability["namespace"], artifact["purl"])
-        require(key not in by_key, "ambiguous native occurrence")
-        by_key[key] = match
+        digest = object_sha(match)
+        require(digest not in native_hashes, "duplicate native occurrence bytes")
+        native_hashes.add(digest)
+        # This is the actual pinned presenter's ruleID, not a guessed package
+        # suffix. Shared rules retain all members and are never dispositionable.
+        rule_id = match["vulnerability"]["id"] + "-" + artifact["name"]
+        groups.setdefault(rule_id, []).append(match)
     rules = {}
     for rule in run["tool"]["driver"]["rules"]:
         require(rule["id"] not in rules, "duplicate SARIF rule")
         rules[rule["id"]] = rule
-    mappings, seen = [], set()
+    require(set(rules) == set(groups), "SARIF/native rule coverage mismatch")
+    result_groups = {}
     for index, result in enumerate(run["results"]):
         require(
             not result.get("suppressions"),
             "raw SARIF contains unexplained suppressions",
         )
-        rule = rules[result["ruleId"]]
+        require(result["ruleId"] in groups, "unknown SARIF rule")
+        result_groups.setdefault(result["ruleId"], []).append((index, result))
+    require(set(result_groups) == set(groups), "SARIF omitted native findings")
+    ranks = {
+        "unknown": -1,
+        "unrated": -1,
+        "negligible": 0,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 4,
+    }
+    mappings = []
+    source = native["source"]
+    image_input = source.get("metadata", source.get("target", {})).get("userInput")
+    for rule_id, members in groups.items():
+        result_members = result_groups[rule_id]
+        # Observed 0.119 emits one result per native match; it only shares rules.
+        # Do not silently support hypothetical result deduplication.
+        require(
+            len(result_members) == len(members),
+            "SARIF/native occurrence count mismatch",
+        )
+        rule = rules[rule_id]
         purls = rule.get("properties", {}).get("purls", [])
         require(len(purls) == 1, "ambiguous SARIF package PURL")
         text = rule["help"]["text"]
-        first = re.findall(r"^Vulnerability (\S+)$", text, re.MULTILINE)
-        require(len(first) == 1, "missing SARIF advisory identity")
-        key = (first[0], help_field(text, "Data Namespace"), purls[0])
-        require(
-            key in by_key and key not in seen,
-            "SARIF/native occurrence mismatch or duplicate",
-        )
-        seen.add(key)
-        match = by_key[key]
-        artifact = match["artifact"]
-        for field, source in [
-            ("Package", "name"),
-            ("Version", "version"),
-            ("Type", "type"),
-        ]:
-            require(
-                help_field(text, field) == artifact[source],
-                "SARIF package metadata mismatch",
+        advisory = re.findall(r"^Vulnerability (\S+)$", text, re.MULTILINE)
+        require(len(advisory) == 1, "missing SARIF advisory identity")
+        # A shared rule only describes one member, not every version/location.
+        # Validate it against an actual complete member without transferring its
+        # package identity to the other members.
+        representatives = [
+            member
+            for member in members
+            if member["vulnerability"]["id"] == advisory[0]
+            and member["vulnerability"]["namespace"]
+            == help_field(text, "Data Namespace")
+            and member["artifact"]["purl"] == purls[0]
+            and all(
+                member["artifact"][key] == help_field(text, label)
+                for label, key in [
+                    ("Package", "name"),
+                    ("Version", "version"),
+                    ("Type", "type"),
+                ]
             )
+            and rendered_severity(member) == help_field(text, "Severity").lower()
+        ]
         require(
-            help_field(text, "Severity").lower()
-            == match["vulnerability"]["severity"].lower(),
-            "severity mismatch",
+            representatives, "SARIF/native occurrence mismatch or severity mismatch"
         )
-        effective_severity, _ = maintained_gate().resolve_sarif_severity(result, rules)
-        require(
-            effective_severity == match["vulnerability"]["severity"].lower(),
-            "gate-effective severity mismatch",
+        shared = len(members) != 1
+        if shared:
+            for member in members:
+                require(
+                    member["artifact"].get("locations")
+                    == artifacts[member["artifact"]["id"]].get("locations"),
+                    "shared native/SBOM locations mismatch",
+                )
+            require(
+                Counter(native_locations(member, image_input) for member in members)
+                == Counter(sarif_locations(result) for _, result in result_members),
+                "shared rule location multiset mismatch",
+            )
+        sole = members[0] if not shared else None
+        native_severity = sole["vulnerability"]["severity"].lower() if sole else None
+        eligible = bool(
+            sole
+            and sole["artifact"]["type"] == "deb"
+            and native_severity in {"critical", "high", "medium", "low"}
         )
-        mappings.append(
+        bound_members = [
             {
-                "result_index": index,
-                "result_sha256": object_sha(result),
-                "native_sha256": object_sha(match),
-                "package": package_identity(artifact),
-                "advisory": key[0],
-                "namespace": key[1],
-                "severity": match["vulnerability"]["severity"],
+                "native_sha256": object_sha(member),
+                "package": package_identity(member["artifact"]),
+                "advisory": member["vulnerability"]["id"],
+                "namespace": member["vulnerability"]["namespace"],
+                "severity": member["vulnerability"]["severity"],
             }
-        )
-    require(seen == set(by_key), "SARIF omitted native findings")
-    return mappings
+            for member in members
+        ]
+        for index, result in result_members:
+            effective, _ = maintained_gate().resolve_sarif_severity(result, rules)
+            require(
+                effective == help_field(text, "Severity").lower(),
+                "gate-effective severity mismatch",
+            )
+            require(
+                all(
+                    member["vulnerability"]["severity"].lower() in ranks
+                    for member in members
+                ),
+                "unsupported native severity",
+            )
+            require(
+                all(
+                    ranks[effective]
+                    >= ranks[member["vulnerability"]["severity"].lower()]
+                    for member in members
+                ),
+                "shared rule understates native severity",
+            )
+            if eligible:
+                require(
+                    effective == native_severity, "gate-effective severity mismatch"
+                )
+            mappings.append(
+                {
+                    "result_index": index,
+                    "result_sha256": object_sha(result),
+                    "native_sha256": object_sha(sole) if sole else None,
+                    "package": package_identity(sole["artifact"]) if sole else None,
+                    "advisory": sole["vulnerability"]["id"] if sole else None,
+                    "namespace": sole["vulnerability"]["namespace"] if sole else None,
+                    "severity": sole["vulnerability"]["severity"] if sole else None,
+                    "rule_id": rule_id,
+                    "native_members": bound_members,
+                    "gate_severity": effective,
+                    "disposition_eligible": eligible,
+                }
+            )
+    return sorted(mappings, key=lambda item: item["result_index"])
 
 
 def verify_deb(path, package, selected_files):
@@ -657,11 +779,26 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
         all(not result.get("suppressions") for result in results),
         "preexisting raw suppressions",
     )
-    occurrences = {item["native_sha256"]: item for item in observation["occurrences"]}
+    mappings = observation["occurrences"]
+    occurrences = {
+        item["native_sha256"]: item for item in mappings if item["disposition_eligible"]
+    }
     require(
-        len(occurrences) == len(observation["occurrences"]) == len(results),
+        len(mappings) == len(results)
+        and {item["result_index"] for item in mappings} == set(range(len(results)))
+        and len(occurrences) == sum(item["disposition_eligible"] for item in mappings),
         "ambiguous occurrence inventory",
     )
+    native_members = {}
+    for item in mappings:
+        for member in item["native_members"]:
+            digest = member["native_sha256"]
+            require(
+                digest not in native_members or native_members[digest] == member,
+                "inconsistent native member inventory",
+            )
+            native_members[digest] = member
+    require(len(native_members) == len(results), "native/SARIF accounting mismatch")
     seen, counts = set(), Counter()
     for decision in receipt["decisions"]:
         exact_keys(
@@ -677,7 +814,10 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
             "decision",
         )
         key = decision["native_sha256"]
-        require(key in occurrences and key not in seen, "unknown or duplicate decision")
+        require(
+            key in occurrences and key not in seen,
+            "unknown, duplicate or ineligible decision",
+        )
         seen.add(key)
         require(
             decision["status"] in ("fixed", "not_affected"),
@@ -749,6 +889,22 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
         counts[decision["status"]] += 1
     summary = {
         "raw": len(results),
+        "native_raw": len(native_members),
+        "sarif_raw": len(results),
+        "native_active": len(native_members) - len(seen),
+        "native_raw_severities": dict(
+            Counter(member["severity"] for member in native_members.values())
+        ),
+        "native_active_severities": dict(
+            Counter(
+                member["severity"]
+                for digest, member in native_members.items()
+                if digest not in seen
+            )
+        ),
+        "shared_rule_groups": len(
+            {item["rule_id"] for item in mappings if len(item["native_members"]) > 1}
+        ),
         "fixed": counts["fixed"],
         "not_affected": counts["not_affected"],
         "active": len(results) - len(seen),
