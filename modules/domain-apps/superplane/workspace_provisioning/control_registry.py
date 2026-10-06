@@ -13,8 +13,55 @@ from harness_jobs.identity import decode_payload, encode_payload, payload_digest
 from harness_jobs.store import _record
 
 from .retirement_access_authority import FIELDS, execution_steps, request_revision
+from .retirement_access_context import require_original_seal
 from .retirement_access_plan import PHASE, access_identity
 from .runtime_config import LifecycleRefused
+
+
+async def allocation_source(connection, source):
+    """Retain adopted ownership; managed ownership belongs to the paid apply."""
+    previous = source.admitted_request().parameters
+    try:
+        mode = json.loads(previous["lifecycle_request"])["mode"]
+        if mode == "bring-existing-cluster":
+            return source
+        if (
+            mode != "existing-account-managed"
+            or json.loads(previous["lifecycle_inputs"]).get("isolation_mode")
+            != "dedicated"
+        ):
+            raise LifecycleRefused(
+                "cleanup control requires dedicated managed ownership"
+            )
+        row = await connection.fetchrow(
+            "SELECT * FROM harness_operations WHERE operation_id=$1 "
+            "AND org_id=$2 AND workspace_id=$3",
+            previous["lifecycle_source_operation_id"],
+            source.org_id,
+            source.workspace_id,
+        )
+        if row is None:
+            raise LifecycleRefused("cleanup control lost its original managed apply")
+        paid = _record(row)
+        request = paid.admitted_request()
+        if (
+            paid.state != "succeeded"
+            or request.action != "provision"
+            or request.parameters.get("lifecycle_phase") != "apply-infrastructure"
+            or any(
+                request.parameters.get(key) != previous[key]
+                for key in ("lifecycle_request", "lifecycle_inputs", "aws_account_id")
+            )
+        ):
+            raise LifecycleRefused("cleanup control original managed apply changed")
+        await require_original_seal(
+            connection, paid, {"original_allocation_id": allocation_id_for(paid)}
+        )
+        return paid
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LifecycleRefused(
+            "cleanup control managed ownership is incomplete"
+        ) from exc
 
 
 async def registration_values(
@@ -45,10 +92,12 @@ async def registration_values(
         )
     request, original = operation.admitted_request(), source.admitted_request()
     parameters, previous = request.parameters, original.parameters
+    allocation = await allocation_source(connection, source)
+    original_allocation_id = allocation_id_for(allocation)
     try:
         retirement_id = str(uuid.UUID(str(request_id)))
         derived_request, derived_allocation = access_identity(
-            org_id, workspace_id, allocation_id_for(source), retirement_id
+            org_id, workspace_id, original_allocation_id, retirement_id
         )
         source_request = json.loads(previous["lifecycle_request"])
         source_account = source_request["target_account_id"]
@@ -62,7 +111,7 @@ async def registration_values(
             and request.idempotency_key == derived_request
             and parameters["retirement_request_id"] == retirement_id
             and parameters["allocation_id"] == derived_allocation
-            and parameters["original_allocation_id"] == allocation_id_for(source)
+            and parameters["original_allocation_id"] == original_allocation_id
             and parameters["retirement_source_operation_id"] == source.operation_id
             and parameters["retirement_source_job_id"] == source.job_id
             and parameters["retirement_source_attempt_id"] == source.attempt_id
@@ -70,7 +119,6 @@ async def registration_values(
             and parameters["lifecycle_artifact_id"] == previous["lifecycle_artifact_id"]
             and parameters["lifecycle_request"] == previous["lifecycle_request"]
             and parameters["lifecycle_inputs"] == previous["lifecycle_inputs"]
-            and source_request["mode"] == "bring-existing-cluster"
             and source_request["workspace_id"] == workspace_id
             and parameters["provider"] == "aws"
             and parameters["aws_account_id"]
@@ -114,6 +162,15 @@ async def registration_values(
         workspace_id,
         source.plan_digest,
     )
+    allocation_paid = await connection.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption WHERE operation_id=$1 "
+        "AND org_id=$2 AND workspace_id=$3 AND plan_digest=$4 "
+        "AND reservation_state IN ('confirmed','retained','released'))",
+        allocation.operation_id,
+        org_id,
+        workspace_id,
+        allocation.plan_digest,
+    )
     registered = await domain_connection.fetchval(
         "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id::text=$1 AND org_id::text=$2 "
         "AND provisioning_operation_id=$3 AND status IN ('Active','active') AND is_default=false)",
@@ -121,7 +178,7 @@ async def registration_values(
         org_id,
         source_bootstrap_operation_id,
     )
-    if not paid or not source_paid or not registered:
+    if not paid or not source_paid or not allocation_paid or not registered:
         raise LifecycleRefused(
             "cleanup control paid identity or current bootstrap registration changed"
         )
@@ -133,7 +190,7 @@ async def registration_values(
         "phase": PHASE,
         "request_id": retirement_id,
         "allocation_id": derived_allocation,
-        "original_allocation_id": allocation_id_for(source),
+        "original_allocation_id": original_allocation_id,
         "plan_digest": operation.plan_digest,
     }
 
