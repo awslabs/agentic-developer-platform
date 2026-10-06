@@ -1,7 +1,6 @@
 """Review immutable bootstrap ownership while cleanup access is unavailable."""
 
 import json
-from dataclasses import asdict
 
 from harness_jobs.identity import decode_payload, payload_digest
 from harness_jobs.store import OperationStore
@@ -155,55 +154,16 @@ async def retirement_facts(
 
 
 async def preview_retirement(composition, db, org_id, workspace_id, request_id):
-    from workspace_provisioning.artifacts import digest
-    from workspace_provisioning.lifecycle_policy import policy_digest
+    from app.services.managed_retirement import preview
 
-    (
-        workspace,
-        principal,
-        source,
-        artifact,
-        inventory,
-        plan,
-        policy,
-        runtime,
-    ) = await retirement_facts(composition, db, org_id, workspace_id)
-    account = inventory.cluster_arn.split(":")[4]
-    region = inventory.cluster_arn.split(":")[3]
-    # These are review facts, not an executable OperationRequest. The separate
-    # cleanup-access recipe must exist before an approvable request can be built.
-    # Bind runtime configuration by digest, never copy its full JSON into a
-    # Harness parameter (which has a 2 KiB bound).
-    review = {
-        "request_id": str(request_id),
-        "workspace_id": str(workspace_id),
-        "source_operation_id": source.operation_id,
-        "source_payload_digest": source.plan_digest,
-        "lifecycle_artifact_id": artifact["artifact_id"],
-        "account_id": account,
-        "region": region,
-        "inventory_sha256": digest(asdict(inventory)),
-        "lifecycle_policy_sha256": policy_digest(policy.model_dump(mode="json")),
-        "runtime_config_sha256": digest(runtime),
-        "steps": [asdict(step) for step in plan.steps],
-        "preserved": list(plan.preserved),
-        "admission_available": False,
-        "blocked_reason": "staged_cleanup_access_required",
-        "approval_request": None,
-    }
-    review["revision"] = digest(review)
-    return workspace, principal, None, review
+    return await preview(composition, db, org_id, workspace_id, request_id)
 
 
 async def admit_retirement(
     composition, db, org_id, workspace_id, request_id, revision, approval_id
 ):
-    """Refuse until a separately governed cleanup-access artifact is implemented.
+    from app.services.managed_retirement import admit
 
-    Bootstrap access was revoked, and the original resource allocation may be
-    sealed. A retirement cannot silently create new access in that allocation.
-    """
-    await _workspace(db, org_id, workspace_id)
-    raise ProvisioningUnavailable(
-        "retirement requires a separately approved cleanup-access operation and immutable grant artifact"
+    return await admit(
+        composition, db, org_id, workspace_id, request_id, revision, approval_id
     )

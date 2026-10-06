@@ -468,9 +468,15 @@ export function grantWorkspaceAccess(
 }
 
 export function parseRetirementReview(raw: unknown): RetirementReview | null {
-  if (!isRecord(raw) || raw.admission_available !== false ||
-      raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null ||
+  if (!isRecord(raw) || typeof raw.admission_available !== 'boolean' ||
       !Array.isArray(raw.steps) || !Array.isArray(raw.preserved)) return null;
+  if (raw.admission_available
+    ? (!parseApprovalRequest(raw.approval_request) || raw.blocked_reason !== null)
+    : (raw.blocked_reason !== 'staged_cleanup_access_required' || raw.approval_request !== null)) return null;
+  if (raw.admission_available && (!isRecord(raw.approval_request) ||
+      raw.approval_request.workspace_id !== raw.workspace_id ||
+      raw.approval_request.idempotency_key !== raw.request_id ||
+      raw.approval_request.action !== 'teardown')) return null;
   const fields = [
     'request_id', 'workspace_id', 'source_operation_id', 'source_payload_digest',
     'lifecycle_artifact_id', 'account_id', 'region', 'inventory_sha256',
@@ -530,6 +536,22 @@ export function previewRetirementAccess(
     return review?.workspace_id === workspaceId && review.retirement_request_id === request.operation_id
       ? review : null;
   });
+}
+
+export function submitRetirement(
+  guard: ScopeGuard, workspaceId: string,
+  body: { operation_id: string; plan_revision: string; approval_id: string },
+  preparation = false,
+): Promise<Outcome<OperationReceipt>> {
+  return call(guard, preparation ? 'admitRetirementAccess' : 'admitRetirement',
+    { workspace_id: workspaceId }, body, (raw) => {
+      if (!isRecord(raw) || raw.workspace_id !== workspaceId || raw.retirement_complete !== false ||
+          (preparation ? raw.retirement_request_id : raw.request_id) !== body.operation_id ||
+          typeof raw[preparation ? 'control_operation_id' : 'operation_id'] !== 'string') return null;
+      return parseOperationReceipt({ ...raw,
+        provisioning_operation_id: raw[preparation ? 'control_operation_id' : 'operation_id'],
+      });
+    });
 }
 
 /**

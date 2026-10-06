@@ -1,9 +1,4 @@
-"""Dormant cleanup-access routes; mount only after complete retirement composition.
-
-The exact external cleanup authority and separate allocation settlement must be
-implemented before adding this router to main, the authorization route inventory,
-or the Gateway allowlist.
-"""
+"""Approved cleanup preparation, gated by installed native retirement composition."""
 
 import uuid
 from typing import Literal
@@ -87,15 +82,14 @@ async def retirement_access_admission(
 ):
     from app.services.retirement_access import admit_access
 
-    return await _call(
-        request,
-        lambda composition: admit_access(
-            composition,
-            db,
-            org_id,
-            workspace_id,
-            body.operation_id,
-            body.plan_revision,
-            body.approval_id,
-        ),
-    )
+    async def invoke(composition):
+        from app.services.retirement_access import preview_access
+        from app.services.provisioning import ProvisioningUnavailable
+
+        *_, review = await preview_access(composition, db, org_id, workspace_id, body.operation_id)
+        if review["admission_available"] is not True:
+            raise ProvisioningUnavailable("this retirement access mode is not composed")
+        return await admit_access(composition, db, org_id, workspace_id, body.operation_id,
+                                  body.plan_revision, body.approval_id)
+
+    return await _call(request, invoke)

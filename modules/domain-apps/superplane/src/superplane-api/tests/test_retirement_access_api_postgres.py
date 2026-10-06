@@ -36,7 +36,7 @@ from tests.test_lifecycle_api_postgres import (
 from tests.test_operation_dispatch_postgres import GatewayTransport
 
 
-def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
+def test_cleanup_access_routes_are_mounted_and_allowlisted_under_runtime_gate():
     from pathlib import Path
 
     from app.main import app
@@ -52,12 +52,12 @@ def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
             else:
                 yield from mounted_paths(route.original_router.routes)
 
-    assert paths.isdisjoint(set(mounted_paths(app.routes)))
+    assert paths <= set(mounted_paths(app.routes))
     gateway = (
         Path(__file__).resolve().parents[5]
         / "gateway/src/domain_proxy/superplane_routes.json"
     )
-    assert paths.isdisjoint({path for _, path in json.loads(gateway.read_text())})
+    assert paths <= {path for _, path in json.loads(gateway.read_text())}
 
 
 @pytest.fixture

@@ -37,6 +37,10 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
     if managed:
         from harness_jobs.store import OperationStore
 
+        from app.services.managed_retirement import require_runtime
+
+        await require_runtime(org_id)
+
         async with composition.operation_connect() as connection:
             paid_source = await OperationStore().get(
                 connection,
@@ -54,6 +58,7 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
                 original_allocation_id=allocation_id_for(paid_source),
                 bootstrap_artifact_id=artifact["artifact_id"],
                 retirement_request_id=str(retirement_request_id),
+                prepare_destroy=True,
                 **managed_recipe_inputs(inventory, runtime),
             )
             await require_managed_paid_plan(connection, paid_source, plan)
@@ -65,7 +70,9 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
             original_allocation_id=allocation_id_for(source),
             retirement_request_id=str(retirement_request_id),
         )
-    request = access_request(plan, source, policy, allocation_source=paid_source)
+    request = access_request(
+        plan, source, policy, allocation_source=paid_source, prepare_destroy=managed
+    )
     review = {
         "retirement_request_id": str(retirement_request_id),
         "request_id": request.idempotency_key,
@@ -90,7 +97,7 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
         "preserved": list(deletion.preserved),
         "max_resource_units": 0,
         "max_cost_micros": 0,
-        "admission_available": False,
+        "admission_available": managed,
         "approval_request": {
             "workspace_id": str(workspace_id),
             "action": request.action,
@@ -98,6 +105,18 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
             "parameters": dict(request.parameters),
         },
     }
+    if managed:
+        review["authority"] = {
+            "cleanup": {
+                "description": "Temporary mapping to the original retained cleanup role; deletion is restricted to owned named objects."
+            },
+            "fence": {
+                "description": "Activate the original named cluster admission fence, then list workload and storage identities across the dedicated cluster. New workload creation remains blocked pending retirement."
+            },
+            "plan": {
+                "description": "Prepare a deletion-only Terraform plan for the original workspace state. Applying that plan requires a separate approval."
+            },
+        }
     return workspace, principal, request, review
 
 

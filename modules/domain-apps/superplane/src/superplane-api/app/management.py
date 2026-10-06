@@ -29,6 +29,8 @@ MANAGEMENT_ROUTES = frozenset(
         ("POST", "/workspaces/preview"),
         ("POST", "/workspaces/adopt"),
         ("POST", "/workspaces/{workspace_id}/retirement/preview"),
+        ("POST", "/workspaces/{workspace_id}/retirement/access/preview"),
+        ("POST", "/workspaces/{workspace_id}/retirement/access"),
         ("POST", "/workspaces/{workspace_id}/retirement"),
         ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"),
         (
