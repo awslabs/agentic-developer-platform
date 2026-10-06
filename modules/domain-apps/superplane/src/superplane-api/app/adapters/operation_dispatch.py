@@ -8,13 +8,12 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-import botocore.auth
-import botocore.awsrequest
 import botocore.session
 import httpx
 from harness_jobs.identity import decode_payload, payload_digest
 from harness_jobs.outbox import DispatchOutbox
 
+from app.adapters.iam_signing import signed_headers
 from app.operation_activation import dispatch_enabled
 
 logger = logging.getLogger(__name__)
@@ -78,16 +77,7 @@ class ProducerTransport:
         credentials = self.session.get_credentials()
         if credentials is None:
             raise RuntimeError("operation producer IAM identity unavailable")
-        request = botocore.awsrequest.AWSRequest(
-            method="POST",
-            url=url,
-            data=encoded,
-            headers={"Content-Type": "application/json"},
-        )
-        botocore.auth.SigV4Auth(
-            credentials.get_frozen_credentials(), "execute-api", self.region
-        ).add_auth(request)
-        return dict(request.headers)
+        return signed_headers(credentials, url, encoded, self.region)
 
     def can_sign(self):
         return bool(

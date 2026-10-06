@@ -280,9 +280,12 @@ def compose(request, reviewed, env, lock, operator):
     require(
         isinstance(env.get("api_adapters"), dict)
         and isinstance(env["api_adapters"].get("vault"), dict)
-        and isinstance(env["api_adapters"]["vault"].get("secret_key_ref"), dict)
-        and isinstance(env["api_adapters"].get("verification"), dict)
-        and isinstance(env["api_adapters"].get("dispatcher"), dict),
+        and isinstance(env["api_adapters"].get("dispatcher"), dict)
+        and env["api_adapters"]["vault"].get("auth") == "api-producer-iam"
+        and "secret_key_ref" not in env["api_adapters"]["vault"]
+        and env["api_adapters"]["vault"].get("url")
+        == env["api_adapters"].get("dispatcher", {}).get("endpoint")
+        and isinstance(env["api_adapters"].get("verification"), dict),
         "Runtime preparation needs the selected existing vault, verification and dispatcher services",
     )
     dispatcher = env["api_adapters"]["dispatcher"]

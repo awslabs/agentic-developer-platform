@@ -372,17 +372,19 @@ IAM plan and the applied live identity before changing the API service account.
 
 The closed mapping requires `vault`, `dispatcher` and `verification`:
 
-- `vault.url` must be the exact `http://SERVICE.NAMESPACE.svc.cluster.local:PORT`.
-  `secret_key_ref` contains only the existing API-namespace Secret `name` and `key`.
-  `transport` contains `namespace`, `service`, numeric `port` and `target_port`,
-  the actual Service `selector` mapping, and
-  `security: reviewed-cluster-http`. Select this boundary only after reviewing
-  the installation's internal HTTP trust contract. Other transports are refused.
+- `vault.url` must equal the selected `dispatcher.endpoint`; `vault.auth` must be
+  `api-producer-iam`. Evidence uses renewable API workload IRSA credentials to sign
+  the exact POST body for `execute-api`. Shared keys and direct Service evidence
+  URLs are refused. `transport` retains the selected Gateway Service namespace,
+  service, ports, selector and `security: reviewed-cluster-http` for the native
+  worker network and health contract; it is not API evidence authentication.
 - `dispatcher` contains the existing `endpoint`, `region`, `role_arn`, `api_id`
   and `stage`. The endpoint must exactly match that API Gateway invoke API/stage
   in the selected account's region. The dedicated role must trust only the
   management cluster OIDC and API ServiceAccount, and grant only POST invoke on
-  `producer-readiness`, `verify-run` and `dispatch`. Other role authorities require
+  the six controller-execution producer routes and `/internal/v1/credential-evidence`.
+  Only the exact original three- or six-route policies can be upgraded to seven
+  while retaining role identity and trust. Other role authorities require
   separate review and are refused by this installer.
 - `verification` contains an existing `workspace_id`, `connection_id`,
   `credential_id`, `service` and `label`. The installation verification token must
@@ -396,7 +398,7 @@ explicitly disabled. An isolated image contract check is not a production
 capability verdict. The actual installed API must pass the original four composed
 ports, workload STS identity, tenant producer readiness, live credential metadata,
 management reads and a deliberately unapproved admission-refusal control. The
-Secret's UID/resourceVersion and selected Service/role/profile/environment/release
+IAM evidence mode/endpoint/region and selected Service/role/profile/environment/release
 are bound to a private receipt. Full mode activates only a fresh unchanged stage;
 management-only mode stays disabled. Changed metadata or expired proof requires
 verification again. Public routing still uses the existing publication fence.
@@ -406,8 +408,8 @@ checks its internal management process; public routing stays disabled. This does
 not promise uninterrupted management availability or cancel previously admitted
 workers. Credential version proof is unavailable in the current evidence contract;
 the receipt reports that limitation rather than inventing a version. Existing
-broad API TCP443/5432 egress remains; the selected Gateway peer receives only the
-explicit Service/target ports. Cluster-specific denied-neighbor network evidence
+broad API TCP443/5432 egress remains; API evidence uses HTTPS and receives no
+additional direct Gateway HTTP egress. The native worker retains its selected peer. Cluster-specific denied-neighbor network evidence
 and all behavioral tests still require remote CI and authorized live verification.
 
 The rotation check negotiates Kubernetes `PartialObjectMetadata` with no full

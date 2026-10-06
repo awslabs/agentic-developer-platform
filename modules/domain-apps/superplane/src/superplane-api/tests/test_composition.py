@@ -24,8 +24,13 @@ from app.composition import (
 
 
 class _Configured:
-    adp_gateway_internal_url = "https://gateway.internal"
-    adp_gateway_internal_api_key = "internal-key"
+    adp_gateway_internal_url = (
+        "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+    )
+    adp_gateway_internal_api_key = ""
+    adp_gateway_evidence_auth = "api-producer-iam"
+    superplane_operation_gateway_url = adp_gateway_internal_url
+    superplane_operation_gateway_region = "us-east-1"
     # No `database_url`, so the three harness-backed ports report "no operation
     # store configured" rather than composing. That is the point for most of this
     # file: it isolates the vault port. `TestTheHarnessPortsAreComposed` supplies
@@ -555,7 +560,7 @@ async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
 
     class ConfiguredProducer(_WithOperationStore):
         superplane_operation_gateway_url = (
-            "https://producer.execute-api.us-east-1.amazonaws.com/internal"
+            "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
         )
         superplane_operation_gateway_region = "us-east-1"
         superplane_operation_dispatch_enabled = True
@@ -571,11 +576,15 @@ async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
         )
     finally:
         await composition.aclose()
+
+
 async def test_current_identity_composition_shares_registered_producer_transport():
     from app.current_identity import MappedProducerIdentityReader
 
     class Configured(_WithOperationStore):
-        superplane_operation_gateway_url = "https://gateway.example"
+        superplane_operation_gateway_url = (
+            "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+        )
         superplane_operation_gateway_region = "us-east-1"
 
     result = compose(Configured())
