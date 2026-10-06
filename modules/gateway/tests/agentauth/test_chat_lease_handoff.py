@@ -167,11 +167,25 @@ async def test_competing_handoffs_commit_exactly_one_launch(client, runtime, mon
     original = protected.client.transact_write_items
     barrier, lock = Barrier(2), Lock()
 
+    # Moto snapshots all tables during transactions. Even a concurrent read can
+    # mutate its backing dictionaries, so serialize individual emulator calls,
+    # not whole admissions: both candidates must still reach the commit barrier.
+    def serialize_emulator_calls(client):
+        make_api_call = client._make_api_call
+
+        def serialized(operation_name, api_params):
+            with lock:
+                return make_api_call(operation_name, api_params)
+
+        monkeypatch.setattr(client, "_make_api_call", serialized)
+
+    for client in (protected.client, runtime[2].meta.client):
+        serialize_emulator_calls(client)
+
     def synchronize_handoffs(**kwargs):
         if any(action.get("Put", {}).get("Item", {}).get("pk", {}).get("S", "").startswith("CHAT-LAUNCH#") for action in kwargs["TransactItems"]):
             barrier.wait(timeout=10)
-        with lock:
-            return original(**kwargs)
+        return original(**kwargs)
 
     monkeypatch.setattr(protected.client, "transact_write_items", synchronize_handoffs)
     results = await asyncio.gather(

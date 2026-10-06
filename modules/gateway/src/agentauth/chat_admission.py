@@ -16,6 +16,7 @@ from src.orchestration.chat_data_migration import _owner_fields, _owns_context_r
 OPERATIONS = frozenset(
     {
         "history.read",
+        "activity.read",
         "history.expand",
         "history.append",
         "memory.search",
