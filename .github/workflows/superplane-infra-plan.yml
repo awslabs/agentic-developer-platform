@@ -157,12 +157,14 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: terraform validate
 
-      - name: Validate installer Namespace RBAC root (no backend)
+      - name: Validate and test installer Namespace RBAC root (no backend)
         if: matrix.name == 'installer-access'
         working-directory: modules/domain-apps/superplane/infra/installer-access/namespace-rbac
         run: |
           terraform init -backend=false -input=false
           terraform validate
+          test -f tests/authority.tftest.hcl
+          terraform test -no-color
 
       - name: Run every .tftest.hcl and prove none was skipped
         working-directory: ${{ matrix.dir }}
