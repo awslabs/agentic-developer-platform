@@ -61,6 +61,8 @@ EXPOSE 3000
 # Drop to non-root before the runtime instructions (USER must precede
 # HEALTHCHECK/CMD so the missing-user check is satisfied).
 USER appuser
+RUN --network=none --mount=type=bind,source=docker/security,target=/checks,readonly \
+    node /checks/verify-proxy-addr.cjs
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1

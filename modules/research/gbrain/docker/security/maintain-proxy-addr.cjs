@@ -6,6 +6,7 @@ const archive = '/tmp/proxy-addr-2.0.8.tgz';
 const expected = 'ffcc8055b78b0852b2889a426ad3a3003b60bc79df704faca194157efa2b2587';
 assert.equal(crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex'), expected);
 const target = '/opt/gbrain/node_modules/proxy-addr';
+const originalMode = fs.statSync(target).mode & 0o777;
 const before = JSON.parse(fs.readFileSync(target + '/package.json', 'utf8'));
 assert.equal(before.version, '2.0.7');
 const stage = fs.mkdtempSync('/tmp/proxy-addr-fixed-');
@@ -16,6 +17,7 @@ assert.equal(after.version, '2.0.8');
 assert.deepEqual(after.dependencies, before.dependencies);
 // No package solver: retain the existing dependency graph and patched driver.
 fs.rmSync(target, {recursive: true});
+fs.chmodSync(stage, originalMode);
 fs.renameSync(stage, target);
 const files = Object.fromEntries(fs.readdirSync(target).sort().filter(n => fs.statSync(target + '/' + n).isFile()).map(n => [n, crypto.createHash('sha256').update(fs.readFileSync(target + '/' + n)).digest('hex')]));
 fs.mkdirSync('/opt/adp-security', {recursive: true});
