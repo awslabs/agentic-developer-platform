@@ -2,6 +2,7 @@
 """Allow narrowly defined deployment replacements; protect existing integrations."""
 import importlib.util
 import json
+import os
 import re
 from pathlib import Path
 import sys
@@ -475,9 +476,47 @@ def protected_change(resource):
     return False
 
 
-def evaluate(plan, module, account):
+def worker_migration_plan(plan, module, account, migration):
+    """Authorize only the drained, qualified cutover's known webhook changes."""
+    if not migration or module != 'webhook-ingress':
+        return False
+    values = {k: v.get('value') for k, v in plan.get('variables', {}).items()}
+    return (migration.get('account') == account
+            and migration.get('region') == values.get('aws_region')
+            and migration.get('environment') == values.get('environment')
+            and migration.get('phase') in ('drained', 'configured', 'verified', 'admitting')
+            and values.get('eks_cluster_name') == f"adp-{migration['environment']}-eks-cluster"
+            and values.get('gateway_namespace') == 'adp-gateway'
+            and values.get('agent_image') == migration.get('worker_image')
+            and values.get('agent_authority_worker_image_digests') == [migration['worker_image'].split('@')[1]]
+            and all(values.get(k) is True for k in (
+                'agent_authority_prepared', 'agent_authority_enabled', 'agent_authority_runtime_ready',
+                'agent_authority_legacy_workers_drained', 'agent_task_source_isolation_confirmed',
+                'agent_legacy_worker_admin_retired'))
+            and values.get('agent_worker_admission_paused') is (migration['phase'] != 'admitting'))
+
+
+def migration_rollout(resource, authorized):
+    if not authorized or resource.get('address') != 'terraform_data.worker_gateway_rollout[0]':
+        return False
+    change = resource['change']
+    before = (change.get('before') or {}).get('triggers_replace', {})
+    after = (change.get('after') or {}).get('triggers_replace', {})
+    # This carrier has no destroy provisioner. No resource other than this
+    # marker gains a replacement exception from the migration receipt.
+    return (resource.get('type') == 'terraform_data' and resource.get('deposed') is None
+            and change['actions'] in (['delete', 'create'], ['create', 'delete'])
+            and set(before) == set(after) == {'configuration', 'marker_version', 'rollout_script'}
+            and after.get('rollout_script') == WORKER_ROLLOUT_IDENTITY_MIGRATION[1]
+            and isinstance(after.get('marker_version'), str) and after['marker_version'] != 'disabled'
+            and bool(after['marker_version'])
+            and bool(re.fullmatch('[0-9a-f]{64}', after.get('configuration', ''))))
+
+
+def evaluate(plan, module, account, migration=None):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
+    cutover = worker_migration_plan(plan, module, account, migration)
     for resource in plan["resource_changes"]:
         if module == 'webhook-ingress' and resource['address'] == 'terraform_data.worker_security_rollout':
             change = resource['change']
@@ -485,20 +524,25 @@ def evaluate(plan, module, account):
             after = (change.get('after') or {}).get('input') or {}
             # No destructive override can silently pause a serving deployment
             # or downgrade active protected identities as part of a code update.
-            if (before.get('paused') is False and after.get('paused') is not False
+            authorized_pause = cutover and after.get('active') is True and after.get('paused') is True
+            if (before.get('paused') is False and after.get('paused') is not False and not authorized_pause
                     or before.get('active') is True and after.get('active') is not True):
                 protected.append(resource['address'])
         retained_version = retained_operator_version(resource, plan, module, account)
         if protected_change(resource) and not retained_version:
             protected.append(resource["address"])
         if set(resource["change"]["actions"]) & {"delete", "forget"}:
-            (allowed if retained_version or routine(resource, module, account, plan) else blocked).append(resource["address"])
+            (allowed if retained_version or migration_rollout(resource, cutover)
+             or routine(resource, module, account, plan) else blocked).append(resource["address"])
     return {"routine": allowed, "blocked": blocked, "protected": protected}
 
 
 if __name__ == "__main__":
     try:
-        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
+        migration = None
+        if os.environ.get('ADP_WORKER_MIGRATION_EVIDENCE') and os.environ.get('UPGRADE_RUN_DIR'):
+            migration = json.loads((Path(os.environ['UPGRADE_RUN_DIR']) / 'worker-migration.json').read_text())
+        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3], migration)
         if result["protected"]:
             sys.exit("Upgrade would change protected infrastructure, account settings, credentials, worker admission or installation mappings: " + ", ".join(result["protected"]))
         for address in result["routine"]:

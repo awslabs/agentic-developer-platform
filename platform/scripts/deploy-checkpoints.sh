@@ -40,6 +40,10 @@ deploy_checkpoint_init() {
 }
 deploy_checkpoint_exit() {
   local result="$1"
+  if [ "$result" -ne 0 ] && [ "${WORKER_MIGRATION:-false}" = true ] && [ -n "${UPGRADE_RUN_DIR:-}" ]; then
+    python3 "$SCRIPT_DIR/upgrade-workers.py" fail_closed --directory "$UPGRADE_RUN_DIR" \
+      || echo "Worker migration recovery could not verify its pause; inspect the retained migration receipt" >&2
+  fi
   if [ -n "${DEPLOY_ACTIVE_PHASE:-}" ]; then
     deploy_checkpoint failed "$DEPLOY_ACTIVE_PHASE" || true
   fi

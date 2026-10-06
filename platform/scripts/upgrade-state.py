@@ -51,7 +51,20 @@ def write_json(path, data):
 def release_settings(state, module):
     """Retain account-local inputs; never import platform dev activation flags."""
     if os.environ.get("ADP_PORTABLE_RELEASE_CONFIG") != "true":
-        return {}
+        # Security cutovers remain authoritative on subsequent source updates,
+        # even when an older operator overlay still contains legacy defaults.
+        saved = output(state, "release_configuration", {})
+        security = {
+            'platform': {'agent_authority_legacy_workers_drained', 'agent_legacy_worker_admin_retired'},
+            'gateway': {'orchestration_agent_authority_enabled'},
+            'webhook-ingress': {'agent_authority_prepared', 'agent_authority_enabled',
+                'agent_authority_runtime_ready', 'agent_authority_legacy_workers_drained',
+                'agent_task_source_isolation_confirmed', 'agent_legacy_worker_admin_retired',
+                'agent_worker_admission_paused', 'agent_authority_worker_image_digests'},
+        }
+        if not isinstance(saved, dict):
+            raise ValueError(f"Invalid retained {module} security configuration")
+        return {key: value for key, value in saved.items() if key in security.get(module, set())}
     contract = Path(__file__).resolve().parents[2] / "config/release-defaults/preserved-inputs.json"
     keys = set(json.loads(contract.read_text())[module])
     saved = output(state, "release_configuration")
