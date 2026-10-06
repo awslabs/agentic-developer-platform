@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:54:12.524Z",
+  "updated_at": "2026-10-06T00:59:54.160Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -12,9 +12,10 @@
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/services/retirement_access.py"
       ],
-      "note": "73430b4 adds managed review and live rechecks; admitted PostgreSQL activation and exact revocation remain.",
+      "note": "fab15ef requires paid approval as well as the original seal. Production grant activation and exact revocation remain unwired.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -23,7 +24,8 @@
         "1e0168e",
         "46ba891",
         "bc6d025",
-        "73430b4"
+        "73430b4",
+        "fab15ef"
       ]
     },
     {
@@ -36,9 +38,12 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "32 managed tests passed with no skips; production allocation-bound activation and revocation are not proved."
+      "note": "b92e027 adds real PostgreSQL control admission and forged-paid-source denial; activation and revocation remain untested.",
+      "commits": [
+        "b92e027"
+      ]
     },
     {
       "id": "AC-01-c2",
@@ -90,7 +95,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Review/live-drift denial passes offline; admitted-effect denial remains."
+      "note": "Paid-source denial passes; admitted deletion denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -130,7 +135,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Access review and guarded worker path advanced; managed producer registration remains.",
+      "note": "Managed producer registration and retirement worker wiring remain.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -149,10 +154,8 @@
         "AC-02-c3",
         "AC-02-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py"
-      ],
-      "note": "10 API contract tests passed; no admitted managed API-to-producer test."
+      "files": [],
+      "note": "Seven API cleanup tests pass; no admitted managed API-to-retirement-producer test."
     },
     {
       "id": "AC-02-t2",
@@ -187,7 +190,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Changed-package checks passed locally; full suites and required CI remain."
+      "note": "Focused suites pass separately; full relevant suites and required CI remain."
     },
     {
       "id": "AC-04-c1",
