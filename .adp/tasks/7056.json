@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "issue": 7056,
+  "updated_at": "2026-10-06T00:35:24.653Z",
+  "tasks": [
+    {
+      "id": "AUTH01-c1",
+      "kind": "code",
+      "criterion": "AUTH01",
+      "title": "Gate and audit the repair route",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/admin/org_connections/routes.py",
+        "modules/gateway/src/admin/audit_operation.py"
+      ],
+      "note": "Implementation unchanged; prior authorization and durable-audit evidence remains applicable.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "8cf60c2"
+      ]
+    },
+    {
+      "id": "AUTH01-t1",
+      "kind": "test",
+      "criterion": "AUTH01",
+      "title": "Run route authorization, audit and inventory tests",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin/test_org_github_connection_lifecycle.py",
+        "modules/gateway/tests/admin/test_admin_audit_durability.py",
+        "modules/gateway/tests/admin/test_admin_audit_inventory.py"
+      ],
+      "note": "Previously passed focused validation and the full Gateway admin suite; unchanged tests were not rerun.",
+      "commits": [
+        "0db2fbf",
+        "498a7a8",
+        "cf12129",
+        "bd1d123"
+      ]
+    },
+    {
+      "id": "OWN02-c1",
+      "kind": "code",
+      "criterion": "OWN02",
+      "title": "Attest canonical installation ownership before repair",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/admin/org_connections/service.py"
+      ],
+      "note": "Existing attestation and canonical-owner checks preserved.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "OWN02-t1",
+      "kind": "test",
+      "criterion": "OWN02",
+      "title": "Run attested-owner integration and refusal tests",
+      "status": "done",
+      "covers": [
+        "OWN02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin/connections/test_reconcile_routing.py"
+      ],
+      "note": "Prior passing attestation and refusal tests remain applicable to identical Gateway content.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "18427f4"
+      ]
+    },
+    {
+      "id": "ROUTE03-c1",
+      "kind": "code",
+      "criterion": "ROUTE03",
+      "title": "Conditionally repair one forward routing projection",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/admin/identity_index.py"
+      ],
+      "note": "Existing conditional transaction preserved without changes.",
+      "commits": [
+        "498a7a8",
+        "cf12129",
+        "d9a4bfd"
+      ]
+    },
+    {
+      "id": "ROUTE03-t1",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Run transaction, race, preservation and replay tests",
+      "status": "done",
+      "covers": [
+        "ROUTE03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin/connections/test_reconcile_routing.py"
+      ],
+      "note": "Prior passing transaction, race, replay, preservation and read-failure evidence remains applicable.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "ROUTE03-t2",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Verify prepared base merge with focused Gateway unit regressions",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [],
+      "note": "Revalidated the prepared merge of base 757eb5425631a34725050b560af4dfe75cecb56f: no unmerged entries, unstaged changes or whitespace errors; Superplane files exactly match the supplied base. Previously tested and published Gateway trees both equal a5918d3450921c2ce27895dd1d24af55910c6e0f, and the prepared merge does not change them. Prior 99 focused tests and pinned Ruff checks remain applicable."
+    },
+    {
+      "id": "ROUTE03-t3",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Run full Gateway admin unit suite on the prepared merge",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin"
+      ],
+      "note": "Retained verified result: AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true uv run --locked --extra dev pytest -q -n 4 tests/admin returned 2745 passed, 48 skipped and 1935 warnings in 160.12s. Gateway content and shared validation configuration remain unchanged; no redundant rerun. Skips are not passes."
+    },
+    {
+      "id": "ROUTE03-t4",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Verify published revision and required Gateway CI results",
+      "status": "open",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [],
+      "note": "Controller confirms prior publication at 2fec6499e668dfd83b1b8baa61d10a07b2d7e003. The newer prepared base merge still awaits publication. Supplied CI evidence shows Select Superplane checks queued, with no reported failures; passing final-head evidence remains unavailable."
+    },
+    {
+      "id": "READ04-c1",
+      "kind": "code",
+      "criterion": "READ04",
+      "title": "Compare forward projection with canonical owner in verification",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/admin/connections/service.py"
+      ],
+      "note": "Existing owner-equality verification and tenant-scoped cache preserved.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    },
+    {
+      "id": "READ04-t1",
+      "kind": "test",
+      "criterion": "READ04",
+      "title": "Run verification and webhook-denial regressions",
+      "status": "done",
+      "covers": [
+        "READ04-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin/connections/test_onboarding_verification.py"
+      ],
+      "note": "Prior verification and webhook-denial evidence retained for unchanged code; no repeated suites.",
+      "commits": [
+        "498a7a8",
+        "cf12129"
+      ]
+    }
+  ]
+}

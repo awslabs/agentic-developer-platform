@@ -38,6 +38,7 @@ class Operation:
     terminal: dict | None = None
     started: bool = False
     effects_started: bool = False
+    refusal: dict | None = None
 
 
 current_operation: ContextVar[Operation | None] = ContextVar("admin_operation", default=None)
@@ -168,17 +169,23 @@ class AuditedAdminRoute(APIRoute):
                     if operation.started:
                         await operation.db.rollback()
                         code = getattr(exc, "status_code", 500)
+                        refused = code in (401, 403, 404, 409, 422) or (operation.refusal is not None and not operation.effects_started)
                         try:
                             await persist(
                                 operation,
-                                event_type="admin_operation_refused" if code in (401, 403, 404, 409, 422) else "admin_operation_failed",
-                                outcome="denied"
-                                if code in (401, 403, 404, 409, 422) and not operation.effects_started
-                                else "reconciliation_required",
+                                event_type="admin_operation_refused" if refused else "admin_operation_failed",
+                                outcome=(
+                                    "refused"
+                                    if operation.refusal is not None and not operation.effects_started
+                                    else "denied"
+                                    if refused and not operation.effects_started
+                                    else "reconciliation_required"
+                                ),
                                 extra={
                                     "status_code": code,
                                     "exception_type": type(exc).__name__,
                                     "effects_may_have_occurred": operation.effects_started,
+                                    **(operation.refusal or {}),
                                 },
                             )
                         except Exception:
