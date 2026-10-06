@@ -98,7 +98,7 @@ async def reconcile_routing(org_id: str, installation_id: int, expected_org_id: 
         outcome, observed = await IdentityIndexClient().reconcile_installation_routing(installation_id, expected_org_id, org_id)
     except Exception as exc:
         logger.warning("Routing reconciliation projection unavailable for installation=%s: %s", installation_id, type(exc).__name__)
-        raise RoutingReconciliationRefusedError("projection_unavailable", 503) from exc
+        raise RoutingReconciliationRefusedError("projection_unavailable", 503, authoritative_org_id=org_id) from exc
     if outcome not in {"repaired", "already_consistent"}:
         raise RoutingReconciliationRefusedError(outcome, observed_org_id=observed, authoritative_org_id=org_id)
     return outcome, observed or org_id
