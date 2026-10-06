@@ -7,6 +7,7 @@ adopted: untracked operator access and account-setting ownership require review.
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -100,7 +101,36 @@ def check_operator(state, identity, region, cluster, read=aws):
                                  ' before upgrading; see platform_upgrades.md.')
 
 
-def prepare(directory, account, region, environment, gateway=True):
+def check_worker_security(state, release=False):
+    """Do not turn an ordinary upgrade into an implicit worker cutover.
+
+    These are current Terraform observations, not runtime qualification proof.
+    A staged migration may update an already paused deployment outside release
+    mode; a release requires the completed migration and live acceptance later.
+    """
+    rollout = state_tools.output(state, 'worker_security_rollout', {})
+    saved = state_tools.output(state, 'release_configuration', {})
+    if not isinstance(rollout, dict) or not isinstance(saved, dict):
+        raise ValueError('Invalid worker security state; inspect the current webhook state')
+    paused = rollout.get('admission_paused') is True
+    migrated = (rollout.get('active') is True
+                and rollout.get('legacy_admin_retired') is True
+                and saved.get('agent_task_source_isolation_confirmed') is True
+                and saved.get('agent_authority_runtime_ready') is True
+                and saved.get('agent_authority_legacy_workers_drained') is True)
+    if not migrated and not (paused and not release):
+        raise ValueError(
+            'Worker security migration required before upgrading gateway or webhook code. '
+            'Quiesce admission, reconcile queued work, drain legacy jobs, qualify protected runtimes, '
+            'isolate the legacy source role and retire administrator grants through reviewed Terraform stages. '
+            'Do not set readiness assertions without evidence or use --confirm-destructive. '
+            'See docs/security/terraform-worker-rollout.md#stages. No migration was performed.')
+    if release and rollout.get('admission_paused') is not False:
+        raise ValueError('Release requires worker admission enabled after security qualification; '
+                         'a paused deployment is maintenance, not release acceptance')
+
+
+def prepare(directory, account, region, environment, gateway=True, webhook=True):
     directory = Path(directory)
     identity = aws(region, 'sts', 'get-caller-identity')
     if identity['Account'] != account:
@@ -116,6 +146,13 @@ def prepare(directory, account, region, environment, gateway=True):
         aws(region, 's3api', 'get-object', '--bucket', f'adp-terraform-state-{account}', '--key', key, str(path))
         return json.loads(path.read_text())
 
+    # Resume must inspect current state, never accept the original pre-migration
+    # snapshot as proof. Check before any deployment or network mutation.
+    if (gateway or webhook) and (directory / 'webhook-ingress-before.tfstate').exists():
+        installed_workers = current_state('webhook-ingress')
+        if (list(state_tools.resources(installed_workers))
+                or state_tools.output(installed_workers, 'worker_security_rollout') is not None):
+            check_worker_security(installed_workers, release=bool(os.environ.get('ADP_RELEASE_DIR')))
     platform = current_state('platform')
     settings = check_settings(platform, region)
     check_operator(platform, identity, region, f'adp-{environment}-eks-cluster')
@@ -161,8 +198,10 @@ if __name__ == '__main__':
     for name in ('directory', 'account', 'region', 'environment'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--skip-gateway', action='store_true')
+    parser.add_argument('--skip-webhook', action='store_true')
     args = vars(parser.parse_args())
     args['gateway'] = not args.pop('skip_gateway')
+    args['webhook'] = not args.pop('skip_webhook')
     try:
         prepare(**args)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
