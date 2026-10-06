@@ -5,9 +5,18 @@ from __future__ import annotations
 import re
 import hashlib
 import stat
+import uuid
 
 from .api_adapters import closed
-from .config import EKS_NAME, IDENTIFIER, deployment_identity, digest, identity, require
+from .config import (
+    EKS_NAME,
+    IDENTIFIER,
+    SCHEMA,
+    deployment_identity,
+    digest,
+    identity,
+    require,
+)
 
 
 def names(env):
@@ -221,6 +230,8 @@ def compose(request, reviewed, env, lock, operator):
             "producer_registry_id",
             "worker_registry_id",
             "database_secret_id",
+            "domain_database_secret_id",
+            "domain_database_schema",
             "observation_credential_secret_id",
             "observation_url",
             "repo",
@@ -309,10 +320,29 @@ def compose(request, reviewed, env, lock, operator):
             )
             for key in ("producer_registry_id", "worker_registry_id")
         )
-        and operator["producer_registry_id"] != operator["worker_registry_id"],
-        "Runtime preparation needs distinct owner-provided registry identifiers",
+        and operator["producer_registry_id"] != operator["worker_registry_id"]
+        and operator["producer_registry_id"]
+        == str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "adp:domain-operation-registration:v1:" + dispatcher["role_arn"],
+            )
+        )
+        and operator["worker_registry_id"]
+        == str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "adp:domain-operation-registration:v1:" + resources["worker_role_arn"],
+            )
+        ),
+        "Runtime preparation requires the protected owner's deterministic registry identities",
     )
-    for key in ("database_secret_id", "observation_credential_secret_id"):
+    secret_fields = (
+        "database_secret_id",
+        "domain_database_secret_id",
+        "observation_credential_secret_id",
+    )
+    for key in secret_fields:
         require(
             isinstance(operator[key], str)
             and re.fullmatch(
@@ -322,8 +352,8 @@ def compose(request, reviewed, env, lock, operator):
             "Runtime preparation needs exact selected same-account secret identifiers",
         )
     require(
-        operator["database_secret_id"] != operator["observation_credential_secret_id"],
-        "Runtime preparation secret purposes must be separate",
+        len({operator[key] for key in secret_fields}) == 3,
+        "Runtime preparation Harness, domain and observation secret purposes must be separate",
     )
     require(
         isinstance(operator["observation_url"], str)
@@ -361,8 +391,15 @@ def compose(request, reviewed, env, lock, operator):
     )
     require(
         isinstance(env.get("database"), dict)
-        and worker["operation_schema"] == env["database"].get("schema"),
-        "Runtime preparation needs the existing isolated domain schema",
+        and isinstance(operator["domain_database_schema"], str)
+        and SCHEMA.fullmatch(operator["domain_database_schema"])
+        and operator["domain_database_schema"] != "public"
+        and operator["domain_database_schema"] == env["database"].get("schema")
+        and isinstance(worker["operation_schema"], str)
+        and SCHEMA.fullmatch(worker["operation_schema"])
+        and worker["operation_schema"] != "public"
+        and worker["operation_schema"] != operator["domain_database_schema"],
+        "Runtime preparation requires separate Harness operation and existing domain schemas",
     )
     require(
         https_origin(worker["management_api_server"]),
@@ -397,6 +434,8 @@ def compose(request, reviewed, env, lock, operator):
         "worker_registry_id": operator["worker_registry_id"],
         "database_secret_id": operator["database_secret_id"],
         "database_schema": selected["operation_schema"],
+        "domain_database_secret_id": operator["domain_database_secret_id"],
+        "domain_database_schema": operator["domain_database_schema"],
         "queue_url": resources["queue_url"],
         "worker_namespace": request["namespace"],
         "worker_service_account": paid_worker.WORKER,

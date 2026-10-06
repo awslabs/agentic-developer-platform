@@ -10,8 +10,8 @@ This is an app-owned source candidate for #7058. It prepares **only** a dedicate
 
 - `review_id`: a reference for an independently authenticated operator review, **not approval proof**.
 - `keda_operator_role_arn`: the selected existing same-account KEDA operator role; its owner must grant assumption of the new observer role by maintained policy.
-- `producer_registry_id`, `worker_registry_id`: distinct identities assigned through the protected Gateway owner route, not created by this mapping.
-- `database_secret_id`, `observation_credential_secret_id`: distinct selected Secrets Manager **references**, never SecretString or credentials.
+- `producer_registry_id`, `worker_registry_id`: the protected owner’s deterministic UUIDv5 identities using the URL namespace and `adp:domain-operation-registration:v1:<exact-role-ARN>` for the producer and worker respectively. This mapping proposes references; it does not register or attest them.
+- `database_secret_id`: the selected shared Harness operation-store DSN reference. `domain_database_secret_id`, `domain_database_schema`: the separate domain-port DSN reference and existing domain schema (matching the installer environment). `observation_credential_secret_id`: the separate observation credential reference. All three Secrets Manager references must be distinct and in the selected account/region; never supply SecretString or credentials. The worker `operation_schema` must be a separate non-public schema, such as `superplane_operations`; domain schema remains `superplane`.
 - `observation_url`, `repo`: the protected Gateway observation endpoint and repository binding.
 - `policy_configmap: superplane-lifecycle-policy`, `state_claim: superplane-lifecycle-state`: fixed reviewed inputs; existence, immutability and durability are not attested here.
 - `worker`: exactly `database_secret`, `workspace_credentials_secret`, `provider_secret`, `operation_schema`, `skypilot_url`, `management_api_server`, `node_selector`, `egress`, `max_replica_count`, `active_deadline_seconds`. The first three are Kubernetes Secret **names**, not values. The existing paid-worker validator enforces the dedicated schema, bounded execution, distinct secrets and fixed egress names. The immutable paid-worker image comes from the selected release lock; a pending image is refused.
@@ -47,3 +47,19 @@ python3 scripts/check-public-docs.py
 ```
 
 These checks demonstrate source contracts only. The foreground installer and shared owners separately review, authorize, wire, build, run and collect live evidence; do not treat this PR or its synthetic fixtures as live acceptance.
+
+
+## Source integration dependency
+
+The runtime proposal now uses the two-store binding consumed by shared owner
+#7065: `database_secret_id`/`database_schema` select Harness operation storage;
+`domain_database_secret_id`/`domain_database_schema` select domain ports. Registry
+IDs exactly match the protected owner's deterministic role-ARN keys. A registry
+proposal still supplies no authority or readiness proof.
+
+The paid-worker consumer from #5535 must accept and keep these two stores
+isolated. Its older validator equates `operation_schema` to the domain schema;
+that source correctly refuses this new proposal until the reviewed consumer
+update lands. Do not rewrite the environment to appease that old validator or
+combine database search paths. The integration tests must pass against the
+actual updated consumer before merging or planning this source for live use.

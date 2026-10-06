@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -138,12 +139,27 @@ def contract_input(native):
             "queue_arn",
         }
     }
+    worker["operation_schema"] = "superplane_operations"
     operator = {
         "review_id": "change-001",
         "keda_operator_role_arn": f"arn:aws:iam::{env['account_id']}:role/existing-keda-operator",
-        "producer_registry_id": "11111111-1111-1111-1111-111111111111",
-        "worker_registry_id": "22222222-2222-2222-2222-222222222222",
-        "database_secret_id": f"arn:aws:secretsmanager:{env['region']}:{env['account_id']}:secret:domain-db-abc123",
+        "producer_registry_id": str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "adp:domain-operation-registration:v1:"
+                + env["api_adapters"]["dispatcher"]["role_arn"],
+            )
+        ),
+        "worker_registry_id": str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "adp:domain-operation-registration:v1:"
+                + reviewed["resources"]["worker_role_arn"],
+            )
+        ),
+        "database_secret_id": f"arn:aws:secretsmanager:{env['region']}:{env['account_id']}:secret:operation-db-abc123",
+        "domain_database_secret_id": f"arn:aws:secretsmanager:{env['region']}:{env['account_id']}:secret:domain-db-abc123",
+        "domain_database_schema": env["database"]["schema"],
         "observation_credential_secret_id": f"arn:aws:secretsmanager:{env['region']}:{env['account_id']}:secret:observation-abc123",
         "observation_url": "https://observer.example.test/verify",
         "repo": "example/superplane",
@@ -168,6 +184,17 @@ def test_contract_reuses_actual_worker_validator_and_fixed_gateway_binding(
     assert (
         result["gateway_binding_proposal"]["queue_url"]
         == reviewed["resources"]["queue_url"]
+    )
+    assert (
+        result["gateway_binding_proposal"]["database_schema"] == "superplane_operations"
+    )
+    assert (
+        result["gateway_binding_proposal"]["domain_database_schema"]
+        == env["database"]["schema"]
+    )
+    assert (
+        result["gateway_binding_proposal"]["database_secret_id"]
+        != result["gateway_binding_proposal"]["domain_database_secret_id"]
     )
     assert result["gateway_binding_proposal"]["worker_image_digests"] == [
         lock["images"][paid_worker.COMPONENT]
@@ -271,3 +298,29 @@ def test_gateway_binding_and_terraform_variable_shapes_match_actual_sources(
     variables = set(re.findall(r'^variable "([a-z_]+)"', terraform, re.MULTILINE))
     assert set(result["terraform_variables"]) == variables
     assert (domain_apps.parent / "harness/jobs/harness_jobs/schema.py").exists()
+
+
+@pytest.mark.parametrize("field", ["producer_registry_id", "worker_registry_id"])
+def test_registry_proposals_require_protected_owner_identity(contract_input, field):
+    from installation.runtime_preparation import compose
+
+    request, reviewed, env, lock, operator = contract_input
+    operator[field] = "11111111-1111-1111-1111-111111111111"
+    with pytest.raises(Refusal, match="deterministic registry"):
+        compose(request, reviewed, env, lock, operator)
+
+
+@pytest.mark.parametrize(
+    "field", ["domain_database_secret_id", "domain_database_schema"]
+)
+def test_shared_operation_and_domain_ports_cannot_be_aliased(contract_input, field):
+    from installation.runtime_preparation import compose
+
+    request, reviewed, env, lock, operator = contract_input
+    operator[field] = (
+        operator["database_secret_id"]
+        if field.endswith("secret_id")
+        else operator["worker"]["operation_schema"]
+    )
+    with pytest.raises(Refusal, match="separate"):
+        compose(request, reviewed, env, lock, operator)
