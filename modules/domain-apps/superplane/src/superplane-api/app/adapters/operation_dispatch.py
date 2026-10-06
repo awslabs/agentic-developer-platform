@@ -429,11 +429,13 @@ class OperationDispatcher:
             return ()
         async with self.connect() as connection:
             rows = await connection.fetch(
-                "SELECT o.operation_id FROM harness_dispatch_outbox o "
+                "SELECT o.operation_id FROM harness_dispatch_outbox b "
+                "JOIN harness_operations o ON o.operation_id=b.operation_id "
+                "AND o.org_id=b.org_id AND o.workspace_id=b.workspace_id "
                 "JOIN workspaces w ON w.id::text=o.workspace_id AND w.org_id::text=o.org_id "
-                "WHERE o.delivered_at IS NULL AND o.abandoned_at IS NULL "
-                "AND (o.claimed_until IS NULL OR o.claimed_until<now()) "
-                "AND " + _REGISTERED + " ORDER BY o.id LIMIT 100",
+                "WHERE b.delivered_at IS NULL AND b.abandoned_at IS NULL "
+                "AND (b.claimed_until IS NULL OR b.claimed_until<now()) "
+                "AND " + _REGISTERED + " ORDER BY b.id LIMIT 100",
             )
             return await self.outbox.drain_once(
                 connection,

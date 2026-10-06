@@ -6,9 +6,11 @@ ledger use real PostgreSQL. These tests run in remote CI, never against a cloud.
 """
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,6 +24,7 @@ from workspace_provisioning.runtime_config import LifecycleRefused
 
 from app import database
 from app.adapters.harness_operation_facade import HarnessOperationFacade
+from app.adapters.operation_dispatch import OperationDispatcher
 from app.adapters.operation_authority_source import (
     ActingPrincipal,
     GrantBackedAuthority,
@@ -31,6 +34,8 @@ from app.adapters.operation_authority_source import (
 from app.config import settings
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
+from app.models.controller_deployment import ControllerDeploymentOperation
+from app.models.deployment import Deployment
 from app.models.lifecycle import WorkspaceLifecycleArtifact
 from app.models.operation_approval import OperationApproval
 from app.models.organization import Organization
@@ -124,6 +129,8 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
                     CloudAccount,
                     Cluster,
                     Workspace,
+                    Deployment,
+                    ControllerDeploymentOperation,
                     OrganizationGrantRecord,
                     WorkspaceGrantRecord,
                     OperationApproval,
@@ -135,16 +142,58 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
     for module in (database, onboarding, lifecycle_proposals):
         monkeypatch.setattr(module, "async_session_factory", sessions)
     authority = GrantBackedAuthority(sessions)
+    org_id = uuid.uuid4()
+    binding = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "arn:aws:iam::123456789012:role/paid-worker",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:paid-operations",
+    }
+    binding_file = tmp_path / "worker-binding.json"
+    binding_file.write_text(json.dumps(binding))
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+
+    async def binding_proof(route, payload):
+        assert (route, payload) == (
+            "/binding-proof",
+            {"domain": "superplane", "org_id": str(org_id)},
+        )
+        return {
+            "version": 1,
+            "installed": True,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "domain": "superplane",
+            "org_id": str(org_id),
+            "adp_org_id": "adp-test",
+            **binding,
+        }
+
+    dispatcher = OperationDispatcher(
+        connections.connect,
+        SimpleNamespace(post=binding_proof),
+        policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
+    )
     facade = HarnessOperationFacade(
         OperationFacadeService(
             connect=connections.connect,
             resolver=authority,
             approvals=authority,
             ledger=budget,
-        )
+        ),
+        lifecycle_verify=dispatcher.binding_ready,
     )
     monkeypatch.setattr(provisioning, "_facade", facade)
-    org_id = uuid.uuid4()
     document = {"version": 1, "tenants": {str(org_id): policy()}}
     config = tmp_path / "lifecycle-policy.json"
     config.write_text(canonical(document))

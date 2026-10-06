@@ -1,5 +1,7 @@
 """The actual shared outbox waits for durable domain workspace registration."""
 
+import json
+import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -11,6 +13,7 @@ from harness_jobs.leases import acquire, fence_expired_lease, read_lease, releas
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.adapters.operation_dispatch import OperationDispatcher
+from app.config import settings
 from app.database import Base
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
@@ -30,17 +33,31 @@ pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 class GatewayTransport:
-    def __init__(self):
+    def __init__(self, binding, adp_org_id="adp-tenant"):
         self.calls = []
         self.alter = {}
+        self.binding = binding
+        self.adp_org_id = adp_org_id
+        self.proofs = []
 
     async def post(self, route, payload):
+        if route == "/binding-proof":
+            self.proofs.append(payload)
+            return {
+                "version": 1,
+                "installed": True,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "domain": "superplane",
+                "org_id": payload["org_id"],
+                "adp_org_id": self.adp_org_id,
+                **self.binding,
+            }
         self.calls.append((route, payload))
         return {
             "version": 1,
             **payload,
             "domain_org_id": payload["org_id"],
-            "adp_org_id": "adp-tenant",
+            "adp_org_id": self.adp_org_id,
             "invocation_id": "real-invocation",
             "principal": "real-invocation#1",
             "status": "pending",
@@ -50,7 +67,7 @@ class GatewayTransport:
 
 
 @pytest.fixture
-async def dispatch(settlement, installation_postgres_url):  # noqa: F811
+async def dispatch(settlement, installation_postgres_url, monkeypatch, tmp_path):  # noqa: F811
     _, connections, _, identity, _ = settlement
     async with connections.connect() as connection:
         schema = await connection.fetchval("SELECT current_schema()")
@@ -98,7 +115,27 @@ async def dispatch(settlement, installation_postgres_url):  # noqa: F811
             )
             await session.commit()
 
-    transport = GatewayTransport()
+    binding = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "arn:aws:iam::123456789012:role/paid-worker",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:paid-operations",
+    }
+    binding_file = tmp_path / "worker-binding.json"
+    binding_file.write_text(json.dumps(binding))
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    transport = GatewayTransport(binding)
     dispatcher = OperationDispatcher(
         connections.connect,
         transport,
@@ -124,6 +161,7 @@ async def test_admission_before_workspace_commit_is_not_delivered_or_exhausted(
         )
     await register()
     assert (await dispatcher.drain_once()).delivered == 1
+    assert transport.proofs == [{"domain": "superplane", "org_id": identity["org_id"]}]
     assert (await dispatcher.drain_once()).handled == 0
     assert transport.calls == [
         ("/dispatch", {"domain": "superplane", "mode": "execution", **identity})
