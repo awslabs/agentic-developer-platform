@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from src.shared.config import get_settings
@@ -36,6 +37,7 @@ class AgentRegistryEntry(TypedDict):
 
     agent_id: str
     role_arn: str
+    iam_role_id: str
     agent_name: str
     org_id: str
     team_id: str
@@ -78,6 +80,7 @@ class AgentRegistryService:
         settings = get_settings()
         self._table_name = table_name or settings.agent_registry_table
         self._dynamodb = None
+        self._iam = None
         # Use OrderedDict for LRU-style eviction with size limit
         self._cache: OrderedDict[str, tuple[AgentRegistryEntry | None, datetime]] = OrderedDict()
         self._cache_ttl = timedelta(minutes=5)  # Cache entries for 5 minutes
@@ -109,6 +112,7 @@ class AgentRegistryService:
         return AgentRegistryEntry(
             agent_id=item.get("agent_id", {}).get("S", ""),
             role_arn=item.get("role_arn", {}).get("S", ""),
+            iam_role_id=item.get("iam_role_id", {}).get("S", ""),
             agent_name=item.get("agent_name", {}).get("S", ""),
             org_id=item.get("org_id", {}).get("S", ""),
             team_id=item.get("team_id", {}).get("S", ""),
@@ -126,6 +130,33 @@ class AgentRegistryService:
             created_at=item.get("created_at", {}).get("S", ""),
             updated_at=item.get("updated_at", {}).get("S", ""),
         )
+
+    @staticmethod
+    def _domain_role(entry: AgentRegistryEntry) -> bool:
+        return entry.get("owner") == "webhook-terraform-domain-operations-v1" or bool(
+            re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/adp-[a-z][a-z0-9-]*-superplane-(api-producer|domain-worker)", entry["role_arn"])
+        )
+
+    def _domain_role_is_current(self, entry: AgentRegistryEntry) -> bool:
+        if not self._domain_role(entry):
+            return True
+        expected = entry.get("iam_role_id", "")
+        if not re.fullmatch(r"AROA[A-Z0-9]{16,32}", expected):
+            return False
+        try:
+            if self._iam is None:
+                self._iam = boto3.client(
+                    "iam",
+                    region_name=get_settings().aws_region,
+                    config=Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1}),
+                )
+            observed = self._iam.get_role(RoleName=entry["role_arn"].rsplit("/", 1)[-1])["Role"]
+            return observed["Arn"] == entry["role_arn"] and observed["RoleId"] == expected
+        except Exception:
+            # Missing/recreated role, denied lookup and unknown provider outcome
+            # all refuse protected authority; never log SDK response contents.
+            logger.warning("Protected domain IAM role identity could not be verified")
+            return False
 
     def get_agent_by_role_arn(self, role_arn: str) -> AgentRegistryEntry | None:
         """
@@ -148,6 +179,8 @@ class AgentRegistryService:
             cached_entry, cache_time = self._cache[role_arn]
             if self._is_cache_valid(cache_time):
                 logger.debug(f"Cache hit for role_arn: {role_arn}")
+                if cached_entry is not None and self._domain_role(cached_entry):
+                    return self.get_current_agent(cached_entry["agent_id"], role_arn)
                 return cached_entry
 
         try:
@@ -173,6 +206,11 @@ class AgentRegistryService:
                 logger.warning(f"Agent {entry['agent_name']} is not active (status: {entry['status']})")
                 self._cache_set(role_arn, (None, datetime.now(UTC)))
                 return None
+
+            if self._domain_role(entry):
+                entry = self.get_current_agent(entry["agent_id"], role_arn)
+                if entry is None:
+                    return None
 
             logger.info(f"Found agent: {entry['agent_name']} (org: {entry['org_id']}, team: {entry['team_id']})")
             self._cache_set(role_arn, (entry, datetime.now(UTC)))
@@ -204,6 +242,8 @@ class AgentRegistryService:
             return None
         entry = self._parse_dynamodb_item(item)
         if entry["role_arn"] != role_arn or entry["status"] != "active":
+            return None
+        if not self._domain_role_is_current(entry):
             return None
         return entry
 

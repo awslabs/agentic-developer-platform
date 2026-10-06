@@ -40,6 +40,8 @@ locals {
     ADP_TASK_WORKER_IMAGE_DIGESTS   = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
     } : {}, length(var.codex_task_personas) > 0 ? {
     ADP_CODEX_PERSONA_CATALOG_FILE = "/app/src/agentauth/codex-github-catalogue.json"
+    } : {}, local.domain_operation_enabled ? {
+    ADP_DOMAIN_OPERATION_BINDINGS = jsonencode(local.domain_operation_gateway_bindings)
   } : {})
 }
 
@@ -49,7 +51,8 @@ resource "kubernetes_config_map" "worker_gateway" {
     name      = "adp-worker-authority-config"
     namespace = var.gateway_namespace
   }
-  data = local.worker_gateway_config
+  data       = local.worker_gateway_config
+  depends_on = [terraform_data.domain_operation_registration, aws_iam_role_policy.gateway_domain_operations, aws_iam_role_policy_attachment.gateway_domain_operations, kubernetes_role_binding.gateway_domain_operation_read]
   lifecycle {
     precondition {
       condition     = !var.shared_worker_continuation_enabled || (var.shared_run_reporting_enabled && !var.agent_authority_enabled)
@@ -85,6 +88,10 @@ resource "terraform_data" "worker_gateway_rollout" {
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,
+    terraform_data.domain_operation_registration,
+    aws_iam_role_policy.gateway_domain_operations,
+    aws_iam_role_policy_attachment.gateway_domain_operations,
+    kubernetes_role_binding.gateway_domain_operation_read,
   ]
 }
 

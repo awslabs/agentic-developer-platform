@@ -100,13 +100,15 @@ jobs:
             modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
             modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py \
-            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py
+            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py \
+            modules/agent-factory/webhook-ingress/scripts/tests/test_domain_operation_registration.py
       - name: Check Terraform rollout states with mocked providers
         working-directory: modules/agent-factory/webhook-ingress/infra
         run: |
           terraform init -backend=false -input=false
           terraform test -filter=tests/agent_worker_events_write.tftest.hcl \
-            -filter=tests/worker_security_rollout.tftest.hcl
+            -filter=tests/worker_security_rollout.tftest.hcl \
+            -filter=tests/domain_operation_bindings.tftest.hcl
 
   lint:
     name: Lint
