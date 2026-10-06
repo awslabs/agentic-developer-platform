@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from .api_adapters import closed
-from .config import EKS_NAME, IDENTIFIER, digest, identity, require
+from .config import EKS_NAME, IDENTIFIER, deployment_identity, digest, identity, require
 
 
 def names(env):
@@ -47,10 +47,71 @@ def validate_request(request):
     require(
         isinstance(request["operator_role_arn"], str)
         and re.fullmatch(
-            rf"arn:aws:iam::{request['account_id']}:role/[A-Za-z0-9+=,.@_-]{{1,64}}",
+            rf"arn:aws:iam::{request['account_id']}:role/(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{{1,64}}",
             request["operator_role_arn"],
         ),
         "Runtime preparation requires an explicit same-account operator role",
+    )
+
+
+def selected_operator(request, env):
+    selected = deployment_identity(env, required=True)
+    require(
+        request["account_id"] == env.get("account_id")
+        and request["operator_role_arn"] == selected["expected_role_arn"],
+        "Runtime operator differs from the selected connection identity",
+    )
+    return dict(selected)
+
+
+def verify_operator(request, selected, commands):
+    """Check the credentials used for Terraform, not just the read-only inspector."""
+    import json
+
+    from .config import Refusal
+
+    def observed(*args):
+        result = commands.call(
+            [
+                "aws",
+                "--region",
+                request["region"],
+                "--no-cli-pager",
+                *args,
+                "--output",
+                "json",
+            ],
+            timeout=120,
+        )
+        try:
+            value = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            raise Refusal("Runtime operator identity response is invalid") from None
+        require(
+            isinstance(value, dict), "Runtime operator identity response is invalid"
+        )
+        return value
+
+    target = observed("sts", "get-caller-identity")
+    role_name = selected["expected_role_arn"].rsplit("/", 1)[1]
+    prefix = f"arn:aws:sts::{request['account_id']}:assumed-role/{role_name}/"
+    arn = target.get("Arn", "")
+    require(
+        target.get("Account") == request["account_id"]
+        and isinstance(arn, str)
+        and arn.startswith(prefix)
+        and bool(arn[len(prefix) :])
+        and "/" not in arn[len(prefix) :]
+        and target.get("UserId")
+        == selected["expected_role_id"] + ":" + arn[len(prefix) :],
+        "Runtime operator session differs from the selected connection identity",
+    )
+    role = observed("iam", "get-role", "--role-name", role_name).get("Role")
+    require(
+        isinstance(role, dict)
+        and role.get("Arn") == selected["expected_role_arn"]
+        and role.get("RoleId") == selected["expected_role_id"],
+        "Runtime operator role differs from the selected immutable identity",
     )
 
 
@@ -59,7 +120,7 @@ def review(request, inspector, *, existing=False):
     validate_request(request)
     account, region = request["account_id"], request["region"]
     target = inspector.json(inspector.aws("sts", "get-caller-identity"))
-    role = request["operator_role_arn"].split(":role/", 1)[1]
+    role = request["operator_role_arn"].rsplit("/", 1)[1]
     require(
         target.get("Account") == account
         and target.get("Arn", "").startswith(
@@ -149,6 +210,7 @@ def compose(request, reviewed, env, lock, operator):
     from .config import https_origin
 
     validate_request(request)
+    selected_identity = selected_operator(request, env)
     closed(
         operator,
         {
@@ -356,6 +418,7 @@ def compose(request, reviewed, env, lock, operator):
         "state_durable_verified": False,
         "review_id": operator["review_id"],
         "installation_id": reviewed["installation_id"],
+        "deployment_identity": selected_identity,
         "terraform_variables": {
             "account_id": request["account_id"],
             "region": request["region"],
@@ -368,6 +431,7 @@ def compose(request, reviewed, env, lock, operator):
             "api_stage": dispatcher["stage"],
             "keda_operator_role_arn": operator["keda_operator_role_arn"],
             "operator_role_arn": request["operator_role_arn"],
+            "operator_role_id": selected_identity["expected_role_id"],
         },
         "paid_worker": selected,
         "gateway_binding_proposal": binding,
@@ -417,6 +481,7 @@ READ_ADDRESSES = frozenset(
         "data.aws_eks_cluster.selected",
         "data.aws_iam_openid_connect_provider.selected",
         "data.aws_iam_role.keda_operator",
+        "data.aws_iam_role.operator",
     }
 )
 WORKER_ROUTES = (
@@ -710,7 +775,7 @@ def inspect_state(state, proposal, inspector):
     )["Tags"]
     require(
         attributes.get("QueueArn") == expected_arn
-        and attributes.get("FifoQueue") == "false"
+        and attributes.get("FifoQueue", "false") == "false"
         and attributes.get("SqsManagedSseEnabled") == "true"
         and not attributes.get("Policy")
         and not attributes.get("RedrivePolicy")
@@ -824,6 +889,8 @@ def prepare(
     from .runner import atomic
 
     validate_request(request)
+    selected_identity = selected_operator(request, env)
+    verify_operator(request, selected_identity, commands)
     work = Path(directory)
     require(
         work.is_absolute() and not work.is_symlink(),
@@ -952,6 +1019,7 @@ def prepare(
         prefix = ["terraform", f"-chdir={terraform_dir}"]
 
         def call(*args):
+            verify_operator(request, selected_identity, commands)
             return commands.call([*prefix, *args], timeout=120)
 
         def structured(*args):
@@ -1040,6 +1108,7 @@ def prepare(
             review(request, inspector) == reviewed,
             "Runtime target identity or name inventory changed before apply",
         )
+        verify_operator(request, selected_identity, commands)
         receipt["status"] = "apply-attempted"
         atomic(receipt_file, receipt)
         call("apply", "-input=false", "-lock-timeout=60s", "installation.tfplan")

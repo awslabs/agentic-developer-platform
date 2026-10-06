@@ -10,9 +10,9 @@ import contextlib
 import copy
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
-import ipaddress
 import subprocess
 import sys
 import tempfile
@@ -25,11 +25,13 @@ from urllib.parse import urlsplit
 import httpx
 import yaml
 
+from .cluster_probe import ClusterProbe
 from .config import (
     COMPONENTS,
     LABEL,
     MODULE,
     Refusal,
+    deployment_identity,
     digest,
     identity,
     image,
@@ -37,7 +39,6 @@ from .config import (
     verify_cluster_dns,
 )
 from .manifests import bootstrap_job, migration_job, render
-from .cluster_probe import ClusterProbe
 
 sys.path.insert(0, str(MODULE / "infra/scripts"))
 from domain_ownership import validate_plan  # noqa: E402
@@ -134,12 +135,88 @@ class Installer:
             self.receipt["mode"] = "control-plane-only"
         self.receipt_path = directory / "receipt.json"
 
+    def verify_deployment_identity(self):
+        selected = deployment_identity(self.env, required=True)
+        # Use the active command credentials each time. Never cache success across
+        # phases, credential refresh, compensation, cleanup or lock recovery.
+        caller = self.json(
+            self.commands.call(
+                [
+                    "aws",
+                    "--region",
+                    self.env["region"],
+                    "--no-cli-pager",
+                    "sts",
+                    "get-caller-identity",
+                    "--output",
+                    "json",
+                ]
+            )
+        )
+        role_arn = selected["expected_role_arn"]
+        role_name = role_arn.rsplit("/", 1)[1]
+        prefix = f"arn:aws:sts::{self.env['account_id']}:assumed-role/{role_name}/"
+        arn, user_id = caller.get("Arn", ""), caller.get("UserId", "")
+        require(
+            caller.get("Account") == self.env["account_id"],
+            "AWS identity does not match the selected account",
+        )
+        require(
+            isinstance(arn, str)
+            and arn.startswith(prefix)
+            and bool(arn[len(prefix) :])
+            and "/" not in arn[len(prefix) :]
+            and user_id == selected["expected_role_id"] + ":" + arn[len(prefix) :],
+            "AWS session does not match the selected connection role identity",
+        )
+        observed = self.json(
+            self.commands.call(
+                [
+                    "aws",
+                    "--region",
+                    self.env["region"],
+                    "--no-cli-pager",
+                    "iam",
+                    "get-role",
+                    "--role-name",
+                    role_name,
+                    "--output",
+                    "json",
+                ]
+            )
+        ).get("Role", {})
+        require(
+            observed.get("Arn") == role_arn
+            and observed.get("RoleId") == selected["expected_role_id"],
+            "Selected IAM role was replaced or differs from the authorized connection",
+        )
+        self.receipt["deployment_identity_verification"] = {
+            **selected,
+            "account_id": caller["Account"],
+            "assumed_role_arn": arn,
+            "verified_at": datetime.now(UTC).isoformat(),
+            "stage": self.receipt.get("stage"),
+        }
+        self.save()
+        return caller
+
     def aws(self, *args, **kwargs):
+        # S3 locks/routes and secret preparation also mutate outside phase().
+        # Unknown operations are guarded; only AWS read verbs/local kubeconfig
+        # generation may proceed without another check.
+        operation = args[1] if len(args) > 1 else ""
+        if (
+            not operation.startswith(("get-", "describe-", "list-", "head-"))
+            and operation != "update-kubeconfig"
+        ):
+            self.verify_deployment_identity()
         return self.commands.call(
             ["aws", "--region", self.env["region"], "--no-cli-pager", *args], **kwargs
         )
 
     def kube(self, *args, data=None, **kwargs):
+        if not args or args[0] not in {"get", "logs", "auth", "config", "wait"}:
+            self.verify_deployment_identity()
         return self.commands.call(
             [
                 "kubectl",
@@ -165,6 +242,7 @@ class Installer:
         self.receipt["stage"] = name
         self.save()
         try:
+            self.verify_deployment_identity()
             result = action()
         except Exception:
             self.receipt["status"] = "failed"
@@ -248,11 +326,7 @@ class Installer:
         return self.receipt
 
     def target(self, verify_source=True):
-        account = self.json(self.aws("sts", "get-caller-identity"))["Account"]
-        require(
-            account == self.env["account_id"],
-            "AWS identity does not match the selected account",
-        )
+        account = self.verify_deployment_identity()["Account"]
         cluster = self.json(
             self.aws("eks", "describe-cluster", "--name", self.env["cluster"])
         )["cluster"]

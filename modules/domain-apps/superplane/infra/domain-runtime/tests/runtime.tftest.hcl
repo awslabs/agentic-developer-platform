@@ -12,11 +12,21 @@ variables {
   api_stage              = "prod"
   keda_operator_role_arn = "arn:aws:iam::111122223333:role/existing-keda-operator"
   operator_role_arn      = "arn:aws:iam::111122223333:role/installation-operator"
+  operator_role_id       = "AROAAAAAAAAAAAAAAAAAA"
 }
 
 override_data {
   target = data.aws_caller_identity.current
-  values = { account_id = "111122223333", arn = "arn:aws:sts::111122223333:assumed-role/installation-operator/session" }
+  values = { account_id = "111122223333", arn = "arn:aws:sts::111122223333:assumed-role/installation-operator/session", user_id = "AROAAAAAAAAAAAAAAAAAA:session" }
+}
+
+override_data {
+  target = data.aws_iam_role.operator
+  values = {
+    name      = "installation-operator"
+    arn       = "arn:aws:iam::111122223333:role/installation-operator"
+    unique_id = "AROAAAAAAAAAAAAAAAAAA"
+  }
 }
 
 override_data {
@@ -83,5 +93,48 @@ run "refuse_different_cluster_issuer" {
 run "refuse_wrong_operator" {
   command = plan
   variables { operator_role_arn = "arn:aws:iam::111122223333:role/different-operator" }
+  expect_failures = [aws_sqs_queue.operations, aws_iam_role.worker, aws_iam_role.observer]
+}
+
+run "operator_with_iam_path" {
+  command = plan
+  variables { operator_role_arn = "arn:aws:iam::111122223333:role/deployment/installation-operator" }
+  override_data {
+    target = data.aws_iam_role.operator
+    values = {
+      name      = "installation-operator"
+      arn       = "arn:aws:iam::111122223333:role/deployment/installation-operator"
+      unique_id = "AROAAAAAAAAAAAAAAAAAA"
+    }
+  }
+  assert {
+    condition     = data.aws_iam_role.operator.name == "installation-operator" && local.target_verified
+    error_message = "An IAM path must preserve the exact role ARN while using the STS role name."
+  }
+}
+
+run "refuse_recreated_operator" {
+  command = plan
+  override_data {
+    target = data.aws_iam_role.operator
+    values = {
+      name      = "installation-operator"
+      arn       = "arn:aws:iam::111122223333:role/installation-operator"
+      unique_id = "AROABBBBBBBBBBBBBBBBB"
+    }
+  }
+  expect_failures = [aws_sqs_queue.operations, aws_iam_role.worker, aws_iam_role.observer]
+}
+
+run "refuse_replaced_session_identity" {
+  command = plan
+  override_data {
+    target = data.aws_caller_identity.current
+    values = {
+      account_id = "111122223333"
+      arn        = "arn:aws:sts::111122223333:assumed-role/installation-operator/session"
+      user_id    = "AROABBBBBBBBBBBBBBBBB:session"
+    }
+  }
   expect_failures = [aws_sqs_queue.operations, aws_iam_role.worker, aws_iam_role.observer]
 }

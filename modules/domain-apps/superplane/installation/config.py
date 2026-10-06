@@ -125,6 +125,48 @@ def verify_cluster_dns(env: dict, cluster: dict) -> str | None:
     return str(address)
 
 
+def deployment_identity(env: dict, *, required: bool = False) -> dict | None:
+    """Reviewed connection metadata; never derive authority from the current caller."""
+    selected = env.get("deployment_identity")
+    if selected is None:
+        require(
+            not required,
+            "Live installation requires deployment_identity from the authorized connection",
+        )
+        return None
+    require(
+        isinstance(selected, dict)
+        and set(selected)
+        == {"service", "connection_label", "expected_role_arn", "expected_role_id"},
+        "deployment_identity requires exact connection and role metadata",
+    )
+    require(selected["service"] == "aws", "deployment_identity.service must be aws")
+    require(
+        isinstance(selected["connection_label"], str)
+        and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected["connection_label"]
+        ),
+        "deployment_identity requires the selected connection label",
+    )
+    role = selected["expected_role_arn"]
+    require(
+        isinstance(role, str)
+        and re.fullmatch(
+            r"arn:aws:iam::"
+            + re.escape(str(env.get("account_id", "")))
+            + r":role/(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}",
+            role,
+        ),
+        "deployment_identity role must belong to the selected account",
+    )
+    require(
+        isinstance(selected["expected_role_id"], str)
+        and re.fullmatch(r"AROA[A-Z0-9]{17}", selected["expected_role_id"]),
+        "deployment_identity requires the independently resolved immutable IAM RoleId",
+    )
+    return selected
+
+
 def validate(
     env: dict,
     lock: dict | None,
@@ -148,6 +190,7 @@ def validate(
     require(env.get("version") == 1, "environment.version must be 1")
     allowed = {
         "version",
+        "deployment_identity",
         "environment",
         "account_id",
         "region",
@@ -182,6 +225,7 @@ def validate(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
+    deployment_identity(env)
     cluster_dns_address(env)
     from .api_adapters import validate as validate_api_adapters
 

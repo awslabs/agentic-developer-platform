@@ -81,7 +81,15 @@ variable "keda_operator_role_arn" {
 variable "operator_role_arn" {
   type = string
   validation {
-    condition     = can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,64}$", var.operator_role_arn))
+    condition     = can(regex("^arn:aws:iam::[0-9]{12}:role/([A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}$", var.operator_role_arn))
     error_message = "Supply the selected same-account operator role ARN."
+  }
+}
+
+variable "operator_role_id" {
+  type = string
+  validation {
+    condition     = can(regex("^AROA[A-Z0-9]{17}$", var.operator_role_id))
+    error_message = "Supply the independently resolved immutable operator RoleId."
   }
 }

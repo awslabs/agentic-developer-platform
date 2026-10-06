@@ -114,11 +114,16 @@ def contract_input(native):
         key: env[key]
         for key in ("account_id", "region", "environment", "cluster", "namespace")
     }
-    selected_request["operator_role_arn"] = (
-        f"arn:aws:iam::{env['account_id']}:role/installation-operator"
-    )
+    selected_request["operator_role_arn"] = env["deployment_identity"][
+        "expected_role_arn"
+    ]
     reviewed = review(
-        selected_request, inspector(account=env["account_id"], cluster=env["cluster"])
+        selected_request,
+        inspector(
+            account=env["account_id"],
+            cluster=env["cluster"],
+            role=selected_request["operator_role_arn"].rsplit("/", 1)[1],
+        ),
     )
     worker = {
         key: value
@@ -218,7 +223,12 @@ def test_contract_rejects_review_substitution_and_never_outputs_secrets(contract
     with pytest.raises(Refusal):
         compose(selected_request, reviewed, env, lock, operator)
     reviewed = review(
-        selected_request, inspector(account=env["account_id"], cluster=env["cluster"])
+        selected_request,
+        inspector(
+            account=env["account_id"],
+            cluster=env["cluster"],
+            role=selected_request["operator_role_arn"].rsplit("/", 1)[1],
+        ),
     )
     result = compose(selected_request, reviewed, env, lock, operator)
     assert "private-token" not in str(result)

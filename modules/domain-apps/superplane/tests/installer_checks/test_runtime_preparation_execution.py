@@ -176,6 +176,10 @@ class FakeInspector:
     def __init__(self, request, proposal, values):
         self.request, self.proposal, self.values = request, proposal, values
         self.applied = False
+        self.queue_attributes = {
+            "QueueArn": values["aws_sqs_queue.operations"]["arn"],
+            "SqsManagedSseEnabled": "true",
+        }
 
     def json(self, result):
         return result
@@ -183,9 +187,10 @@ class FakeInspector:
     def aws(self, service, operation, *args):
         account, region = self.request["account_id"], self.request["region"]
         if service == "sts":
+            role_name = self.request["operator_role_arn"].rsplit("/", 1)[1]
             return {
                 "Account": account,
-                "Arn": f"arn:aws:sts::{account}:assumed-role/installation-operator/session",
+                "Arn": f"arn:aws:sts::{account}:assumed-role/{role_name}/session",
             }
         if service == "eks":
             return {
@@ -206,13 +211,7 @@ class FakeInspector:
             if operation == "list-queues":
                 return {"QueueUrls": [queue["url"]] if self.applied else []}
             if operation == "get-queue-attributes":
-                return {
-                    "Attributes": {
-                        "QueueArn": queue["arn"],
-                        "FifoQueue": "false",
-                        "SqsManagedSseEnabled": "true",
-                    }
-                }
+                return {"Attributes": self.queue_attributes}
             if operation == "list-queue-tags":
                 return {"Tags": queue["tags"]}
         if service == "iam":
@@ -259,12 +258,37 @@ class FakeInspector:
 
 
 class FakeTerraform:
-    def __init__(self, plan, values, inspector, *, lose_response=False):
+    def __init__(
+        self, plan, values, inspector, selected_identity, *, lose_response=False
+    ):
         self.plan, self.values, self.inspector = plan, values, inspector
         self.calls = []
+        self.aws_calls = []
         self.lose_response = lose_response
+        account = inspector.request["account_id"]
+        role_name = selected_identity["expected_role_arn"].rsplit("/", 1)[1]
+        self.caller = {
+            "Account": account,
+            "Arn": f"arn:aws:sts::{account}:assumed-role/{role_name}/session",
+            "UserId": selected_identity["expected_role_id"] + ":session",
+        }
+        self.operator_role = {
+            "Arn": selected_identity["expected_role_arn"],
+            "RoleId": selected_identity["expected_role_id"],
+        }
 
     def call(self, args, **_):
+        if args[0] == "aws":
+            self.aws_calls.append(args)
+            if args[4:6] == ["sts", "get-caller-identity"]:
+                return SimpleNamespace(stdout=json.dumps(self.caller))
+            if args[4:6] == ["iam", "get-role"]:
+                assert args[6:8] == [
+                    "--role-name",
+                    self.inspector.request["operator_role_arn"].rsplit("/", 1)[1],
+                ]
+                return SimpleNamespace(stdout=json.dumps({"Role": self.operator_role}))
+            raise AssertionError(args)
         self.calls.append(args)
         action = args[2]
         if action == "show" and args[-1] == "installation.tfplan":
@@ -315,7 +339,7 @@ def execution(contract_input):
     selected_request, _reviewed, env, lock, operator = contract_input
     proposal, plan, values = planned(contract_input)
     inspector = FakeInspector(selected_request, proposal, values)
-    terraform = FakeTerraform(plan, values, inspector)
+    terraform = FakeTerraform(plan, values, inspector, env["deployment_identity"])
     return (
         selected_request,
         env,
@@ -326,6 +350,89 @@ def execution(contract_input):
         values,
         inspector,
         terraform,
+    )
+
+
+@pytest.mark.parametrize(
+    "observation,change",
+    [
+        ("caller", {"Account": "999999999999"}),
+        ("caller", {"Arn": "arn:aws:sts::123456789012:assumed-role/other/session"}),
+        ("caller", {"UserId": "AROA" + "B" * 17 + ":session"}),
+        ("caller", {"UserId": "AROA" + "A" * 17 + ":other-session"}),
+        ("operator_role", {"RoleId": "AROA" + "B" * 17}),
+        ("operator_role", {"Arn": "arn:aws:iam::123456789012:role/other"}),
+    ],
+)
+def test_execution_refuses_unselected_or_recreated_operator(
+    execution, tmp_path, observation, change
+):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    getattr(terraform, observation).update(change)
+    with pytest.raises(Refusal, match="identity|account"):
+        prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    assert not terraform.calls
+
+
+def test_execution_requires_selected_connection(execution, tmp_path):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    env.pop("deployment_identity")
+    with pytest.raises(Refusal, match="deployment_identity"):
+        prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    assert not terraform.calls
+
+
+def test_execution_refuses_operator_different_from_selected_connection(
+    execution, tmp_path
+):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    env["deployment_identity"]["expected_role_arn"] = (
+        f"arn:aws:iam::{env['account_id']}:role/other"
+    )
+    with pytest.raises(Refusal, match="selected connection"):
+        prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    assert not terraform.calls
+
+
+def test_saved_plan_binds_selected_connection_identity(execution, tmp_path):
+    selected_request, env, lock, operator, proposal, _, _, inspector, terraform = (
+        execution
+    )
+    assert proposal["deployment_identity"] == env["deployment_identity"]
+    prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    terraform.calls.clear()
+    env["deployment_identity"]["connection_label"] = "another-connection"
+    with pytest.raises(Refusal, match="immutable review"):
+        prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    assert not terraform.calls
+
+
+def test_execution_rechecks_credentials_after_approval(execution, tmp_path):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    receipt = prepare(
+        selected_request, env, lock, operator, inspector, terraform, tmp_path
+    )
+
+    def approve(**data):
+        terraform.caller["UserId"] = "AROA" + "B" * 17 + ":session"
+        return {"approved": True, **data, "approver": "independent-operator"}
+
+    with pytest.raises(Refusal, match="identity"):
+        prepare(
+            selected_request,
+            env,
+            lock,
+            operator,
+            inspector,
+            terraform,
+            tmp_path,
+            approved_plan_digest=receipt["plan_sha256"],
+            approval_check=SimpleNamespace(verify_plan=approve),
+        )
+    assert "apply" not in [args[2] for args in terraform.calls]
+    assert (
+        json.loads((tmp_path / "runtime-preparation.json").read_text())["status"]
+        == "planned"
     )
 
 
@@ -362,8 +469,9 @@ def test_exact_saved_plan_digest_and_separate_approval(execution, tmp_path):
     assert "apply" not in [args[2] for args in terraform.calls]
 
 
+@pytest.mark.parametrize("fifo_attributes", [{}, {"FifoQueue": "false"}])
 def test_lost_response_reconciles_from_unchanged_state_without_second_apply(
-    execution, tmp_path
+    execution, tmp_path, fifo_attributes
 ):
     (
         selected_request,
@@ -376,6 +484,7 @@ def test_lost_response_reconciles_from_unchanged_state_without_second_apply(
         inspector,
         terraform,
     ) = execution
+    inspector.queue_attributes.update(fifo_attributes)
     for name in ("worker", "observer"):
         values[f"aws_iam_role.{name}"]["arn"] = (
             f"arn:aws:iam::{selected_request['account_id']}:role/{values[f'aws_iam_role.{name}']['name']}"
@@ -414,6 +523,24 @@ def test_lost_response_reconciles_from_unchanged_state_without_second_apply(
         prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
         == result
     )
+
+
+@pytest.mark.parametrize("fifo_value", ["true", False, None, "unexpected"])
+def test_reconciliation_refuses_fifo_or_invalid_queue_type(execution, fifo_value):
+    _, _, _, _, proposal, _, values, inspector, _ = execution
+    inspector.queue_attributes["FifoQueue"] = fifo_value
+    state = {
+        "values": {
+            "root_module": {
+                "resources": [
+                    {"address": address, "mode": "managed", "values": value}
+                    for address, value in values.items()
+                ]
+            }
+        }
+    }
+    with pytest.raises(Refusal, match="live queue differs"):
+        inspect_state(state, proposal, inspector)
 
 
 @pytest.mark.parametrize(
