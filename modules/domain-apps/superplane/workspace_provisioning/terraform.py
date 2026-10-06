@@ -288,8 +288,13 @@ def apply(operation, context, config, row, process):
     }
     if any(actual[key] != target[key] for key in actual):
         raise LifecycleRefused("Terraform outputs belong to another workspace")
+    from .applied_inventory import identities_from_state
+
+    state = json.loads(process.checked(["terraform", "show", "-json"], cwd=module))
+    applied_resources = identities_from_state(state)
     return target, {
         "next_phase": "bootstrap-workspace",
+        "applied_resources": applied_resources,
         "allocation_source_operation_id": operation.grant.lease.operation_id,
         "outputs": outputs,
         "source_artifact_id": row["artifact_id"],

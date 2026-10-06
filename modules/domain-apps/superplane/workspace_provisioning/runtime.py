@@ -358,14 +358,23 @@ async def _run_validated_lifecycle(operation, context, phase_state):
         return (
             CallOutcome.SUCCEEDED,
             "bounded lifecycle phase prepared its next reviewed proposal",
-            result["artifact_id"],
+            None if phase == "apply-infrastructure" else result["artifact_id"],
         )
 
     async def authenticate(_token):
         return (await current_operation(operation, context)).grant
 
+    async def after_step(_grant, step_result):
+        if phase == "apply-infrastructure":
+            from .applied_inventory import seal_applied_inventory
+
+            await seal_applied_inventory(operation, context, step_result)
+
     server = ExecutionRPCServer(
-        connect=context.connect, provider_call=hook, authenticate=authenticate
+        connect=context.connect,
+        provider_call=hook,
+        authenticate=authenticate,
+        after_step=after_step,
     )
     runtime = OperationExecutor(lease, connect=context.connect, provider_call=hook)
 

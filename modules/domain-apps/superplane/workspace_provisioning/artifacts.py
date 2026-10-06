@@ -210,7 +210,19 @@ def continuation_parameters(row):
         if request["mode"] == "new-account-managed"
         else row["account_id"]
     )
+    root_allocation = parameters.get(
+        "lifecycle_root_allocation_id", parameters["allocation_id"]
+    )
     parameters.update(
+        lifecycle_root_allocation_id=root_allocation,
+        allocation_id=digest(
+            {
+                "phase": phase,
+                "artifact_id": row["artifact_id"],
+                "org_id": row["org_id"],
+                "workspace_id": row["workspace_id"],
+            }
+        ),
         lifecycle_phase=phase,
         lifecycle_source_operation_id=row["source_operation_id"],
         lifecycle_artifact_id=row["artifact_id"],

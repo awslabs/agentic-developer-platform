@@ -49,6 +49,24 @@ class Process:
                     }.items()
                 }
             )
+        if argv[:2] == ["terraform", "show"]:
+            return canonical(
+                {
+                    "format_version": "1.0",
+                    "values": {
+                        "root_module": {
+                            "resources": [
+                                {
+                                    "mode": "managed",
+                                    "type": "aws_vpc",
+                                    "address": "aws_vpc.workspace[0]",
+                                    "values": {"id": "vpc-owned"},
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
         return ""
 
 
@@ -124,7 +142,7 @@ def reviewed(tmp_path, monkeypatch):
 def test_apply_consumes_saved_review_and_retains_original_allocation_lineage(reviewed):
     operation, context, config, row, process, original, _ = reviewed
     target, metadata = apply(operation, context, config, row, process)
-    assert len(process.calls) == 2
+    assert len(process.calls) == 3
     assert process.calls[0][1].endswith("apply_workspace_plan.py")
     assert str(original / "review/workspace.tfplan") in process.calls[0]
     assert not any(

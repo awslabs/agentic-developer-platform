@@ -8,24 +8,23 @@ Run only in remote CI or the disposable EC2 regression harness.
 """
 
 import asyncio
+import importlib.util
+import json
 from builtins import BaseExceptionGroup
 from copy import deepcopy
 from dataclasses import asdict, replace
-import importlib.util
 from io import StringIO
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from account_factory.modes import OwnershipMode
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-import pytest
-
-from harness_jobs import OperationFacadeService, OperationStore, REQUIRED_PERMISSION
+from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.identity import decode_payload
 
-from account_factory.modes import OwnershipMode
 from workspace_provisioning import bootstrap_runtime, runtime, terraform
 from workspace_provisioning.artifacts import (
     canonical,
@@ -187,7 +186,10 @@ class Scenario:
 
         class Session:
             def client(self, service, *, region_name):
-                assert service in {"sts", "eks", "ec2"} and region_name == "us-east-1"
+                assert (
+                    service in {"sts", "eks", "ec2", "resourcegroupstaggingapi"}
+                    and region_name == "us-east-1"
+                )
                 return self
 
             def get_caller_identity(self):
@@ -247,6 +249,26 @@ class Scenario:
                     raise OSError("lost ingress reply")
                 return {"SecurityGroupRules": [deepcopy(rule)]}
 
+            def get_paginator(self, method):
+                fields = {
+                    "describe_instances": "Reservations",
+                    "describe_network_interfaces": "NetworkInterfaces",
+                    "describe_volumes": "Volumes",
+                    "describe_addresses": "Addresses",
+                    "get_resources": "ResourceTagMappingList",
+                }
+                assert method in fields
+                return SimpleNamespace(paginate=lambda **kwargs: [{fields[method]: []}])
+
+            def describe_addresses(self, **kwargs):
+                return {"Addresses": []}
+
+            def describe_vpcs(self, **kwargs):
+                if getattr(scenario, "deny_census", False):
+                    raise OSError("provider read denied")
+                assert kwargs == {"VpcIds": ["vpc-0123456789abcdef0"]}
+                return {"Vpcs": [{"VpcId": "vpc-0123456789abcdef0"}]}
+
             def __getattr__(self, method):
                 assert method in scenario.responses, (
                     "unapproved provider method: " + method
@@ -299,6 +321,37 @@ class Scenario:
                     assert reviewed.read_text() == "reviewed-binary-plan"
                     if scenario.lose_apply_reply:
                         raise OSError("lost apply reply after provider allocation")
+                elif argv[:2] == ["terraform", "show"]:
+                    return canonical(
+                        {
+                            "format_version": "1.0",
+                            "values": {
+                                "root_module": {
+                                    "resources": [
+                                        {
+                                            "mode": "managed",
+                                            "type": "aws_vpc",
+                                            "address": "aws_vpc.workspace[0]",
+                                            "values": {"id": "vpc-0123456789abcdef0"},
+                                        },
+                                        {
+                                            "mode": "managed",
+                                            "type": "aws_eks_cluster",
+                                            "address": "aws_eks_cluster.workspace",
+                                            "values": {
+                                                "arn": scenario.outputs["cluster_arn"][
+                                                    "value"
+                                                ],
+                                                "name": scenario.outputs[
+                                                    "cluster_name"
+                                                ]["value"],
+                                            },
+                                        },
+                                    ]
+                                }
+                            },
+                        }
+                    )
                 elif argv[:2] == ["terraform", "output"]:
                     return canonical(scenario.outputs)
                 else:
@@ -371,8 +424,9 @@ def errors(exception):
     return str(exception)
 
 
+@pytest.mark.parametrize("deny_census", [False, True])
 def test_managed_preparation_and_apply_preserve_review_and_original_allocation(
-    harness, tmp_path, monkeypatch
+    harness, tmp_path, monkeypatch, deny_census
 ):
     scenario = Scenario(
         harness, tmp_path, monkeypatch, OwnershipMode.EXISTING_ACCOUNT_MANAGED
@@ -416,6 +470,24 @@ def test_managed_preparation_and_apply_preserve_review_and_original_allocation(
         scenario.responses["describe_launch_template_versions"][
             "LaunchTemplateVersions"
         ][0]["LaunchTemplateData"].pop("SecurityGroupIds")
+        scenario.deny_census = deny_census
+        if deny_census:
+            with pytest.raises(Exception) as refused:
+                await runtime.run_lifecycle(applying, scenario.context)
+            assert "census is incomplete" in errors(refused.value)
+            async with harness.connect() as connection:
+                assert not await connection.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM harness_allocation_seal WHERE allocation_id=$1)",
+                    applying.request.parameters["allocation_id"],
+                )
+                assert (
+                    await connection.fetchval(
+                        "SELECT count(*) FROM harness_provider_call_intent WHERE operation_id=$1",
+                        applying.grant.lease.operation_id,
+                    )
+                    == 1
+                )
+            return
         result = await runtime.run_lifecycle(applying, scenario.context)
         assert result["status"] == "awaiting_plan_approval"
         assert result["phase"] == "bootstrap-workspace"
@@ -441,7 +513,30 @@ def test_managed_preparation_and_apply_preserve_review_and_original_allocation(
             await bootstrap_runtime.original_managed_allocation(
                 applying, scenario.context, substituted
             )
-        assert len(scenario.process_calls) == 3
+        assert len(scenario.process_calls) == 4
+        async with harness.connect() as connection:
+            assert await connection.fetchval(
+                "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
+                applying.request.parameters["allocation_id"],
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_allocation_resource WHERE allocation_id=$1",
+                    applying.request.parameters["allocation_id"],
+                )
+                == 2
+            )
+        bootstrap_parameters = continuation_parameters(applied)
+        assert (
+            len(
+                {
+                    json.loads(prepared["parameters_json"])["allocation_id"],
+                    applying.request.parameters["allocation_id"],
+                    bootstrap_parameters["allocation_id"],
+                }
+            )
+            == 3
+        )
         assert not scenario.creates and not scenario.bootstrap_calls
 
     harness.run(run())
