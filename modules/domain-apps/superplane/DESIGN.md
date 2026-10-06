@@ -66,6 +66,15 @@ in a day” has not been resolved into a provisioning-time objective or implemen
 deadline and is not an accepted SLA. Establish prerequisites, timing boundaries and
 provider-specific evidence before adding such a target.
 
+Issue #7135 adds a distinct installation-owned provider authority for a reviewed
+same-account native workspace. Personal platform-account connections remain
+forbidden. Protected owner enrollment pins exact installation, human selectors,
+org/workspace, role/policy and secret generations; Gateway re-establishes live
+identity and releases only operation-bound short-lived sessions. See
+[provider authority](installation/PROVIDER-AUTHORITY.md) for the storage, evidence,
+revocation and delivery contract. Provider policies, mandatory child-role
+boundaries, qualified API/worker images and live acceptance remain separate gates.
+
 ## 2. Logical design
 
 ### 2.1 Terminology and ownership invariants

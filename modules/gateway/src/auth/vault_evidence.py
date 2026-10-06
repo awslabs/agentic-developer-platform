@@ -233,7 +233,9 @@ async def resolve_exact_credential(
     ambiguous about which credential it names, so it is refused rather than resolved
     in favour of the id.
     """
-    if not org_id or not credential_id:
+    from src.shared.domain_provider_contract import reserved
+
+    if not org_id or not credential_id or reserved(credential_id):
         return None
     row = await session.scalar(
         select(UserCredential)
@@ -343,6 +345,22 @@ async def read_credential_evidence(
     credential, or a claimed attestation that does not match the Gateway's own
     record. See the module docstring for why a raise would be wrong here.
     """
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(credential_id):
+        from src.internal.domain_provider_authority import evidence
+
+        return await evidence(
+            session,
+            sm,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            credential_id=credential_id,
+            service=service,
+            label=label,
+            principal=principal,
+            report_digest=report_digest,
+        )
     if not workspace_id or not workspace_id.strip() or not principal or not principal.strip():
         return None
 
