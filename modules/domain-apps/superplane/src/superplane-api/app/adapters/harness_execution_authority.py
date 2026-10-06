@@ -66,9 +66,15 @@ class HarnessExecutionAuthority:
     """
 
     def __init__(
-        self, connect: Any, store: Any = None, *, verify_run: Any = None
+        self,
+        connect: Any,
+        store: Any = None,
+        *,
+        verify_run: Any = None,
+        domain_connect: Any = None,
     ) -> None:
         self._connect = connect
+        self._domain_connect = domain_connect
         self._store = store
         self._verify_run = verify_run
 
@@ -142,10 +148,11 @@ class HarnessExecutionAuthority:
             or not isinstance(workspace, str)
             or workspace not in submitter.workspaces
             or self._verify_run is None
+            or self._domain_connect is None
         ):
             return None
         try:
-            async with self._connect() as connection:
+            async with self._domain_connect() as connection:
                 org_id = await connection.fetchval(
                     "SELECT org_id::text FROM workspaces WHERE id::text=$1", workspace
                 )

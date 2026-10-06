@@ -794,6 +794,8 @@ class TestManifestStructure:
         assert perms["issues"] == "write"
         assert perms["pull_requests"] == "write"
         assert perms["checks"] == "write"
+        assert perms["actions"] == "write"
+        assert perms["workflows"] == "write"
         assert perms["metadata"] == "read"
 
     def test_manifest_events(self):

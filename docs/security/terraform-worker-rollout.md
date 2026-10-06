@@ -125,6 +125,19 @@ the full IAM/Kubernetes inventory, including other clusters and legacy mappings.
 
 ## Stages
 
+An ordinary `deploy.sh --update` preserves a serving deployment's installed
+worker identity. It does not require or assert completion of the protected-worker
+cutover. For a legacy deployment, the script must match the current Terraform
+rollout, role and service account, then confirm live KEDA admission, service
+account and gateway mode before applying. It supplies a transient
+`agent_legacy_upgrade_role_arn` input bound to that existing role. The saved-plan
+gate refuses a fresh identity, a removed permissions boundary, an admission
+change or a protected-to-legacy downgrade. Fresh installs do not receive this
+compatibility input and keep their paused preparation defaults. Release evidence
+records the retained worker identity mode; a software release in legacy mode is
+not protected-worker security acceptance. The explicit migration below retains
+all qualification requirements.
+
 Use reviewed environment configuration and Terraform plans. Follow the
 [canonical deployment guide](../adp-platform-deployment/deploy-with-agent.md)
 for target confirmation and verification. No direct IAM attachment, SSM flag or
@@ -183,6 +196,73 @@ Other infrastructure workflows have separate deployment triggers; review them
 before merging a rollout change.
 
 ## Verification
+
+### Scripted migration of an existing deployment
+
+After the live qualification above has been completed and reviewed, the public
+upgrade entrypoint can coordinate the cutover:
+
+```bash
+./deploy.sh --aws-profile customer --update --release <qualified-release> \
+  --migrate-workers /private/qualification/worker-migration.json
+```
+
+The selected release must contain the migration helper. The evidence must cover
+that exact source and the immutable gateway and worker images in the target
+account. `--migrate-workers` requires the full guarded update; it cannot be
+combined with `--skip-agents` or `--confirm-destructive`. The equivalent
+`ADP_WORKER_MIGRATION_EVIDENCE` environment variable is available to the release
+runner; its child still enters through `deploy.sh`.
+
+The script stops the orchestration schedule, requires an empty legacy queue,
+pauses the existing KEDA ScaledJob without deleting Jobs, and waits up to ten
+minutes for KEDA acknowledgment and worker drain. Queue counts are checked again
+before activation and admission. Pending work is never purged or relabeled. A
+busy deployment must finish or reconcile that work before retrying.
+
+Existing Terraform applies configure the protected worker, retire legacy IAM
+authority and align gateway/tick settings while admissions stay paused. The
+script checks the customer-source boundary, remaining managed attachments,
+worker image/service account, and gateway/tick release agreement before applying
+admission. It then waits for KEDA readiness and restores the original schedule
+setting. A failure after pause attempts to keep admission and scheduling stopped;
+recovery failures are reported. It does not grant cluster access, delete unknown
+Kubernetes grants, restore legacy administrator authority or unpause workers that
+were already operator-paused.
+
+The input is an **operator-reviewed live qualification record**, not automated
+canary evidence. Do not generate it from unit tests or Terraform booleans. Keep
+it and the referenced report private. Its JSON fields are:
+
+| Field | Required value |
+| --- | --- |
+| `schema` | `1` |
+| `account`, `region`, `environment` | Exact deployment target |
+| `source_sha` | Full source commit of the selected release |
+| `gateway_image`, `worker_image` | Target-account `adp-gateway` and `adp-agent-runtime` image URIs pinned with `@sha256:` |
+| `reviewed_by` | Attributed reviewer of the live report |
+| `clusters` | All EKS cluster ARNs in every enabled region of the account |
+| `report` | Object with `file` (adjacent report filename) and its `sha256` |
+| `checks` | Object containing each check below with value `"passed"` |
+
+Required checks are `coding`, `github_renewal_over_one_hour`, `cancellation`,
+`tool_tokens`, `logs`, `marker_and_door`, `vault_raw_proxy_file`,
+`customer_role_refresh_chaining`, `victim_substitution_denied`, and
+`all_cluster_source_isolation`. The report must identify actual fixture owners,
+run IDs, timestamps, images, observed identities, credential lifetime and
+revocation results, and the all-cluster inventory including historical implicit
+creator access. The helper rechecks the current cluster inventory, EKS entries
+and aws-auth role/account mappings; those API checks alone cannot prove historical
+implicit-creator isolation. Existing source-role grants stop the migration for
+review in their owning configuration.
+
+The original pause state and stage are stored privately in
+`worker-migration.json` inside the existing upgrade run directory. To retry an
+interrupted run, use the retained checkout's `deploy.sh --update --resume` with
+the same target and `--migrate-workers` evidence. The script rechecks live state
+on resume. Retain this directory; do not start a fresh run to lose the original
+operator pause state. Admission and security inputs are retained in Terraform's
+release configuration for subsequent source and published-release upgrades.
 
 Native Terraform tests cover preparation, region/environment scoping, incomplete
 activation, mutable-image refusal, protected identity selection and legacy IAM

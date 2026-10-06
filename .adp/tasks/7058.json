@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "issue": 7058,
+  "updated_at": "2026-10-06T00:43:21.517Z",
+  "tasks": [
+    {
+      "id": "PREP01-c1",
+      "kind": "code",
+      "criterion": "PREP01",
+      "title": "Define closed reviewed preparation inputs and owned-only plan",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Closed-input and collision-refusal behavior verified in the integrated suite.",
+      "commits": [
+        "a31f930"
+      ]
+    },
+    {
+      "id": "PREP01-t1",
+      "kind": "test",
+      "criterion": "PREP01",
+      "title": "Run unit fixtures for closed input, collision and identity rejection",
+      "status": "done",
+      "covers": [
+        "PREP01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": "Passed within the 498-test integrated run."
+    },
+    {
+      "id": "PREP01-c2",
+      "kind": "code",
+      "criterion": "PREP01",
+      "title": "Bind runtime preparation to the merged installer deployment identity",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py",
+        "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
+        "modules/domain-apps/superplane/infra/domain-runtime/variables.tf",
+        "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md"
+      ],
+      "note": "Selected credentials, immutable role identity, replay binding, and IAM role paths verified; foreground-owned files remain identical to the supplied base."
+    },
+    {
+      "id": "PREP01-t2",
+      "kind": "test",
+      "criterion": "PREP01",
+      "title": "Test selected-identity enforcement, role paths and credential changes with unit and Terraform mock fixtures",
+      "status": "done",
+      "covers": [
+        "PREP01-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py",
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py",
+        "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
+      ],
+      "note": "Python regressions pass in the integrated suite; prior successful Terraform mock evidence remains valid for unchanged Terraform content."
+    },
+    {
+      "id": "PREP02-c1",
+      "kind": "code",
+      "criterion": "PREP02",
+      "title": "Define dedicated standard queue and scoped worker/observer roles in isolated Terraform root",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
+        ".github/workflows/superplane-infra-plan.yml"
+      ],
+      "note": "Separate state, scoped resource permissions, disabled readiness, and maintained CI coverage verified.",
+      "commits": [
+        "c82cd9a"
+      ]
+    },
+    {
+      "id": "PREP02-t1",
+      "kind": "test",
+      "criterion": "PREP02",
+      "title": "Run Terraform validation and unit fixtures for resource and IAM scope",
+      "status": "done",
+      "covers": [
+        "PREP02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
+      ],
+      "note": "Carried forward unchanged: Terraform 1.9.8, locked AWS provider 6.65.0, validation, formatting, and 7 passing mock tests."
+    },
+    {
+      "id": "PREP03-c1",
+      "kind": "code",
+      "criterion": "PREP03",
+      "title": "Connect preparation outputs to maintained shared-authority contracts without mutating authorities",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Proposal-only boundary verified; source does not claim shared authority or live readiness.",
+      "commits": [
+        "e58437c"
+      ]
+    },
+    {
+      "id": "PREP03-c-wire",
+      "kind": "code",
+      "criterion": "PREP03",
+      "title": "Wire exact runtime prerequisites into existing paid-worker consumer contract",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Existing consumer validator remains in use; foreground installer/deploy wiring remains separately owned."
+    },
+    {
+      "id": "PREP03-t1",
+      "kind": "test",
+      "criterion": "PREP03",
+      "title": "Run unit producer/consumer contract fixtures",
+      "status": "done",
+      "covers": [
+        "PREP03-c1",
+        "PREP03-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": "Contract and release fixtures passed in the integrated run."
+    },
+    {
+      "id": "PREP03-t2",
+      "kind": "test",
+      "criterion": "PREP03",
+      "title": "Run unit refusal fixtures for missing vault, approver and shared services",
+      "status": "done",
+      "covers": [
+        "PREP03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": "Synthetic refusal fixtures pass; actual shared-service availability remains separately deferred."
+    },
+    {
+      "id": "PREP04-c1",
+      "kind": "code",
+      "criterion": "PREP04",
+      "title": "Save exact identity and resource receipt with same-input reconciliation",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Receipt identity, approval boundary, and lost-response reconciliation verified.",
+      "commits": [
+        "42df143"
+      ]
+    },
+    {
+      "id": "PREP04-t1",
+      "kind": "test",
+      "criterion": "PREP04",
+      "title": "Run unit replay and lost-response recovery fixtures",
+      "status": "done",
+      "covers": [
+        "PREP04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
+      ],
+      "note": "Integrated tests verify recovery and repeated resume without a second apply."
+    },
+    {
+      "id": "PREP04-t2",
+      "kind": "test",
+      "criterion": "PREP04",
+      "title": "Run unit immutable-identity and secret-safe output refusal fixtures",
+      "status": "done",
+      "covers": [
+        "PREP04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
+      ],
+      "note": "Destructive-plan, identity/source-change, and fabricated-readiness refusals pass."
+    },
+    {
+      "id": "PREP04-c2",
+      "kind": "code",
+      "criterion": "PREP04",
+      "title": "Reconcile standard SQS queues when FIFO-only attributes are omitted",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Missing FifoQueue is accepted for the exact named standard queue; explicit FIFO or malformed values remain refused."
+    },
+    {
+      "id": "PREP04-t3",
+      "kind": "test",
+      "criterion": "PREP04",
+      "title": "Test standard-queue recovery and invalid FIFO attributes with unit fixtures",
+      "status": "done",
+      "covers": [
+        "PREP04-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation_execution.py"
+      ],
+      "note": "Regression reproduced before repair and passes afterward, including in the full integrated run; negative attribute cases remain rejected."
+    },
+    {
+      "id": "PREP05-c1",
+      "kind": "code",
+      "criterion": "PREP05",
+      "title": "Document exact foreground entry point, owner gaps and safe installation handoff",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md",
+        "modules/domain-apps/superplane/installation/README.md"
+      ],
+      "note": "Handoff preserves approval requirements, identity binding, recovery limits, and deferred owner responsibilities.",
+      "commits": [
+        "1d9d062"
+      ]
+    },
+    {
+      "id": "PREP05-t1",
+      "kind": "test",
+      "criterion": "PREP05",
+      "title": "Run public-docs check and full relevant local suites",
+      "status": "done",
+      "covers": [
+        "PREP05-c1"
+      ],
+      "files": [
+        "scripts/check-public-docs.py"
+      ],
+      "note": "498 integrated tests now pass; prior zero-finding public-docs check remains valid because documentation is unchanged."
+    },
+    {
+      "id": "PREP05-t2",
+      "kind": "test",
+      "criterion": "PREP05",
+      "title": "Validate integrated installer/release suites and published-head required CI",
+      "status": "open",
+      "covers": [
+        "PREP01-c1",
+        "PREP01-c2",
+        "PREP02-c1",
+        "PREP03-c1",
+        "PREP03-c-wire",
+        "PREP04-c1",
+        "PREP04-c2",
+        "PREP05-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks",
+        "modules/domain-apps/superplane/tests/test_paid_worker_release.py",
+        ".github/workflows/superplane-infra-plan.yml"
+      ],
+      "note": "Local portion complete: 498 passed, 9 warnings under Python 3.12 with SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt; scoped functional/security inspection complete. Tested /work/repo at HEAD d89c2f9 with prepared base merge 3848a2c and unpublished repairs. Only controller publication and final-head CI verification remain."
+    }
+  ]
+}

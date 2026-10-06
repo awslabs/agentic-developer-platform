@@ -35,8 +35,12 @@ async function main(): Promise<void> {
       const result = envelope.kind === "codex_engine_review"
         ? await runEngineReview(envelope, runtime)
         : await runReview(envelope, runtime);
-      await observer.finish({ summary: 'Reviewer finished: ' + result.status +
-        ('merged' in result && result.merged ? ' (merged)' : '') });
+      try {
+        await observer.finish({ summary: 'Reviewer finished: ' + result.status +
+          ('merged' in result && result.merged ? ' (merged)' : '') });
+      } catch {
+        console.warn('Final reporting failed; the verified review/delivery result is preserved.');
+      }
       return result;
     } catch (error) {
       await observer.fail(error);

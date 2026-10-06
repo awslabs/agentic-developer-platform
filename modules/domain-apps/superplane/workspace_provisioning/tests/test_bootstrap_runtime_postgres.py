@@ -16,7 +16,13 @@ from uuid import UUID
 
 import pytest
 
-from harness_jobs import OperationFacadeService, REQUIRED_PERMISSION, ResolvedPrincipal
+from account_factory.modes import OwnershipMode
+from harness_jobs import (
+    OperationFacadeService,
+    OperationStore,
+    REQUIRED_PERMISSION,
+    ResolvedPrincipal,
+)
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.leases import lock_lease
 from superplane_bootstrap.access import ProviderIdentity
@@ -70,11 +76,16 @@ def bootstrap_harness(tmp_path_factory, request):
         yield harness
 
 
+@pytest.mark.parametrize("public_api", [False, True])
 def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_grants(
-    bootstrap_harness, tmp_path, monkeypatch
+    bootstrap_harness, tmp_path, monkeypatch, public_api
 ):
     harness = bootstrap_harness
     cluster = _FakeCluster()
+    # This scenario starts from the maintained fresh managed module. The generic
+    # adopted-cluster fixture adds EBS CSI, which this module does not provision;
+    # the original workload baseline must not claim that unrelated deployment.
+    cluster.deployments.pop(("kube-system", "ebs-csi-controller"))
     config = runtime_config()
     config.update(
         namespace=identities.NAMESPACE,
@@ -102,6 +113,24 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             "created": False,
         },
     }
+    if public_api:
+        config["workspace_variables"].update(
+            cluster_endpoint_public_access=True,
+            cluster_endpoint_public_access_cidrs=["52.22.137.37/32"],
+        )
+        config["management_public_access"] = {
+            "vpc_id": "vpc-0123456789abcdef0",
+            "nat_gateway_ids": ["nat-0123456789abcdef0"],
+        }
+        outputs.update(
+            cluster_endpoint_public_access=True,
+            cluster_endpoint_public_access_cidrs=["52.22.137.37/32"],
+        )
+        evidence.pop("management-api-rule")
+        monkeypatch.setattr(
+            "workspace_provisioning.public_network.probe_public_path",
+            lambda *args: "52.22.137.37",
+        )
 
     async def run():
         principal = ResolvedPrincipal(
@@ -116,6 +145,27 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             approvals=_Approves(),
             ledger=_Ledger(),
         )
+        source_progress = await facade.open_operation(
+            action="provision",
+            workspace_id=identities.WORKSPACE_ID,
+            org_id=identities.ORG_ID,
+            permission=REQUIRED_PERMISSION,
+            parameters={
+                "idempotency_key": "canonical-bootstrap-source-apply",
+                "lifecycle_phase": "apply-infrastructure",
+                "allocation_id": "fixture-approved-managed-allocation",
+            },
+        )
+        async with harness.connect() as connection:
+            # Provider apply is outside this bootstrap fixture. Preserve its real
+            # paid admission/request/approval rows and model only terminal status.
+            await connection.execute(
+                "UPDATE harness_operations SET state='succeeded' WHERE operation_id=$1",
+                source_progress.operation_id,
+            )
+            source = await OperationStore().get(
+                connection, principal, source_progress.operation_id
+            )
         progress = await facade.open_operation(
             action="provision",
             workspace_id=identities.WORKSPACE_ID,
@@ -129,7 +179,8 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             grant=grant,
             request=SimpleNamespace(
                 parameters={
-                    "lifecycle_inputs": json.dumps({"cluster_placement": "dedicated"})
+                    "lifecycle_inputs": json.dumps({"cluster_placement": "dedicated"}),
+                    "credential_id": identities.CREDENTIAL_ID,
                 }
             ),
         )
@@ -181,6 +232,43 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
         transport_factory = compose_authority(cluster, tmp_path, arguments)
         transport = transport_factory.resolve_clients(None)
         cloud = cluster.authority_cloud
+        if public_api:
+            cloud.get_caller_identity = lambda: {"Account": identities.ACCOUNT_ID}
+            cloud.describe_cluster = lambda **arguments: {
+                "cluster": {
+                    "accessConfig": {"authenticationMode": "API"},
+                    "name": outputs["cluster_name"],
+                    "arn": outputs["cluster_arn"],
+                    "status": "ACTIVE",
+                    "endpoint": outputs["cluster_endpoint"],
+                    "certificateAuthority": {
+                        "data": outputs["cluster_certificate_authority_data"]
+                    },
+                    "resourcesVpcConfig": {
+                        "vpcId": outputs["vpc_id"],
+                        "endpointPublicAccess": True,
+                        "endpointPrivateAccess": True,
+                        "publicAccessCidrs": ["52.22.137.37/32"],
+                    },
+                }
+            }
+            cloud.describe_nat_gateways = lambda **arguments: {
+                "NatGateways": [
+                    {
+                        "NatGatewayId": "nat-0123456789abcdef0",
+                        "VpcId": "vpc-0123456789abcdef0",
+                        "State": "available",
+                        "ConnectivityType": "public",
+                        "NatGatewayAddresses": [
+                            {
+                                "PublicIp": "52.22.137.37",
+                                "AllocationId": "eipalloc-0123456789abcdef0",
+                                "Status": "succeeded",
+                            }
+                        ],
+                    }
+                ]
+            }
 
         async def check():
             async with harness.connect() as connection, connection.transaction():
@@ -199,7 +287,7 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
                 self._superplane_external_id = None
 
             def client(self, service, **kwargs):
-                assert service == "eks"
+                assert service in ({"eks", "ec2", "sts"} if public_api else {"eks"})
                 return cloud
 
         provider = Session("provider")
@@ -304,16 +392,23 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             context,
             config,
             SimpleNamespace(
+                mode=OwnershipMode.EXISTING_ACCOUNT_MANAGED,
                 region=identities.REGION,
                 cluster_ownership=SimpleNamespace(value="adp-created"),
             ),
             {
                 "account_id": identities.ACCOUNT_ID,
+                "source_operation_id": source.operation_id,
+                "source_payload_digest": source.plan_digest,
+                "source_request_payload": source.request_payload,
+                "source_job_id": source.job_id,
+                "source_attempt_id": source.attempt_id,
                 "artifact_metadata_json": canonical(
                     {
+                        "allocation_source_operation_id": source.operation_id,
                         "outputs": {
                             key: {"value": value} for key, value in outputs.items()
-                        }
+                        },
                     }
                 ),
             },
@@ -324,6 +419,11 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
             evidence,
         )
         assert outcome.ready, repr(outcome.refusal)
+        endpoint_kinds = {item.kind for item in outcome.inventory.prerequisites}
+        assert ("EksPublicEndpoint" in endpoint_kinds) is public_api
+        assert (
+            "SecurityGroupRule/cluster-endpoint" in endpoint_kinds
+        ) is not public_api
         anchor = await bootstrap_result_anchor(operation, context, outcome)
         assert (
             anchor["registration"]["namespace_uid"]

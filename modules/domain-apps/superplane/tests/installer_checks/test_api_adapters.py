@@ -213,7 +213,15 @@ def test_dedicated_role_does_not_accept_worker_or_wildcard_authority(adapters):
                 "Effect": "Allow",
                 "Action": "execute-api:Invoke",
                 "Resource": [
-                    prefix + r for r in ("producer-readiness", "verify-run", "dispatch")
+                    prefix + r
+                    for r in (
+                        "producer-readiness",
+                        "verify-run",
+                        "dispatch",
+                        "binding-proof",
+                        "current-identity",
+                        "current-identity/readiness",
+                    )
                 ],
             }
         ]

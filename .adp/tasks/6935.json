@@ -1,0 +1,409 @@
+{
+  "version": 1,
+  "issue": 6935,
+  "updated_at": "2026-10-06T07:06:10.640Z",
+  "tasks": [
+    {
+      "id": "DEP01-c1",
+      "kind": "code",
+      "criterion": "DEP01",
+      "title": "Authorize installation diagnostics using explicit reader entitlement",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_reader.py"
+      ],
+      "note": "Implementation is unchanged. Reader and route regressions passed in the current 169-test gateway selection, including denial of infrastructure visibility through personal-work access.",
+      "commits": [
+        "ed4b4ba"
+      ]
+    },
+    {
+      "id": "DEP01-c-wire",
+      "kind": "code",
+      "criterion": "DEP01",
+      "title": "Wire bounded status and failure reads into assistant tools",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_data_routes.py",
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/installation-tools.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts"
+      ],
+      "note": "Both tool families, distinct request allowlists and diagnostic sanitizers remain unchanged. Current gateway and worker integration selections passed.",
+      "commits": [
+        "cd86a9a"
+      ]
+    },
+    {
+      "id": "DEP01-t1",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Test entitled and denied installation readers",
+      "status": "done",
+      "covers": [
+        "DEP01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_reader.py"
+      ],
+      "note": "Reader and coexistence regressions passed in the current 169-test gateway selection using the prepared base's pinned dependencies."
+    },
+    {
+      "id": "DEP01-t2",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Test redaction and rejection of arbitrary reads",
+      "status": "done",
+      "covers": [
+        "DEP01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_data_routes.py",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/installation-tools.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/run-query.ts"
+      ],
+      "note": "Gateway rejection/redaction, worker sanitization and cross-operation field-rejection tests passed in the current focused selections."
+    },
+    {
+      "id": "DEP01-t3",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Observe live authorized access, denial and redaction",
+      "status": "blocked",
+      "covers": [
+        "DEP01-c1",
+        "DEP01-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 owns live evaluation; no authorized target was supplied. Deferred qualification, not a code-merge blocker."
+    },
+    {
+      "id": "DEP01-c2",
+      "kind": "code",
+      "criterion": "DEP01",
+      "title": "Refuse diagnostics through revised installation bindings",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_status.py",
+        "modules/gateway/src/agentauth/installation_failure.py"
+      ],
+      "note": "Revised-binding refusal is unchanged; its regression passed in the current gateway selection.",
+      "commits": [
+        "fd156e6",
+        "f4ddbc8"
+      ]
+    },
+    {
+      "id": "DEP01-t4",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Test revised installation binding with SQLite fixture",
+      "status": "done",
+      "covers": [
+        "DEP01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py"
+      ],
+      "note": "Passed as part of the current 169-test gateway selection."
+    },
+    {
+      "id": "DEP01-t5",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Verify full relevant gateway and chat-worker suites",
+      "status": "done",
+      "covers": [
+        "DEP01-c-wire",
+        "DEP01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth",
+        "modules/agent-factory/agent/src/complex-task-chat"
+      ],
+      "note": "Retained supplied prior full-suite evidence: gateway 2928 passed, 6 skipped; worker 704 passed, 2 failed. Both recall-header failures were reproduced on exact base 104bceed5f70a52682c154ee2b12b9b6d30098b2 with identical dependencies and tracked by #7041. These suites were not rerun this turn. Updated dependencies received focused validation under DEP01-t6; final-head CI remains open under DEP01-t9."
+    },
+    {
+      "id": "DEP01-c3",
+      "kind": "code",
+      "criterion": "DEP01",
+      "title": "Preserve authorized diagnostics and current base behavior through integration",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts",
+        "modules/gateway/src/agentauth/chat_data_routes.py",
+        "modules/agent-factory/agent/package-lock.json",
+        "modules/agent-factory/agent/jest.config.js",
+        "modules/gateway/uv.lock"
+      ],
+      "note": "Verified prepared integration in /work/repo: HEAD 8e4f7240667fc1fd546ce7e1b36af36e2989b254, MERGE_HEAD 1e19ebc49ff4e52e6389342c6219025f3b83c24f. All 64 incoming paths match the base exactly; all 16 story-specific paths match HEAD. No unmerged entries, unstaged changes or untracked files. No edits were necessary. Integration patch SHA-256: 8f86c62f63326f0be4afcae0328bb65b8b4d2e924d40e9e32e4e75aeee9399c1. Story patch excluding task metadata SHA-256: 158df1f99d3a82f680953206f6942edb58283ce0c56979eb3d58675cca988ebf."
+    },
+    {
+      "id": "DEP01-t6",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Verify prepared integration with focused SQLite, Moto and PostgreSQL tests",
+      "status": "done",
+      "covers": [
+        "DEP01-c3"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py",
+        "modules/gateway/tests/agentauth/test_installation_data_routes.py",
+        "modules/gateway/tests/agentauth/test_installation_reader.py",
+        "modules/gateway/tests/agentauth/test_chat_data_routes.py",
+        "modules/gateway/tests/agentauth/test_chat_capability.py",
+        "modules/gateway/tests/agentauth/test_chat_activity_work.py",
+        "modules/gateway/tests/auth/test_pyjwt_security.py",
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.test.ts",
+        "modules/agent-factory/agent/src/proxy-addr-security.test.ts",
+        "modules/agent-factory/agent/src/token-test-isolation.test.ts"
+      ],
+      "note": "Prepared integration passed fresh focused validation after uv sync --frozen --extra dev and npm ci --ignore-scripts --no-audit --no-fund. From modules/gateway: AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true uv run --no-sync pytest tests/agentauth/test_installation_status.py tests/agentauth/test_installation_data_routes.py tests/agentauth/test_installation_reader.py tests/agentauth/test_chat_data_routes.py tests/agentauth/test_chat_capability.py tests/agentauth/test_chat_activity_work.py tests/auth/test_pyjwt_security.py tests/orchestration/test_assistant_deploy_boundary.py -q --disable-warnings --tb=short returned 169 passed. From modules/agent-factory/agent: npm test -- --runInBand --silent src/complex-task-chat/gateway/installation-tools.test.ts src/complex-task-chat/complex-task-chat-agent.test.ts src/complex-task-chat/gateway/chat-data-client.test.ts src/complex-task-chat/activity/tools.test.ts src/complex-task-chat/activity/answer.test.ts src/proxy-addr-security.test.ts src/token-test-isolation.test.ts returned 168 passed; npm run build -- --pretty false passed. Ruff check and format checks passed for 10 relevant Python files. From /work/repo, python3 scripts/check-public-docs.py checked 1436 files with 0 findings. Logs: /tmp/adp-6935-base-validation.opTymn/. Prior PostgreSQL/browser evidence is retained, not newly executed."
+    },
+    {
+      "id": "DEP01-c4",
+      "kind": "code",
+      "criterion": "DEP01",
+      "title": "Bind installation observations to their originating deployment attempt",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_status.py"
+      ],
+      "note": "Tenant, execution, attempt, receipt-cycle and revised-binding safeguards are unchanged. Current status regressions passed."
+    },
+    {
+      "id": "DEP01-t7",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Test cross-attempt isolation and receipt-cycle validation with SQLite fixtures",
+      "status": "done",
+      "covers": [
+        "DEP01-c4"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py"
+      ],
+      "note": "Cross-attempt and receipt-cycle regressions passed in the current 169-test gateway selection."
+    },
+    {
+      "id": "DEP01-t8",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Complete code-stage functional/security and deployment-guard inspection",
+      "status": "done",
+      "covers": [
+        "DEP01-c1",
+        "DEP01-c-wire",
+        "DEP01-c2",
+        "DEP01-c3",
+        "DEP01-c4"
+      ],
+      "files": [
+        "modules/gateway/src/agentauth/chat_admission.py",
+        "modules/gateway/src/agentauth/chat_capability.py",
+        "modules/gateway/src/agentauth/chat_data_routes.py",
+        "modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/installation-tools.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/run-query.ts",
+        "scripts/check-assistant-deploy-boundary.sh",
+        ".github/workflows/gateway-deploy.yml",
+        ".github/workflows/chat-agent-deploy.yml",
+        ".github/workflows/agent-worker-image.yml"
+      ],
+      "note": "Retained prior manual inspection for unchanged authorization, projections and deployment guards. Reviewed incoming PyJWT/proxy-addr dependency changes and isolated worker test environment; associated security regressions, capability checks and deployment-boundary tests passed. Dedicated /security-review tooling remains unavailable; no automated scanner pass is claimed. No cloud, credential, deployment or GitHub operations occurred."
+    },
+    {
+      "id": "DEP01-t9",
+      "kind": "test",
+      "criterion": "DEP01",
+      "title": "Verify required CI and diagnostics regressions on the published final head",
+      "status": "open",
+      "covers": [
+        "DEP01-c1",
+        "DEP01-c-wire",
+        "DEP01-c2",
+        "DEP01-c3",
+        "DEP01-c4"
+      ],
+      "files": [
+        ".github/workflows/gateway-ci.yml",
+        "modules/gateway/tests/agentauth/test_installation_status.py",
+        "modules/gateway/tests/agentauth/test_installation_data_routes.py",
+        "modules/gateway/tests/agentauth/test_installation_reader.py"
+      ],
+      "note": "Prepared integration passes local focused validation but has not been published by this worker. No final-head CI evidence was supplied for this integration. Controller must publish it and provide applicable gateway shard/aggregate, chat integration, Agent control, frontend, lint, smoke and boundary-check results plus diagnostic evidence bound to the resulting head. Earlier-head results, pending checks and skips are not final-head passes."
+    },
+    {
+      "id": "DEP02-c1",
+      "kind": "code",
+      "criterion": "DEP02",
+      "title": "Represent observed, desired, verified, stale and unknown states",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_status.py"
+      ],
+      "note": "Existing-record projections remain unchanged. Current status fixtures pass without inventing installed versions.",
+      "commits": [
+        "894c983"
+      ]
+    },
+    {
+      "id": "DEP02-c2",
+      "kind": "code",
+      "criterion": "DEP02",
+      "title": "Return bounded failed-stage evidence and partial outcomes",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_failure.py"
+      ],
+      "note": "Bounded failure projection is unchanged; mixed-upgrade and redaction fixtures passed in the current gateway selection.",
+      "commits": [
+        "b77feb0"
+      ]
+    },
+    {
+      "id": "DEP02-t1",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Test partial failed upgrade and redacted timestamps with SQLite fixtures",
+      "status": "done",
+      "covers": [
+        "DEP02-c1",
+        "DEP02-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py"
+      ],
+      "note": "Distinct-revision, mixed-upgrade and redaction fixtures passed in the current 169-test gateway selection."
+    },
+    {
+      "id": "DEP02-t2",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Verify absent optional module against installed records",
+      "status": "blocked",
+      "covers": [
+        "DEP02-c1"
+      ],
+      "files": [],
+      "note": "Deferred until the installed-record provider exists; not a blocker to independently permitted existing-record diagnostics."
+    },
+    {
+      "id": "DEP02-t3",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Observe bounded failure evidence on an authorized live installation",
+      "status": "blocked",
+      "covers": [
+        "DEP02-c2"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 owns qualification against an authorized deployed target. Not code-merge acceptance."
+    },
+    {
+      "id": "DEP02-t4",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Test stale health and unknown legacy versions with SQLite fixtures",
+      "status": "done",
+      "covers": [
+        "DEP02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py"
+      ],
+      "note": "Stale-health, unavailable-version, secret-omission and ambiguous-binding fixtures passed in the current gateway selection."
+    },
+    {
+      "id": "DEP02-t5",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Verify desired versus last-verified release using provider-backed fixture",
+      "status": "blocked",
+      "covers": [
+        "DEP02-c1",
+        "DEP02-c2"
+      ],
+      "files": [],
+      "note": "Deferred provider-backed qualification; mock release values cannot establish acceptance. Not a code-merge blocker."
+    },
+    {
+      "id": "DEP02-t6",
+      "kind": "test",
+      "criterion": "DEP02",
+      "title": "Test missing and mismatched merge evidence with SQLite fixtures",
+      "status": "done",
+      "covers": [
+        "DEP02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py"
+      ],
+      "note": "Missing and mismatched merge-evidence regressions passed in the current gateway selection."
+    },
+    {
+      "id": "DEP03-c1",
+      "kind": "code",
+      "criterion": "DEP03",
+      "title": "Gate unavailable installed-record capabilities without inferred versions",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/installation_status.py"
+      ],
+      "note": "Explicit unavailable-capability behavior is unchanged and its fixtures pass. No competing ledger or inferred versions are introduced.",
+      "commits": [
+        "9576f91"
+      ]
+    },
+    {
+      "id": "DEP03-t1",
+      "kind": "test",
+      "criterion": "DEP03",
+      "title": "Test explicit unavailable-capability response",
+      "status": "done",
+      "covers": [
+        "DEP03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_installation_status.py",
+        "modules/gateway/tests/agentauth/test_installation_data_routes.py"
+      ],
+      "note": "Unavailable-capability and no-invented-version fixtures passed in the current 169-test gateway selection."
+    },
+    {
+      "id": "DEP03-c2",
+      "kind": "code",
+      "criterion": "DEP03",
+      "title": "Adapt implemented installed-record provider with version validation",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Deferred until #6896/#6927 supplies the provider. Existing-record diagnostics may merge independently."
+    },
+    {
+      "id": "DEP03-t2",
+      "kind": "test",
+      "criterion": "DEP03",
+      "title": "Run contract tests against implemented installed-record provider",
+      "status": "blocked",
+      "covers": [
+        "DEP03-c2"
+      ],
+      "files": [],
+      "note": "Requires the real provider; remains outstanding for full story acceptance, not independent code-stage delivery."
+    }
+  ]
+}

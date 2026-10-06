@@ -7,6 +7,7 @@ adopted: untracked operator access and account-setting ownership require review.
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -100,11 +101,44 @@ def check_operator(state, identity, region, cluster, read=aws):
                                  ' before upgrading; see platform_upgrades.md.')
 
 
-def prepare(directory, account, region, environment, gateway=True):
+def check_worker_security(state, release=False):
+    """Do not turn an ordinary upgrade into an implicit worker cutover.
+
+    These are current Terraform observations, not runtime qualification proof.
+    A serving legacy deployment may retain its observed identity for a code
+    upgrade. A security cutover remains explicit. Never downgrade protected
+    workers or use repository defaults as proof of an installed legacy mode.
+    """
+    rollout = state_tools.output(state, 'worker_security_rollout', {})
+    saved = state_tools.output(state, 'release_configuration', {})
+    if not isinstance(rollout, dict) or not isinstance(saved, dict):
+        raise ValueError('Invalid worker security state; inspect the current webhook state')
+    paused = rollout.get('admission_paused') is True
+    migrated = (rollout.get('active') is True
+                and rollout.get('legacy_admin_retired') is True
+                and saved.get('agent_task_source_isolation_confirmed') is True
+                and saved.get('agent_authority_runtime_ready') is True
+                and saved.get('agent_authority_legacy_workers_drained') is True)
+    legacy = state_tools.legacy_worker_settings(state)
+    if not migrated and not legacy and not (paused and not release):
+        raise ValueError(
+            'Worker security migration required before upgrading gateway or webhook code. '
+            'Quiesce admission, reconcile queued work, drain legacy jobs, qualify protected runtimes, '
+            'isolate the legacy source role and retire administrator grants through reviewed Terraform stages. '
+            'Do not set readiness assertions without evidence or use --confirm-destructive. '
+            'See docs/security/terraform-worker-rollout.md#stages. No migration was performed.')
+    if release and rollout.get('admission_paused') is not False:
+        raise ValueError('Release requires worker admission enabled after security qualification; '
+                         'a paused deployment is maintenance, not release acceptance')
+
+
+def prepare(directory, account, region, environment, gateway=True, webhook=True, worker_migration=False):
     directory = Path(directory)
     identity = aws(region, 'sts', 'get-caller-identity')
     if identity['Account'] != account:
         raise ValueError('Preflight AWS account differs from upgrade target')
+    if (directory / 'worker-migration.json').exists() and not worker_migration:
+        raise ValueError('Resume this worker migration with its original --migrate-workers evidence')
 
     def current_state(module):
         # Resume retains the original integration baseline, but ownership must
@@ -116,6 +150,30 @@ def prepare(directory, account, region, environment, gateway=True):
         aws(region, 's3api', 'get-object', '--bucket', f'adp-terraform-state-{account}', '--key', key, str(path))
         return json.loads(path.read_text())
 
+    # Resume must inspect current state, never accept the original pre-migration
+    # snapshot as proof. Check before any deployment or network mutation.
+    if worker_migration and not (gateway and webhook and (directory / 'webhook-ingress-before.tfstate').exists()):
+        raise ValueError('Worker migration requires an existing full gateway/webhook deployment')
+    if (gateway or webhook) and (directory / 'webhook-ingress-before.tfstate').exists():
+        installed_workers = current_state('webhook-ingress')
+        if (list(state_tools.resources(installed_workers))
+                or state_tools.output(installed_workers, 'worker_security_rollout') is not None):
+            if worker_migration:
+                migration = load(Path(__file__).with_name('upgrade-workers.py'), 'worker_migration_preflight')
+                migration.validate(directory, os.environ['ADP_WORKER_MIGRATION_EVIDENCE'], account, region, environment)
+            else:
+                check_worker_security(installed_workers, release=bool(os.environ.get('ADP_RELEASE_DIR')))
+                legacy = state_tools.legacy_worker_settings(installed_workers)
+                target = directory / 'webhook-ingress.tfvars.json'
+                preserved = json.loads(target.read_text())
+                # This transient input must be rediscovered, not inherited from
+                # a previous attempt after an identity cutover.
+                preserved.pop('agent_legacy_upgrade_role_arn', None)
+                if legacy:
+                    if legacy['agent_legacy_upgrade_role_arn'] != f'arn:aws:iam::{account}:role/adp-{environment}-agent-scaledjob-role':
+                        raise ValueError('Installed legacy worker identity belongs to another target')
+                    preserved.update(legacy)
+                state_tools.write_json(target, preserved)
     platform = current_state('platform')
     settings = check_settings(platform, region)
     check_operator(platform, identity, region, f'adp-{environment}-eks-cluster')
@@ -156,14 +214,49 @@ def prepare(directory, account, region, environment, gateway=True):
         state_tools.write_json(evidence, {'missing': digest is None, 'desired_schedule_enabled': desired})
 
 
+def verify_live_workers(directory):
+    """Confirm the retained legacy mode against Kubernetes before any apply."""
+    settings = json.loads((Path(directory) / 'webhook-ingress.tfvars.json').read_text())
+    arn = settings.get('agent_legacy_upgrade_role_arn')
+    if not arn:
+        return
+
+    def kube(kind, name, namespace):
+        return json.loads(subprocess.check_output(
+            ['kubectl', 'get', kind, name, '-n', namespace, '-o', 'json', '--request-timeout=30s'], text=True))
+
+    job = kube('scaledjob', 'agent-scaledjob', 'adp-agents')
+    annotations = job.get('metadata', {}).get('annotations', {})
+    if (any(k.startswith('autoscaling.keda.sh/paused') for k in annotations)
+            or any(c.get('type') == 'Paused' and c.get('status') == 'True' for c in job.get('status', {}).get('conditions', []))):
+        raise ValueError('Workers were paused outside Terraform; preserve that pause before upgrading')
+    if job['spec']['jobTargetRef']['template']['spec']['serviceAccountName'] != 'agent-scaledjob-sa':
+        raise ValueError('Live worker identity differs from the retained legacy identity')
+    sa = kube('serviceaccount', 'agent-scaledjob-sa', 'adp-agents')
+    if sa['metadata'].get('annotations', {}).get('eks.amazonaws.com/role-arn') != arn:
+        raise ValueError('Live worker role differs from the retained identity')
+    config = kube('configmap', 'adp-worker-authority-config', 'adp-gateway')['data']
+    if config.get('AGENT_AUTHORITY_ENABLED') != 'false':
+        raise ValueError('Gateway authority is already active or unknown; do not downgrade through legacy compatibility')
+    print('Retaining the installed legacy worker identity; protected-worker qualification remains separate')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('directory', 'account', 'region', 'environment'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--skip-gateway', action='store_true')
+    parser.add_argument('--skip-webhook', action='store_true')
+    parser.add_argument('--worker-migration', action='store_true')
+    parser.add_argument('--verify-live-workers', action='store_true')
     args = vars(parser.parse_args())
     args['gateway'] = not args.pop('skip_gateway')
+    args['webhook'] = not args.pop('skip_webhook')
+    live_workers = args.pop('verify_live_workers')
     try:
-        prepare(**args)
+        if live_workers:
+            verify_live_workers(args['directory'])
+        else:
+            prepare(**args)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         raise SystemExit('Upgrade compatibility preflight failed: ' + str(error))

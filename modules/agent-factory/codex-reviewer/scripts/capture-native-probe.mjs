@@ -62,6 +62,8 @@ export async function captureNativeProbe(model, persona) {
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    // Native SDK plugin-fetch children can finish writing just after abort.
+    // Bound cleanup retries without changing captured-shape validation.
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }

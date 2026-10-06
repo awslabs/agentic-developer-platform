@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import ConnectAws from '@/pages/settings/ConnectAws';
@@ -80,6 +80,53 @@ describe('ConnectAws Page', () => {
   });
 
   describe('Launch flow', () => {
+    it('explains a rejected platform account and lets the user correct it', async () => {
+      const user = userEvent.setup();
+      mockStartAwsConnect.mockRejectedValueOnce({
+        detail: {
+          error: 'invalid_role',
+          reason: 'platform_account_not_allowed',
+          message: 'This AWS account is used by the ADP platform.',
+          hint: 'Connect a different AWS account. Ask your ADP platform administrator to arrange scoped access for the task.',
+        },
+      }).mockResolvedValueOnce({ credential_id: 'customer-connection', launch_url: 'https://example.com/cfn' });
+      renderConnectAws();
+
+      expect(screen.getByText(/Personal connections are for AWS accounts separate/)).toBeInTheDocument();
+      await user.type(screen.getByLabelText(/Nickname/), 'my-task');
+      await user.type(screen.getByLabelText(/AWS Account ID/), '999999999999');
+      await user.click(screen.getByRole('button', { name: /Launch CloudFormation/i }));
+
+      const alert = await screen.findByRole('alert');
+      expect(within(alert).getByText('This AWS account is used by the ADP platform.')).toBeInTheDocument();
+      expect(within(alert).getByText(/Connect a different AWS account/)).toBeInTheDocument();
+      expect(mockWindowOpen).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: /Verify & Save/i })).not.toBeInTheDocument();
+
+      await user.clear(screen.getByLabelText(/AWS Account ID/));
+      await user.type(screen.getByLabelText(/AWS Account ID/), '123456789012');
+      await user.click(screen.getByRole('button', { name: /Launch CloudFormation/i }));
+      await screen.findByRole('button', { name: /Verify & Save/i });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(mockStartAwsConnect).toHaveBeenLastCalledWith(expect.objectContaining({ account_id: '123456789012' }));
+      expect(mockWindowOpen).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [{ detail: 'Connection setup unavailable' }, 'Connection setup unavailable'],
+      [new Error('Network unavailable'), 'Network unavailable'],
+      [{}, 'Failed to prepare AWS setup. Please retry.'],
+    ])('preserves errors without structured guidance: %s', async (error, message) => {
+      const user = userEvent.setup();
+      mockStartAwsConnect.mockRejectedValueOnce(error);
+      renderConnectAws();
+      await user.type(screen.getByLabelText(/Nickname/), 'my-task');
+      await user.type(screen.getByLabelText(/AWS Account ID/), '123456789012');
+      await user.click(screen.getByRole('button', { name: /Launch CloudFormation/i }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(message);
+      expect(screen.queryByText('Next step:')).not.toBeInTheDocument();
+    });
+
     it('calls startAwsConnect and opens URL on launch', async () => {
       const user = userEvent.setup();
       mockStartAwsConnect.mockResolvedValue({

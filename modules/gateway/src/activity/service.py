@@ -25,11 +25,12 @@ import base64
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from src.activity.liveness import OBSERVED_TERMINAL_STATUSES, compute_liveness
 from src.activity.schemas import (
@@ -85,6 +86,18 @@ def _decode_cursor(cursor: str) -> dict:
         return key
     except (json.JSONDecodeError, UnicodeDecodeError, Exception) as exc:
         raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class WorkActivityPage:
+    items: list[InvocationItem]
+    direct_cursor: str | None
+    descendant_cursor: str | None
+    coverage: list[dict[str, str]] = field(default_factory=list)
+
+
+class ActivitySourceUnavailableError(Exception):
+    """The chat query cannot establish that this Activity index was readable."""
 
 
 class ActivityService:
@@ -204,6 +217,67 @@ class ActivityService:
             last_key=primary.last_key,
         )
 
+    def query_work_by_user(
+        self,
+        user_id: str,
+        *,
+        tenant_id: str,
+        page_size: int,
+        since: str,
+        until: str,
+        direct_cursor: str | None = None,
+        descendant_cursor: str | None = None,
+        first_page: bool = True,
+    ) -> WorkActivityPage:
+        """Page direct and root-attributed indexes independently for chat reads.
+
+        A missing cursor after page one means that index is exhausted, rather
+        than a request to reread its first page. The tenant filter applies to
+        both indexes even when an opaque index cursor is supplied.
+        Query whole boundary seconds so mixed timestamp precision cannot omit
+        records; the chat projection applies the exact half-open datetime filter.
+        """
+        index_since = datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(UTC).isoformat(timespec="seconds").removesuffix("+00:00")
+        index_until = datetime.fromisoformat(until.replace("Z", "+00:00")).astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        coverage: list[dict[str, str]] = []
+
+        def page(index_name: str, partition_key_name: str, cursor: str | None) -> InvocationListResponse:
+            source = "activity_direct" if index_name == "user-index" else "activity_descendants"
+            if not first_page and cursor is None:
+                return InvocationListResponse(items=[], count=0, last_key=None)
+            try:
+                response = self._execute_query(
+                    index_name=index_name,
+                    partition_key_name=partition_key_name,
+                    partition_key_value=user_id,
+                    extra_filter_tenant_id=tenant_id,
+                    page_size=page_size,
+                    last_key=cursor,
+                    status=None,
+                    channel=None,
+                    persona=None,
+                    since=index_since,
+                    until=index_until,
+                    strict_missing=True,
+                )
+            except ActivitySourceUnavailableError:
+                coverage.append({"source": source, "status": "unavailable", "reason": "index_missing"})
+                return InvocationListResponse(items=[], count=0, last_key=None)
+            except (ClientError, BotoCoreError):
+                coverage.append({"source": source, "status": "unavailable", "reason": "provider_failure"})
+                return InvocationListResponse(items=[], count=0, last_key=None)
+            coverage.append({"source": source, "status": "available", "reason": "queried"})
+            return response
+
+        direct = page("user-index", "user_id", direct_cursor)
+        descendants = page("root-human-index", "root_human_id", descendant_cursor)
+        return WorkActivityPage(
+            items=direct.items + descendants.items,
+            direct_cursor=direct.last_key,
+            descendant_cursor=descendants.last_key,
+            coverage=coverage,
+        )
+
     def query_by_tenant(
         self,
         tenant_id: str,
@@ -268,6 +342,7 @@ class ActivityService:
         extra_filter_user_id: str | None = None,
         extra_filter_tenant_id: str | None = None,
         include_non_triggering: bool = False,
+        strict_missing: bool = False,
     ) -> InvocationListResponse:
         """Execute a DynamoDB Query with shared logic for both endpoints.
 
@@ -356,6 +431,8 @@ class ActivityService:
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("ValidationException", "ResourceNotFoundException"):
+                if strict_missing:
+                    raise ActivitySourceUnavailableError("activity index unavailable") from None
                 # Missing GSI or table — deploy-order gap; return empty.
                 logger.warning(
                     "DynamoDB query failed (likely missing GSI/table) — returning empty",

@@ -38,6 +38,8 @@
 /** Path prefix the ADP gateway exposes the Superplane domain API under. */
 export const DOMAIN_BASE = '/superplane/v1';
 
+export const C1_CONTRACT_VERSION = '2026-10-05.1';
+
 /**
  * Why an onboarding action cannot be performed right now.
  *
@@ -89,6 +91,8 @@ export interface EndpointDeclaration {
 export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
+  getWorkspaceAccess: { method: 'GET', path: '/workspaces/{workspace_id}/access/v1/me', served: true },
+  grantWorkspaceAccess: { method: 'POST', path: '/workspaces/{workspace_id}/access/v1/grants', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
   batchResult: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/result', served: true },
   batchAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting', served: true },
@@ -141,6 +145,31 @@ export const ENDPOINTS = {
   requestApproval: { method: 'POST', path: '/operation-approvals', served: true, capability: 'requesting approval for a reviewed operation' },
   getApproval: { method: 'GET', path: '/operation-approvals/{approval_id}', served: true, capability: 'reading a requested operation approval' },
   decideApproval: { method: 'POST', path: '/operation-approvals/{approval_id}/decision', served: true, capability: 'deciding an operation approval' },
+
+  previewRetirement: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement/preview',
+    served: true,
+    capability: 'reviewing the exact workspace retirement inventory',
+  },
+  admitRetirement: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement',
+    served: true,
+    capability: 'submitting an approved workspace retirement',
+  },
+  previewRetirementAccess: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement/access/preview',
+    served: true,
+    capability: 'reviewing separate cleanup access for workspace removal',
+  },
+  admitRetirementAccess: {
+    method: 'POST',
+    path: '/workspaces/{workspace_id}/retirement/access',
+    served: true,
+    capability: 'requesting approved cleanup access for workspace removal',
+  },
 
   /**
    * Adopt a cluster the user already operates (bring-your-own-cluster).
@@ -204,13 +233,10 @@ export type EndpointName = keyof typeof ENDPOINTS;
  *
  * WHY SUBMISSION IS REFUSED WITHOUT IT
  * ------------------------------------
- * `POST /workspaces` today accepts a body validated by a Pydantic model that has
- * no operation-identity field. Pydantic ignores unknown fields by default, so a
- * client sending one gets a 201 and *believes* the submission was idempotent
- * while the server deduplicated nothing. A retry after a lost reply would then
- * build a second workspace and spend twice — the exact outcome the idempotency
- * requirement exists to prevent, arrived at through an apparently successful
- * request.
+ * The composed `CreateWorkspaceRequest` accepts a UUID `operation_id` and
+ * refuses extra fields. A mounted route alone cannot establish that the deployed
+ * execution adapter honours that identity, so submission requires an affirmative
+ * capability response. This avoids a second workspace after an uncertain reply.
  *
  * Silently-ignored is the worst case, so both clients require the server to say
  * it honours the identity before any create is sent. `adp-superplane.py` gates on
@@ -416,6 +442,63 @@ export type OnboardingMode = 'managed' | 'adopt';
 export const ISOLATION_MODES = ['dedicated', 'namespace', 'research'] as const;
 
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
+
+export interface RetirementPreviewRequest {
+  operation_id: string;
+}
+
+export interface RetirementAdmissionRequest extends RetirementPreviewRequest {
+  plan_revision: string;
+  approval_id: string;
+}
+
+export interface RetirementReview {
+  request_id: string;
+  workspace_id: string;
+  source_operation_id: string;
+  source_payload_digest: string;
+  lifecycle_artifact_id: string;
+  account_id: string;
+  region: string;
+  inventory_sha256: string;
+  lifecycle_policy_sha256: string;
+  runtime_config_sha256: string;
+  steps: readonly {
+    step_id: string;
+    provider: string;
+    operation_kind: string;
+    target: string;
+  }[];
+  preserved: readonly string[];
+  admission_available: boolean;
+  blocked_reason: string | null;
+  approval_request: Record<string, unknown> | null;
+  revision: string;
+}
+
+export interface RetirementAccessReview {
+  admission_available?: boolean;
+  retirement_request_id: string;
+  request_id: string;
+  workspace_id: string;
+  source_operation_id: string;
+  phase: string;
+  revision: string;
+  allocation_id: string;
+  original_allocation_id: string;
+  inventory_sha256: string;
+  access_plan: Record<string, unknown>;
+  authority: Record<string, unknown>;
+  preserved: readonly string[];
+  max_resource_units: number;
+  max_cost_micros: number;
+  approval_request: {
+    workspace_id: string;
+    action: string;
+    idempotency_key: string;
+    parameters: Record<string, unknown>;
+  };
+}
 
 /**
  * Isolation modes the deployment says it serves, or the schema's set when it has

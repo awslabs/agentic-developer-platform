@@ -95,9 +95,17 @@ export interface ConnectAwsFormProps {
   onPrepared?: () => void;
 }
 
-function connectErrorMessage(err: unknown, fallback: string): string {
-  const detail = (err as { detail?: string | { message?: string } })?.detail;
-  return (typeof detail === 'string' ? detail : detail?.message) || (err as { message?: string })?.message || fallback;
+interface ConnectError {
+  message: string;
+  hint?: string;
+}
+
+function connectErrorMessage(err: unknown, fallback: string): ConnectError {
+  const detail = (err as { detail?: string | { message?: string; hint?: string } })?.detail;
+  return {
+    message: (typeof detail === 'string' ? detail : detail?.message) || (err as { message?: string })?.message || fallback,
+    hint: typeof detail === 'object' && typeof detail?.hint === 'string' ? detail.hint : undefined,
+  };
 }
 
 export function ConnectAwsForm({
@@ -122,7 +130,7 @@ export function ConnectAwsForm({
   const [setup, setSetup] = useState<ConnectAwsSetup | null>(null);
   const [launchUrl, setLaunchUrl] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<ConnectAwsVerifyResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ConnectError | null>(null);
   const resumeHandle = initialConnection?.handle;
 
   useEffect(() => {
@@ -365,8 +373,9 @@ export function ConnectAwsForm({
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-4" data-testid={`${testIdPrefix}-error`}>
-          <p className="text-sm text-red-800">{error}</p>
+        <div role="alert" className="bg-red-50 border border-red-200 rounded-md p-4" data-testid={`${testIdPrefix}-error`}>
+          <p className="text-sm text-red-800">{error.message}</p>
+          {error.hint && <p className="mt-2 text-sm text-red-800"><strong>Next step: </strong>{error.hint}</p>}
         </div>
       )}
     </div>

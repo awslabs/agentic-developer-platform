@@ -345,6 +345,45 @@ such merges or obtain explicit target-specific rollout authority. This design PR
 changes only documentation, but verify its actual checks and triggered workflows.
 Do not disable deployment workflows globally as an incidental implementation step.
 
+### Persistent assistant rollout approval
+
+The gateway backend, chat-worker and agent-worker rollout jobs run
+`scripts/check-assistant-deploy-boundary.sh` before establishing deployment
+credentials. When an approval applies to the target, this guard compares the
+candidate's protected assistant files with that target-approved source revision.
+An unrelated later push cannot carry an earlier held assistant change into the
+same artifact. Gateway and worker comparisons have separate path scopes, so
+changes confined to the other artifact do not hold this deployment. Changes
+outside the protected paths can deploy when the assistant files still match the
+approved revision. Extend the path inventory when introducing assistant code
+outside the existing protected locations
+(`docs/architecture/assistant-deploy-boundary.md` lists the audited workflows).
+
+The deployment owner configures these variables in each protected GitHub
+deployment environment, after approving the source for that target:
+
+- `ADP_ASSISTANT_APPROVED_TARGET`: the exact deployment environment name.
+- `ADP_ASSISTANT_APPROVED_REVISION`: the full 40-character approved source commit.
+
+The workflows supply their actual environment name and fetch complete history.
+A target mismatch, a checkout/candidate mismatch, an approved revision outside
+the candidate's ancestry, or protected files that differ from the approved
+revision denies deployment. When no approval applies, the guard compares the
+protected files against the revision this same workflow file last deployed
+successfully on the branch; only a candidate that leaves them unchanged may
+continue, and an unknown baseline refuses. Do not advance the approved revision
+merely because code merged; doing so authorizes its protected assistant content
+for that target. No live approval configuration is established by these repository
+changes.
+
+An explicit `workflow_dispatch` has no bypass: it passes on the recorded approval
+or on the `adp_approved_revision` input naming the approved source for that run.
+The input does not update the persistent approval or authorize later automatic
+deployments. After a separately authorized rollout, the deployment owner may
+record its exact approved source revision in the target environment. Live
+credential isolation and feature enablement remain separate qualification gates
+under #6931 and #6937.
+
 ## Evaluation contract for every story
 
 Use the existing repository tests and CI checks. Add missing tests as part of the

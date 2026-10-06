@@ -1,5 +1,6 @@
 """The actual shared outbox waits for durable domain workspace registration."""
 
+import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from harness_jobs.leases import acquire, fence_expired_lease, read_lease, releas
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.adapters.operation_dispatch import OperationDispatcher
+from app.config import settings
 from app.database import Base
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
@@ -18,6 +20,7 @@ from app.models.deployment import Deployment
 from app.models.controller_deployment import ControllerDeploymentOperation
 from app.models.organization import Organization
 from app.models.workspace import Workspace
+from app.models.lifecycle import WorkspaceLifecycleControlOperation
 from tests.test_operation_settlement_postgres import (
     installation_postgres_url as installation_postgres_url,
     ledger as ledger,
@@ -29,17 +32,36 @@ pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 class GatewayTransport:
-    def __init__(self):
+    def __init__(self, binding, adp_org_id="adp-tenant"):
         self.calls = []
         self.alter = {}
+        self.binding = binding
+        self.adp_org_id = adp_org_id
+        self.proofs = []
+        self.proof_override = {}
+        self.lose_dispatch_reply = False
 
     async def post(self, route, payload):
+        if route == "/binding-proof":
+            self.proofs.append(payload)
+            return {
+                "version": 1,
+                "installed": True,
+                "checked_at": datetime.now(UTC).isoformat(),
+                "domain": "superplane",
+                "org_id": payload["org_id"],
+                "adp_org_id": self.adp_org_id,
+                **self.binding,
+                **self.proof_override,
+            }
         self.calls.append((route, payload))
+        if self.lose_dispatch_reply:
+            raise TimeoutError("Gateway response lost after dispatch")
         return {
             "version": 1,
             **payload,
             "domain_org_id": payload["org_id"],
-            "adp_org_id": "adp-tenant",
+            "adp_org_id": self.adp_org_id,
             "invocation_id": "real-invocation",
             "principal": "real-invocation#1",
             "status": "pending",
@@ -49,7 +71,7 @@ class GatewayTransport:
 
 
 @pytest.fixture
-async def dispatch(settlement, installation_postgres_url):  # noqa: F811
+async def dispatch(settlement, installation_postgres_url, monkeypatch, tmp_path):  # noqa: F811
     _, connections, _, identity, _ = settlement
     async with connections.connect() as connection:
         schema = await connection.fetchval("SELECT current_schema()")
@@ -71,6 +93,7 @@ async def dispatch(settlement, installation_postgres_url):  # noqa: F811
                 Workspace.__table__,
                 Deployment.__table__,
                 ControllerDeploymentOperation.__table__,
+                WorkspaceLifecycleControlOperation.__table__,
             ],
         )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -96,10 +119,31 @@ async def dispatch(settlement, installation_postgres_url):  # noqa: F811
             )
             await session.commit()
 
-    transport = GatewayTransport()
+    binding = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "arn:aws:iam::123456789012:role/paid-worker",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:paid-operations",
+    }
+    binding_file = tmp_path / "worker-binding.json"
+    binding_file.write_text(json.dumps(binding))
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    transport = GatewayTransport(binding)
     dispatcher = OperationDispatcher(
         connections.connect,
         transport,
+        domain_connect=connections.connect,
         policy_for=lambda org: SimpleNamespace(adp_org_id="adp-tenant"),
     )
     try:
@@ -122,10 +166,125 @@ async def test_admission_before_workspace_commit_is_not_delivered_or_exhausted(
         )
     await register()
     assert (await dispatcher.drain_once()).delivered == 1
+    assert transport.proofs == [{"domain": "superplane", "org_id": identity["org_id"]}]
     assert (await dispatcher.drain_once()).handled == 0
     assert transport.calls == [
         ("/dispatch", {"domain": "superplane", "mode": "execution", **identity})
     ]
+
+
+@pytest.mark.parametrize(
+    "proof_change",
+    [
+        {"checked_at": "2000-01-01T00:00:00+00:00"},
+        {"org_id": "other-organization"},
+        {"adp_org_id": "other-adp-organization"},
+        {"worker_registry_id": "other-worker"},
+    ],
+    ids=["stale", "foreign-org", "foreign-adp-org", "misbound-worker"],
+)
+async def test_changed_installed_worker_proof_preserves_pending_outbox(
+    dispatch, proof_change
+):
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    transport.proof_override.update(proof_change)
+    report = await dispatcher.drain_once()
+    assert report.delivered == 0
+    assert report.failed == 1
+    assert transport.proofs == [{"domain": "superplane", "org_id": identity["org_id"]}]
+    assert transport.calls == []
+    async with connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT delivered_at FROM harness_dispatch_outbox WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            is None
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            == "pending"
+        )
+
+
+@pytest.mark.parametrize("failure", ["lost-reply", "partial-receipt"])
+async def test_uncertain_dispatch_remains_pending_until_verified_retry(
+    dispatch, failure
+):
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    if failure == "lost-reply":
+        transport.lose_dispatch_reply = True
+    else:
+        transport.alter = {"status": "unknown"}
+    first = await dispatcher.drain_once()
+    assert (first.delivered, first.failed, first.exhausted) == (0, 1, 0)
+    assert transport.calls == [
+        ("/dispatch", {"domain": "superplane", "mode": "execution", **identity})
+    ]
+    async with connections.connect() as connection:
+        outbox = await connection.fetchrow(
+            "SELECT delivered_at, attempts, last_error FROM harness_dispatch_outbox "
+            "WHERE operation_id=$1",
+            identity["operation_id"],
+        )
+        state = await connection.fetchval(
+            "SELECT state FROM harness_operations WHERE operation_id=$1",
+            identity["operation_id"],
+        )
+        reservations = await connection.fetchval(
+            "SELECT count(*) FROM operation_budget_reservations"
+        )
+        approvals = await connection.fetchval(
+            "SELECT count(*) FROM harness_approval_consumption"
+        )
+    assert outbox["delivered_at"] is None
+    assert outbox["attempts"] == 1 and outbox["last_error"]
+    assert state == "pending"
+    assert (reservations, approvals) == (1, 1)
+
+    transport.lose_dispatch_reply = False
+    transport.alter = {}
+    restarted = OperationDispatcher(
+        connections.connect,
+        transport,
+        domain_connect=dispatcher.domain_connect,
+        policy_for=dispatcher.policy_for,
+    )
+    retry = await restarted.drain_once()
+    assert (retry.delivered, retry.failed, retry.exhausted) == (1, 0, 0)
+    assert transport.calls == [transport.calls[0]] * 2
+    async with connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT delivered_at FROM harness_dispatch_outbox WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            is not None
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            == "running"
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM harness_approval_consumption"
+            )
+            == 1
+        )
 
 
 async def test_workspace_for_another_operation_does_not_unlock_dispatch(dispatch):
@@ -175,7 +334,10 @@ async def test_expired_recovery_dispatch_survives_restart_with_original_paid_ids
         before = await read_lease(connection, operation_id=identity["operation_id"])
     assert await dispatcher.recover_once() == (identity["operation_id"],)
     restarted = OperationDispatcher(
-        connections.connect, transport, policy_for=dispatcher.policy_for
+        connections.connect,
+        transport,
+        domain_connect=dispatcher.domain_connect,
+        policy_for=dispatcher.policy_for,
     )
     assert await restarted.recover_once() == (identity["operation_id"],)
     assert (
@@ -290,3 +452,106 @@ async def test_recovery_mismatched_receipt_preserves_retryable_durable_lease(dis
     assert await dispatcher.recover_once() == ()
     transport.alter = {}
     assert await dispatcher.recover_once() == (identity["operation_id"],)
+
+
+async def test_dispatch_and_recovery_with_mutually_isolated_database_roles(
+    dispatch,
+    installation_postgres_url,
+):
+    """Production pools cannot read the opposite owner's schema, even by name."""
+    from asyncpg.exceptions import InsufficientPrivilegeError
+    from sqlalchemy.engine import make_url
+    from app.adapters.harness_connection import HarnessConnections
+
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    suffix = uuid.uuid4().hex[:12]
+    domain_schema = "dispatch_domain_" + suffix
+    shared_role, domain_role = "shared_" + suffix, "domain_" + suffix
+    domain_tables = [
+        "organizations",
+        "cloud_accounts",
+        "clusters",
+        "workspaces",
+        "deployments",
+        "controller_deployment_operations",
+        "workspace_lifecycle_control_operations",
+        "operation_budget_reservations",
+    ]
+    pools = []
+    async with connections.connect() as admin:
+        shared_schema = await admin.fetchval("SELECT current_schema()")
+        await admin.execute(f'CREATE SCHEMA "{domain_schema}"')
+        for table in domain_tables:
+            await admin.execute(f'ALTER TABLE "{table}" SET SCHEMA "{domain_schema}"')
+        for role, schema in (
+            (shared_role, shared_schema),
+            (domain_role, domain_schema),
+        ):
+            await admin.execute(f'CREATE ROLE "{role}" LOGIN')
+            await admin.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{role}"')
+            await admin.execute(
+                f'GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{role}"'
+            )
+            await admin.execute(
+                f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{role}"'
+            )
+    try:
+        for role, schema in (
+            (shared_role, shared_schema),
+            (domain_role, domain_schema),
+        ):
+            url = make_url(installation_postgres_url).set(
+                drivername="postgresql", username=role
+            )
+            pool = HarnessConnections(
+                url.render_as_string(hide_password=False),
+                {
+                    "ssl": "disable",
+                    "server_settings": {"search_path": schema},
+                },
+            )
+            await pool.open()
+            pools.append(pool)
+        shared, domain = pools
+        async with shared.connect() as connection:
+            assert await connection.fetchval("SELECT to_regclass('workspaces')") is None
+            with pytest.raises(InsufficientPrivilegeError):
+                await connection.fetch(f'SELECT * FROM "{domain_schema}".workspaces')
+        async with domain.connect() as connection:
+            assert (
+                await connection.fetchval("SELECT to_regclass('harness_operations')")
+                is None
+            )
+            with pytest.raises(InsufficientPrivilegeError):
+                await connection.fetch(
+                    f'SELECT * FROM "{shared_schema}".harness_operations'
+                )
+        dispatcher.connect = shared.connect
+        dispatcher.domain_connect = domain.connect
+        dispatcher.policy_for = None  # Canonical organization mapping uses domain pool.
+        assert (await dispatcher.drain_once()).delivered == 1
+        assert await dispatcher.recover_once() == (identity["operation_id"],)
+        async with domain.connect() as connection:
+            await connection.execute(
+                "UPDATE operation_budget_reservations SET max_runtime_seconds=max_runtime_seconds+1"
+            )
+        assert await dispatcher.recover_once() == ()
+        async with domain.connect() as connection:
+            await connection.execute(
+                "UPDATE organizations SET adp_org_id='foreign-tenant'"
+            )
+        dispatcher.policy_for = lambda org: SimpleNamespace(adp_org_id="adp-tenant")
+        assert await dispatcher.recover_once() == ()
+    finally:
+        for pool in pools:
+            await pool.aclose()
+        async with connections.connect() as admin:
+            for table in domain_tables:
+                await admin.execute(
+                    f'ALTER TABLE "{domain_schema}"."{table}" SET SCHEMA "{shared_schema}"'
+                )
+            await admin.execute(f'DROP SCHEMA "{domain_schema}"')
+            for role in (shared_role, domain_role):
+                await admin.execute(f'DROP OWNED BY "{role}"')
+                await admin.execute(f'DROP ROLE "{role}"')

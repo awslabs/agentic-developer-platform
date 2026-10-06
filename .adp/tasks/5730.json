@@ -1,0 +1,519 @@
+{
+  "version": 1,
+  "issue": 5730,
+  "updated_at": "2026-10-06T02:29:57.837Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Preserve default-off route and capability-scoped onboarding actions",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained; ancestry-only merge leaves feature source unchanged.",
+      "commits": [
+        "1de1440"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test disabled feature, zero-workspace admin and denied role",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "Prior local evidence retained; supplied Frontend Unit Tests check succeeds at c885af6."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Publish source-derived C1 contract checkpoint",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior checkpoint retained.",
+      "commits": [
+        "40b67d2"
+      ]
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Connect workspace details and server-side receipt re-entry",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained; pre-registration recovery without an ID still needs backend discovery.",
+      "commits": [
+        "8ef3966"
+      ]
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire capability-gated retirement preview into workspace details",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Review-only path retained; Remove remains disabled.",
+      "commits": [
+        "061fc68"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test creation, approval and receipt recovery with source-shaped fixtures",
+      "status": "done",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [],
+      "note": "Passing fixture evidence retained; supplied browser CI also exercises onboarding and continuation. Not live API evidence."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test retirement refusal and absence of deletion",
+      "status": "done",
+      "covers": [
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "Local evidence retained; passing browser job at c885af6 executes refusal/re-entry scenarios and asserts no retirement admission request."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Verify real API-backed onboarding and durable readiness",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c2",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #5540/live-evaluation owner; compatible release and authorization required. Separate from source merge."
+    },
+    {
+      "id": "AC-02-t4",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test C1 source-contract drift and retirement refusal",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": "Prior source-contract and expanded permission-contract evidence retained."
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Consume mounted cleanup-access and positive retirement contracts without enabling unsupported admission",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Guarded preview retained. Positive producer/binding integration belongs to the supervisor/backend owner; not a source-merge requirement.",
+      "commits": [
+        "b94733b"
+      ]
+    },
+    {
+      "id": "AC-02-t5",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test mounted contract, incomplete evidence and malformed retirement responses",
+      "status": "done",
+      "covers": [
+        "AC-02-c3"
+      ],
+      "files": [],
+      "note": "Current refusal and malformed-response evidence retained; positive contract remains unverified."
+    },
+    {
+      "id": "AC-02-c4",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Wire separate human approval, exact-plan admission and durable retirement re-entry",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Read-only original-ID re-entry retained. Positive approval/admission remains with the supervisor/backend owner; Remove must remain disabled.",
+      "commits": [
+        "0116fc0"
+      ]
+    },
+    {
+      "id": "AC-02-t6",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test approved submission, accepted progress and no duplicate removal after lost response",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c4"
+      ],
+      "files": [],
+      "note": "Recovery negatives pass; positive admission requires the separately owned producer contract."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Scope receipts and observations across organization, workspace and session changes",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained.",
+      "commits": [
+        "916b5e9"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test late responses, sign-in re-entry and scope isolation",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Passing stale-response and scoped-recovery evidence retained."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test revocation, substituted responses and secret absence",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Prior tests and manual security inspection retained for identical feature source. No live-security acceptance claimed."
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Recover retirement review from receipt-storage failures without sending an unsafe request",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained."
+    },
+    {
+      "id": "AC-03-t3",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test retirement receipt-storage failure and retry recovery with component fixtures",
+      "status": "done",
+      "covers": [
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "Passing RetirementPanel regression evidence retained."
+    },
+    {
+      "id": "AC-03-c3",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Keep workspace browsing available when saved creation receipts cannot be read",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior repair retained."
+    },
+    {
+      "id": "AC-03-t4",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test unreadable creation receipts, browsing continuity and original-identity recovery",
+      "status": "done",
+      "covers": [
+        "AC-03-c3"
+      ],
+      "files": [],
+      "note": "Passing OnboardingView regression evidence retained."
+    },
+    {
+      "id": "AC-03-c4",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Preserve scoped retirement and access identities across refresh, scope changes and uncertain replies",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Principal-scoped receipts and immutable operation lineage retained.",
+      "commits": [
+        "7343120"
+      ]
+    },
+    {
+      "id": "AC-03-t5",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test stale authority, changed workspace, cross-scope replay and lost-response recovery",
+      "status": "done",
+      "covers": [
+        "AC-03-c4"
+      ],
+      "files": [],
+      "note": "Passing receipt-lineage and retirement recovery evidence retained."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Show independent readiness and access observations with honest freshness",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained.",
+      "commits": [
+        "cc62ec1"
+      ]
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test fresh, stale and unknown readiness and access details",
+      "status": "done",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Passing readiness and onboarding evidence retained."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test partial bootstrap, missing capabilities and unavailable provider",
+      "status": "done",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Passing frontend negative-path evidence retained."
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Distinguish retirement acceptance and progress from verified removal and residual costs",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Operation states remain distinct from verified removal and unknown residual cost.",
+      "commits": [
+        "6851867"
+      ]
+    },
+    {
+      "id": "AC-04-t3",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test partial cleanup, unknown costs and absence-proof requirements",
+      "status": "done",
+      "covers": [
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "Passing RetirementPanel outcome evidence retained."
+    },
+    {
+      "id": "AC-05-c1",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Provide accessible and focus-managed onboarding and removal controls",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained.",
+      "commits": [
+        "1b3b104"
+      ]
+    },
+    {
+      "id": "AC-05-t1",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test focus, labels, keyboard use and session expiry",
+      "status": "done",
+      "covers": [
+        "AC-05-c1"
+      ],
+      "files": [],
+      "note": "Passing component evidence retained; supplied browser success provides additional real-browser fixture coverage."
+    },
+    {
+      "id": "AC-05-t2",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Run real-browser narrow-screen and keyboard checks",
+      "status": "done",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c2"
+      ],
+      "files": [
+        ".github/workflows/superplane-ui-browser-ci.yml",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_browser.py",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Updated evidence: controller reports success at c885af6 for https://github.com/aws-e/adp/actions/runs/37402725400/job/112074154035. Inspected workflow invokes verify_browser.py, which unconditionally invokes onboarding checks including keyboard interaction and 360/1280px layout assertions. Fixture evidence only, not live acceptance.",
+      "commits": [
+        "194af4a",
+        "c277efb",
+        "6e17714",
+        "7793cfb"
+      ]
+    },
+    {
+      "id": "AC-05-c2",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Add lifecycle-continuation and session-expiry scenarios to the browser fixture",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Prior implementation retained."
+    },
+    {
+      "id": "AC-05-t3",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test continuation and expired-session fixture contracts before browser execution",
+      "status": "done",
+      "covers": [
+        "AC-05-c2"
+      ],
+      "files": [],
+      "note": "Previously verified 46 offline fixture tests retained; maintained browser job also succeeds at c885af6."
+    },
+    {
+      "id": "AC-05-c3",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Expose stable accessible retirement approval, recovery and outcome controls in browser fixture",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Named regions retained; removal remains disabled.",
+      "commits": [
+        "5580d0b"
+      ]
+    },
+    {
+      "id": "AC-05-t4",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test retirement keyboard, narrow-screen, expired-session and denial journeys in browser",
+      "status": "done",
+      "covers": [
+        "AC-05-c3"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Updated evidence: successful browser job 112074154035 in run 37402725400 at c885af6. Inspected driver executes retirement-review-reentry, retirement-denied and each expired-action scenario, checks layout, and asserts no creation/removal admission. Resolves the browser-execution gap at this published revision; no live cleanup claim.",
+      "commits": [
+        "e08e3cd"
+      ]
+    },
+    {
+      "id": "AC-06-c1",
+      "kind": "code",
+      "criterion": "AC-06",
+      "title": "Maintain CI wiring and document bounded acceptance mapping",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Story implementation and CI wiring retained; newly requested base update changes ancestry only."
+    },
+    {
+      "id": "AC-06-t1",
+      "kind": "test",
+      "criterion": "AC-06",
+      "title": "Run final-head frontend, typecheck, lint and browser suites",
+      "status": "open",
+      "covers": [
+        "AC-06-c1"
+      ],
+      "files": [
+        "modules/gateway/frontend",
+        "modules/domain-apps/superplane/ui",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
+        ".github/workflows/gateway-ci.yml",
+        ".github/workflows/superplane-ui-browser-ci.yml"
+      ],
+      "note": "Narrowed remaining gap: API CI and required aggregate/final-head confirmation. Controller supplies successful Gateway run 37402725120 checks, including Frontend Unit Tests, all eight test shards, Test and Build Container; Superplane run 37402725400 supplies successful UI and browser jobs at c885af6b21264b5092286a9d3d65773ac6eb899c. Browser coverage was traced to the onboarding driver. API job 112074153754 is still in progress with no reported failure. Skipped persona/controller jobs are not counted as passes. Previous local 2,971 frontend tests, 89 API tests with two known expected failures, TypeScript, passing lint and manual security evidence remain valid for identical source. Keep open until required checks are bound to the final published revision.",
+      "commits": [
+        "cc2b40a",
+        "7a05251",
+        "4caaf18",
+        "3e1e18d",
+        "9d03e68"
+      ]
+    },
+    {
+      "id": "AC-06-t2",
+      "kind": "test",
+      "criterion": "AC-06",
+      "title": "Record exact-release live onboarding and removal evidence",
+      "status": "blocked",
+      "covers": [
+        "AC-06-c1"
+      ],
+      "files": [],
+      "note": "deployed-target: #5540/live-evaluation owner; authorized release and real IDs required. Separate from source merge; keep original story open for unproved acceptance."
+    },
+    {
+      "id": "AC-06-t3",
+      "kind": "test",
+      "criterion": "AC-06",
+      "title": "Verify browser fixture transport and CLI endpoint parity with focused unit tests",
+      "status": "done",
+      "covers": [
+        "AC-06-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py",
+        "modules/gateway/tests/cli/test_superplane_onboarding.py"
+      ],
+      "note": "Previously verified 46 browser-fixture and 136 CLI test passes retained; unchanged suites were not repeated."
+    },
+    {
+      "id": "AC-06-t4",
+      "kind": "test",
+      "criterion": "AC-06",
+      "title": "Verify prepared base merge with focused onboarding, retirement and receipt fixtures",
+      "status": "done",
+      "covers": [
+        "AC-06-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx",
+        "modules/domain-apps/superplane/ui/__tests__/OnboardingView.test.tsx",
+        "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
+        "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts",
+        "modules/domain-apps/superplane/ui/__tests__/contract.test.ts",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": "Latest verification: HEAD c885af6b21264b5092286a9d3d65773ac6eb899c; prepared MERGE_HEAD ab0f00b920161f3dc2aa480fdfe97be4e955d422. New base and previous base 62306dcf1182e97331870b12c6a3e44e0056104e share tree a8187be61e17047d93c76a931fbcc5ad8b72304c. Prepared index and working tree exactly match HEAD; no conflicts or diff-check errors. Reused established tests for identical content instead of rerunning suites or manufacturing edits."
+    }
+  ]
+}

@@ -7,10 +7,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "codebuild"))
 TERMINAL_BUILD_STATES = {"SUCCEEDED", "FAILED", "FAULT", "STOPPED", "TIMED_OUT"}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -134,18 +136,34 @@ def validate_coverage(report, tool: str, source_revision: str, expected_images: 
     if not isinstance(targets, list) or report.get("expected") != len(expected_images) or report.get("succeeded") != len(expected_images):
         raise ValueError(f"{tool} coverage is incomplete")
     by_name = {item.get("name"): item for item in targets if isinstance(item, dict)}
-    if set(by_name) != expected_images or any(item.get("status") != "succeeded" for item in by_name.values()):
+    if len(targets) != len(expected_images) or set(by_name) != expected_images or any(item.get("status") != "succeeded" for item in by_name.values()):
         raise ValueError(f"{tool} coverage target inventory is incomplete")
+    if report.get("scope") == "all" or "excluded_non_runtime" in report:
+        from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, non_runtime_fixtures
+
+        expected_exclusion = non_runtime_fixtures(Path(__file__).resolve().parents[2])
+        if (len(expected_exclusion) != 1
+                or expected_exclusion[0]["dockerfile"] != DOC_API_COMPAT
+                or report.get("excluded_non_runtime") != expected_exclusion
+                or report.get("original_gap") != ORIGINAL_COVERAGE
+                or report.get("discovered") != len(expected_images) + len(expected_exclusion)):
+            raise ValueError(f"{tool} inventory correction is missing or inconsistent")
     return by_name
 
 
 def observed_results(evidence_root: Path, provenance_output: Path, source_revision: str, expected_images: set[str], cleanup_complete: bool):
     if not SHA.fullmatch(source_revision):
         raise ValueError("source revision is not a full SHA")
-    coverage = {
-        tool: validate_coverage(load_json(evidence_root / tool / "coverage.json"), tool, source_revision, expected_images)
-        for tool in ("grype", "syft")
+    reports = {
+        tool: load_json(evidence_root / tool / "coverage.json") for tool in ("grype", "syft")
     }
+    coverage = {
+        tool: validate_coverage(report, tool, source_revision, expected_images)
+        for tool, report in reports.items()
+    }
+    correction_fields = ("scope", "excluded_non_runtime", "original_gap", "discovered")
+    if any(reports["grype"].get(field) != reports["syft"].get(field) for field in correction_fields):
+        raise ValueError("Grype and Syft inventory corrections differ")
     provenance_output.mkdir(parents=True, exist_ok=True)
     images = {}
     for name in sorted(expected_images):
@@ -297,6 +315,29 @@ def cleanup_children(state_dir: Path, expected_children: set[str], region: str, 
     return result
 
 
+def validate_cleanup_receipt(path: Path, expected_complete: bool):
+    receipt = load_json(path)
+    if (not isinstance(receipt, dict)
+            or set(receipt) != {"cleanup_complete", "children", "errors"}
+            or type(receipt["cleanup_complete"]) is not bool
+            or receipt["cleanup_complete"] != expected_complete
+            or not isinstance(receipt["children"], dict)
+            or not isinstance(receipt["errors"], list)):
+        raise ValueError("cleanup receipt does not match the observed cleanup state")
+    if expected_complete:
+        if receipt["errors"] or set(receipt["children"]) != {"grype", "syft"}:
+            raise ValueError("cleanup receipt does not prove both children finished")
+        for tool, child in receipt["children"].items():
+            if (not isinstance(child, dict)
+                    or set(child) != {"build_id", "terminal_status", "source_removed"}
+                    or not isinstance(child["build_id"], str)
+                    or not child["build_id"].split(":", 1)[0].endswith(f"-{tool}-scan")
+                    or child["terminal_status"] not in TERMINAL_BUILD_STATES
+                    or child["source_removed"] is not True):
+                raise ValueError(f"cleanup receipt lacks terminal child and source removal: {tool}")
+    return receipt
+
+
 def expected_image_names(path: Path) -> set[str]:
     targets = load_json(path)
     names = {item.get("name") for item in targets if isinstance(item, dict)} if isinstance(targets, list) else set()
@@ -333,7 +374,9 @@ def main():
     if args.command == "validate-findings":
         validate_findings(args.findings_dir, expected_image_names(args.inventory))
     elif args.command == "observed-results":
-        result = observed_results(args.evidence_dir, args.provenance_output, args.source_revision, expected_image_names(args.inventory), args.cleanup_complete == "true")
+        cleanup_complete = args.cleanup_complete == "true"
+        validate_cleanup_receipt(args.evidence_dir / "cleanup.json", cleanup_complete)
+        result = observed_results(args.evidence_dir, args.provenance_output, args.source_revision, expected_image_names(args.inventory), cleanup_complete)
         args.output.write_text(json.dumps(result, sort_keys=True) + "\n")
     elif args.command == "sanitize-summary":
         sanitize_summary(args.summary, args.output, args.source_revision, args.correlation)

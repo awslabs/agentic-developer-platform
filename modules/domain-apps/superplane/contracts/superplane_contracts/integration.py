@@ -481,7 +481,7 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
     PortContract(
         name="current_identity_reader",
         owner=PortOwner.GATEWAY_IDENTITY,
-        declared_at="src/superplane-api/app/current_identity.py:24",
+        declared_at="src/superplane-api/app/current_identity.py:22",
         purpose=(
             "Read current typed ADP membership and enabled-state evidence without "
             "substituting token claims or domain grants for upstream identity."

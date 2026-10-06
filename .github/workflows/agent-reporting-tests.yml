@@ -51,6 +51,16 @@ jobs:
           cache-dependency-path: modules/agent-factory/agent/package-lock.json
       - run: npm ci --include=dev
       - run: npm run build -- --noEmit
+      - name: Verify proxy trust rejects spoofed client addresses
+        run: npm test -- --runInBand --runTestsByPath src/proxy-addr-security.test.ts
+      - name: Verify tests preserve the worker's GitHub credentials
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/token-test-isolation.test.ts
+          src/utils/ghPost.test.ts
+          src/token-file-on-local-mint.test.ts
+          src/token-refresh-broker.test.ts
+          src/token-propagation.test.ts
       - name: Verify explanation capture, bounded publication and independent archival
         run: >-
           npm test -- --runInBand --runTestsByPath

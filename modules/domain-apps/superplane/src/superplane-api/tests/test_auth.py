@@ -899,6 +899,60 @@ class TestWorkspaceAuthorizationEnforcement:
     """R6: authority is a server-held grant, re-read per operation."""
 
     @pytest.mark.asyncio
+    async def test_signed_access_token_passes_but_signed_id_token_is_401(
+        self, client, enforcing
+    ):
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        claims = {"custom:org_id": str(org_id)}
+        access_token = _mint(enforcing, **claims)
+        id_token = _mint(
+            enforcing, **claims, token_use="id", client_id=None, aud=TEST_CLIENT_ID
+        )
+
+        access_response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        id_response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {id_token}"},
+        )
+
+        assert access_response.status_code == 200
+        assert id_response.status_code == 401
+        assert id_response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.parametrize(
+        ("client_id", "audience"),
+        [("another-client", None), (None, TEST_CLIENT_ID)],
+    )
+    @pytest.mark.asyncio
+    async def test_signed_non_allowlisted_client_is_refused(
+        self, client, enforcing, client_id, audience
+    ):
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        org_claim = {"custom:org_id": str(org_id)}
+        token = _mint(enforcing, **org_claim, client_id=client_id, aud=audience)
+        response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.asyncio
+    async def test_internal_credential_cannot_authenticate_domain_route(
+        self, client, enforcing, internal_token_header
+    ):
+        _, workspace_id = await _seed_workspace("workspace:read")
+        response = await client.get(
+            f"/workspaces/{workspace_id}", headers=internal_token_header
+        )
+
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.asyncio
     async def test_no_token_is_401(self, client, enforcing):
         _, workspace_id = await _seed_workspace("workspace:read")
         response = await client.get(f"/workspaces/{workspace_id}")
@@ -934,6 +988,32 @@ class TestWorkspaceAuthorizationEnforcement:
         token = _mint(enforcing, **{"custom:org_id": str(org_id)})
         response = await client.post(
             f"/workspaces/{workspace_id}/kubeconfig",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_peer_workspace_grant_cannot_authorize_kubeconfig(
+        self, client, enforcing
+    ):
+        from tests.conftest import async_session_test
+
+        org_id, _ = await _seed_workspace("workspace:provision")
+        target_workspace = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=target_workspace,
+                    org_id=org_id,
+                    name="ungranted-peer",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.post(
+            f"/workspaces/{target_workspace}/kubeconfig",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 403
@@ -1067,6 +1147,69 @@ class TestWorkspaceAuthorizationEnforcement:
             f"/workspaces/{workspace_id}", headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_service_grant_is_scoped_and_rechecked(self, client, enforcing):
+        from sqlalchemy import update
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="worker-svc", principal_type="service"
+        )
+        token = _mint(
+            enforcing,
+            sub="worker-svc",
+            **{"custom:org_id": str(org_id), "custom:account_type": "service"},
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        allowed = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        denied = await client.post(
+            f"/workspaces/{workspace_id}/kubeconfig", headers=headers
+        )
+        assert allowed.status_code == 200
+        assert denied.status_code == 403
+
+        async with async_session_test() as session:
+            await session.execute(
+                update(WorkspaceGrantRecord)
+                .where(WorkspaceGrantRecord.workspace_id == workspace_id)
+                .values(revoked_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        revoked = await client.get(f"/workspaces/{workspace_id}", headers=headers)
+        assert revoked.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_role_claims_never_replace_workspace_grants(self, client, enforcing):
+        """Synthetic role-like claims do not confer production authority."""
+        org_id, workspace_id = await _seed_workspace(
+            "workspace:read", principal="granted-user"
+        )
+        granted_token = _mint(
+            enforcing,
+            sub="granted-user",
+            **{"custom:org_id": str(org_id), "role": "workspace_viewer"},
+        )
+        claimed_owner = _mint(
+            enforcing,
+            sub="ungranted-user",
+            **{
+                "custom:org_id": str(org_id),
+                "role": "workspace_owner",
+                "custom:role": "workspace_owner",
+            },
+        )
+        path = f"/workspaces/{workspace_id}"
+        allowed = await client.get(
+            path, headers={"Authorization": f"Bearer {granted_token}"}
+        )
+        denied = await client.get(
+            path, headers={"Authorization": f"Bearer {claimed_owner}"}
+        )
+        assert allowed.status_code == 200
+        assert denied.status_code == 403
 
     @pytest.mark.asyncio
     async def test_administer_implies_read_via_policy_closure(self, client, enforcing):
@@ -1369,6 +1512,25 @@ class TestIdentitySpoofing:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_spoofed_organization_headers_cannot_switch_tenant(
+        self, client, enforcing
+    ):
+        own_org, own_workspace = await _seed_workspace("workspace:read")
+        foreign_org, foreign_workspace = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(own_org)})
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Org-Id": str(foreign_org),
+            "X-ADP-Org-Id": str(foreign_org),
+            "X-Forwarded-Org-Id": str(foreign_org),
+        }
+        own = await client.get(f"/workspaces/{own_workspace}", headers=headers)
+        foreign = await client.get(f"/workspaces/{foreign_workspace}", headers=headers)
+
+        assert own.status_code == 200
+        assert foreign.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_identity_headers_are_stripped_from_request_state(
         self, client, enforcing
     ):
@@ -1387,6 +1549,47 @@ class TestIdentitySpoofing:
         assert "content-type" in safe
         assert not [k for k in safe if k.lower().startswith(("x-adp-", "x-caller-"))]
         assert "x-forwarded-user" not in {k.lower() for k in safe}
+
+    @pytest.mark.asyncio
+    async def test_mounted_route_exposes_only_sanitized_headers(
+        self, client, enforcing, monkeypatch
+    ):
+        observed = []
+        verify = domain_auth.require_verified_caller
+
+        async def capture(request, credentials):
+            caller = await verify(request, credentials)
+            observed.append((request.state.safe_headers, caller))
+            return caller
+
+        monkeypatch.setattr(domain_auth, "require_verified_caller", capture)
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        response = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-ADP-Principal": "other-user",
+                "X-Caller-Id": "other-user",
+                "X-Org-Id": "other-org",
+                "X-Forwarded-User": "other-user",
+                "X-Probe-Metadata": "kept",
+            },
+        )
+
+        assert response.status_code == 200
+        assert len(observed) == 1
+        safe_headers, caller = observed[0]
+        assert safe_headers == caller.safe_headers
+        assert safe_headers["x-probe-metadata"] == "kept"
+        assert all(
+            header not in safe_headers
+            for header in (
+                "x-adp-principal", "x-caller-id", "x-org-id", "x-forwarded-user"
+            )
+        )
+        assert caller.principal.subject == "user-abc"
+        assert caller.principal.org_id == str(org_id)
 
     @pytest.mark.asyncio
     async def test_body_supplied_approver_is_not_trusted(self, client, enforcing):
@@ -1552,6 +1755,39 @@ class TestRouteInventoryCoverage:
                 f"{method} {path} is not a domain route"
             )
             assert requirement is not None
+
+    @pytest.mark.parametrize(
+        "method,path,expected_class,expected_scope",
+        [
+            ("GET", "/health", "public", None),
+            ("GET", "/workspaces", "domain", "organization"),
+            ("POST", "/workspaces", "domain", "organization"),
+            ("GET", "/accounts", "domain", "organization"),
+            ("GET", "/workspaces/{workspace_id}", "domain", "workspace"),
+            (
+                "PATCH",
+                "/api/v1/research/proposals/{proposal_id}/approve",
+                "domain",
+                "organization",
+            ),
+            (
+                "POST",
+                "/operation-approvals/{approval_id}/decision",
+                "domain",
+                "organization",
+            ),
+            ("POST", "/internal/heartbeat", "internal", None),
+            ("POST", "/internal/cost-reconcile", "internal", None),
+            ("POST", "/internal/provider-operations", "internal", None),
+        ],
+    )
+    def test_mounted_route_families_retain_their_class_and_scope(
+        self, method, path, expected_class, expected_scope
+    ):
+        assert (method, path) in self._mounted()
+        route_class, requirement = classify(method, path)
+        assert route_class.value == expected_class
+        assert (requirement[0].value if requirement else None) == expected_scope
 
     def test_kubeconfig_requires_provision_not_read(self):
         """It reads like a getter and it hands out live cluster credentials."""
@@ -2184,8 +2420,11 @@ class TestEnforcementDisabledPath:
 class TestUninventoriedRouteFailsClosed:
     """A route nobody classified must be refused, not served."""
 
+    @pytest.mark.parametrize("present_valid_token", [False, True])
     @pytest.mark.asyncio
-    async def test_route_absent_from_the_inventory_is_refused(self, enforcing):
+    async def test_route_absent_from_the_inventory_is_refused(
+        self, enforcing, present_valid_token
+    ):
         """The property that makes the inventory safe to rely on.
 
         Registered on a throwaway app carrying the same guard, because the point
@@ -2210,8 +2449,13 @@ class TestUninventoriedRouteFailsClosed:
             return {"reached": True}  # pragma: no cover - must be unreachable
 
         transport = ASGITransport(app=probe)
+        headers = (
+            {"Authorization": f"Bearer {_mint(enforcing)}"}
+            if present_valid_token
+            else {}
+        )
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            response = await ac.get("/never-classified")
+            response = await ac.get("/never-classified", headers=headers)
 
         assert response.status_code == 403
         assert "no recorded authorization decision" in response.text
@@ -2507,6 +2751,32 @@ class TestEnvironmentStateIsObservable:
         assert "cognito_enabled" in body
         assert "domain_auth_enforced" in body
         assert isinstance(body["cognito_enabled"], bool)
+
+    @pytest.mark.parametrize("cognito_enabled", [False, True])
+    @pytest.mark.asyncio
+    async def test_health_reports_configured_cognito_state_with_strict_policy(
+        self, client, enforcing, monkeypatch, cognito_enabled
+    ):
+        monkeypatch.setattr(settings, "cognito_enabled", cognito_enabled)
+        response = await client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["cognito_enabled"] is cognito_enabled
+        assert response.json()["domain_auth_enforced"] is True
+
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        permitted = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        refused = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": "Bearer not-a-signed-token"},
+        )
+
+        assert permitted.status_code == 200
+        assert refused.status_code == 401
 
     @pytest.mark.asyncio
     async def test_health_reflects_the_loaded_policy_not_the_setting(

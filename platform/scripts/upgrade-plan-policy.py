@@ -2,6 +2,7 @@
 """Allow narrowly defined deployment replacements; protect existing integrations."""
 import importlib.util
 import json
+import os
 import re
 from pathlib import Path
 import sys
@@ -16,6 +17,71 @@ WORKER_ROLLOUT_TIMEOUT_MIGRATION = (
     "c77563053075fc3ef8487094a1b99e12aba81d006eb37e5c281d7a5c5fb5165d",
     "a7445dc5de28a2001adb32c29d98e93cbf0dc97bbffa044aeb96bf86551bc5a6",
 )
+# The #6880 change removes the retired Door key from the readiness check.
+# This exact script-only transition has no destroy provisioner.
+WORKER_ROLLOUT_IDENTITY_MIGRATION = (
+    WORKER_ROLLOUT_TIMEOUT_MIGRATION[1],
+    "4a9163e763cf07e984b2e7f39c64dbf77c969a2c1f85e589b5857dd49357aba3",
+)
+
+
+def legacy_worker_upgrade(plan, account):
+    """Retain an existing identity; never use this input for a fresh launch/downgrade."""
+    values = {k: v.get('value') for k, v in plan.get('variables', {}).items()}
+    environment = values.get('environment')
+    if environment not in ('dev', 'staging', 'prod') or not re.fullmatch('[0-9]{12}', account or ''):
+        return False
+    arn = f'arn:aws:iam::{account}:role/adp-{environment}-agent-scaledjob-role'
+    if values.get('agent_legacy_upgrade_role_arn') != arn or any(values.get(k) is not False for k in (
+            'agent_authority_enabled', 'agent_legacy_worker_admin_retired',
+            'agent_task_source_isolation_confirmed', 'agent_worker_admission_paused')):
+        return False
+    role = next((r['change'] for r in plan['resource_changes'] if r['address'] == 'aws_iam_role.agent_scaledjob'), {})
+    before, after = role.get('before') or {}, role.get('after') or {}
+    if (role.get('actions') not in (['no-op'], ['update']) or before.get('arn') != arn or after.get('arn') != arn
+            or before.get('permissions_boundary') or after.get('permissions_boundary')):
+        return False
+    rollout = next((r['change'] for r in plan['resource_changes']
+                    if r['address'] == 'terraform_data.worker_security_rollout'), {})
+    old = (rollout.get('before') or {}).get('input') or {}
+    new = (rollout.get('after') or {}).get('input') or {}
+    return (rollout.get('actions') in (['no-op'], ['update'])
+            and old.get('active') is new.get('active') is False
+            and old.get('paused') is new.get('paused') is False)
+
+
+def retired_internal_key_mirror(resource, plan, account):
+    """Delete only #6880's obsolete SSM mirror, never the source secret.
+
+    Match the resource identity, provenance and target without reading/logging
+    its sensitive value. Admission must be paused or fully protected in the
+    saved plan. This does not authorize a worker cutover.
+    """
+    change = resource['change']
+    before = change.get('before') or {}
+    variables = plan.get('variables', {})
+    value = lambda name: variables.get(name, {}).get('value')
+    environment, region = value('environment'), value('aws_region')
+    if (environment not in ('dev', 'staging', 'prod')
+            or not re.fullmatch(r'[0-9]{12}', account or '')
+            or not re.fullmatch(r'[a-z]{2}-[a-z]+-[0-9]', region or '')):
+        return False
+    name = f'/adp/{environment}/gateway/internal-api-key'
+    safe_admission = legacy_worker_upgrade(plan, account) or value('agent_worker_admission_paused') is True or all(
+        value(key) is True for key in (
+            'agent_authority_enabled', 'agent_authority_runtime_ready',
+            'agent_authority_legacy_workers_drained', 'agent_legacy_worker_admin_retired',
+            'agent_task_source_isolation_confirmed'))
+    return (resource.get('address') == 'aws_ssm_parameter.gateway_internal_api_key[0]'
+            and resource.get('type') == 'aws_ssm_parameter'
+            and resource.get('deposed') is None
+            and change['actions'] == ['delete'] and change.get('after') is None
+            and before.get('name') == before.get('id') == name
+            and before.get('arn') == f'arn:aws:ssm:{region}:{account}:parameter{name}'
+            and before.get('type') == 'SecureString'
+            and before.get('tags') == {'Purpose': 'adversarial-e2e', 'Source': 'secrets-manager-mirror',
+                                       'Issue': '3377', 'Component': 'credential-binding'}
+            and safe_admission)
 
 
 def agent_factory_retirement(resource, plan, account):
@@ -201,6 +267,8 @@ def routine(resource, module, account, plan):
     before, after = change.get("before") or {}, change.get("after") or {}
     order = change["actions"]
     address = resource["address"]
+    if module == "webhook-ingress" and retired_internal_key_mirror(resource, plan, account):
+        return True
     if module == "agent-factory" and agent_factory_retirement(resource, plan, account):
         return True
     if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
@@ -337,7 +405,7 @@ def routine(resource, module, account, plan):
             and (
                 old["rollout_script"] == new["rollout_script"]
                 or (old["rollout_script"], new["rollout_script"])
-                == WORKER_ROLLOUT_TIMEOUT_MIGRATION
+                in (WORKER_ROLLOUT_TIMEOUT_MIGRATION, WORKER_ROLLOUT_IDENTITY_MIGRATION)
             )
             and bool(re.fullmatch(r"[0-9a-f]{64}", new["configuration"]))
             and (
@@ -348,6 +416,11 @@ def routine(resource, module, account, plan):
                 or (
                     resource.get("action_reason") == "replace_because_tainted"
                     and old["configuration"] == new["configuration"]
+                )
+                or (
+                    (old['rollout_script'], new['rollout_script']) == WORKER_ROLLOUT_IDENTITY_MIGRATION
+                    and old['configuration'] == new['configuration']
+                    and resource.get('action_reason') == 'replace_because_cannot_update'
                 )
             )
         )
@@ -428,23 +501,78 @@ def protected_change(resource):
     return False
 
 
-def evaluate(plan, module, account):
+def worker_migration_plan(plan, module, account, migration):
+    """Authorize only the drained, qualified cutover's known webhook changes."""
+    if not migration or module != 'webhook-ingress':
+        return False
+    values = {k: v.get('value') for k, v in plan.get('variables', {}).items()}
+    return (migration.get('account') == account
+            and migration.get('region') == values.get('aws_region')
+            and migration.get('environment') == values.get('environment')
+            and migration.get('phase') in ('drained', 'configured', 'verified', 'admitting')
+            and values.get('eks_cluster_name') == f"adp-{migration['environment']}-eks-cluster"
+            and values.get('gateway_namespace') == 'adp-gateway'
+            and values.get('agent_image') == migration.get('worker_image')
+            and values.get('agent_authority_worker_image_digests') == [migration['worker_image'].split('@')[1]]
+            and all(values.get(k) is True for k in (
+                'agent_authority_prepared', 'agent_authority_enabled', 'agent_authority_runtime_ready',
+                'agent_authority_legacy_workers_drained', 'agent_task_source_isolation_confirmed',
+                'agent_legacy_worker_admin_retired'))
+            and values.get('agent_worker_admission_paused') is (migration['phase'] != 'admitting'))
+
+
+def migration_rollout(resource, authorized):
+    if not authorized or resource.get('address') != 'terraform_data.worker_gateway_rollout[0]':
+        return False
+    change = resource['change']
+    before = (change.get('before') or {}).get('triggers_replace', {})
+    after = (change.get('after') or {}).get('triggers_replace', {})
+    # This carrier has no destroy provisioner. No resource other than this
+    # marker gains a replacement exception from the migration receipt.
+    return (resource.get('type') == 'terraform_data' and resource.get('deposed') is None
+            and change['actions'] in (['delete', 'create'], ['create', 'delete'])
+            and set(before) == set(after) == {'configuration', 'marker_version', 'rollout_script'}
+            and after.get('rollout_script') == WORKER_ROLLOUT_IDENTITY_MIGRATION[1]
+            and isinstance(after.get('marker_version'), str) and after['marker_version'] != 'disabled'
+            and bool(after['marker_version'])
+            and bool(re.fullmatch('[0-9a-f]{64}', after.get('configuration', ''))))
+
+
+def evaluate(plan, module, account, migration=None):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
+    cutover = worker_migration_plan(plan, module, account, migration)
+    if (module == 'webhook-ingress' and plan.get('variables', {}).get('agent_legacy_upgrade_role_arn', {}).get('value')
+            and not legacy_worker_upgrade(plan, account)):
+        protected.append('legacy worker identity preservation')
     for resource in plan["resource_changes"]:
+        if module == 'webhook-ingress' and resource['address'] == 'terraform_data.worker_security_rollout':
+            change = resource['change']
+            before = (change.get('before') or {}).get('input') or {}
+            after = (change.get('after') or {}).get('input') or {}
+            # No destructive override can silently pause a serving deployment
+            # or downgrade active protected identities as part of a code update.
+            authorized_pause = cutover and after.get('active') is True and after.get('paused') is True
+            if (before.get('paused') is False and after.get('paused') is not False and not authorized_pause
+                    or before.get('active') is True and after.get('active') is not True):
+                protected.append(resource['address'])
         retained_version = retained_operator_version(resource, plan, module, account)
         if protected_change(resource) and not retained_version:
             protected.append(resource["address"])
         if set(resource["change"]["actions"]) & {"delete", "forget"}:
-            (allowed if retained_version or routine(resource, module, account, plan) else blocked).append(resource["address"])
+            (allowed if retained_version or migration_rollout(resource, cutover)
+             or routine(resource, module, account, plan) else blocked).append(resource["address"])
     return {"routine": allowed, "blocked": blocked, "protected": protected}
 
 
 if __name__ == "__main__":
     try:
-        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
+        migration = None
+        if os.environ.get('ADP_WORKER_MIGRATION_EVIDENCE') and os.environ.get('UPGRADE_RUN_DIR'):
+            migration = json.loads((Path(os.environ['UPGRADE_RUN_DIR']) / 'worker-migration.json').read_text())
+        result = evaluate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3], migration)
         if result["protected"]:
-            sys.exit("Upgrade would change protected infrastructure, account settings, credentials or installation mappings: " + ", ".join(result["protected"]))
+            sys.exit("Upgrade would change protected infrastructure, account settings, credentials, worker admission or installation mappings: " + ", ".join(result["protected"]))
         for address in result["routine"]:
             print("Routine deployment replacement: " + address, file=sys.stderr)
         print("\n".join(result["blocked"]))

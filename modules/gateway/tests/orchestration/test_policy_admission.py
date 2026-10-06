@@ -546,6 +546,95 @@ class TestMembershipIsVerifiedLive:
 
 
 class TestSpendAbsenceIsReadCorrectly:
+    async def test_one_dispatch_pass_fills_three_slots_before_any_usage_arrives(self, session, governed_work_ownership):
+        from src.orchestration.flow_budget import admission_cost_usd, admission_request_id, flow_reservation_target, get_flow_reservations
+
+        policy = _policy(limits=_limits(max_spend_usd=Decimal("100"), max_concurrent_actions=3))
+        flow, first = await _fixture(session, policy=policy)
+        nodes = [first]
+        for index in range(3):
+            nodes.append(await _make_node(session, flow, node_ref=f"parallel-{index}", issue_ref=str(4200 + index)))
+
+        report = await run_dispatch_pass(session, _config())
+
+        assert report.dispatched == 3
+        assert len(report.pending) == 3
+        assert sorted([await _state_of(session, n.id) for n in nodes]) == ["ready", "running", "running", "running"]
+        refusals = list(
+            (await session.scalars(select(OrchestrationDecision.rejection_reason).where(OrchestrationDecision.kind == "transition_rejected"))).all()
+        )
+        assert any("concurrency_limit_exceeded" in reason for reason in refusals if reason)
+        store = get_flow_reservations()
+        client = await store._get_client()
+        target = flow_reservation_target(org_id=flow.org_id, flow_id=flow.id, policy=policy, settled_usd=Decimal(0))
+        holds = await client.hgetall(target.key())
+        for node in nodes:
+            if await _state_of(session, node.id) == "running":
+                assert Decimal(holds[admission_request_id(node.id)].split(":")[0]) == admission_cost_usd(policy)
+
+    @pytest.mark.parametrize("failure", ["missing", "expired", "unbounded", "unavailable", "disabled"])
+    async def test_running_without_usage_requires_a_trustworthy_meter(self, session, monkeypatch, failure):
+        from unittest.mock import AsyncMock
+
+        from src.budget.config import budget_config
+        from src.orchestration.flow_budget import get_flow_reservations
+        from src.orchestration.flow_meter import meter_target
+
+        policy = _policy()
+        flow, node = await _fixture(session, policy=policy)
+        await _make_node(session, flow, node_ref="starting", state=NodeState.RUNNING, attempts=1)
+        store = get_flow_reservations()
+        client = await store._get_client()
+        target = meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+        if failure == "missing":
+            await client.delete(target.key())
+        elif failure == "expired":
+            await client.hset(target.key(), "__initialized__", "0:1")
+        elif failure == "unbounded":
+            await store.reserve("unknown-call", Decimal(5), [target])
+            await store.mark_unknown("unknown-call", target)
+        elif failure == "unavailable":
+            monkeypatch.setattr(store, "_get_client", AsyncMock(side_effect=ConnectionError("unavailable")))
+        else:
+            monkeypatch.setattr(budget_config, "budget_reservation_enabled", False)
+
+        decision = await _authorize(session, node)
+        assert decision.reason is DenyReason.SPEND_UNKNOWN
+
+    @pytest.mark.parametrize("call_state", ["pending", "retained", "settled"])
+    @pytest.mark.parametrize("call_cost, permitted", [("10", True), ("60", False)])
+    async def test_running_without_usage_preserves_model_bounds_and_admission_holds(self, session, call_state, call_cost, permitted):
+        from src.orchestration.flow_budget import get_flow_reservations, reserve_flow_admission
+        from src.orchestration.flow_meter import meter_target
+
+        policy = _policy(limits=_limits(max_spend_usd=Decimal("100")))
+        flow, node = await _fixture(session, policy=policy)
+        running = await _make_node(session, flow, node_ref="starting", state=NodeState.RUNNING, attempts=1)
+        assert (await reserve_flow_admission(org_id=flow.org_id, flow_id=flow.id, policy=policy, settled_usd=Decimal(0), node_id=running.id)).admitted
+        store = get_flow_reservations()
+        target = meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+        assert (await store.reserve("call", Decimal(call_cost), [target])).admitted
+        if call_state == "retained":
+            assert await store.retain_failed_bound("call", target)
+        elif call_state == "settled":
+            await store.reconcile("call", Decimal(call_cost), [target])
+
+        decision = await _authorize(session, node)
+        assert decision.permitted is permitted
+        if not permitted:
+            assert decision.reason is DenyReason.SPEND_LIMIT_EXCEEDED
+
+    async def test_startup_meter_cannot_lower_recorded_sql_spend(self, session):
+        policy = _policy(limits=_limits(max_spend_usd=Decimal("50")))
+        flow, node = await _fixture(session, policy=policy)
+        await _make_node(session, flow, node_ref="starting", state=NodeState.RUNNING, attempts=1)
+        completed = await _make_node(session, flow, node_ref="completed", state=NodeState.PASSED)
+        await _make_usage(session, completed, cost_usd="40")
+
+        # The freshly initialized meter is zero, but the recorded $40 still
+        # leaves less than the $25 required for this admission.
+        assert (await _authorize(session, node)).reason is DenyReason.SPEND_LIMIT_EXCEEDED
+
     async def test_a_fresh_flow_dispatches_despite_having_no_ledger_rows(self, session: AsyncSession) -> None:
         """**The deadlock this design has to avoid.**
 
@@ -556,13 +645,14 @@ class TestSpendAbsenceIsReadCorrectly:
         _, node = await _fixture(session, policy=_policy())
         assert (await _authorize(session, node)).permitted
 
-    async def test_a_node_that_ran_without_a_usage_row_blocks(self, session: AsyncSession) -> None:
+    @pytest.mark.parametrize("state", [NodeState.PASSED, NodeState.FAILED, NodeState.AWAITING_MERGE])
+    async def test_a_node_that_ran_without_a_usage_row_blocks(self, session: AsyncSession, state) -> None:
         """**The hole on the other side.** Executed work with no cost row is
         unreconciled spend, and admitting more would be minting allowance against an
         unmeasured total.
         """
         flow, node = await _fixture(session, policy=_policy())
-        await _make_node(session, flow, node_ref="s8", state=NodeState.PASSED)
+        await _make_node(session, flow, node_ref="s8", state=state)
 
         decision = await _authorize(session, node)
         assert not decision.permitted

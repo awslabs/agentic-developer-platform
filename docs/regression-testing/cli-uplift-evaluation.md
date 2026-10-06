@@ -541,7 +541,12 @@ not claim the separate E02 password-challenge/non-admin acceptance scenario.
 The `assistant` selection adds E43–E50 to the existing EC2 runner, state,
 report, recovery and cleanup. E50 is the executable baseline for the currently
 supported WebSocket protocol: ordinary-user identity, server-issued session,
-correlated final response and owned HTTP history readback. It uses the registered
+worker lifecycle, correlated final response and owned HTTP history readback.
+It pins the existing `intent-refinement` persona to select the worker path and
+requires `RUN_STARTED` and `RUN_FINISHED` for the same server session/task before
+the final response. A classifier-only reply cannot pass. The saved assistant
+message must also carry that task ID. These are the current worker's events,
+not proof of sandbox isolation or durable/replay semantics. It uses the registered
 `assistant_baseline` remote driver. Offline compatibility tests consume frames
 from the production response router, including its one-based chunk sequence.
 `hosted-chat` (D01) remains a separate CLI Task diagnostic.
@@ -575,6 +580,23 @@ compares normalized instants, not generated prose. Persisted case details includ
 source IDs, UTC timestamps, citation IDs and page counts; credentials and the
 synthetic secret canary are redacted before state or report persistence. Do not
 derive timestamp expectations from the returned answer.
+
+For #6934, E44 also requires a private `assistant_provider_activity` fixture:
+`from`, `to`, `timezone`, `gitlab_base_url`, nonempty `denied_repositories`, `coverage` for **both**
+GitHub and GitLab (each a list of `[status, reason]` pairs), and `events` keyed
+by `provider:repository:kind:event_id`. Each expected event records its UTC
+`timestamp`, `provider`, `repository`, `kind`, `attribution`, `actor_id`, and
+`source_url`. The E44 provider adapter compares that fixture to a structured
+`provider_response` captured from the authorized gateway work read, not to
+generated answer text. It rejects unknown, missing and duplicated events,
+assignment-only activity, bot actions counted as human work, denied repositories,
+incorrect timestamps or links, conflicting coverage and an unavailable provider.
+Only a known denied repository may account for partial provider coverage in E44's
+positive case. These offline checks do **not** supply the missing ordinary-user
+driver for the delegated work read; #6933 must supply that authorized capture,
+and #6937 must verify controlled live fixtures before E44 can establish live
+provider coverage. Do not supply provider tokens or copied production evidence
+as a fixture.
 
 Remote evidence is also sanitized before it reaches retained SSM stdout, on both
 success and failure. The shared emitter checks raw events/pages for the synthetic

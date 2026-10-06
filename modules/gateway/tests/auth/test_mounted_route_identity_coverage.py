@@ -76,6 +76,7 @@ REVIEWED_EXCEPTIONS: frozenset[tuple[frozenset[str], str]] = frozenset(
         # work_routes.py: STS SigV4 proof + signed invocation header + role allowlist
         (frozenset({"POST"}), "/internal/v1/agent/work/admit"),
         (frozenset({"POST"}), "/internal/v1/agent/roots/admit"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/admit"),
         # persona_model_selection.py: STS SigV4 proof via require_agent_transport
         (frozenset({"POST"}), "/internal/v1/agent/persona-model/resolve"),
         # chat_model.py: Kubernetes TokenReview pod identity + live grant + bound dispatch
@@ -207,10 +208,12 @@ class TestReviewedExceptionsAreStable:
     def test_exception_count_is_pinned(self):
         """S10 counted 9 exceptions (Appendix B §2). This continuation added 5
         task-api routes with independent STS SigV4 producer-proof authentication,
-        and the asset/attempt-scoped signed ingestion callback brings the total to 15. Updating this count requires reviewing the
+        and the asset/attempt-scoped signed ingestion callback brought the total to 15.
+        Chat data admission adds body-bound STS producer proof, restricted by the
+        registered chat producer, tenant and persona, for a total of 16. Updating this count requires reviewing the
         new route's authentication mechanism."""
-        assert len(REVIEWED_EXCEPTIONS) == 15, (
-            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 15. If a new exception was reviewed and added, update this count."
+        assert len(REVIEWED_EXCEPTIONS) == 16, (
+            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 16. If a new exception was reviewed and added, update this count."
         )
 
     def test_every_exception_exists_in_the_app(self, internal_routes):

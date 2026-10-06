@@ -9,6 +9,11 @@ A delivery assignment succeeds only after the PR is verified merged. Do not hand
 another scope approval. PR webhook assignments use the same delivery default. An explicit review-only
 assignment remains review-only.
 
+Return `awaiting_ci` when inspected repairs need publication and final CI
+evidence. The controller publishes, waits, returns failures for repair and
+reconciles passing check results with the review before merging. Pending CI is
+not an external blocker; keep required validation open until verified.
+
 ## Stalled-story recovery
 
 The engine may assign an exited worker's retained PR, including a recovery draft

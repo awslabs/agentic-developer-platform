@@ -150,6 +150,17 @@ for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY"; do
   [ "$_scope" != true ] || _SCOPE_COUNT=$((_SCOPE_COUNT + 1))
 done
 [ "$_SCOPE_COUNT" -le 1 ] || fail "Choose only one scope flag"
+WORKER_MIGRATION=false
+if [ -n "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ]; then
+  [ "$UPDATE_MODE" = true ] && [ "$_SCOPE_COUNT" -eq 0 ] && [ "$SKIP_WEBHOOK_INGRESS" = false ] \
+    && [ "$CONFIRM_DESTRUCTIVE" = false ] || fail "Worker migration requires a full guarded --update"
+  WORKER_MIGRATION=true
+  export ADP_PORTABLE_RELEASE_CONFIG=true
+fi
+worker_migration() {
+  python3 "$SCRIPT_DIR/upgrade-workers.py" "$1" --directory "$UPGRADE_RUN_DIR" \
+    || fail "Worker migration stopped; retain the upgrade directory and retry with the same evidence"
+}
 
 # Prepared releases only enter through release/upgrade.py, which checks the
 # source, account, manifest and every artifact before any infrastructure apply.
@@ -274,6 +285,8 @@ if [ "$UPDATE_MODE" = true ]; then
   fi
   COMPATIBILITY_ARGS=()
   [ "$DEPLOY_GATEWAY" = true ] || COMPATIBILITY_ARGS+=(--skip-gateway)
+  [ "$DEPLOY_WEBHOOK" = true ] || COMPATIBILITY_ARGS+=(--skip-webhook)
+  [ "$WORKER_MIGRATION" = false ] || COMPATIBILITY_ARGS+=(--worker-migration)
   python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
     --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
     "${COMPATIBILITY_ARGS[@]}" || fail "Resolve upgrade compatibility findings before changing this account"
@@ -291,6 +304,19 @@ if [ "$UPDATE_MODE" = true ]; then
   if [ "$DEPLOY_GATEWAY" = true ]; then
     kubectl get namespace adp-gateway --request-timeout=30s &>/dev/null \
       || fail "Cannot reach the existing gateway namespace. Verify network reachability and operator EKS access; see platform_upgrades.md (operator access)."
+  fi
+
+  if [ "$DEPLOY_WEBHOOK" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
+      --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" --verify-live-workers \
+      || fail "Live worker identity differs from the preserved upgrade configuration"
+  fi
+  if [ "$WORKER_MIGRATION" = true ]; then
+    [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Worker migration requires gateway and webhook"
+    worker_migration pause
+    ADP_RELEASE_GATEWAY_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gateway_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified gateway image"
+    ADP_RELEASE_AGENT_RUNTIME_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worker_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified worker image"
+    export ADP_RELEASE_GATEWAY_IMAGE ADP_RELEASE_AGENT_RUNTIME_IMAGE
   fi
 
   NETWORK_WAS_ENABLED=$(python3 "$SCRIPT_DIR/upgrade-network.py" enabled)
@@ -1532,6 +1558,7 @@ refresh_credentials
 if deploy_phase_begin webhook; then
 if [ "$DEPLOY_WEBHOOK" = true ]; then
   step "Step 9/11: Deploy webhook-ingress stack"
+  [ "$WORKER_MIGRATION" = false ] || worker_migration check
   WEBHOOK_UPDATE_ARGS=()
   if [ "$UPDATE_MODE" = true ]; then
     WEBHOOK_UPDATE_ARGS+=(--update)
@@ -1571,6 +1598,16 @@ refresh_credentials
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
+if [ "$WORKER_MIGRATION" = true ]; then
+  worker_migration tick
+  (
+    cd "$ROOT_DIR/modules/gateway/infra"
+    gateway_alb_vars
+    terraform_update_apply gateway-worker-authority "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" -var "orchestration_tick_image_tag=$IMAGE_TAG"
+  )
+  worker_migration verify
+fi
 if deploy_phase_begin factory; then
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/11: Deploy agent-factory"
@@ -1839,6 +1876,18 @@ fi
 deploy_phase_complete
 fi
 
+if [ "$WORKER_MIGRATION" = true ]; then
+  worker_migration admit
+  bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
+    --env "$ENVIRONMENT" --region "$AWS_REGION" --update --skip-image --skip-lambda
+  worker_migration complete
+  (
+    cd "$ROOT_DIR/modules/gateway/infra"
+    gateway_alb_vars
+    ADP_WORKER_MIGRATION_EVIDENCE= terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" -var "orchestration_tick_image_tag=$IMAGE_TAG"
+  )
+fi
 if deploy_phase_begin verify; then
 if [ "$UPDATE_MODE" = true ]; then
   REQUIRED_MODULE_ARGS=()
