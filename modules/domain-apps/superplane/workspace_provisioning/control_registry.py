@@ -12,7 +12,11 @@ from harness_jobs.allocation import allocation_id_for
 from harness_jobs.identity import decode_payload, encode_payload, payload_digest
 from harness_jobs.store import _record
 
-from .retirement_access_authority import FIELDS, execution_steps, request_revision
+from .retirement_access_authority import (
+    execution_steps,
+    request_fields,
+    request_revision,
+)
 from .retirement_access_context import require_original_seal
 from .retirement_access_plan import PHASE, access_identity
 from .runtime_config import LifecycleRefused
@@ -94,6 +98,11 @@ async def registration_values(
     parameters, previous = request.parameters, original.parameters
     allocation = await allocation_source(connection, source)
     original_allocation_id = allocation_id_for(allocation)
+    if "retirement_prepare_destroy" in parameters and (
+        allocation.operation_id == source.operation_id
+        or parameters["retirement_prepare_destroy"] != "v1"
+    ):
+        raise LifecycleRefused("destroy preparation requires original managed ownership")
     try:
         retirement_id = str(uuid.UUID(str(request_id)))
         derived_request, derived_allocation = access_identity(
@@ -106,7 +115,7 @@ async def registration_values(
             request.action == "provision"
             and original.action == "provision"
             and previous.get("lifecycle_phase") == "bootstrap-workspace"
-            and set(parameters) == FIELDS
+            and set(parameters) == request_fields(parameters)
             and parameters["lifecycle_phase"] == PHASE
             and request.idempotency_key == derived_request
             and parameters["retirement_request_id"] == retirement_id

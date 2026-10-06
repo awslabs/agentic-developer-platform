@@ -162,7 +162,11 @@ async def establish_access_grants(plan, effects, *, eks, kubernetes, verify_targ
         await effects.confirm(key, recipe[key], current)
         observed[key] = current
 
-    recorded = await effects.complete()
+    recorded = (
+        await effects.complete(keys={spec["key"] for spec in plan.grants})
+        if getattr(plan, "fence_recipe", None) is not None
+        else await effects.complete()
+    )
     if canonical(recorded) != canonical(observed):
         raise LifecycleRefused("cleanup grant evidence differs from provider readback")
     # Earlier grants may have been replaced while later ones were being created.

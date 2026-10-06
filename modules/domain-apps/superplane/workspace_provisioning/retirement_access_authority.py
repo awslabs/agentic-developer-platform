@@ -54,6 +54,14 @@ FIELDS = frozenset(
 )
 
 
+def request_fields(parameters):
+    return FIELDS | (
+        {"retirement_prepare_destroy"}
+        if "retirement_prepare_destroy" in parameters
+        else set()
+    )
+
+
 def request_revision(parameters):
     return digest(
         {
@@ -70,7 +78,9 @@ def execution_steps(recipe_sha256):
     )
 
 
-def access_request(plan, source, deployment_policy, *, allocation_source=None):
+def access_request(
+    plan, source, deployment_policy, *, allocation_source=None, prepare_destroy=False
+):
     """Build from server-read bootstrap metadata and the service-compiled recipe."""
     policy = policy_document(deployment_policy)
     original = decode_payload(source.request_payload)
@@ -152,6 +162,10 @@ def access_request(plan, source, deployment_policy, *, allocation_source=None):
         "max_runtime_seconds": str(policy["operation_max_runtime_seconds"]),
         **reference,
     }
+    if prepare_destroy:
+        if not managed or plan.fence_recipe is None:
+            raise LifecycleRefused("destroy preparation requires approved managed fence")
+        parameters["retirement_prepare_destroy"] = "v1"
     parameters["plan_revision"] = request_revision(parameters)
     parameters["execution_steps"] = execution_steps(
         parameters["retirement_access_recipe_sha256"]
@@ -170,7 +184,7 @@ def validate_request(request, *, org_id, workspace_id, policy):
     parameters = request.parameters
     if (
         request.action != "provision"
-        or set(parameters) != FIELDS
+        or set(parameters) != request_fields(parameters)
         or parameters.get("lifecycle_phase") != PHASE
         or any(
             not isinstance(value, str) or len(value) > 2048
@@ -189,6 +203,11 @@ def validate_request(request, *, org_id, workspace_id, policy):
     account = parameters["aws_account_id"]
     original = json.loads(parameters["lifecycle_request"])
     mode = original.get("mode")
+    if "retirement_prepare_destroy" in parameters and (
+        mode != "existing-account-managed"
+        or parameters["retirement_prepare_destroy"] != "v1"
+    ):
+        raise LifecycleRefused("destroy preparation requires explicit managed approval")
     permission = {
         "existing-account-managed": "managed",
         "bring-existing-cluster": "adopt",

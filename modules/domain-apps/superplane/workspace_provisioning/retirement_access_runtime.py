@@ -114,6 +114,10 @@ async def run_retirement_access(operation, context):
                     original_allocation_id=facts.plan.original_allocation_id,
                     bootstrap_artifact_id=facts.artifact["artifact_id"],
                     retirement_request_id=facts.plan.retirement_request_id,
+                    prepare_destroy=operation.request.parameters.get(
+                        "retirement_prepare_destroy"
+                    )
+                    == "v1",
                     kubernetes=clients.supervisor,
                     eks=clients.eks,
                     **managed_recipe_inputs(facts.inventory, facts.config),
@@ -122,6 +126,13 @@ async def run_retirement_access(operation, context):
                     raise LifecycleRefused(
                         "live cleanup grant identities differ from the approved plan"
                     )
+            prepared = {}
+            if operation.request.parameters.get("retirement_prepare_destroy") == "v1":
+                from .retirement_destroy_producer import prepare_destroy
+
+                prepared["reviewed_destroy"] = await asyncio.to_thread(
+                    prepare_destroy, facts, context, session, directory, verify
+                )
             identities = await establish_access_grants(
                 facts.plan,
                 effects,
@@ -130,7 +141,15 @@ async def run_retirement_access(operation, context):
                 verify_target=clients.verify_target,
             )
             await clients.verify_target()
-            result.update(await record_access_artifact(facts, effects, identities))
+            if prepared:
+                from .retirement_fence import prepare as prepare_fence
+
+                prepared["retirement_fence"] = await prepare_fence(
+                    facts, effects, clients
+                )
+            result.update(
+                await record_access_artifact(facts, effects, identities, **prepared)
+            )
         finally:
             await asyncio.to_thread(clients.close)
         return (

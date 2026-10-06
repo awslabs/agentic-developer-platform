@@ -22,6 +22,15 @@ class ManagedRetirementAccessPlan(RetirementAccessPlan):
     retained_grants: tuple[dict, ...]
     cleanup_group: str
     bootstrap_artifact_id: str
+    fence_recipe: dict | None = None
+
+    def recipe(self):
+        original = super().recipe()
+        if self.fence_recipe is None:
+            return original
+        if set(original) & set(self.fence_recipe):
+            raise LifecycleRefused("retirement fence overlaps its access grant recipe")
+        return {**original, **self.fence_recipe}
 
 
 def managed_recipe_inputs(inventory, runtime):
@@ -104,6 +113,7 @@ def compile_managed_access_plan(
     kubernetes,
     eks,
     review_only=False,
+    prepare_destroy=False,
 ):
     """Bind one temporary EKS mapping to six original-UID grants."""
     config = validate_runtime_config(runtime)
@@ -171,6 +181,11 @@ def compile_managed_access_plan(
         "client_token": digest({"generation": generation, "actor": "cleaner"}),
         "lifetime": "retirement",
     }
+    fence_recipe = None
+    if prepare_destroy:
+        from .retirement_fence import review_recipe
+
+        fence_recipe = review_recipe(inventory, config)
     return ManagedRetirementAccessPlan(
         request_id=request_id,
         allocation_id=allocation_id,
@@ -190,6 +205,7 @@ def compile_managed_access_plan(
         retained_grants=tuple(asdict(item) for item in capability.grants),
         cleanup_group=capability.group,
         bootstrap_artifact_id=bootstrap_artifact_id,
+        fence_recipe=fence_recipe,
     )
 
 

@@ -166,6 +166,7 @@ async def load_access_context(operation, context, registration_store, *, current
             original_allocation_id=parameters["original_allocation_id"],
             bootstrap_artifact_id=artifact["artifact_id"],
             retirement_request_id=parameters["retirement_request_id"],
+            prepare_destroy=parameters.get("retirement_prepare_destroy") == "v1",
             **managed_recipe_inputs(inventory, config),
         )
         async with context.connect() as connection:
@@ -184,6 +185,7 @@ async def load_access_context(operation, context, registration_store, *, current
         source,
         load_policy(context, lease.org_id),
         allocation_source=producer if managed else None,
+        prepare_destroy=parameters.get("retirement_prepare_destroy") == "v1",
     )
     if (
         expected != operation.request
