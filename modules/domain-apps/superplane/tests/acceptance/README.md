@@ -1100,3 +1100,16 @@ executed against the real boundary by someone authorized to do so. U12's baselin
 and serving criteria now have an implemented check (above), but it has not been
 run: capture requires a registered environment and authorized access, which remain
 open.
+
+Native managed recovery retains the original create checkpoint while the workspace
+advances through separately approved prepare, apply and bootstrap operations. The
+authenticated recovery endpoint optionally returns `lifecycle_lineage`: a bounded,
+contiguous chain verified against each original paid admission and immutable
+artifact digest. The browser follows only those verified current request/operation
+IDs; it never substitutes an arbitrary latest operation. Missing or invalid native
+lineage refuses recovery evidence. A partial chain reports readiness as unknown,
+even if a workspace row claims Ready. Completed bootstrap still requires fresh
+workspace observations, independent readiness evidence and the maintained removal
+flow; lineage alone cannot establish a working or cleaned-up demo. Historical
+artifact expiry is ignored only for these read-only identity checks, never for
+new continuation previews, approval or admission.

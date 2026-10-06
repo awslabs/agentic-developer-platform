@@ -185,6 +185,60 @@ def workspace_reading(workspace: dict, now: datetime) -> str:
     )
 
 
+def _native_reentry(operation, workspace, selected, checkpoint):
+    """Follow only the authenticated server's bounded original-admission proof."""
+    lineage = operation.get("lifecycle_lineage")
+    phases = ("prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace")
+    if (
+        not isinstance(lineage, dict)
+        or lineage.get("version") != 1
+        or lineage.get("org_id") != selected.org_id
+        or lineage.get("workspace_id") != checkpoint.workspace_id
+        or lineage.get("root_request_id") != selected.request_id
+        or lineage.get("root_operation_id") != operation["provisioning_operation_id"]
+        or lineage.get("current_operation_id")
+        != workspace.get("provisioning_operation_id")
+        or lineage.get("plan_revision") != selected.plan_revision
+        or not isinstance(lineage.get("phases"), list)
+        or not 1 <= len(lineage["phases"]) <= 3
+    ):
+        raise EvidenceError("browser: native lifecycle lineage unavailable or differs")
+    chain = lineage["phases"]
+    operation_ids, request_ids = set(), set()
+    for index, phase in enumerate(chain):
+        if not isinstance(phase, dict) or phase.get("phase") != phases[index]:
+            raise EvidenceError("browser: native lifecycle phases are not contiguous")
+        operation_id = identifier(phase.get("operation_id"), "lifecycle operation")
+        request_id = identifier(phase.get("request_id"), "lifecycle request")
+        digest(phase.get("payload_digest"), "lifecycle admission digest")
+        if operation_id in operation_ids or request_id in request_ids:
+            raise EvidenceError("browser: native lifecycle identities repeat")
+        operation_ids.add(operation_id)
+        request_ids.add(request_id)
+        if index == 0:
+            if (
+                operation_id != operation["provisioning_operation_id"]
+                or request_id != selected.request_id
+                or phase.get("state") != operation.get("state")
+                or phase.get("source_artifact_id") is not None
+            ):
+                raise EvidenceError(
+                    "browser: native lifecycle original identity differs"
+                )
+        else:
+            digest(phase.get("source_artifact_id"), "lifecycle source artifact")
+        if index < len(chain) - 1 and phase.get("state") != "succeeded":
+            raise EvidenceError("browser: native lifecycle source has not completed")
+    current = chain[-1]
+    if current["operation_id"] != lineage["current_operation_id"]:
+        raise EvidenceError("browser: native lifecycle current identity differs")
+    return (
+        current["operation_id"],
+        current["request_id"],
+        len(chain) == 3 and current.get("state") == "succeeded",
+    )
+
+
 def advance_creation(
     selected: DemoInput,
     transport: BrowserTransport,
@@ -351,6 +405,12 @@ def advance_creation(
     workspace = _response(
         transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
     )
+    current_request_id = selected.request_id
+    native_complete = None
+    if "lifecycle_lineage" in operation:
+        operation_id, current_request_id, native_complete = _native_reentry(
+            operation, workspace, selected, checkpoint
+        )
     if (
         workspace.get("id") != checkpoint.workspace_id
         or workspace.get("org_id") != selected.org_id
@@ -369,13 +429,20 @@ def advance_creation(
         }
     if (
         inspect_original_details(
-            page, checkpoint.workspace_id, selected.request_id, operation_id
+            page, checkpoint.workspace_id, current_request_id, operation_id
         )["reason"]
         != "original identities visible; session and provider authority unverified"
     ):
         return checkpoint, {
             "status": "BLOCKED",
             "reason": "original operation not verified after refresh",
+        }
+    if native_complete is False:
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "native lifecycle awaiting completed approved bootstrap",
+            "creation_observed": True,
+            "readiness": "UNKNOWN",
         }
     retirement_id = checkpoint.retirement_request_id
     status, preview = transport.request(

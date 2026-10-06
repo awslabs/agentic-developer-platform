@@ -489,3 +489,164 @@ def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
             "POST", "https://example.invalid/api/superplane/v1/workspaces", {}
         )
     assert len(calls) == 1
+
+
+def native_proof(selected, count=3):
+    phases = ["prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"]
+    return {
+        "version": 1,
+        "org_id": selected.org_id,
+        "workspace_id": identity(10),
+        "root_request_id": selected.request_id,
+        "root_operation_id": identity(12),
+        "current_operation_id": identity(11 + count),
+        "plan_revision": selected.plan_revision,
+        "phases": [
+            {
+                "operation_id": identity(12 + index),
+                "request_id": selected.request_id
+                if index == 0
+                else identity(30 + index),
+                "payload_digest": str(index + 1) * 64,
+                "phase": phase,
+                "state": "succeeded",
+                "source_artifact_id": str(index) * 64 if index else None,
+            }
+            for index, phase in enumerate(phases[:count])
+        ],
+    }
+
+
+def native_responses(selected, transport, monkeypatch, proof):
+    replace_response(
+        monkeypatch,
+        transport,
+        "/operations/by-idempotency/" + selected.request_id,
+        {"state": "succeeded", "lifecycle_lineage": proof},
+    )
+    replace_response(
+        monkeypatch,
+        transport,
+        "/workspaces/" + identity(10),
+        {
+            "provisioning_operation_id": proof["current_operation_id"]
+            if proof
+            else identity(14),
+            "status": "Ready",
+            "cluster_health": "Healthy",
+            "last_heartbeat": "2026-10-05T11:02:00+00:00",
+        },
+    )
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize("current_state", ["succeeded", "running"])
+def test_native_recovery_follows_verified_phases_without_resubmitting_or_claiming_ready(
+    selected, uncertain_creation, monkeypatch, count, current_state
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected, count)
+    proof["phases"][-1]["state"] = current_state
+    native_responses(selected, transport, monkeypatch, proof)
+    if count == 1:
+        replace_response(
+            monkeypatch,
+            transport,
+            "/operations/by-idempotency/" + selected.request_id,
+            {"state": current_state},
+        )
+    seen = []
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+
+    def inspect(*args):
+        seen.append(args[1:])
+        return {
+            "reason": "original identities visible; session and provider authority unverified"
+        }
+
+    monkeypatch.setattr(demo1_browser, "inspect_original_details", inspect)
+    recovered, report = advance(selected, transport, checkpoint)
+    assert recovered == checkpoint
+    assert seen == [
+        (
+            checkpoint.workspace_id,
+            proof["phases"][-1]["request_id"],
+            proof["current_operation_id"],
+        )
+    ]
+    assert report["status"] == "BLOCKED"
+    if count < 3 or current_state != "succeeded":
+        assert report["readiness"] == "UNKNOWN"
+        assert all(method == "GET" for method, _, _ in transport.calls)
+    else:
+        assert report["readiness"] == "FRESH_WORKSPACE_ONLY"
+        assert "retirement preview denied" in report["reason"]
+        assert transport.calls[-1][1].endswith("/retirement/preview")
+    assert not any(
+        path.endswith("/workspaces") or path.endswith("/continue")
+        for _, path, _ in transport.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "unavailable",
+        "org",
+        "workspace",
+        "root",
+        "request",
+        "revision",
+        "missing_digest",
+        "artifact",
+        "reordered",
+        "skipped",
+        "repeated",
+        "unfinished_source",
+        "wrong_current",
+        "too_long",
+    ],
+)
+def test_native_recovery_refuses_unverified_foreign_partial_and_reordered_chains(
+    selected, uncertain_creation, monkeypatch, invalid
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected)
+    if invalid == "unavailable":
+        proof = None
+    elif invalid in {"org", "workspace", "root", "request"}:
+        key = {
+            "org": "org_id",
+            "workspace": "workspace_id",
+            "root": "root_operation_id",
+            "request": "root_request_id",
+        }[invalid]
+        proof[key] = identity(99)
+    elif invalid == "revision":
+        proof["plan_revision"] = "e" * 64
+    elif invalid == "missing_digest":
+        proof["phases"][1].pop("payload_digest")
+    elif invalid == "artifact":
+        proof["phases"][1]["source_artifact_id"] = None
+    elif invalid == "reordered":
+        proof["phases"].reverse()
+    elif invalid == "skipped":
+        proof["phases"].pop(1)
+    elif invalid == "repeated":
+        proof["phases"][1]["operation_id"] = identity(12)
+    elif invalid == "unfinished_source":
+        proof["phases"][1]["state"] = "running"
+    elif invalid == "wrong_current":
+        proof["phases"][-1]["operation_id"] = identity(99)
+    elif invalid == "too_long":
+        proof["phases"].append(proof["phases"][-1])
+    native_responses(selected, transport, monkeypatch, proof)
+    with pytest.raises(EvidenceError):
+        advance(selected, transport, checkpoint)
+    assert all(method == "GET" for method, _, _ in transport.calls)
