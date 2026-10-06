@@ -132,12 +132,13 @@ async def test_no_unproven_authority(identity_client, monkeypatch, change):
         cognito.admin_get_user.assert_not_called()
 
 
-async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
-    identity_client, db_session, monkeypatch
-):
+async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(identity_client, db_session, monkeypatch):
     _, state, requester_membership, _, cognito = identity_client
     approver = User(
-        id="approver-member", org_id="O1", team_id="", email="approver@example.test",
+        id="approver-member",
+        org_id="O1",
+        team_id="",
+        email="approver@example.test",
         cognito_sub="approver-sub",
     )
     db_session.add(approver)
@@ -147,9 +148,7 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
     await db_session.commit()
 
     enabled = {"immutable-sub": True, "approver-sub": True}
-    cognito.list_users.side_effect = lambda **kwargs: {
-        "Users": [{"Username": kwargs["Filter"].split('"')[1]}]
-    }
+    cognito.list_users.side_effect = lambda **kwargs: {"Users": [{"Username": kwargs["Filter"].split('"')[1]}]}
     cognito.admin_get_user.side_effect = lambda **kwargs: {
         "Enabled": enabled[kwargs["Username"]],
         "UserAttributes": [
@@ -163,18 +162,28 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
         yield db_session
 
     monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
-    monkeypatch.setattr(domain_operation_dispatch, "harness", lambda name: SimpleNamespace(
-        decode_payload=lambda raw: raw, payload_digest=lambda request: "digest",
-    ))
+    monkeypatch.setattr(
+        domain_operation_dispatch,
+        "harness",
+        lambda name: SimpleNamespace(
+            decode_payload=lambda raw: raw,
+            payload_digest=lambda request: "digest",
+        ),
+    )
 
     async def current_approval(connection, operation, request):
         return datetime.now(UTC)
 
     monkeypatch.setattr(domain_operation_approval, "current_approval", current_approval)
     operation = {
-        "operation_id": "original", "org_id": "domain-org", "requester": "immutable-sub",
-        "approved_by": "approver-sub", "plan_digest": "digest", "request_payload": "original",
-        "budget_state": "confirmed", "reservation_state": "confirmed",
+        "operation_id": "original",
+        "org_id": "domain-org",
+        "requester": "immutable-sub",
+        "approved_by": "approver-sub",
+        "plan_digest": "digest",
+        "request_payload": "original",
+        "budget_state": "confirmed",
+        "reservation_state": "confirmed",
     }
 
     class PaidConnection:
@@ -185,7 +194,10 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
 
     async def permitted():
         return await domain_operation_dispatch.paid_operation(
-            binding, "original", connection=PaidConnection(), require_current=True,
+            binding,
+            "original",
+            connection=PaidConnection(),
+            require_current=True,
         )
 
     assert (await permitted())["approved_by"] == "approver-sub"
@@ -223,18 +235,29 @@ async def test_recovery_worker_rechecks_persisted_humans_before_a_protected_call
     from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
 
     original = {
-        "domain": "superplane", "org_id": "domain-org", "operation_id": "original",
-        "job_id": "job", "attempt_id": "attempt", "workspace_id": "workspace", "mode": "recovery",
+        "domain": "superplane",
+        "org_id": "domain-org",
+        "operation_id": "original",
+        "job_id": "job",
+        "attempt_id": "attempt",
+        "workspace_id": "workspace",
+        "mode": "recovery",
     }
     operation = {
-        **original, "requester": "original-requester", "approved_by": "deciding-approver",
+        **original,
+        "requester": "original-requester",
+        "approved_by": "deciding-approver",
     }
     binding = SimpleNamespace(
-        adp_org_id="O1", org_id="domain-org", repo="org/repo", current_identity_enforced=True,
+        adp_org_id="O1",
+        org_id="domain-org",
+        repo="org/repo",
+        current_identity_enforced=True,
     )
     record = SimpleNamespace(principal="worker", tenant_id="O1")
     grant = SimpleNamespace(
-        principal="worker", authority=SimpleNamespace(kind=AUTHORITY_PAID_DOMAIN_OPERATION),
+        principal="worker",
+        authority=SimpleNamespace(kind=AUTHORITY_PAID_DOMAIN_OPERATION),
         repo_scope=frozenset({"org/repo"}),
     )
     monkeypatch.setattr(domain_operation_runtime, "metadata", lambda store, record: original)
@@ -255,6 +278,11 @@ async def test_recovery_worker_rechecks_persisted_humans_before_a_protected_call
         await domain_operation_runtime.validate_paid_execution(record, grant, store=object())
     assert refused.value.status_code == 403
     assert checked == [(operation, "O1")]
-    assert (await domain_operation_runtime.validate_paid_execution(
-        record, grant, store=object(), allow_terminal=True,
-    )) == (binding, original, operation)
+    assert (
+        await domain_operation_runtime.validate_paid_execution(
+            record,
+            grant,
+            store=object(),
+            allow_terminal=True,
+        )
+    ) == (binding, original, operation)

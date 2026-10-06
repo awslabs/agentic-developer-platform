@@ -5,12 +5,14 @@ paid database checks, HMAC, registry, BootstrapStore and TaskDelivery remain rea
 """
 
 import json
+import os
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import asyncpg
 import boto3
@@ -24,11 +26,14 @@ from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.routes import AgentRuntime
 from src.auth.agent_registry import AgentRegistryService
 from src.internal import controller_execution_routes as controller_routes
+from src.internal import domain_current_identity
 from src.internal import domain_operation_dispatch as dispatch_module
 from src.internal import domain_operation_routes as routes
 from src.internal import domain_operation_runtime as runtime_module
 from src.internal.domain_operation_store import DomainBinding
 from src.internal.vault_evidence_routes import DELIVERY_SCOPE
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, User
 from tests.agentauth.test_bootstrap_routes import DIGEST, ENV, kubernetes, store  # noqa: F401
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
 
@@ -387,3 +392,79 @@ async def test_current_domain_approval_and_exact_reservation_gate_every_executio
     async with paid.connect() as c:
         assert await c.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
         assert await c.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+
+@pytest.mark.parametrize("revoked_subject", ["human", "approver"])
+async def test_original_human_membership_is_rechecked_before_dispatch_and_paid_effects(paid, db_session, monkeypatch, revoked_subject):
+    db_session.add(Organization(id="tenant", name="Current ADP tenant"))
+    await db_session.flush()
+    memberships = {}
+    for subject in ("human", "approver"):
+        user = User(
+            id=f"adp-{subject}",
+            org_id="tenant",
+            team_id="",
+            email=f"{subject}@example.test",
+            cognito_sub=subject,
+        )
+        db_session.add(user)
+        await db_session.flush()
+        membership = TenantMembership(user_id=user.id, tenant_id="tenant", is_active=True)
+        db_session.add(membership)
+        memberships[subject] = membership
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def membership_session():
+        yield db_session
+
+    monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
+    monkeypatch.setattr(domain_current_identity, "cognito_user_pool_id", lambda: "fixture-pool")
+    cognito = MagicMock()
+    cognito.list_users.side_effect = lambda **kwargs: {"Users": [{"Username": kwargs["Filter"].split('"')[1]}]}
+    cognito.admin_get_user.side_effect = lambda **kwargs: {
+        "Enabled": True,
+        "UserAttributes": [
+            {"Name": "sub", "Value": kwargs["Username"]},
+            {"Name": "custom:org_id", "Value": "tenant"},
+        ],
+    }
+    monkeypatch.setattr(domain_current_identity, "aws_client", lambda service: cognito)
+    bindings = json.loads(os.environ["ADP_DOMAIN_OPERATION_BINDINGS"])
+    bindings[0]["current_identity_enforced"] = True
+    monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps(bindings))
+
+    memberships[revoked_subject].revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    refused = await paid.post("/dispatch", paid.body, role="producer")
+    assert refused.status_code == 403, refused.text
+    assert "Messages" not in paid.sqs.receive_message(QueueUrl=paid.queue)
+
+    memberships[revoked_subject].revoked_at = None
+    await db_session.commit()
+    dispatched, credential = await start(paid)
+    first_lease = await paid.post(
+        "/lease",
+        {"operation_id": "original-operation"},
+        credential=credential,
+    )
+    assert first_lease.status_code == 200, first_lease.text
+    assert cognito.admin_get_user.call_count >= 4
+
+    memberships[revoked_subject].revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    for path, body, role in [
+        ("/authority", {"operation_id": "original-operation"}, "worker"),
+        ("/lease", {"operation_id": "original-operation"}, "worker"),
+        ("/renew", None, "worker"),
+        (
+            "/verify-run",
+            {key: paid.body[key] for key in ("domain", "org_id", "workspace_id", "operation_id")} | {"subject": dispatched["principal"]},
+            "producer",
+        ),
+    ]:
+        response = await paid.post(path, body, credential=credential, role=role)
+        assert response.status_code == 403, (revoked_subject, path, response.text)
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
+        assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0

@@ -78,13 +78,7 @@ async def revalidate_original_humans(operation: dict, *, adp_org_id: str) -> Non
     """Recheck the two human subjects recorded in the paid admission, not the worker."""
     requester = operation.get("requester")
     approver = operation.get("approved_by")
-    if (
-        not isinstance(requester, str)
-        or not requester
-        or not isinstance(approver, str)
-        or not approver
-        or requester == approver
-    ):
+    if not isinstance(requester, str) or not requester or not isinstance(approver, str) or not approver or requester == approver:
         raise HTTPException(403, "original domain identities refused")
     try:
         async with get_session_factory()() as db:
