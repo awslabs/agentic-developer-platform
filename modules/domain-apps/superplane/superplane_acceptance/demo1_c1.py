@@ -85,7 +85,7 @@ def inspect_reentry(page: BrowserPage, workspace_display_name: str) -> dict:
 def _visible_after_wait(locator) -> bool:
     with suppress(Exception):
         locator.wait_for(state="visible", timeout=5000)
-        return locator.is_visible()
+        return True
     return False
 
 

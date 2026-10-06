@@ -35,8 +35,14 @@ class Page:
         self.closed = 0
 
     def goto(self, url, **options):
-        assert url.endswith("/superplane") and options["timeout"] > 0
+        assert url.endswith(("/superplane", "/.well-known/adp-demo1-session"))
+        assert options["timeout"] > 0
         self.url = url
+
+    def route(self, url, handler):
+        assert url.endswith("/.well-known/adp-demo1-session")
+
+    unroute = route
 
     def set_default_timeout(self, value):
         assert value > 0
@@ -63,6 +69,9 @@ class Page:
         self.reloads += 1
 
     def evaluate(self, script, arguments):
+        if "sessionStorage.setItem" in script:
+            assert arguments["cognito_access_token"]
+            return
         assert (
             "redirect: 'error'" in script and "AbortSignal.timeout(timeout)" in script
         )
@@ -79,6 +88,7 @@ class Page:
         return [status, body, self.release]
 
     def new_context(self, **options):
+        self.url = "about:blank"
         assert options["service_workers"] == "block"
         self.contexts.append(options)
         return SimpleNamespace(new_page=lambda: self)
@@ -200,7 +210,8 @@ def test_cli_waits_for_independent_approval_and_recovers_lost_reply(driver, lost
     assert not any(path.endswith(("/retirement", "/decide")) for _, path, _ in calls)
     assert driver.page.closed == 5
     assert all(
-        context["storage_state"] == driver.session for context in driver.page.contexts
+        context["storage_state"]["origins"][0]["localStorage"] == []
+        for context in driver.page.contexts
     )
 
 
@@ -401,6 +412,8 @@ def test_changed_release_in_creation_reply_retains_submitted_identity(
     evaluate = driver.page.evaluate
 
     def changed_reply(script, arguments):
+        if "path" not in arguments:
+            return evaluate(script, arguments)
         result = evaluate(script, arguments)
         if arguments["method"] == "POST" and arguments["path"].endswith("/workspaces"):
             result[2] = "f" * 64
@@ -431,6 +444,8 @@ def test_final_presend_refusal_keeps_checkpoint_retryable(driver, monkeypatch, f
 
     def refuse_final_probe(script, arguments):
         nonlocal approval_checked
+        if "path" not in arguments:
+            return evaluate(script, arguments)
         result = evaluate(script, arguments)
         if arguments["path"].endswith("/operation-approvals/" + identity(11)):
             approval_checked = True
@@ -525,6 +540,8 @@ def test_uncertain_evaluation_is_durably_marked_and_recovery_404_never_replays(
     evaluate = driver.page.evaluate
 
     def uncertain_evaluation(script, arguments):
+        if "path" not in arguments:
+            return evaluate(script, arguments)
         if arguments["method"] == "POST" and arguments["path"].endswith("/workspaces"):
             assert (
                 json.loads(checkpoint.read_bytes())["checkpoint"]["submitted"] is True

@@ -10,6 +10,7 @@ from .demo1_evidence import EvidenceError
 from .demo1_lineage import observe_lineage
 from .demo1_report import reference
 from .demo1_runtime import RuntimeReader
+from .demo1_session import browser_state_parts, restore_browser_session
 
 
 def advance_browser(
@@ -18,6 +19,7 @@ def advance_browser(
     session,
     store,
     *,
+    continuation_store=None,
     clock=lambda: datetime.now(UTC),
     monotonic=time.monotonic,
 ):
@@ -42,7 +44,12 @@ def advance_browser(
             )
         return max(1, int(remaining * 1000))
 
+    storage_state, session_storage = browser_state_parts(session, envelope.origin)
     saved = store.load()
+    if continuation_store is not None and (saved is None or not saved.submitted):
+        raise EvidenceError(
+            "journey: original submitted creation required before continuation"
+        )
     reader = RuntimeReader(selected, envelope.runtime_target)
     runtime = reader.observe(remaining_ms() / 1000)
 
@@ -67,11 +74,14 @@ def advance_browser(
             browser = playwright.chromium.launch(headless=True, timeout=remaining_ms())
             try:
                 context = browser.new_context(
-                    storage_state=session, service_workers="block"
+                    storage_state=storage_state, service_workers="block"
                 )
                 page = context.new_page()
                 page.set_default_timeout(min(30_000, remaining_ms()))
                 page.set_default_navigation_timeout(min(30_000, remaining_ms()))
+                restore_browser_session(
+                    page, envelope.origin, session_storage, timeout=remaining_ms()
+                )
                 page.goto(
                     envelope.origin + "/superplane",
                     wait_until="domcontentloaded",
@@ -96,9 +106,21 @@ def advance_browser(
                     checkpoint=saved,
                     persist=store.save,
                     verify_lineage=verify_lineage,
+                    preview_retirement=continuation_store is None,
                     effects_authorized=True,
                     now=clock(),
                 )
+                if continuation_store is not None and result.get("creation_observed"):
+                    from .demo1_continuation import advance_continuation
+
+                    result["continuation"] = advance_continuation(
+                        selected,
+                        envelope,
+                        transport,
+                        continuation_store,
+                        clock=clock,
+                        verified_source=result["operation_ref"],
+                    )
                 remaining_ms()
             finally:
                 browser.close()

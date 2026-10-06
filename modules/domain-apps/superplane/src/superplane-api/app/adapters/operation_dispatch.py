@@ -5,8 +5,8 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import botocore.auth
 import botocore.awsrequest
@@ -29,10 +29,20 @@ _WORKLOAD_REGISTERED = """EXISTS (
  WHERE cd.operation_id=o.operation_id AND cd.org_id=o.org_id
   AND cd.workspace_id=o.workspace_id AND cd.action=o.action
 )"""
+_CONTROL_REGISTERED = """EXISTS (
+ SELECT 1 FROM workspace_lifecycle_control_operations control
+ WHERE control.operation_id=o.operation_id AND control.org_id=o.org_id
+  AND control.workspace_id=o.workspace_id AND control.plan_digest=o.plan_digest
+  AND control.source_bootstrap_operation_id=w.provisioning_operation_id
+  AND control.phase='prepare-retirement-access'
+  AND w.status IN ('Active','active') AND w.is_default=false
+)"""
 _REGISTERED = (
     "((o.action='provision' AND w.provisioning_operation_id=o.operation_id) OR "
     "(o.action='teardown' AND w.teardown_operation_id=o.operation_id) OR "
     + _WORKLOAD_REGISTERED
+    + " OR "
+    + _CONTROL_REGISTERED
     + ")"
 )
 
@@ -130,7 +140,9 @@ class ProducerTransport:
 
 
 class OperationDispatcher:
-    def __init__(self, connect, transport, *, policy_for=None, interval=5, enabled=True):
+    def __init__(
+        self, connect, transport, *, policy_for=None, interval=5, enabled=True
+    ):
         self.connect, self.transport, self.policy_for = connect, transport, policy_for
         self.outbox = DispatchOutbox()
         if type(enabled) is not bool:
@@ -155,6 +167,30 @@ class OperationDispatcher:
 
     async def _registration(self, row):
         request = decode_payload(row["request_payload"])
+        if request.parameters.get("lifecycle_phase") == "prepare-retirement-access":
+            from workspace_provisioning.control_registry import registration_values
+
+            async with self.connect() as connection:
+                registered = await connection.fetchrow(
+                    "SELECT * FROM workspace_lifecycle_control_operations "
+                    "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3",
+                    row["operation_id"],
+                    row["org_id"],
+                    row["workspace_id"],
+                )
+                if registered is None:
+                    return False
+                values = await registration_values(
+                    connection,
+                    operation_id=row["operation_id"],
+                    org_id=row["org_id"],
+                    workspace_id=row["workspace_id"],
+                    source_bootstrap_operation_id=registered[
+                        "source_bootstrap_operation_id"
+                    ],
+                    request_id=registered["request_id"],
+                )
+            return all(registered[key] == value for key, value in values.items())
         deployment_id = request.parameters.get("controller_deployment_id")
         if deployment_id is None:
             return True
@@ -202,6 +238,54 @@ class OperationDispatcher:
         except Exception:
             return False
 
+    async def binding_ready(self, org_id, expected):
+        """A fresh installed-worker read is required before each lifecycle admission."""
+        from datetime import UTC, datetime, timedelta
+
+        if not self.enabled or not dispatch_enabled():
+            return False
+        try:
+            policy = await self._policy(org_id)
+            proof = await self.transport.post(
+                "/binding-proof", {"domain": "superplane", "org_id": org_id}
+            )
+            checked_at = datetime.fromisoformat(proof["checked_at"])
+            now = datetime.now(UTC)
+            return (
+                proof.get("version") == 1
+                and proof.get("installed") is True
+                and proof.get("domain") == "superplane"
+                and proof.get("org_id") == org_id
+                and proof.get("adp_org_id") == policy.adp_org_id
+                and checked_at.tzinfo is not None
+                and now - timedelta(seconds=60) <= checked_at <= now
+                and all(proof.get(key) == value for key, value in expected.items())
+            )
+        except Exception:
+            return False
+
+    async def _lifecycle_ready(self, row):
+        parameters = decode_payload(row["request_payload"]).parameters
+        if (
+            "runtime_config_sha256" in parameters
+            and "lifecycle_phase" not in parameters
+        ):
+            return False
+        if "lifecycle_phase" not in parameters:
+            return True
+        from app.operation_activation import (
+            expected_lifecycle_binding,
+            require_admission_enabled,
+        )
+        from app.services.provisioning import ProvisioningUnavailable
+
+        try:
+            require_admission_enabled(lifecycle=True)
+            expected = expected_lifecycle_binding()
+        except ProvisioningUnavailable:
+            return False
+        return await self.binding_ready(row["org_id"], expected)
+
     async def deliver(self, envelope):
         if not self.enabled or not dispatch_enabled():
             return False
@@ -234,7 +318,7 @@ class OperationDispatcher:
             != row["plan_digest"]
         ):
             return False
-        if not await self._registration(row):
+        if not await self._registration(row) or not await self._lifecycle_ready(row):
             return False
         policy = await self._policy(envelope.org_id)
         if policy.adp_org_id != row["adp_org_id"]:
@@ -311,7 +395,9 @@ class OperationDispatcher:
                     != row["plan_digest"]
                 ):
                     continue
-                if not await self._registration(row):
+                if not await self._registration(row) or not await self._lifecycle_ready(
+                    row
+                ):
                     continue
                 policy = await self._policy(row["org_id"])
                 if policy.adp_org_id != row["adp_org_id"]:
@@ -343,11 +429,13 @@ class OperationDispatcher:
             return ()
         async with self.connect() as connection:
             rows = await connection.fetch(
-                "SELECT o.operation_id FROM harness_dispatch_outbox o "
+                "SELECT o.operation_id FROM harness_dispatch_outbox b "
+                "JOIN harness_operations o ON o.operation_id=b.operation_id "
+                "AND o.org_id=b.org_id AND o.workspace_id=b.workspace_id "
                 "JOIN workspaces w ON w.id::text=o.workspace_id AND w.org_id::text=o.org_id "
-                "WHERE o.delivered_at IS NULL AND o.abandoned_at IS NULL "
-                "AND (o.claimed_until IS NULL OR o.claimed_until<now()) "
-                "AND " + _REGISTERED + " ORDER BY o.id LIMIT 100",
+                "WHERE b.delivered_at IS NULL AND b.abandoned_at IS NULL "
+                "AND (b.claimed_until IS NULL OR b.claimed_until<now()) "
+                "AND " + _REGISTERED + " ORDER BY b.id LIMIT 100",
             )
             return await self.outbox.drain_once(
                 connection,
@@ -358,7 +446,7 @@ class OperationDispatcher:
 
     def start(self):
         if not self.enabled or not dispatch_enabled():
-            return None
+            return
         if self._task is None:
             self._task = asyncio.create_task(
                 self._run(), name="superplane-operation-outbox"

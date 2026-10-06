@@ -51,6 +51,14 @@ WORKFLOW = ROOT / ".github/workflows/superplane-domain-ci.yml"
         ("modules/domain-apps/superplane/migration/placement.py", {"domain"}),
         ("modules/domain-apps/superplane/deploy.sh", {"domain"}),
         (
+            "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py",
+            {"domain", "ui"},
+        ),
+        (
+            "modules/domain-apps/superplane/superplane_acceptance/demo1_session.py",
+            {"domain", "ui"},
+        ),
+        (
             "modules/domain-apps/superplane/auth/superplane_auth/policy.py",
             {"api", "domain", "gateway"},
         ),

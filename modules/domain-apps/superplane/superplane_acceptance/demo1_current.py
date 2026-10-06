@@ -5,6 +5,7 @@ import time
 from datetime import UTC, datetime
 
 from .demo1_aws import AwsProviderReader, _resource
+from .demo1_discovery import ProviderCensus, discovery_report
 from .demo1_evidence import EvidenceError, fields, instant
 from .demo1_ownership import observe_ownership, ownership_report
 from .demo1_provider import InventoryQuery
@@ -104,7 +105,7 @@ def observe_current_provider(
     }
     try:
         remaining()
-        snapshot = AwsProviderReader(
+        reader = AwsProviderReader(
             connection_id=selected.connection_id,
             broker_label=envelope.broker_label,
             account=selected.account,
@@ -112,10 +113,29 @@ def observe_current_provider(
             region=selected.region,
             runner=bounded_run,
             clock=clock,
-        ).read_current_inventory(query)
+        )
+        snapshot = reader.read_current_inventory(query)
         remaining()
         _record_snapshot(report, snapshot, query, started, clock())
+        if report["provider"].get("lookup_status") == "OBSERVED":
+            census = ProviderCensus(
+                reader, query, selected.org_id, snapshot["resource_states"]
+            ).collect()
+            remaining()
+            report["provider"]["discovery"] = discovery_report(census)
+            report["provider"]["reason"] = (
+                "recorded lookups and scoped provider census read; full ownership coverage remains unverified"
+            )
+            report["checks"]["current_inventory"]["detail"] = (
+                "recorded subset and current provider census read; durable full ownership and creation fence remain unverified"
+            )
     except EvidenceError:
+        report["provider"].pop("owned_absent_refs", None)
+        report["provider"]["discovery"] = {
+            "status": "BLOCKED",
+            "listing_complete": False,
+            "inventory_complete": False,
+        }
         report["provider"]["reason"] = (
             "provider reads unavailable, invalid or outside the authorized window"
         )

@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Self
-from urllib.parse import urlsplit
 
 from .demo1_browser import CreationCheckpoint, checked_origin
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant, text
@@ -123,36 +122,15 @@ class LiveEnvelope:
 
 
 def validate_browser_state(value: object, origin: str) -> None:
-    if not isinstance(value, dict) or set(value) != {"cookies", "origins"}:
-        raise EvidenceError("live: private browser state unavailable")
-    origins = value["origins"]
-    cookies = value["cookies"]
-    if (
-        not isinstance(origins, list)
-        or len(origins) != 1
-        or not isinstance(origins[0], dict)
-        or origins[0].get("origin") != origin
-    ):
-        raise EvidenceError("live: browser state belongs to another origin")
-    storage = origins[0].get("localStorage")
-    if not isinstance(storage, list) or not any(
-        isinstance(item, dict)
-        and item.get("name") == "cognito_access_token"
-        and isinstance(item.get("value"), str)
-        and item["value"]
-        for item in storage
-    ):
-        raise EvidenceError("live: authenticated requester browser state required")
-    hostname = urlsplit(origin).hostname
-    if not isinstance(cookies, list) or any(
-        not isinstance(cookie, dict) or cookie.get("domain") != hostname
-        for cookie in cookies
-    ):
-        raise EvidenceError("live: cross-origin browser cookies refused")
+    from .demo1_session import browser_state_parts
+
+    browser_state_parts(value, origin)
 
 
 class PrivateCheckpoint:
     """One cooperating process per private checkpoint, with atomic durable replacement."""
+
+    state_type = CreationCheckpoint
 
     def __init__(
         self,
@@ -269,11 +247,11 @@ class PrivateCheckpoint:
         saved = value["checkpoint"]
         if (
             not isinstance(saved, dict)
-            or set(saved) != set(CreationCheckpoint.__dataclass_fields__)
+            or set(saved) != set(self.state_type.__dataclass_fields__)
             or type(saved["submitted"]) is not bool
         ):
             raise EvidenceError("checkpoint: invalid saved state")
-        state = CreationCheckpoint(**saved)
+        state = self.state_type(**saved)
         self._validate(state)
         return state
 
@@ -282,11 +260,8 @@ class PrivateCheckpoint:
             raise EvidenceError("checkpoint: lock required")
         previous = self.load()
         if previous and (
-            previous.request_id != checkpoint.request_id
-            or previous.workspace_id != checkpoint.workspace_id
-            or previous.plan_revision != checkpoint.plan_revision
-            or previous.approval_id != checkpoint.approval_id
-            or previous.retirement_request_id != checkpoint.retirement_request_id
+            {**asdict(previous), "submitted": checkpoint.submitted}
+            != asdict(checkpoint)
             or (previous.submitted and not checkpoint.submitted)
         ):
             raise EvidenceError("checkpoint: request replay or identity change refused")

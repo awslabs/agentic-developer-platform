@@ -12,6 +12,7 @@ from uuid import uuid4
 from .demo1_c1 import inspect_original_details, inspect_reentry, retirement_preview
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant
 from .demo1_lineage import lineage_report
+from .demo1_report import reference
 
 PREFIX = "/api/superplane/v1"
 
@@ -104,7 +105,7 @@ class PlaywrightBrowserTransport:
         try:
             result = self.page.evaluate(
                 """async ({method, path, body, timeout}) => {
-                  const token = localStorage.getItem('cognito_access_token');
+                  const token = sessionStorage.getItem('cognito_access_token');
                   if (!token) return [401, null, null];
                   const response = await fetch(path, {
                     method, credentials: 'same-origin', redirect: 'error',
@@ -254,6 +255,7 @@ def advance_creation(
     checkpoint: CreationCheckpoint | None = None,
     persist: Callable[[CreationCheckpoint], None] | None = None,
     verify_lineage: Callable[[CreationCheckpoint, str, str], dict] | None = None,
+    preview_retirement: bool = True,
     effects_authorized: bool = False,
     now: datetime | None = None,
 ) -> tuple[CreationCheckpoint | None, dict]:
@@ -491,6 +493,14 @@ def advance_creation(
                 "browser: workspace changed during continuation re-entry"
             )
         workspace = refreshed
+    if not preview_retirement:
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "creation re-entry verified; continuation requires separate approval",
+            "creation_observed": True,
+            "operation_ref": reference(current_id),
+            **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
+        }
     retirement_id = checkpoint.retirement_request_id
     status, preview = transport.request(
         "POST",

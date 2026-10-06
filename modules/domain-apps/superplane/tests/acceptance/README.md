@@ -77,7 +77,21 @@ Use the v2 authority/runtime target and private files described below. Install
 the repository browser CI's pinned `playwright==1.55.0` and its Chromium runtime
 in the operator environment, in addition to the runtime-observer prerequisites.
 The requester storage state must come from a real, independent sign-in to the
-selected origin. No approver session or copied credentials belong in it.
+selected origin. No approver session or unrelated credentials belong in it.
+The maintained UI uses `sessionStorage`, which Playwright's ordinary
+`storage_state()` export does not capture. Include the requester's session entries
+as a `sessionStorage` array of `{ "name": "…", "value": "…" }` objects on that
+same origin record, alongside `localStorage`. Preserve the signed-in session's
+access/ID tokens and expiry privately; never print or publish them. The importer
+also accepts the earlier local-storage token carrier, but moves Cognito token
+keys into the new tab's session storage and excludes them from persistent local
+storage. Duplicate or conflicting token entries are refused.
+
+Session import uses a one-time locally fulfilled blank page at the exact selected
+origin before opening the real UI. It makes no login or provider request and
+installs no persistent token-restoration script. Reloading after logout or expiry
+does not silently restore the imported token. A fresh invocation still requires
+the operator's private requester session and server-side authorization.
 
 ```sh
 PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
@@ -95,6 +109,19 @@ on every domain response, rejects redirects, and verifies the requester and
 organization before admission. This uses the same public-release contract as
 the installer; it is not verification of the frontend artifact or every release
 component. Actual browser UI rendering remains separately exercised by browser CI.
+
+The maintained offline Chromium check uses the real onboarding UI and driver
+transport, synthetic requester tokens and intercepted API responses. With the
+browser CI's pinned Playwright/Chromium and `npm ci --prefix modules/gateway/frontend`
+dependencies installed, run:
+
+```sh
+python3 modules/domain-apps/superplane/ui/browser-tests/verify_demo1_browser.py
+```
+
+It checks rendered workspace re-entry, continuation-operation details, authenticated
+fetches, and refusal on release mismatch, redirects and lost sessions. It does not
+prove real sign-in, backend authorization, lifecycle mutations or live acceptance.
 
 On first use, the private checkpoint records the original workspace, request,
 plan and pending approval. Hand that exact approval to the designated human
@@ -137,8 +164,55 @@ it never replaces or replays the original request. Private `browser.lineage`
 output contains hashed identities, not a new approval or Ready/cleanup receipt.
 Historical parent artifacts may be older than the admission freshness window:
 this verifies work already admitted, not permission to submit a continuation.
-The command still does not approve or submit apply/bootstrap continuations or
-positive retirement; those orchestration steps remain unfinished.
+The creation command does not submit continuations. Use the separate, explicitly
+selected phase command below; positive retirement remains unfinished.
+
+### Advance a separately approved continuation
+
+After creation is submitted and its preparation phase succeeds, the driver can
+request approval and submit one apply or bootstrap phase through the maintained
+authenticated lifecycle interfaces. This requires separate live authorization
+covering that phase, the same exact runtime/target envelope and the original
+creation checkpoint. The driver never decides an approval or uses an approver
+session. The command below is exercised offline with browser/runtime doubles;
+actual Chromium and deployed lifecycle acceptance remain separate checks.
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --advance-continuation apply-infrastructure \
+  --continuation-checkpoint "$DEMO1_PRIVATE_DIR/apply-checkpoint.json" \
+  --report "$DEMO1_PRIVATE_DIR/apply-report-01.json"
+```
+
+The first invocation records a private phase checkpoint and returns `BLOCKED`
+while waiting for the selected independent human. Give that human the exact
+approval ID from the private phase checkpoint, using the maintained approval UI.
+Run the same command after approval with a new report filename. For bootstrap,
+select `bootstrap-workspace` after apply succeeds and use a separate
+`bootstrap-checkpoint.json` and report filename. Never replace or delete either
+phase checkpoint to retry work. Keep both alongside the original creation
+checkpoint for the cleanup owner; the creation checkpoint is not rewritten.
+
+Each phase uses a stable request identity derived from the original request,
+phase and immutable artifact. A lost approval-request reply therefore recovers
+the same approval intent. Before paid admission the driver checks the exact
+target, original plan, source operation, request parameters, distinct approver,
+expiry and resource/runtime/cost envelope. Runtime must fit the invocation limit
+and remaining authorization window; cost must fit the selected budget. It saves
+submitted state immediately before the authenticated request. An uncertain
+submission is only read back by its original request ID, never re-submitted;
+missing recovery evidence remains blocked. A definite pre-send refusal remains
+retryable. Checkpoint-write uncertainty requires reconciliation using the saved
+file, not a fresh request. Submitted recovery does not renew an expired approval.
+
+This command always exits 2: a submission receipt is not completed execution,
+Ready, cleanup or zero-cost evidence. Read `browser.continuation` in the private
+report. Provider observation is a separate invocation; complete inventory,
+retirement admission and whole-lifecycle reporting remain unfinished.
 
 Provider integration requires authenticated **observed ownership**
 for the original managed workspace. The existing lifecycle-proposals API
@@ -198,6 +272,19 @@ This command first revalidates the runtime and immutable ownership, then uses th
 selected provider broker label and exact assumed role for each AWS read. Supplied
 network identities join the survivor baseline rather than the owned-resource
 list. Runtime verification and provider calls share one finite time budget.
+After successful recorded-resource lookups, it also collects a bounded provider
+census: instances, volumes, snapshots, interfaces, elastic addresses, NAT and
+internet gateways, route tables, VPC endpoints, launch templates, subnets,
+security groups and VPCs. Each family uses exact organization/workspace tags;
+VPC-scoped families are also queried inside the immutable owned VPC, never
+broadly inside a supplied network. Attached volumes and allocated addresses get
+exact-identity reads. The selected read-only role needs the corresponding EC2
+`Describe*` permissions and Resource Groups Tagging API `GetResources` permission.
+The tagging API retains other resource families as unresolved references rather
+than silently omitting them. Every page and attachment lookup rechecks the
+selected identity. Pagination, duplicate responses and limits of 64 pages and
+200 candidate resources are checked; a denied, malformed or truncated census
+is blocked, not an empty inventory.
 Add `--observe-provider` to the documented `--advance-creation` command to collect
 these observations after authenticated browser creation/re-entry; pending approval,
 uncertain replies or failed browser verification prevent provider reads in that
@@ -205,17 +292,35 @@ combined invocation. Neither mode approves or submits retirement.
 
 The private report links hashed provider observations to the ownership artifact
 and original workspace. Missing selected peers fail the survivor check; denied or
-incomplete lookups establish no absence. Successful lookups of every recorded
-resource still leave `inventory_complete` false: storage and other resources are
-not fully inventoried. An absent recorded subset is not complete cleanup. Cost
-remains unknown, and the cleanup check and AC-02 remain `BLOCKED`. Provider-only
+incomplete lookups establish no absence. A successful census reports
+`listing_complete` only for these selected queries and keeps `inventory_complete`
+false. Current tags, attachments and VPC membership cannot recover every
+historical untagged detached resource or replace canonical Terraform/bootstrap
+ownership and an independently verified fence against new resource creation.
+An empty census or absent recorded subset is not complete cleanup. Cost remains
+unknown, and the cleanup check and AC-02 remain `BLOCKED`. Provider-only
 invocation exits 2 without rewriting the checkpoint; the combined browser path
-retains its normal creation effects and checkpoint writes. Offline CLI tests exercise this command
-and combined browser/provider wiring through doubles, not live acceptance.
+retains its normal creation effects and checkpoint writes. Offline CLI tests
+exercise this command and combined browser/provider wiring through doubles, not
+live acceptance. Run the census and provider integration fixtures without credentials:
 
-Full continuation lineage and positive retirement integration remain harness
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_discovery.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_current.py -q
+```
+
+Complete lifecycle reporting and positive retirement integration remain harness
 work. Do not substitute planned resources or invented authority. These remaining
 source requirements are separate from #5540's later live evaluation.
+The current mounted producer also imposes a source-contract dependency:
+`retirement_facts` requires a complete deletion plan, while the bootstrap-only
+plan does not complete teardown of a managed dedicated cluster; retirement
+admission remains explicitly unavailable. Cleanup-access compiler and artifact
+validators alone do not make that dedicated admission path available. The
+lifecycle producer owners (#5534/#5535) must expose the reviewed dedicated
+destroy-plan and immutable-grant admission contract before the harness can use
+it. A provider census or a supplied private file cannot waive that refusal.
 
 The existing diagnostic AWS reader treats an error as absence only for a matching
 resource-kind error, exact AWS operation and selected resource identity in a

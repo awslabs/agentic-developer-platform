@@ -14,6 +14,7 @@ from test_demo1_cli import identifier, write_private
 from test_demo1_ownership import OwnershipProducer, Records, reader_checkpoint
 
 from superplane_acceptance import demo1_cli, demo1_current
+from superplane_acceptance.demo1_discovery import COLLECTIONS
 from superplane_acceptance.demo1_evidence import EvidenceError
 from superplane_acceptance.demo1_live import LiveEnvelope, PrivateCheckpoint
 from superplane_acceptance.demo1_report import reference
@@ -81,6 +82,19 @@ class CurrentProducer:
                 "Account": self.records.selected["account"],
                 "Arn": f"arn:aws:sts::{self.records.selected['account']}:assumed-role/{role}/example",
             }
+        elif (
+            service == "resourcegroupstaggingapi"
+            or "--filters" in command
+            or "--filter" in command
+        ):
+            assert self.calls[-2][8:10] == ["sts", "get-caller-identity"]
+            assert "--no-paginate" in command
+            collection = (
+                "ResourceTagMappingList"
+                if service == "resourcegroupstaggingapi"
+                else COLLECTIONS[operation.removeprefix("describe-")][0]
+            )
+            result = {collection: []}
         else:
             assert self.calls[-2][8:10] == ["sts", "get-caller-identity"]
             kind, collection, field, error, api = {

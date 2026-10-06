@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -165,14 +166,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authority")
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--continuation-checkpoint")
     parser.add_argument("--observe-provider", action="store_true")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--observe-runtime", action="store_true")
     action.add_argument("--observe-ownership", action="store_true")
     action.add_argument("--advance-creation", action="store_true")
+    action.add_argument(
+        "--advance-continuation",
+        choices=("apply-infrastructure", "bootstrap-workspace"),
+    )
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
+            if bool(arguments.advance_continuation) != bool(
+                arguments.continuation_checkpoint
+            ) or (arguments.advance_continuation and arguments.observe_provider):
+                raise EvidenceError(
+                    "continuation: choose one phase and its private checkpoint without provider observation"
+                )
             if arguments.observe_provider and (
                 arguments.observe_runtime or arguments.observe_ownership
             ):
@@ -201,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             expires = time.monotonic() + envelope.max_runtime_seconds
             if (
                 arguments.advance_creation
+                or arguments.advance_continuation
                 or arguments.observe_ownership
                 or arguments.observe_provider
             ):
@@ -211,18 +224,38 @@ def main(argv: list[str] | None = None) -> int:
                 envelope.origin,
                 envelope=envelope
                 if arguments.advance_creation
+                or arguments.advance_continuation
                 or arguments.observe_ownership
                 or arguments.observe_provider
                 else None,
             ) as store:
-                if arguments.advance_creation:
+                if arguments.advance_creation or arguments.advance_continuation:
+                    from .demo1_continuation import PrivateContinuation
                     from .demo1_journey import advance_browser
 
                     report["evidence_mode"] = "live-browser-phase-unverified"
                     try:
-                        report.update(
-                            advance_browser(selected, envelope, session, store)
+                        continuation = (
+                            PrivateContinuation(
+                                arguments.continuation_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                                arguments.advance_continuation,
+                            )
+                            if arguments.advance_continuation
+                            else nullcontext()
                         )
+                        with continuation as phase_store:
+                            report.update(
+                                advance_browser(
+                                    selected,
+                                    envelope,
+                                    session,
+                                    store,
+                                    continuation_store=phase_store,
+                                )
+                            )
                     except EvidenceError as error:
                         report["reason"] = str(error)
                 saved = store.load()
@@ -308,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         except EvidenceError as error:
             print(f"BLOCKED: {error}")
             return 2
-        if arguments.advance_creation:
+        if arguments.advance_creation or arguments.advance_continuation:
             label = "Live browser phase"
         elif arguments.observe_ownership:
             label = "Live historical ownership observation"
@@ -322,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
         if (
             arguments.observe_runtime
             or arguments.advance_creation
+            or arguments.advance_continuation
+            or arguments.continuation_checkpoint
             or arguments.observe_ownership
             or arguments.observe_provider
         ):
