@@ -650,3 +650,113 @@ def test_native_recovery_refuses_unverified_foreign_partial_and_reordered_chains
     with pytest.raises(EvidenceError):
         advance(selected, transport, checkpoint)
     assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+def test_expired_submitted_approval_recovers_only_actual_original_admission(
+    selected, uncertain_creation, monkeypatch
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected)
+    native_responses(selected, transport, monkeypatch, proof)
+    replace_response(
+        monkeypatch,
+        transport,
+        "/" + checkpoint.approval_id,
+        {"expires_at": "2026-10-05T11:01:30+00:00"},
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    recovered, report = advance(selected, transport, checkpoint)
+    assert recovered == checkpoint and recovered.submitted
+    assert report == {
+        "status": "BLOCKED",
+        "reason": "original admission recovered read-only; creation approval expired",
+        "creation_observed": True,
+        "readiness": "FRESH_WORKSPACE_ONLY",
+    }
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert any(
+        path.endswith("/operations/by-idempotency/" + selected.request_id)
+        for _, path, _ in transport.calls
+    )
+
+
+def test_expired_unsubmitted_approval_cannot_create(selected, monkeypatch):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.calls.clear()
+    replace_response(
+        monkeypatch,
+        transport,
+        "/" + checkpoint.approval_id,
+        {"expires_at": "2026-10-05T11:01:30+00:00"},
+    )
+    with pytest.raises(EvidenceError, match="approval expired"):
+        advance(selected, transport, checkpoint)
+    assert not checkpoint.submitted
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operations/" in path for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "pending",
+        "revoked",
+        "late_decision",
+        "foreign_approval",
+        "foreign_request",
+        "missing_admission",
+    ],
+)
+def test_expired_submitted_checkpoint_cannot_invent_or_resubmit_admission(
+    selected, uncertain_creation, monkeypatch, invalid
+):
+    transport, checkpoint = uncertain_creation
+    changes = {"expires_at": "2026-10-05T11:01:30+00:00"}
+    if invalid == "pending":
+        changes["result"] = "pending"
+    elif invalid == "revoked":
+        changes["revoked"] = True
+    elif invalid == "late_decision":
+        changes["decided_at"] = "2026-10-05T11:01:31+00:00"
+    elif invalid == "foreign_approval":
+        changes["approval_id"] = identity(99)
+    replace_response(monkeypatch, transport, "/" + checkpoint.approval_id, changes)
+    if invalid == "foreign_request":
+        replace_response(
+            monkeypatch,
+            transport,
+            "/operations/by-idempotency/" + selected.request_id,
+            {"request_id": identity(99)},
+        )
+    if invalid == "missing_admission":
+        original = transport.request
+
+        def unavailable(method, path, body=None):
+            response = original(method, path, body)
+            if "/operations/by-idempotency/" in path:
+                return 404, {"detail": "operation not found"}
+            return response
+
+        monkeypatch.setattr(transport, "request", unavailable)
+    with pytest.raises(EvidenceError):
+        advance(selected, transport, checkpoint)
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any(
+        path.endswith("/workspaces/" + checkpoint.workspace_id)
+        for _, path, _ in transport.calls
+    )

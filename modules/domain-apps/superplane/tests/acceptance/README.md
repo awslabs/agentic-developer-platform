@@ -1113,3 +1113,11 @@ workspace observations, independent readiness evidence and the maintained remova
 flow; lineage alone cannot establish a working or cleaned-up demo. Historical
 artifact expiry is ignored only for these read-only identity checks, never for
 new continuation previews, approval or admission.
+
+A saved `submitted` creation checkpoint may read its original admitted operation
+when the original approval has since expired. Historical ticket scope and the
+independent decision before expiry are still checked, followed by authenticated
+operation/workspace recovery. This path performs GETs only and reports BLOCKED;
+it cannot resubmit creation, preview retirement or grant another effect. An
+unsubmitted checkpoint still needs a currently valid approval. Retirement must
+use its own maintained preview and separately approved operation.

@@ -132,7 +132,12 @@ def _plan_parameters_match(parameters: object, plan_revision: str) -> bool:
 
 
 def _approval(
-    ticket: dict, selected: DemoInput, checkpoint: CreationCheckpoint, now: datetime
+    ticket: dict,
+    selected: DemoInput,
+    checkpoint: CreationCheckpoint,
+    now: datetime,
+    *,
+    historical: bool = False,
 ) -> str:
     if (
         ticket.get("approval_id") != checkpoint.approval_id
@@ -150,9 +155,10 @@ def _approval(
         or selected.approver_id not in ticket["approvers"]
     ):
         raise EvidenceError("browser: approval identity or scope mismatch")
-    if instant(ticket.get("expires_at"), "approval expiry") <= now:
+    expiry = instant(ticket.get("expires_at"), "approval expiry")
+    if expiry <= now and not historical:
         raise EvidenceError("browser: approval expired")
-    if ticket.get("result") == "pending":
+    if ticket.get("result") == "pending" and not historical:
         return "pending"
     if (
         ticket.get("result") != "allowed-once"
@@ -160,6 +166,7 @@ def _approval(
         or not selected.authorized_at
         <= instant(ticket.get("decided_at"), "approval decision")
         <= now
+        or instant(ticket.get("decided_at"), "approval decision") >= expiry
     ):
         raise EvidenceError("browser: distinct human approval not verified")
     return "allowed-once"
@@ -343,7 +350,17 @@ def advance_creation(
     approval = _response(
         transport, "GET", PREFIX + f"/operation-approvals/{checkpoint.approval_id}"
     )
-    if _approval(approval, selected, checkpoint, now) == "pending":
+    # The saved submitted flag disables creation unconditionally. An expired
+    # ticket can only support historical reads of the original admission; it
+    # cannot approve another effect or reset an uncertain request for retry.
+    read_only_recovery = (
+        checkpoint.submitted
+        and instant(approval.get("expires_at"), "approval expiry") <= now
+    )
+    if (
+        _approval(approval, selected, checkpoint, now, historical=read_only_recovery)
+        == "pending"
+    ):
         return checkpoint, {
             "status": "BLOCKED",
             "reason": "awaiting independent human approval",
@@ -443,6 +460,13 @@ def advance_creation(
             "reason": "native lifecycle awaiting completed approved bootstrap",
             "creation_observed": True,
             "readiness": "UNKNOWN",
+        }
+    if read_only_recovery:
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "original admission recovered read-only; creation approval expired",
+            "creation_observed": True,
+            "readiness": workspace_reading(workspace, now),
         }
     retirement_id = checkpoint.retirement_request_id
     status, preview = transport.request(
