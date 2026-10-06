@@ -174,9 +174,11 @@ class AuditedAdminRoute(APIRoute):
                             await persist(
                                 operation,
                                 event_type="admin_operation_refused" if refused else "admin_operation_failed",
-                                outcome="denied"
-                                if refused and not operation.effects_started
-                                else "reconciliation_required",
+                                outcome=(
+                                    "refused" if operation.refusal is not None and not operation.effects_started
+                                    else "denied" if refused and not operation.effects_started
+                                    else "reconciliation_required"
+                                ),
                                 extra={
                                     "status_code": code,
                                     "exception_type": type(exc).__name__,

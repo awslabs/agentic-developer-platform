@@ -668,7 +668,7 @@ class TestRouteContract:
         assert audit.details["expected_projection_org_id"] == "historical"
         assert audit.details["observed_projection_org_id"] == VICTIM_ORG
         assert audit.details["authoritative_org_id"] == OWNER_ORG
-        assert audit.details["outcome"] == "denied"
+        assert audit.details["outcome"] == "refused"
 
     async def test_attach_returns_409_for_a_cross_tenant_claim(self, db_session: AsyncSession, platform_admin_context: TokenContext):
         """The refusal reaches the client as a 409, not a 500.
