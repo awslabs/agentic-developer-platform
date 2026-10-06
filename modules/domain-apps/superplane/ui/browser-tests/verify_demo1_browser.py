@@ -280,7 +280,10 @@ def main():
                         raise AssertionError("changed origin was not refused")
                     assert len(calls) == count
                     from demo1_controls_fixture import run as run_controls
-                    controls_result = run_controls(browser, state, session, ORIGIN, LOCAL, RELEASE)
+
+                    controls_result = run_controls(
+                        browser, state, session, ORIGIN, LOCAL, RELEASE
+                    )
                     (OUTPUT / "demo1-browser.json").write_text(
                         json.dumps(
                             {

@@ -245,6 +245,7 @@ def run(browser, state, session, origin, local, release):
         "plan_revision": revision,
         "approval_id": APPROVAL,
     }
+
     def durable(kind):
         # The real gate refreshes approval through the same browser while the
         # outgoing mutation is held. Exercise nested authenticated reads here.
