@@ -89,7 +89,11 @@ async def write_admin_audit(
             "target_type": target_type,
             "target_id": target_id,
             "org_id": target_org,
-            "extra": {k: v for k, v in (extra or {}).items() if k in {"user_id", "provider", "github_org_id"}},
+            "extra": {
+                k: v
+                for k, v in (extra or {}).items()
+                if k in {"user_id", "provider", "github_org_id", "expected_projection_org_id", "observed_projection_org_id", "authoritative_org_id"}
+            },
         }
         return
     try:

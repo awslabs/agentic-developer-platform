@@ -528,6 +528,70 @@ class IdentityIndexClient:
             label=f"github_installation_id/{installation_id}",
         )
 
+    async def reconcile_installation_routing(self, installation_id: int, expected_org_id: str, canonical_org_id: str) -> tuple[str, str | None]:
+        """Repair one existing forward row, never changing ownership or policy attributes.
+
+        A consistent read distinguishes absence from failure; the transaction
+        rechecks the owner and revocation marker at the instant of the write.
+        """
+        key = {"identity_type": {"S": "github_installation_id"}, "identity_value": {"S": str(installation_id)}}
+        response = await asyncio.to_thread(self._client.get_item, TableName=self._table_name, Key=key, ConsistentRead=True)
+        item = response.get("Item")
+        if not item:
+            return "missing_projection", None
+        observed = item.get("org_id", {}).get("S")
+        if observed == canonical_org_id:
+            result = "already_consistent"
+        elif observed == expected_org_id:
+            result = "repaired"
+        else:
+            return "stale_expectation", observed
+
+        guard = {
+            "ConditionCheck": {
+                "TableName": self._table_name,
+                "Key": {"identity_type": {"S": "github_installation_revoked"}, "identity_value": {"S": str(installation_id)}},
+                "ConditionExpression": "attribute_not_exists(identity_type)",
+            }
+        }
+        values = {":observed": {"S": observed}}
+        condition = "attribute_exists(identity_type) AND org_id = :observed"
+        if result == "repaired":
+            operation = {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": key,
+                    "ConditionExpression": condition,
+                    "UpdateExpression": "SET org_id = :canonical, updated_at = :now",
+                    "ExpressionAttributeValues": {
+                        **values,
+                        ":canonical": {"S": canonical_org_id},
+                        ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                    },
+                }
+            }
+        else:
+            operation = {
+                "ConditionCheck": {
+                    "TableName": self._table_name,
+                    "Key": key,
+                    "ConditionExpression": condition,
+                    "ExpressionAttributeValues": values,
+                }
+            }
+        from src.admin.audit_operation import mark_admin_effects
+
+        mark_admin_effects()
+        try:
+            await asyncio.to_thread(self._client.transact_write_items, TransactItems=[guard, operation])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException" or any(
+                reason.get("Code") == "ConditionalCheckFailed" for reason in exc.response.get("CancellationReasons", [])
+            ):
+                return "concurrent_change_or_revocation", observed
+            raise
+        return result, observed
+
     async def get_reverse_installation_identity(self, org_id: str) -> dict | None:
         """Read the reverse row (org_installation/<org> → installation_id). READ-ONLY.
 

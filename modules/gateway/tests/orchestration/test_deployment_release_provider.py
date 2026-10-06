@@ -97,10 +97,17 @@ def test_producer_refuses_unverifiable_release(build, failure):
 def test_actual_workflows_publish_bound_release_evidence(workflow, job, component):
     document = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
     steps = document["jobs"][job]["steps"]
-    record = next(s for s in steps if "deployment-release-evidence.py" in s.get("run", ""))
-    assert record["run"].endswith(component)
+    records = [s for s in steps if "ADP_RELEASE_SOURCE" in s.get("env", {})]
+    assert len(records) == 1
+    record = records[0]
+    expected_script = (
+        '"$RUNNER_TEMP/adp-gateway-control/release-evidence.py"'
+        if job == "deploy-backend"
+        else "modules/gateway/scripts/deployment-release-evidence.py"
+    )
+    assert record["run"] == f"python3 {expected_script} {component}"
     assert record["env"]["GITHUB_REPOSITORY_ID"] == "${{ github.repository_id }}"
-    assert record["env"]["ADP_RELEASE_SOURCE"] == "${{ inputs.adp_source_revision || github.sha }}"
+    assert record["env"]["ADP_RELEASE_SOURCE"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
     upload = steps[steps.index(record) + 1]
     assert upload["with"]["name"] == f"adp-release-{component}-${{{{ github.run_attempt }}}}"
     assert upload["with"]["path"].endswith("/release.json")
