@@ -1,0 +1,11 @@
+# Scoped SkyPilot Debian maintenance candidate
+
+This separate offline overlay upgrades 14 existing Debian 13 amd64 packages and adds two required companion packages on the exact PyJWT 2.14 SkyPilot candidate: glibc (2), ncurses runtime/tools (3), and util-linux runtime/tools (9). The two additions, `util-linux-extra` and `bsdextrautils`, preserve tools moved out of util-linux/login by Debian 2.42 packaging. Seven explicit sbin-to-bin compatibility aliases retain original absolute command paths. The installer checks every original executable command path still exists.
+
+The locked packages are the identical payloads independently reviewed for the repaired Python base. This recipe does not transfer those review conclusions to SkyPilot; the resulting image needs its own qualification.
+
+ACL is already the same reviewed version in SkyPilot and is not replaced. Python 3.10, SkyPilot 0.12.3, PyJWT 2.14.0 and all provider distributions stay unchanged. The installer requires every expected starting Debian package/version, verifies artifact hashes and control metadata, uses empty apt sources and a network-disabled build step, and refuses any package/version changes beyond the 14 upgrades and two explicit additions. `dpkg --audit` and `pip check` must pass. UID 1000:1000 is restored.
+
+Stage retained artifacts with `python3 prepare.py ARTIFACT_DIRECTORY`. Supply an OCI layout containing the locked PyJWT candidate and run `python3 build.py OCI_LAYOUT --tag LOCAL_TAG --metadata-file OUTPUT_JSON`. The build wrapper verifies the exact base manifest and config before invoking BuildKit with a digest-bound named context. BuildKit verifies content-addressed layers. Neither script publishes an image or changes release locks.
+
+Qualification must compare complete filesystems, bind installed package payloads to the 16 authenticated debs, verify unchanged runtime configuration and inherited layers, exercise the maintained SkyPilot server/client acceptance and ordinary native-library compatibility, and retain fresh raw SBOM, native and SARIF scans. Debian maintainer-script bookkeeping changes must be inspected separately from package payload changes. The candidate retains unrelated residual findings, including GCC, OpenSSL, PCRE, Python and Jackson families; no scanner exclusions, dispositions or promotion are included.
