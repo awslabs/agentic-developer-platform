@@ -665,3 +665,23 @@ def test_conflicting_gate_result_issue_severity_denied(bundle):
     )
     with pytest.raises(D.Invalid, match="gate-effective severity mismatch"):
         observed(bundle)
+
+
+def test_duplicate_debian_purl_cannot_replace_package_identity(bundle):
+    def mutate(sbom):
+        duplicate = copy.deepcopy(sbom["artifacts"][0])
+        duplicate["id"] = "different-package-id"
+        sbom["artifacts"].append(duplicate)
+
+    change_json(bundle, "sbom", mutate)
+    with pytest.raises(D.Invalid, match="duplicate Debian package PURL"):
+        observed(bundle)
+
+
+def test_decision_package_id_must_equal_mapped_occurrence(bundle):
+    observation = observed(bundle)
+    package = next(iter(observation["packages"].values()))
+    package["package"]["id"] = "different-package-id"
+    record = receipt(bundle, observation)
+    with pytest.raises(D.Invalid, match="decision package identity mismatch"):
+        derive(bundle, record, observation)

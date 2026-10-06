@@ -404,6 +404,7 @@ def collect(root, inputs, image, source_revision):
         if artifact.get("type") != "deb":
             continue
         identity = package_identity(artifact)
+        require(identity["purl"] not in inventories, "duplicate Debian package PURL")
         architecture = artifact.get("metadata", {}).get("architecture")
         candidates = [
             p
@@ -700,6 +701,10 @@ def derive(root, receipt, approval_sha256, observation, raw_sarif):
         require(
             package is not None,
             "only verified Debian package decisions currently supported",
+        )
+        require(
+            package["package"] == occurrence["package"],
+            "decision package identity mismatch",
         )
         require(decision["files"], "exact installed-file evidence required")
         for path, expected in decision["files"].items():
