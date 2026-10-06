@@ -1,19 +1,26 @@
 # Browser fetch and callable timer scan review (#6999)
 
-This is a **candidate source review, not a closure decision**. The original SARIF is
-private; its per-result indices/native ratings have not been verified. A pinned,
-scoped candidate scan found all eleven original-rule matches plus both unsafe
-controls, with zero scan errors. All eleven records remain **unresolved** until
-the original report is reconciled and their dispositions are reviewed. The source baseline is
-`fa75f1c407ffeb075d43271eb8a18accaa6458b3`; the original report digest is
-`4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd`.
-On the resumed run, the owner-selected connection successfully listed, assumed
-the expected role in the expected target account, and listed CodeBuild projects.
-The same verified role received HTTP 403 from `HeadObject` and `AccessDenied`
-from `GetObject` for the separate platform-account original report. Target-role
-access does **not** establish permission to read that cross-account evidence.
-The scan-reader permission or authorized connection is still required; no
-ambient worker identity was used as a substitute.
+The original private SARIF was retrieved and verified on 6 October 2026.
+Its SHA-256 matches
+`4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd`;
+all eleven assigned rule/path/line selectors occur exactly once, with nine
+native critical and two native high ratings. No assigned record has an accepted
+suppression. The original source is
+`fa75f1c407ffeb075d43271eb8a18accaa6458b3`.
+
+The source was integrated with current main before verification. The pinned
+Semgrep 1.80.0 candidate scan retained all eleven observations and detected both
+unsafe controls, with zero scan errors. Its raw SARIF SHA-256 is
+`d30dfc68c3e9679d356340946428b1d48a8f973c3923e160113c55c9afa47bbb`.
+The raw report is retained privately. These pattern matches require the
+execution-context review below; the patch does not suppress rules or declare a
+clean full-repository scan. Merge and composed-artifact verification remain
+separate from this source-evidence checkpoint.
+
+Earlier agent runs could not read the cross-account evidence using their
+selected connection. That historical limitation no longer blocks this review;
+it does not imply those agents' permissions have changed.
+
 The script `.github/scripts/reconcile_6999.py` verifies that digest and the
 exact rule/path/line selector for **each** record, using the baseline severity
 resolver (native before CVSS; `error` alone is unrated). It reports accepted
