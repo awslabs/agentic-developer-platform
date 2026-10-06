@@ -93,7 +93,9 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
       data-current={current ? 'true' : undefined}
       aria-current={current ? 'step' : undefined}
       className={[
-        'rounded-lg border p-3 text-left',
+        // Evidence paths and IDs must wrap inside the grid cell, including the
+        // nested journey, execution details and dependency list.
+        'min-w-0 rounded-lg border p-3 text-left [overflow-wrap:anywhere]',
         // Dashed border for queued: "not yet real" is legible before any colour
         // is perceived, which also survives greyscale printing.
         isQueued ? 'border-dashed border-gray-400 dark:border-gray-600' : 'border-gray-200 dark:border-gray-700',
