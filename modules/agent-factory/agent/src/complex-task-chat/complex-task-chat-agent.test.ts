@@ -1,9 +1,8 @@
 /**
  * Wiring tests for the live chat worker's store composition (#6932, WIRE-t1).
  *
- * Exercises `buildChatStores`, the exact function the message loop calls, so the
- * flag-off path proves today's direct stores are untouched and the flag-on path
- * proves every store is gateway-backed through ONE workload-bound client.
+ * Exercises the retained store builder and the worker entrypoint. The worker
+ * refuses to start while a delegated sandbox and supervisor are unavailable.
  * No network: AWS SDK clients and the model runner are mocked, the token file
  * is a temp file, and fetch is spied to prove nothing is called at construction.
  */
@@ -25,18 +24,11 @@ jest.mock('./gateway/chat-data-client', () => {
   return { ...actual, ChatDataClient: jest.fn((config: unknown) => new actual.ChatDataClient(config)) };
 });
 
-import { buildChatStores } from './complex-task-chat-agent';
+import { buildChatStores, main } from './complex-task-chat-agent';
 import { ChatDataClient } from './gateway/chat-data-client';
-import { NoopContextManager } from './context/noop-context';
-import { LcmContext } from './context/lcm/lcm-context';
 import { GatewayContextManager } from './context/gateway-context';
-import { NullMemoryProvider } from './memory/null-memory';
-import { DynamoMemoryProvider } from './memory/dynamo-memory';
 import { GatewayMemoryProvider } from './memory/gateway-memory';
-import { NoopArtifactStore } from './artifacts/noop-artifact-store';
-import { S3ArtifactStore } from './artifacts/s3-artifact-store';
 import { GatewayArtifactStore } from './artifacts/gateway-artifact-store';
-import { DynamoDraftStore, NoopDraftStore } from './draft/dynamo-draft-store';
 import { GatewayDraftStore } from './draft/gateway-draft-store';
 
 const task = { task_id: 'task-1', session_id: 'session-a', message: 'hello', user_id: 'user-a', tenant_id: 'tenant-a' };
@@ -77,32 +69,22 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('buildChatStores with scoped chat data off', () => {
-  it.each([undefined, 'false', '1', 'TRUE'])('keeps the current direct stores when ADP_CHAT_DATA_ENABLED=%s', async flag => {
-    const stores = await buildChatStores({ ...currentEnv, ADP_CHAT_DATA_ENABLED: flag }, task);
-    expect(stores.activityTools).toBeUndefined();
-    expect(stores.diagnostics).toBeUndefined();
-    expect(stores.context).toBeInstanceOf(LcmContext);
-    expect(stores.memory).toBeInstanceOf(DynamoMemoryProvider);
-    expect(stores.artifacts).toBeInstanceOf(S3ArtifactStore);
-    expect(stores.draftStore).toBeInstanceOf(DynamoDraftStore);
+describe('retired credentialed chat worker', () => {
+  it.each([undefined, 'false', '1', 'TRUE'])('rejects direct stores when ADP_CHAT_DATA_ENABLED=%s', async flag => {
+    await expect(buildChatStores({ ...currentEnv, ADP_CHAT_DATA_ENABLED: flag }, task))
+      .rejects.toThrow('cannot build direct owner stores');
     expect(ChatDataClient).not.toHaveBeenCalled();
+    expect(jest.requireMock('@aws-sdk/client-dynamodb').DynamoDBClient).not.toHaveBeenCalled();
+    expect(jest.requireMock('@aws-sdk/client-s3').S3Client).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the default no-op stores when nothing is configured', async () => {
-    const stores = await buildChatStores({}, task);
-    expect(stores.context).toBeInstanceOf(NoopContextManager);
-    expect(stores.memory).toBeInstanceOf(NullMemoryProvider);
-    expect(stores.artifacts).toBeInstanceOf(NoopArtifactStore);
-    expect(stores.draftStore).toBeInstanceOf(NoopDraftStore);
-    expect(ChatDataClient).not.toHaveBeenCalled();
-  });
-
-  it('ignores gateway URL and token settings while the switch is off', async () => {
-    const stores = await buildChatStores({ ...currentEnv, ADP_CHAT_DATA_URL: 'https://gateway.example.test', ADP_WORKLOAD_TOKEN_FILE: '/nonexistent' }, task);
-    expect(stores.context).toBeInstanceOf(LcmContext);
-    expect(ChatDataClient).not.toHaveBeenCalled();
+  it('refuses to consume registered turns even with a scoped-data flag', async () => {
+    for (const flag of [undefined, 'false', 'true']) {
+      process.env.ADP_CHAT_DATA_ENABLED = flag;
+      await expect(main()).rejects.toThrow('Credentialed chat worker retired');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

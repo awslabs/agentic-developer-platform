@@ -50,6 +50,12 @@ from src.agentauth.chat_history_summary import ChatSummaryWriter, SummaryAppend
 from src.agentauth.chat_history_write import AssistantAppend, ChatHistoryConflictError, ChatHistoryWriter
 from src.agentauth.chat_memory import ChatMemoryConflictError, ChatMemoryStore, MemoryId, MemorySearch, MemoryWrite
 from src.agentauth.chat_session_acl import AclWrite, ChatSessionAclConflictError, ChatSessionAclWriter
+from src.agentauth.chat_supervisor_resume import resume_supervisor_turn
+from src.agentauth.chat_teardown import ChatTeardown
+from src.agentauth.chat_terminal_publication import publish_terminal_delivery
+from src.agentauth.chat_turn_completion import complete_delivered_turn
+from src.agentauth.chat_turn_finalization import ChatTurnFinalizer
+from src.agentauth.chat_turn_result import ChatTurnResultWriter, TurnResult
 from src.agentauth.external_roots import root_bindings, root_store
 from src.agentauth.installation_failure import read_installation_failure as load_installation_failure
 from src.agentauth.installation_reader import authorize_installation_reader
@@ -80,7 +86,7 @@ def _runtime():
     table = _get_context_table()
     if table is None:
         raise ChatAuthorizationUnavailableError("chat context unconfigured")
-    authority = ChatRuntimeAuthority(root_store(), table, KubernetesWorkloadVerifier.in_cluster(chat=True))
+    authority = ChatRuntimeAuthority(root_store(), table, KubernetesWorkloadVerifier.in_cluster(chat_sandbox=True))
     return authority, chat_capabilities(authority=authority, session_factory=get_session_factory())
 
 
@@ -130,13 +136,20 @@ def contract_errors(function):
     return wrapped
 
 
-class AdmissionRequest(BaseModel):
+class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: Identifier
     envelope_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AdmissionRequest(ResumeRequest):
     pod_name: str = Field(min_length=1, max_length=253)
     pod_uid: Identifier
+
+
+class CreationRequest(ResumeRequest):
+    image_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
 
 
 class ExchangeRequest(BaseModel):
@@ -167,6 +180,10 @@ class HistorySummaryRequest(HistoryRequest):
 
 
 class HistoryAppendRequest(HistoryRequest, AssistantAppend):
+    pass
+
+
+class TurnResultRequest(HistoryRequest, TurnResult):
     pass
 
 
@@ -271,7 +288,23 @@ def bearer(request: Request) -> str:
     return token
 
 
-Capability = Annotated[str, Depends(bearer)]
+def bound_bearer(request: Request, services=Depends(runtime)) -> str:
+    token = bearer(request)
+    authority, capabilities = services
+    try:
+        pod = authority.workloads.verify(request.headers.get(WORKLOAD_HEADER, ""))
+        capabilities.verify_pod(token, pod, now=clock())
+    except (ChatCapabilityExpiredError, ChatCapabilityInvalidError) as error:
+        code = "capability_expired" if isinstance(error, ChatCapabilityExpiredError) else "capability_invalid"
+        raise HTTPException(401, detail={"error": code}, headers={"Cache-Control": "no-store"}) from None
+    except (ChatAuthorizationUnavailableError, WorkloadUnavailableError, AuthorityStoreError, BotoCoreError, ClientError, ValidationError):
+        raise HTTPException(503, detail={"error": "chat_authority_unavailable"}, headers={"Cache-Control": "no-store"}) from None
+    except (ChatAuthorizationRefusedError, WorkloadRefusedError):
+        raise HTTPException(404, detail={"error": "chat_scope_refused"}, headers={"Cache-Control": "no-store"}) from None
+    return token
+
+
+Capability = Annotated[str, Depends(bound_bearer)]
 
 
 async def _read_installation(request: Request, token: str, services, db: AsyncSession, operation: str):
@@ -380,6 +413,16 @@ async def append_history(body: HistoryAppendRequest, token: Capability, services
     write = AssistantAppend.model_validate(body.model_dump(exclude={"run_id", "session_id"}))
     result = await run_in_threadpool(writer.append, token, run_id=body.run_id, session_id=body.session_id, write=write, now=clock())
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/v1/chat/data/turn/result", dependencies=[Depends(enabled)])
+@contract_errors
+async def record_turn_result(body: TurnResultRequest, token: Capability, services=Depends(runtime)):
+    authority, capabilities = services
+    writer = ChatTurnResultWriter(authority, ChatHistoryStore(authority.context_table, capabilities))
+    result = TurnResult.model_validate(body.model_dump(exclude={"run_id", "session_id"}))
+    receipt = await run_in_threadpool(writer.commit, token, run_id=body.run_id, session_id=body.session_id, result=result, now=clock())
+    return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/v1/chat/data/history/summary/append", dependencies=[Depends(enabled)])
@@ -537,14 +580,15 @@ async def download_artifact(
 async def admit_chat(body: AdmissionRequest, request: Request, services=Depends(runtime), db: AsyncSession = Depends(get_db)):
     authority, capabilities = services
     bindings = [binding for binding in root_bindings() if binding.source == "chat"]
-    role = await verify_producer(
-        request.headers.get(PROOF_HEADER, ""), envelope_digest(body.model_dump()), allowed_roles={binding.producer_role for binding in bindings}
-    )
+    roles = {role for binding in bindings for role in (binding.producer_role, binding.chat_supervisor_role) if role is not None}
+    role = await verify_producer(request.headers.get(PROOF_HEADER, ""), envelope_digest(body.model_dump()), allowed_roles=roles)
     now = clock()
     execution, grant, session_id = await run_in_threadpool(root_identity, authority, body.run_id, body.envelope_digest, now)
     metadata = await run_in_threadpool(authority.store._read, f"TENANT#{execution.tenant_id}", f"EXEC#{body.run_id}")
     if not any(
-        binding.producer_role == role and binding.tenant_id == execution.tenant_id and metadata.get("persona", {}).get("S") in binding.personas
+        role in (binding.producer_role, binding.chat_supervisor_role)
+        and binding.tenant_id == execution.tenant_id
+        and metadata.get("persona", {}).get("S") in binding.personas
         for binding in bindings
     ):
         raise ChatAuthorizationRefusedError("chat producer scope refused")
@@ -560,6 +604,93 @@ async def admit_chat(body: AdmissionRequest, request: Request, services=Depends(
     await run_in_threadpool(capabilities.issue, launch.run_id, pod, now=now)
     return JSONResponse(
         {"run_id": launch.run_id, "session_id": session_id, "lease_generation": launch.lease_generation}, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post("/internal/v1/agent/chat/data/exit", dependencies=[Depends(enabled)])
+@contract_errors
+async def sandbox_exit(body: AdmissionRequest, request: Request, services=Depends(runtime)):
+    terminated = await observe_teardown(body, request, services, removed=False)
+    return JSONResponse({"run_id": body.run_id, "pod_uid": body.pod_uid, "terminated": terminated}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/v1/agent/chat/data/teardown", dependencies=[Depends(enabled)])
+@contract_errors
+async def sandbox_teardown(body: AdmissionRequest, request: Request, services=Depends(runtime)):
+    removed = await observe_teardown(body, request, services, removed=True)
+    return JSONResponse({"run_id": body.run_id, "pod_uid": body.pod_uid, "removed": removed}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/v1/agent/chat/data/finalize", dependencies=[Depends(enabled)])
+@contract_errors
+async def finalize_chat(body: AdmissionRequest, request: Request, services=Depends(runtime)):
+    if not await observe_teardown(body, request, services, removed=True):
+        raise ChatHistoryConflictError("chat sandbox removal not confirmed")
+    authority, capabilities = services
+    writer = ChatTurnFinalizer(authority, ChatHistoryStore(authority.context_table, capabilities))
+    terminal = await run_in_threadpool(writer.finalize, body, now=clock())
+    await run_in_threadpool(publish_terminal_delivery, authority, capabilities.launches, terminal)
+    return JSONResponse(terminal, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/v1/agent/chat/data/resume", dependencies=[Depends(enabled)])
+@contract_errors
+async def resume_chat(body: ResumeRequest, request: Request, services=Depends(runtime)):
+    bindings = [binding for binding in root_bindings() if binding.source == "chat" and binding.chat_supervisor_role is not None]
+    role = await verify_producer(
+        request.headers.get(PROOF_HEADER, ""),
+        envelope_digest(body.model_dump()),
+        allowed_roles={binding.chat_supervisor_role for binding in bindings},
+    )
+    authority, capabilities = services
+    receipt = await run_in_threadpool(resume_supervisor_turn, authority, capabilities, body, role, bindings, now=clock())
+    return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/v1/agent/chat/data/reserve", dependencies=[Depends(enabled)])
+@contract_errors
+async def reserve_chat(body: CreationRequest, request: Request, services=Depends(runtime)):
+    bindings = [binding for binding in root_bindings() if binding.source == "chat" and binding.chat_supervisor_role is not None]
+    role = await verify_producer(
+        request.headers.get(PROOF_HEADER, ""),
+        envelope_digest(body.model_dump()),
+        allowed_roles={binding.chat_supervisor_role for binding in bindings},
+    )
+    authority, capabilities = services
+    receipt = await run_in_threadpool(
+        resume_supervisor_turn, authority, capabilities, body, role, bindings, now=clock(), creation_image=body.image_digest
+    )
+    return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/internal/v1/agent/chat/data/complete", dependencies=[Depends(enabled)])
+@contract_errors
+async def complete_chat(body: AdmissionRequest, request: Request, services=Depends(runtime)):
+    if not await observe_teardown(body, request, services, removed=True):
+        raise ChatHistoryConflictError("chat sandbox removal not confirmed")
+    authority, capabilities = services
+    receipt = await run_in_threadpool(complete_delivered_turn, authority, capabilities, body, now=clock())
+    return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
+
+
+async def observe_teardown(body, request, services, *, removed):
+    authority, capabilities = services
+    bindings = [binding for binding in root_bindings() if binding.source == "chat" and binding.chat_supervisor_role is not None]
+    role = await verify_producer(
+        request.headers.get(PROOF_HEADER, ""),
+        envelope_digest(body.model_dump()),
+        allowed_roles={binding.chat_supervisor_role for binding in bindings},
+    )
+    if removed and await run_in_threadpool(authority.store._read, f"CHAT-LAUNCH#{body.run_id}", "LAUNCH") is None:
+        receipt = await run_in_threadpool(resume_supervisor_turn, authority, capabilities, body, role, bindings, now=clock(), removed=True)
+        return receipt.get("removed") is True
+    return await run_in_threadpool(
+        ChatTeardown(authority, capabilities.launches).observe,
+        body,
+        role,
+        bindings,
+        removed=removed,
+        now=clock(),
     )
 
 
@@ -584,6 +715,13 @@ async def exchange_chat(body: ExchangeRequest, request: Request, services=Depend
     await run_in_threadpool(renew_lease, authority, launch, now=now)
     token = await run_in_threadpool(capabilities.issue, launch.run_id, pod, now=now)
     return JSONResponse(
-        {"capability": token, "run_id": launch.run_id, "session_id": launch.session_id, "expires_at": min(now + 300, launch.expires_at)},
+        {
+            "capability": token,
+            "run_id": launch.run_id,
+            "session_id": launch.session_id,
+            "attempt": launch.attempt,
+            "lease_generation": launch.lease_generation,
+            "expires_at": min(now + 300, launch.expires_at),
+        },
         headers={"Cache-Control": "no-store"},
     )

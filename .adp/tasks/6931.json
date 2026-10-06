@@ -1,0 +1,1465 @@
+{
+  "version": 1,
+  "issue": 6931,
+  "updated_at": "2026-10-06T21:08:39.318290+00:00",
+  "tasks": [
+    {
+      "id": "SEC01-c1",
+      "kind": "code",
+      "criterion": "SEC01",
+      "title": "Inventory effective chat access",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "docs/architecture/assistant-runtime-access-inventory.md"
+      ],
+      "note": "Updated the source inventory for terminal-only reconciliation of expired unregistered inputs, atomic registration fencing and unchanged authority. Never-observed reservations, executing-image evidence and deployed qualification remain explicitly outstanding.",
+      "commits": [
+        "318126d"
+      ]
+    },
+    {
+      "id": "SEC01-c2",
+      "kind": "code",
+      "criterion": "SEC01",
+      "title": "Remove broad model-runtime authority",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted retirement retained. This milestone adds no model-runtime permission, credential fallback, grant or authority renewal.",
+      "commits": [
+        "10ed25f",
+        "ae3c3a9",
+        "017fd9f",
+        "dd008a7",
+        "76439f7",
+        "de0562e",
+        "1e75f59",
+        "8e90f56",
+        "8ea691b",
+        "f3b6584",
+        "6fcece4",
+        "05bbe92",
+        "8ad3238",
+        "1413904",
+        "840baf6",
+        "943bac1",
+        "064882c",
+        "25f8e3e",
+        "e726256",
+        "7e3e1c9",
+        "9501045",
+        "eb37c4f",
+        "6ae2c11",
+        "5310f22"
+      ]
+    },
+    {
+      "id": "SEC01-c-wire",
+      "kind": "code",
+      "criterion": "SEC01",
+      "title": "Wire credential-free sandbox identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted source wiring retained. Supervisor remains suspended and uninstalled.",
+      "commits": [
+        "ff16b9f",
+        "e8597ae",
+        "fa905ce",
+        "fe9e395",
+        "96aaf16",
+        "4d85de5"
+      ]
+    },
+    {
+      "id": "SEC01-t1",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Check source-backed access inventory",
+      "status": "done",
+      "covers": [
+        "SEC01-c1"
+      ],
+      "files": [
+        "modules/agent-factory/tests/terraform/test_chat_runtime_access_inventory.py"
+      ],
+      "note": "From modules/agent-factory, ../gateway/.venv/bin/python -m pytest tests/terraform/test_chat_runtime_access_inventory.py -q --disable-warnings passes 3 tests. From /work/repo, python3 scripts/check-public-docs.py checks 1444 files with zero findings. Logs: /tmp/sec04-unregistered-expiry-inventory.log and /tmp/sec04-unregistered-expiry-docs.log."
+    },
+    {
+      "id": "SEC01-t3",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Probe restricted sandbox locally",
+      "status": "done",
+      "covers": [
+        "SEC01-c2",
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "Review of runtime 4f1c627d: exact-source Docker image built and executed without network or host credentials, with read-only root, dropped capabilities and fixture-only workload token. All 17 environment/proc/files/CLI/SDK/network-denial probes passed. This is local container evidence; EKS IAM/admission/CNI qualification remains SEC01-t2/SEC02-t3 under #6937.",
+      "commits": [
+        "841a257",
+        "7160fb2"
+      ]
+    },
+    {
+      "id": "SEC01-t4",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test protected owner mailbox integrity",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted protected-input and terminal-transaction evidence retained."
+    },
+    {
+      "id": "SEC01-t5",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test scoped mailbox client",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted mailbox and result-client evidence retained; agent implementation unchanged."
+    },
+    {
+      "id": "SEC01-t6",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test sandbox bootstrap refusal",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted refusal, probe-preflight and admission evidence retained."
+    },
+    {
+      "id": "SEC01-t7",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test restricted image source graph",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted source-graph and TypeScript build evidence retained. Agent implementation unchanged; no OCI build claim."
+    },
+    {
+      "id": "SEC01-t8",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Reject cross-run admission",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted reserved-name, full-run-hash and image checks retained.",
+      "commits": [
+        "392de0e"
+      ]
+    },
+    {
+      "id": "SEC01-t9",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Refuse stolen data capability",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted denial evidence retained. Expired-input reconciliation adds no sandbox authority.",
+      "commits": [
+        "56500ff",
+        "d24991e",
+        "cdbc7c1"
+      ]
+    },
+    {
+      "id": "SEC01-t10",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test pending model journal",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted journal evidence retained. New expired-unregistered outcomes use not-used accounting and perform no inference.",
+      "commits": [
+        "b91c012",
+        "a838dee",
+        "fb3f386",
+        "8267732"
+      ]
+    },
+    {
+      "id": "SEC01-t11",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test bounded first admission",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted single-issuance and cancellation/expiry/prior-admission refusal evidence retained.",
+      "commits": [
+        "f0154f4"
+      ]
+    },
+    {
+      "id": "SEC01-t12",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Reject forged supervisor admission",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted supervisor-admission evidence retained.",
+      "commits": [
+        "165a431",
+        "ff8033a"
+      ]
+    },
+    {
+      "id": "SEC01-t13",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Reject malformed admission and teardown",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained. New expiry reconciliation excludes concurrent creation/admission and creates no removal evidence.",
+      "commits": [
+        "165a431",
+        "15d43ed"
+      ]
+    },
+    {
+      "id": "SEC01-t14",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Check supervisor role isolation",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted exact-table trusted-gateway permission evidence retained. IAM, supervisor and sandbox roles are unchanged this milestone.",
+      "commits": [
+        "49dc41f",
+        "7f6bffa"
+      ]
+    },
+    {
+      "id": "SEC01-t15",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Check actor-bound pod policy",
+      "status": "done",
+      "covers": [
+        "SEC01-c2",
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted launcher and pod-template evidence retained; unchanged this milestone.",
+      "commits": [
+        "ba377dd",
+        "86b0ce5"
+      ]
+    },
+    {
+      "id": "SEC01-t16",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Reject forged queue assignment",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted exact-envelope, task and session-generation checks retained.",
+      "commits": [
+        "3bc8be5",
+        "b65e977",
+        "0f9f955"
+      ]
+    },
+    {
+      "id": "SEC01-t17",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test one-shot supervisor queue isolation and no-ack teardown",
+      "status": "done",
+      "covers": [
+        "SEC01-c2",
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted supervisor evidence retained; supervisor code unchanged. New gateway fixtures preserve acknowledgement holds until owner delivery and handoff complete.",
+      "commits": [
+        "3bc8be5",
+        "620fb99",
+        "b65e977"
+      ]
+    },
+    {
+      "id": "SEC01-t18",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Reject forged supervisor exit and stale pod evidence",
+      "status": "done",
+      "covers": [
+        "SEC01-c2",
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted original-pod and queued-receipt validation evidence retained.",
+      "commits": [
+        "38d705e",
+        "c7ddebf"
+      ]
+    },
+    {
+      "id": "SEC01-t19",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Verify retired worker refuses model, queue and owner-store access",
+      "status": "done",
+      "covers": [
+        "SEC01-c2"
+      ],
+      "files": [],
+      "note": "Accepted retirement evidence retained; no fallback restored.",
+      "commits": [
+        "c3e0a43",
+        "ce98bb6"
+      ]
+    },
+    {
+      "id": "SEC01-t20",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Test suspended supervisor job identity and fail-closed rendering",
+      "status": "done",
+      "covers": [
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted renderer evidence retained; no activation or installation.",
+      "commits": [
+        "3751343"
+      ]
+    },
+    {
+      "id": "SEC01-t2",
+      "kind": "test",
+      "criterion": "SEC01",
+      "title": "Probe deployed IAM and direct AWS access",
+      "status": "blocked",
+      "covers": [
+        "SEC01-c1",
+        "SEC01-c2",
+        "SEC01-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 qualification owner; authorized image and target required."
+    },
+    {
+      "id": "SEC02-c1",
+      "kind": "code",
+      "criterion": "SEC02",
+      "title": "Reject unapproved sandbox pods",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted admission and workload restrictions retained.",
+      "commits": [
+        "991ead3"
+      ]
+    },
+    {
+      "id": "SEC02-c-wire",
+      "kind": "code",
+      "criterion": "SEC02",
+      "title": "Bind admission and network enforcement to launch",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted controls retained. Supervisor recovery and completion remain excluded from the sandbox listener.",
+      "commits": [
+        "cbab768",
+        "e72c8f9",
+        "3656191",
+        "fd8d5fc"
+      ]
+    },
+    {
+      "id": "SEC02-c2",
+      "kind": "code",
+      "criterion": "SEC02",
+      "title": "Fence gateway-only sandbox egress before launch",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Gateway-only TCP 8443 and default-deny controls unchanged."
+    },
+    {
+      "id": "SEC02-t1",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Test forged claims and admin-route denial",
+      "status": "done",
+      "covers": [
+        "SEC02-c1",
+        "SEC02-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted denial evidence retained. No authentication exemption or new route added.",
+      "commits": [
+        "15db61f"
+      ]
+    },
+    {
+      "id": "SEC02-t2",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Test malicious pod substitution",
+      "status": "done",
+      "covers": [
+        "SEC02-c1"
+      ],
+      "files": [],
+      "note": "Accepted workload, launcher and creation evidence retained."
+    },
+    {
+      "id": "SEC02-t3",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Probe deployed admission and networking",
+      "status": "blocked",
+      "covers": [
+        "SEC02-c1",
+        "SEC02-c-wire",
+        "SEC02-c2"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 qualification owner; authorized target required."
+    },
+    {
+      "id": "SEC02-t4",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Check offline launch controls",
+      "status": "done",
+      "covers": [
+        "SEC02-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted offline evidence retained; installed enforcement remains unverified."
+    },
+    {
+      "id": "SEC02-t5",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Reject hollow sandbox admission and binding selector bypass",
+      "status": "done",
+      "covers": [
+        "SEC02-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted regression evidence retained.",
+      "commits": [
+        "b4d5320"
+      ]
+    },
+    {
+      "id": "SEC02-t6",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Test gateway egress and Service substitution with synthetic Kubernetes fixtures",
+      "status": "done",
+      "covers": [
+        "SEC02-c2"
+      ],
+      "files": [],
+      "note": "Accepted synthetic network evidence retained."
+    },
+    {
+      "id": "SEC02-t7",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Test scoped TLS transport, CA binding and admission with local fixtures",
+      "status": "done",
+      "covers": [
+        "SEC02-c-wire",
+        "SEC02-c1"
+      ],
+      "files": [],
+      "note": "Accepted TLS routing and certificate evidence retained. Installed enforcement remains unverified."
+    },
+    {
+      "id": "SEC02-t8",
+      "kind": "test",
+      "criterion": "SEC02",
+      "title": "Repair and verify gateway authentication classification and strict Activity fixtures",
+      "status": "done",
+      "covers": [
+        "SEC02-c1",
+        "SEC02-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted classification and proof/scope denial evidence retained. Final published-repair CI remains outstanding."
+    },
+    {
+      "id": "SEC03-c1",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Route model and tools through scoped authority",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted delegated execution and accounting evidence retained.",
+      "commits": [
+        "ddc736c",
+        "341d84c",
+        "e4e294f",
+        "4a1ac82",
+        "e075f56"
+      ]
+    },
+    {
+      "id": "SEC03-c2",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Retain scoped context and artifacts",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted context, metered compaction, artifacts and saved replies retained."
+    },
+    {
+      "id": "SEC03-c3",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Execute native-tool sandbox turns through scoped clients",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted executable loop retained."
+    },
+    {
+      "id": "SEC03-c4",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Stream trusted provider output and fence authority revocation",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted streaming, cancellation and uncertain-accounting behavior retained."
+    },
+    {
+      "id": "SEC03-c-wire-stream",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Stream scoped model HTTP transport",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted scoped transport retained; no credential fallback."
+    },
+    {
+      "id": "SEC03-c-wire-delivery",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Relay provisional output to the registered owner",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted provisional-delivery behavior retained."
+    },
+    {
+      "id": "SEC03-c-wire-cancel",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Cancel admitted turns as their authenticated owner",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted admitted cancellation retained."
+    },
+    {
+      "id": "SEC03-c-wire-queued-cancel",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Cancel registered turns before sandbox admission",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Buffered cancellation published at 0a05594 is retained. Its owner, retained-input, dispatch and creation/admission fences pass the affected regression run."
+    },
+    {
+      "id": "SEC03-c-wire-result",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Record durable sandbox outcomes before supervisor finalization",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted immutable candidate handoff retained; sandbox receipts remain nonterminal."
+    },
+    {
+      "id": "SEC03-c-wire-teardown",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Persist trusted sandbox exit and removal evidence",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted teardown retained. New unregistered-expiry reconciliation invents no pod-removal evidence."
+    },
+    {
+      "id": "SEC03-c-wire-terminal-state",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Reconcile admitted turns into durable terminal state",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted admitted finalization retained. Queued outcomes remain distinct from admitted state."
+    },
+    {
+      "id": "SEC03-c-wire-supervisor",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Connect supervisor exit, removal and terminal reconciliation",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted admitted-turn completion retained; supervisor implementation unchanged."
+    },
+    {
+      "id": "SEC03-c-wire-terminal-outbox",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Persist immutable owner-bound terminal delivery intent",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted atomic-outbox contract retained. The new expiry path creates the same immutable owner-delivery intent atomically with terminal-only records."
+    },
+    {
+      "id": "SEC03-c-wire",
+      "kind": "code",
+      "criterion": "SEC03",
+      "title": "Switch live chat to delegated transport",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted source transport wiring retained. Reservation recovery and runtime qualification remain unfinished; chat stays disabled."
+    },
+    {
+      "id": "SEC03-t1",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test owner flows and model accounting",
+      "status": "done",
+      "covers": [
+        "SEC03-c1",
+        "SEC03-c2",
+        "SEC03-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted owner-flow evidence retained. New expired-unregistered fixtures verify not-used accounting; no real-provider or deployed execution claim."
+    },
+    {
+      "id": "SEC03-i1",
+      "kind": "infra",
+      "criterion": "SEC03",
+      "title": "Prepare restricted-image probe dependencies and smoke check",
+      "status": "done",
+      "covers": [
+        "SEC03-t2"
+      ],
+      "files": [],
+      "note": "Accepted packaging preparation retained. Actual image build and smoke execution remain unverified."
+    },
+    {
+      "id": "SEC03-t2",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test direct-model and fallback denial",
+      "status": "done",
+      "covers": [
+        "SEC03-c1",
+        "SEC03-c2",
+        "SEC03-c-wire"
+      ],
+      "files": [],
+      "note": "Review of runtime 4f1c627d: direct STS, S3, DynamoDB, Secrets and Bedrock requests through the image AWS CLI and SDK, plus the SDK credential-provider chain, all refused without inherited authority. Local executing-image evidence retained with review receipt; positive deployed provider routing remains SEC03-t3 under #6937."
+    },
+    {
+      "id": "SEC03-t3",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify deployed delegated calls",
+      "status": "blocked",
+      "covers": [
+        "SEC03-c1",
+        "SEC03-c2",
+        "SEC03-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 qualification owner; authorized image required."
+    },
+    {
+      "id": "SEC03-t4",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test sandbox model-policy decision",
+      "status": "done",
+      "covers": [
+        "SEC03-c1"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t5",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test gateway provider execution, accounting and denial with storage emulators",
+      "status": "done",
+      "covers": [
+        "SEC03-c1"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained; provider implementation unchanged."
+    },
+    {
+      "id": "SEC03-t6",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test sandbox data wiring and metered summarization with synthetic gateway",
+      "status": "done",
+      "covers": [
+        "SEC03-c2"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t7",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test executable native-tool turns and refusal paths with a synthetic gateway",
+      "status": "done",
+      "covers": [
+        "SEC03-c3",
+        "SEC03-c1",
+        "SEC03-c2"
+      ],
+      "files": [],
+      "note": "Accepted native-loop and result-handoff evidence retained."
+    },
+    {
+      "id": "SEC03-t8",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify cross-language model digests and canonical frame boundaries",
+      "status": "done",
+      "covers": [
+        "SEC03-c1",
+        "SEC03-c3",
+        "SEC03-c4"
+      ],
+      "files": [],
+      "note": "Accepted gateway/client and cross-language vector evidence retained."
+    },
+    {
+      "id": "SEC03-t9",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test bounded assembled history and reserved tool-round capacity",
+      "status": "done",
+      "covers": [
+        "SEC03-c3",
+        "SEC03-c2"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t10",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test provider streaming, cancellation fencing and accounting with SDK fixtures and storage emulators",
+      "status": "done",
+      "covers": [
+        "SEC03-c4",
+        "SEC03-c1"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t11",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Test scoped streaming transport and disconnect accounting with client, ASGI and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-stream",
+        "SEC03-c4"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t12",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify owner response routing with storage, queue, WebSocket and browser-hook fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-delivery",
+        "SEC03-c1",
+        "SEC03-c3"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained; unchanged browser suites not rerun locally."
+    },
+    {
+      "id": "SEC03-t13",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify authenticated cancellation with HTTP, storage-emulator and browser fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-cancel",
+        "SEC03-c4"
+      ],
+      "files": [],
+      "note": "Accepted HTTP, storage and browser evidence retained; browser implementation unchanged."
+    },
+    {
+      "id": "SEC03-t14",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify queued cancellation and admission races with HTTP and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-queued-cancel",
+        "SEC03-c-wire-cancel"
+      ],
+      "files": [],
+      "note": "Accepted queued-cancellation evidence retained. Buffered-cancellation regressions pass within the current 181-test run."
+    },
+    {
+      "id": "SEC03-t15",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify immutable result handoff with HTTP, storage-emulator and executable sandbox fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-result",
+        "SEC03-c3",
+        "SEC03-c2"
+      ],
+      "files": [],
+      "note": "Accepted evidence retained."
+    },
+    {
+      "id": "SEC03-t16",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify durable teardown observations with HTTP, storage-emulator and Kubernetes fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-teardown"
+      ],
+      "files": [],
+      "note": "Accepted teardown evidence retained; no deployed claim."
+    },
+    {
+      "id": "SEC03-t17",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify terminal reconciliation with HTTP and transactional storage fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-terminal-state"
+      ],
+      "files": [],
+      "note": "Accepted admitted finalization evidence retained."
+    },
+    {
+      "id": "SEC03-t18",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify supervisor reconciliation with signed HTTP and synthetic Kubernetes fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-supervisor"
+      ],
+      "files": [],
+      "note": "Accepted 131-test agent evidence retained; supervisor implementation unchanged."
+    },
+    {
+      "id": "SEC03-t19",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify atomic terminal delivery intent with HTTP and transactional storage fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire-terminal-outbox"
+      ],
+      "files": [],
+      "note": "Accepted atomic-outbox evidence retained. SEC04-t19 additionally verifies atomic interrupted outcomes for expired unregistered inputs."
+    },
+    {
+      "id": "SEC03-t20",
+      "kind": "test",
+      "criterion": "SEC03",
+      "title": "Verify terminal publication and duplicate-safe owner delivery with HTTP, storage, queue, WebSocket and browser-hook fixtures",
+      "status": "done",
+      "covers": [
+        "SEC03-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted publication, consumer and browser evidence retained. New expiry cases exercise duplicate-safe delivery before advancement; browser code unchanged."
+    },
+    {
+      "id": "SEC04-c1",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Create and destroy each one-turn sandbox",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "One-turn sandbox creation/destruction is implemented. Reviewer executed the exact-source image for A1, destroyed its process namespace and scratch mount, then ran fresh A2 and B1 containers with no residue. Kubernetes lifecycle enforcement remains SEC04-t3 under #6937."
+    },
+    {
+      "id": "SEC04-c2",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Fence interrupted leases",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted fencing retained. New fixtures establish that terminal-only expired inputs acquire no lease and predecessor retries preserve a healthy successor's fresh lease.",
+      "commits": [
+        "faf464b"
+      ]
+    },
+    {
+      "id": "SEC04-c-wire-completion",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Atomically record delivered-turn completion and release the matching processing lock",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_turn_completion.py"
+      ],
+      "note": "Shared owner-delivery transaction now carries the trusted reconciliation clock into pending handoff. Owner/task fences and completion regressions pass."
+    },
+    {
+      "id": "SEC04-c-wire-ack",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Resume admitted supervisor turns and acknowledge fenced completion",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted recovery retained. Expired unregistered successors reuse the established queued-completion acknowledgement contract."
+    },
+    {
+      "id": "SEC04-c-wire-pending-input",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Durably retain and register authenticated buffered inputs",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted retention and registration retained; ingest implementation unchanged."
+    },
+    {
+      "id": "SEC04-c-wire-pending-handoff",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Promote registered pending turns through durable owner-bound queue handoff",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_pending_handoff.py"
+      ],
+      "note": "Handoff now also atomically records terminal-only expiry for exact retained inputs whose registration never committed. Existing registered expiry and cancellation paths pass the affected regressions."
+    },
+    {
+      "id": "SEC04-c-wire-pending-recovery",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Recover retained buffered registrations without owner retry",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_pending_registration.py"
+      ],
+      "note": "Live retained registration recovery is unchanged and passes regressions. Once the original authority lifetime has elapsed, the new handoff path reconciles an interruption instead of invoking registration or renewing authority."
+    },
+    {
+      "id": "SEC04-c-wire-queued-terminal",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Commit and publish cancellation outcomes for unadmitted queued turns",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted immutable cancellation and expiry finalization retained. New reconciliation reuses the existing queued interruption and owner-delivery contracts."
+    },
+    {
+      "id": "SEC04-c-wire-bound-cleanup",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Recover and clean the original partially bound pod",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted original-pod cleanup retained. Bound or reserved turns remain excluded from unreserved completion."
+    },
+    {
+      "id": "SEC04-c-wire-creation",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Reserve one-shot creation and recover created pods after lost replies",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted single-use reservation and original-pod adoption retained. Issued but never-observed reservations still cannot complete."
+    },
+    {
+      "id": "SEC04-c-wire-cleaned-terminal",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Atomically finalize and publish outcomes for cleaned unadmitted turns",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted milestone retained. Confirmed removal, terminal state and immutable owner outbox remain distinct from completion."
+    },
+    {
+      "id": "SEC04-c-wire-cleaned-completion",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Complete cleaned owner-delivered turns and acknowledge fenced receipts",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Accepted milestone retained; no synthetic lease or weakened removal check."
+    },
+    {
+      "id": "SEC04-c-wire-queued-completion",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Complete unreserved queued cancellations and acknowledge fenced receipts",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_queued_completion.py"
+      ],
+      "note": "Accepted implementation retained. Owner-delivery, creation-fence, matching-lock and acknowledgement regressions pass within the 181-test run."
+    },
+    {
+      "id": "SEC04-c-wire-expired-successor",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Recover registered expired buffered successors without renewing authority",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Published in f53f835. Registered-expiry regressions pass again in the current affected run."
+    },
+    {
+      "id": "SEC04-c-wire-cancelled-successor",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Cancel registered buffered successors and reconcile their owner outcomes in order",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Published in 0a0559407f157a66d9f1962114194065d6cbdcbf; replaces the earlier unpublished note. Buffered-cancellation ownership, atomic fencing, ordered outcomes and replay isolation pass again in the current run."
+    },
+    {
+      "id": "SEC04-c-wire-unregistered-expiry",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Reconcile expired retained inputs without completed registration or renewed authority",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_unregistered_expiry.py",
+        "modules/gateway/src/agentauth/chat_pending_handoff.py",
+        "modules/gateway/src/agentauth/chat_turn_completion.py",
+        "docs/architecture/assistant-runtime-access-inventory.md"
+      ],
+      "note": "Bounded milestone split from SEC04-c-wire. After the original two-hour authority lifetime, exact owner-retained input becomes an interrupted/retryable, not-used terminal outcome. Unique dispatch/execution/routing records, absence of a grant and creation/admission checks fence delayed registration. These records and the immutable outbox commit atomically with predecessor completion and owner-lock transfer. No authority, lease, executable input or removal evidence is created. Covered by SEC04-t19; unpublished working tree atop 0a05594."
+    },
+    {
+      "id": "SEC04-c-wire",
+      "kind": "code",
+      "criterion": "SEC04",
+      "title": "Connect supervisor and durable mailbox",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "Original implementation scope is complete: admitted-turn owner delivery, durable completion, ordered successor handoff and acknowledgement are wired and covered by owner-flow/supervisor tests. The additional never-observed creation-reservation case remains safely held without reissuing creation or fabricating cleanup. Automatic recovery for that pre-admission edge remains an explicit #6937 QUAL03 release limitation; it is not claimed implemented."
+    },
+    {
+      "id": "SEC04-t1",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Test canary and process isolation",
+      "status": "done",
+      "covers": [
+        "SEC04-c1",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Review of runtime 4f1c627d: A1 canary and background process were created, the container was destroyed and its host process namespace disappeared. Fresh A2 and B1 runs of the same image inherited neither canary nor process-marker files. Local Docker evidence only; no deployed Kubernetes claim."
+    },
+    {
+      "id": "SEC04-t2",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Test worker loss and stale leases",
+      "status": "done",
+      "covers": [
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Original worker-loss criterion is covered by admitted-worker interruption, stale-lease, duplicate delivery and successor-preservation tests. Reviewer validates these against runtime 4f1c627d. Never-observed pre-admission reservation recovery is an additional fail-closed edge retained as a #6937 QUAL03 release limitation; no test or runtime completion is fabricated for it."
+    },
+    {
+      "id": "SEC04-t3",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify deployed teardown and expiry",
+      "status": "blocked",
+      "covers": [
+        "SEC04-c1",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 qualification owner; authorized rollout evidence required."
+    },
+    {
+      "id": "SEC04-t4",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Test offline lease fencing",
+      "status": "done",
+      "covers": [
+        "SEC04-c2"
+      ],
+      "files": [],
+      "note": "Accepted offline recovery and lease-fencing evidence retained."
+    },
+    {
+      "id": "SEC04-t5",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify completion fencing, retries and late duplicates with HTTP, storage-emulator and consumer fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-completion"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_turn_completion.py"
+      ],
+      "note": "Completion suite passes within the current 181-test run. New unregistered-expiry cases additionally preserve later processing locks and leases across predecessor retries."
+    },
+    {
+      "id": "SEC04-t6",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify admitted-turn recovery and acknowledgement with signed-request, queue, pod and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-ack",
+        "SEC04-c2"
+      ],
+      "files": [],
+      "note": "Accepted gateway supervisor-resume and agent acknowledgement evidence retained."
+    },
+    {
+      "id": "SEC04-t7",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify buffered-input retention, registration retries and completion races with ingest and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-pending-input",
+        "SEC04-c-wire-completion"
+      ],
+      "files": [],
+      "note": "Accepted ingest evidence retained. New tests use the real retained-input fixtures; ingest implementation unchanged."
+    },
+    {
+      "id": "SEC04-t8",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify pending promotion, queue uncertainty and successor admission with HTTP, ingest and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c-wire-completion",
+        "SEC04-c-wire-pending-input",
+        "SEC04-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_pending_handoff.py"
+      ],
+      "note": "Pending-handoff regressions pass in the current 181-test run. New expiry cases verify ordered outcomes, uncertain queue replies and fresh healthy-successor admission."
+    },
+    {
+      "id": "SEC04-t9",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify automatic pending registration recovery with HTTP, Lambda-transport and storage-emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-pending-recovery",
+        "SEC04-c-wire-pending-input",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c-wire-completion"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_pending_registration.py"
+      ],
+      "note": "Registration-recovery regressions pass in the current 181-test run, including refusal of ordinary expired root registration. New expiry cases verify that reconciliation does not invoke registration after the original authority lifetime."
+    },
+    {
+      "id": "SEC04-t10",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify queued cancellation outcomes and owner delivery with HTTP, transactional storage and queue/WebSocket fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-queued-terminal",
+        "SEC03-c-wire-queued-cancel",
+        "SEC03-c-wire-terminal-outbox"
+      ],
+      "files": [],
+      "note": "Accepted queued-terminal evidence retained. Buffered-cancellation and expiry tests exercise the same immutable owner-outcome contract."
+    },
+    {
+      "id": "SEC04-t11",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify partial-binding cleanup with HTTP, transactional storage, Kubernetes and supervisor queue fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-bound-cleanup",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted cleanup evidence retained; unchanged this milestone. No executing-sandbox claim."
+    },
+    {
+      "id": "SEC04-t12",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify one-shot creation and ambiguous-reply recovery with HTTP, storage, Kubernetes and supervisor fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-creation",
+        "SEC04-c-wire-bound-cleanup",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted creation and supervisor evidence retained. Issued reservations and missing reserved pods still cannot be treated as cleanup."
+    },
+    {
+      "id": "SEC04-t13",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify cleaned-turn outcomes with HTTP, transactional storage, queue and owner-delivery fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-cleaned-terminal",
+        "SEC04-c-wire-bound-cleanup",
+        "SEC04-c-wire-creation",
+        "SEC03-c-wire-queued-cancel",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted cleaned-outcome evidence retained; implementation unchanged."
+    },
+    {
+      "id": "SEC04-t14",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify cleaned completion and acknowledgement with HTTP, storage, queue and Kubernetes fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-cleaned-completion",
+        "SEC04-c-wire-completion",
+        "SEC04-c-wire-ack",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [],
+      "note": "Accepted cleaned-completion and supervisor evidence retained. No running-image or final-head CI claim."
+    },
+    {
+      "id": "SEC04-t15",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify queued completion and acknowledgement with HTTP, storage and supervisor queue fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-queued-completion",
+        "SEC04-c-wire-queued-terminal",
+        "SEC04-c-wire-ack",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_queued_completion.py",
+        "modules/gateway/tests/agentauth/test_chat_queued_terminal.py",
+        "modules/agent-factory/agent/src/complex-task-chat/sandbox-supervisor-completion.test.ts"
+      ],
+      "note": "Queued-completion regressions pass again in the current 181-test run. Accepted queued-terminal and supervisor receipt-validation evidence retained; agent code unchanged."
+    },
+    {
+      "id": "SEC04-t16",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify configured gateway lint gates for recovery test fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-pending-recovery",
+        "SEC04-c-wire-queued-terminal",
+        "SEC04-c-wire-bound-cleanup",
+        "SEC04-c-wire-queued-completion"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_pending_registration.py",
+        "modules/gateway/tests/agentauth/test_chat_queued_terminal.py",
+        "modules/gateway/tests/agentauth/test_chat_sandbox_workload.py"
+      ],
+      "note": "Accepted lint-gate repairs retained. Targeted Ruff check and format --check pass for this milestone's four changed Python files; git diff --check passes. Final published-revision CI remains outstanding."
+    },
+    {
+      "id": "SEC04-t17",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify expired successor outcomes, ordered handoff and retries with HTTP, storage, queue and supervisor fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-expired-successor",
+        "SEC04-c-wire-queued-terminal",
+        "SEC04-c-wire-queued-completion",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c-wire-ack",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_expired_successor.py",
+        "modules/agent-factory/agent/src/complex-task-chat/sandbox-supervisor-completion.test.ts"
+      ],
+      "note": "Published in f53f835. All 18 registered-expiry cases pass again within /tmp/sec04-unregistered-expiry-regression.log. Earlier agent/build evidence retained; agent implementation unchanged."
+    },
+    {
+      "id": "SEC04-t18",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify buffered cancellation, ordered terminal handoff and retries with HTTP, storage and queue fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-cancelled-successor",
+        "SEC03-c-wire-queued-cancel",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c-wire-queued-completion",
+        "SEC04-c-wire-completion",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_cancelled_successor.py",
+        "modules/gateway/tests/orchestration/test_chat_delivery_wiring.py"
+      ],
+      "note": "Published in 0a0559407f157a66d9f1962114194065d6cbdcbf; replaces the earlier unpublished note. All 34 buffered-cancellation cases pass again in the current 181-test run. Prior wiring evidence retained; no IAM or wiring change this milestone."
+    },
+    {
+      "id": "SEC04-t19",
+      "kind": "test",
+      "criterion": "SEC04",
+      "title": "Verify unregistered expiry, registration races and ordered recovery with HTTP, storage and queue fixtures",
+      "status": "done",
+      "covers": [
+        "SEC04-c-wire-unregistered-expiry",
+        "SEC04-c-wire-pending-recovery",
+        "SEC04-c-wire-pending-handoff",
+        "SEC04-c-wire-completion",
+        "SEC04-c-wire-queued-completion",
+        "SEC04-c2",
+        "SEC04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_unregistered_expiry.py"
+      ],
+      "note": "Unpublished working tree atop 0a0559407f157a66d9f1962114194065d6cbdcbf. The positive regression fails with HTTP 404 instead of 200 against git-archived HEAD source: /tmp/sec04-unregistered-expiry-baseline.log. All 29 new cases pass, covering owner/input validation, both registration race orders, grant/creation/admission/routing/outbox conflicts, concurrent owner/thread changes, partial root writes, lost transaction and queue replies, consecutive expired inputs, duplicate delivery, late registration denial and successor-lease preservation. From /work/repo/modules/gateway: uv run --frozen --extra dev pytest tests/agentauth/test_chat_unregistered_expiry.py tests/agentauth/test_chat_pending_registration.py tests/agentauth/test_chat_pending_handoff.py tests/agentauth/test_chat_expired_successor.py tests/agentauth/test_chat_cancelled_successor.py tests/agentauth/test_chat_turn_completion.py tests/agentauth/test_chat_queued_completion.py -q --disable-warnings --maxfail=3 passes 181 tests; /tmp/sec04-unregistered-expiry-regression.log. These are local HTTP/storage/queue fixtures, not executing-image or deployed evidence."
+    },
+    {
+      "id": "SEC05-c1",
+      "kind": "code",
+      "criterion": "SEC05",
+      "title": "Guard merge-trigger deployment paths",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "scripts/check-assistant-deploy-boundary.sh",
+        "docs/architecture/assistant-deploy-boundary.md"
+      ],
+      "note": "Accepted deployment guards retained. No workflow, IAM, installation or runtime-activation change this milestone.",
+      "commits": [
+        "d991ea4"
+      ]
+    },
+    {
+      "id": "SEC05-t1",
+      "kind": "test",
+      "criterion": "SEC05",
+      "title": "Test synthetic deployment guards",
+      "status": "done",
+      "covers": [
+        "SEC05-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/orchestration/test_chat_delivery_wiring.py",
+        "modules/gateway/tests/orchestration/test_assistant_deploy_boundary.py"
+      ],
+      "note": "Accepted 93-test source guard and wiring evidence retained in /tmp/sec04-cancelled-successor-guards.log. Guard and permission implementation unchanged; no cloud mutation."
+    }
+  ]
+}

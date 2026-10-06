@@ -38,11 +38,17 @@ vi.mock('@/services/chatSession', async () => {
 const mockSendMessage = vi.fn();
 let mockConnectionStatus = 'connected';
 let mockSessionExpired = false;
+let mockAwaitingReply = false;
+let mockCancelState = 'idle';
+const mockCancelTurn = vi.fn();
 
 vi.mock('@/hooks/useAgUiEvents', () => ({
   useAgUiEvents: vi.fn(() => ({
     connectionStatus: mockConnectionStatus,
-    isAwaitingReply: false,
+    isAwaitingReply: mockAwaitingReply,
+    canCancel: mockAwaitingReply && mockCancelState !== 'requested',
+    cancelState: mockCancelState,
+    cancelTurn: mockCancelTurn,
     reconnectAttempt: 0,
     sessionExpired: mockSessionExpired,
     sessionMeta: null,
@@ -89,10 +95,36 @@ describe('AgentChat — server-issued session ids', () => {
     mockRequestId.mockReset();
     mockConnectionStatus = 'connected';
     mockSessionExpired = false;
+    mockAwaitingReply = false;
+    mockCancelState = 'idle';
+    mockCancelTurn.mockReset();
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('offers Stop for the active reply without enabling another send', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Active', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockAwaitingReply = true;
+    renderPage();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Stop current reply' }));
+    expect(mockCancelTurn).toHaveBeenCalledOnce();
+    expect(screen.getByTestId('chat-input')).toBeDisabled();
+  });
+
+  it('shows an accepted stop as pending teardown rather than a finished reply', () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Active', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockAwaitingReply = true;
+    mockCancelState = 'requested';
+    renderPage();
+    expect(screen.getByRole('button', { name: 'Stop current reply' })).toBeDisabled();
+    expect(screen.getByText('Stop requested')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-input')).toBeDisabled();
   });
 
   // ----- Fresh creation -----

@@ -63,14 +63,16 @@ describe('gateway context manager', () => {
     expect(assembled.messages[0]).toEqual({ role: 'user', content: 'message-0' });
     expect(assembled.messages[1].content).toContain('<summary id="sum_opaque"');
     expect(assembled.messages[2]).toEqual({ role: 'user', content: 'message-2' });
+    expect(assembled.protectedMessageCount).toBe(1);
     expect(assembled.meta).toEqual({ rawMessageCount: 2, summaryCount: 1, estimatedTokens: 23, compactionTriggered: false });
     const bounded = await manager.assemble({ sessionId: 'session-a', userMessage: 'New input', tokenBudget: 10 });
     expect(bounded.messages).toEqual([{ role: 'user', content: 'message-2' }]);
+    expect(bounded.protectedMessageCount).toBe(1);
   });
 
   it('represents authorized empty history without inventing a session', async () => {
     await expect(manager.assemble({ sessionId: 'session-a', userMessage: 'New input', tokenBudget: 100 }))
-      .resolves.toMatchObject({ messages: [], meta: { rawMessageCount: 0, summaryCount: 0 } });
+      .resolves.toMatchObject({ messages: [], protectedMessageCount: 0, meta: { rawMessageCount: 0, summaryCount: 0 } });
     expect(append).not.toHaveBeenCalled();
   });
 

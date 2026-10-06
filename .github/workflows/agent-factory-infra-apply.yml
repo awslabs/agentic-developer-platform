@@ -36,6 +36,11 @@ on:
         description: 'Optional Terraform address to scope the apply, e.g. module.arc_runner. Empty = whole module (~61 resources).'
         required: false
         default: ''
+      adp_approved_revision:
+        description: 'Assistant rollout approval for this run only: full 40-hex commit with approved chat IAM files.'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: tf-apply-agent-factory-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -57,6 +62,7 @@ jobs:
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
+      actions: read
       contents: read
       pull-requests: read
 
@@ -71,6 +77,15 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Guard assistant IAM deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: chat-infra
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+        run: bash scripts/check-assistant-deploy-boundary.sh
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment

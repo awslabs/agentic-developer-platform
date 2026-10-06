@@ -7,7 +7,13 @@ from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.chat_authority import ChatRuntimeAuthority, ChatSessionLease
-from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunch, ChatLaunchStore
+from src.agentauth.chat_capability import (
+    ChatAuthorizationRefusedError,
+    ChatAuthorizationUnavailableError,
+    ChatLaunch,
+    ChatLaunchStore,
+    require_sandbox_run,
+)
 from src.agentauth.chat_user_turn import consume_user_turn, load_user_turn, user_turn_records, verify_user_turn
 from src.agentauth.execution import ExecutionStatus
 from src.agentauth.workload import VerifiedPod
@@ -15,6 +21,9 @@ from src.orchestration.chat_data_migration import _owner_fields, _owns_context_r
 
 OPERATIONS = frozenset(
     {
+        "model.invoke",
+        "turn.next",
+        "turn.result",
         "history.read",
         "activity.read",
         "history.expand",
@@ -65,10 +74,14 @@ def root_identity(authority: ChatRuntimeAuthority, run_id: str, digest: str, now
 
 
 def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: VerifiedPod, team_id: str, now: int) -> ChatLaunch:
+    from src.agentauth.chat_sandbox_creation import admission_creation_check
+
+    require_sandbox_run(pod, run_id)
     store = authority.store
     execution, grant, session_id = root_identity(authority, run_id, digest, now)
     if not pod.image_digest or grant.expires_at is None:
         raise ChatAuthorizationRefusedError("chat launch unavailable")
+    creation_check = admission_creation_check(authority, run_id, execution.tenant_id, pod)
     execution = store.bind(invocation_id=run_id, digest=digest, pod=pod, now=datetime.fromtimestamp(now, UTC))
     if store.authority.abort_intent(invocation_id=run_id, tenant_id=execution.tenant_id) is not None:
         raise ChatAuthorizationRefusedError("chat run ended")
@@ -227,6 +240,7 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
         store.client.transact_write_items(
             TransactItems=[
                 context_write,
+                creation_check,
                 *user_writes,
                 *handoff_checks,
                 {"Put": {"TableName": store.table, "Item": launches.item(launch), "ConditionExpression": "attribute_not_exists(pk)"}},
@@ -237,7 +251,9 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
                         "TableName": store.table,
                         "Key": {"pk": {"S": f"TENANT#{launch.tenant_id}"}, "sk": {"S": f"EXEC#{run_id}"}},
                         "ConditionExpression": (
-                            "#status = :active AND workload_binding = :pod AND current_attempt = :attempt AND current_credential_epoch = :epoch"
+                            "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
+                            "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
+                            "AND attribute_not_exists(chat_pre_admission_cleanup)"
                         )
                         + (" AND chat_user_turn = :user_turn" if user_turn is not None else ""),
                         "ExpressionAttributeNames": {"#status": "status"},

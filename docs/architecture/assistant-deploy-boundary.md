@@ -11,19 +11,22 @@ Components audited and their source roots:
 |---|---|
 | gateway | `modules/gateway/src/**` |
 | chat worker | `modules/agent-factory/agent/**` |
+| chat IAM/runtime | `modules/agent-factory/infra/chat-*.tf`, `modules/agent-factory/infra/gateway-chat-*.tf`, `modules/agent-factory/infra/gateway-main.tf` |
 | agent-worker image | `modules/agent-factory/agent/**`, `modules/agent-factory/agent-worker-image/**`, `modules/agent-factory/codex-reviewer/**`, `modules/agent-factory/codex-harness/**` |
 | frontend | `modules/gateway/frontend/**` |
 
 ## Inventory
 
-Every workflow under `.github/workflows/` whose `on.push.paths` cover any of the
-roots above (all trigger on `main`). "Trigger paths" lists only the
-component-relevant patterns; see each file for the full list.
+The table covers push-triggered workflows for the audited roots and the
+manual agent-factory Terraform apply that can change assistant IAM. Push-only
+checks use `on.push.paths`; manual apply has no merge-triggered execution.
+
 
 | Workflow | Trigger paths (component-relevant) | Mutates | Guard decision |
 |---|---|---|---|
 | `gateway-deploy.yml` | `modules/gateway/src/**` | `deploy-backend`: builds `adp-gateway` via CodeBuild, runs Alembic, rolls the image onto EKS namespace `adp-gateway`; `deploy-frontend` runs on `workflow_dispatch` only | Guarded, component `gateway`, target `adp-gateway-deploy-<env>` |
 | `chat-agent-deploy.yml` | `modules/agent-factory/agent/**` | `build-and-deploy`: builds `adp-chat-agent` via CodeBuild and updates the `chat-agent-worker` ScaledJob in `adp-gateway-agents` | Guarded, component `chat-worker`, target `adp-chat-deploy-dev` |
+| `agent-factory-infra-apply.yml` | Manual dispatch only; chat IAM/runtime Terraform files | `apply`: applies Terraform in the protected target environment | Guarded, component `chat-infra`, target `adp-deploy-<env>`; requires recorded target approval or one-run approved revision before credentials |
 | `agent-worker-image.yml` | `modules/agent-factory/agent/**`, `modules/agent-factory/agent-worker-image/**`, `modules/agent-factory/codex-reviewer/**`, `modules/agent-factory/codex-harness/**` | `build`: builds `adp-agent-runtime` via CodeBuild (build only); `deploy`: `rollout-worker-image.py` pins the digest in SSM and patches `agent-scaledjob` in `adp-agents` | Guarded on the `deploy` job only, component `agent-worker`, target `adp-worker-deploy-<env>`; build and test jobs stay unguarded |
 | `gateway-frontend-deploy.yml` | `modules/gateway/frontend/**` | `publish`: builds the SPA, syncs S3, invalidates CloudFront | Out of scope for #6932: no protected assistant paths exist under `modules/gateway/frontend` yet; #6936 must add a `frontend` component and guard this job before assistant UI merges |
 | `gateway-ci.yml` | `modules/gateway/src/**`, `modules/agent-factory/agent/src/complex-task-chat/**`, `modules/agent-factory/agent/package*.json`, `modules/agent-factory/codex-reviewer/package.json` | Lint and tests; `build` runs the smoke buildspec under the non-publishing PR CodeBuild role (no image is published, nothing deployed) | Build-only / test-only, no guard |
@@ -41,7 +44,7 @@ one of the roots is missing from this table.
 
 `scripts/check-assistant-deploy-boundary.sh` runs in each guarded job after
 checkout (`fetch-depth: 0`) and before any AWS credential or kubeconfig step. It
-receives the component (`gateway`, `chat-worker`, `agent-worker`), the exact
+receives the component (`gateway`, `chat-worker`, `agent-worker`, `chat-infra`), the exact
 deployment environment name as `ADP_ASSISTANT_DEPLOY_TARGET`, the candidate
 commit, and the approval inputs below. Each component has its own protected path
 list in the script; `agent-worker` protects
@@ -79,6 +82,12 @@ non-ancestor baseline refuses with a message that the deployed baseline is
 unknown and that recording `ADP_ASSISTANT_APPROVED_*` (or dispatching with
 `adp_approved_revision`) is the way forward; there is never a fallback to
 `github.event.before`.
+
+The manual agent-factory apply has no push deployment baseline. It requires a
+target-matched persistent approval or a full approved revision on this dispatch
+before the workflow obtains deployment credentials. Its separate plan workflow
+does not apply changes. An unrelated manual apply may proceed when its approved
+revision matches the protected chat IAM files; absent approval fails closed.
 
 Bootstrap: the first run of a brand-new workflow has no successful deploy job and
 therefore no baseline. The operator records `ADP_ASSISTANT_APPROVED_*` on the

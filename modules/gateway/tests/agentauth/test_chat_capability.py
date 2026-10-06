@@ -5,12 +5,17 @@ Live-root and directory callbacks are controlled fixtures, not live IAM evidence
 
 import base64
 import json
+from types import SimpleNamespace
 
 import boto3
+import httpx
 import pytest
 from botocore.exceptions import ClientError
+from fastapi import FastAPI
 from moto import mock_aws
 
+from src.admin import routes as admin_routes
+from src.agentauth import chat_data_routes
 from src.agentauth.bootstrap import BootstrapStore
 from src.agentauth.chat_capability import (
     VERSION,
@@ -21,10 +26,13 @@ from src.agentauth.chat_capability import (
     ChatLaunchStore,
 )
 from src.agentauth.run_credential import CREDENTIAL_KEY_ENV, CredentialError, verify_credential
-from src.agentauth.workload import VerifiedPod
+from src.agentauth.workload import VerifiedPod, WorkloadRefusedError
+from src.auth import dependencies as auth_dependencies
+from src.auth.cognito_jwt import CognitoJWTValidator
+from src.shared.database import get_db
 
 NOW = 1_800_000_000
-POD = VerifiedPod("pod-a", "sandbox-a", "sandboxes", "sandbox", "127.0.0.1")
+POD = VerifiedPod("pod-a", "sandbox-a", "sandboxes", "sandbox", "127.0.0.1", image_digest="sha256:" + "a" * 64)
 
 
 @pytest.fixture
@@ -246,3 +254,111 @@ def test_no_unsigned_or_shared_credential_fallback(setup):
     service.env = {}
     with pytest.raises(ChatAuthorizationUnavailableError):
         service.issue("run-a", POD, now=NOW)
+
+
+@pytest.fixture
+async def scoped_gateway(setup, db_session_factory, monkeypatch):
+    service, _, _, state = setup
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="scoped-chat-context",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+    )
+    for session_id, owner in (("session-a", "alice"), ("session-other", "bob")):
+        table.put_item(
+            Item={
+                "PK": f"session#{session_id}",
+                "SK": "header",
+                "orgId": "tenant-a",
+                "tenantId": "tenant-a",
+                "teamId": "team-a",
+                "ownerUserId": owner,
+                "ttl": NOW + 1000,
+            }
+        )
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    monkeypatch.setattr(chat_data_routes, "clock", lambda: NOW)
+    validator = CognitoJWTValidator(user_pool_id="us-east-1_synthetic", client_id="local-test", region="us-east-1")
+    monkeypatch.setattr(auth_dependencies, "_get_cognito_validator", lambda: validator)
+    app = FastAPI()
+    app.include_router(chat_data_routes.router)
+    app.include_router(admin_routes.router, prefix="/api")
+
+    def verify_workload(value):
+        if value != "sandbox-token":
+            raise WorkloadRefusedError("workload refused")
+        return POD
+
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: (
+        SimpleNamespace(context_table=table, workloads=SimpleNamespace(verify=verify_workload)),
+        service,
+    )
+
+    async def database():
+        async with db_session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    token = service.issue("run-a", POD, now=NOW)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://gateway.test", headers={"X-Adp-Workload-Token": "sandbox-token"}
+    ) as client:
+        yield client, token, state
+
+
+async def scoped_read(client, token, **changes):
+    return await client.post(
+        "/v1/chat/data/history/read",
+        json={"run_id": "run-a", "session_id": "session-a", **changes},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-User-Id": "bob",
+            "X-Tenant-Id": "tenant-other",
+            "X-Session-Id": "session-other",
+            "X-Run-Id": "run-other",
+            "X-Lease-Generation": "2",
+        },
+    )
+
+
+async def test_valid_sandbox_capability_ignores_forged_identity_headers(scoped_gateway):
+    client, token, _ = scoped_gateway
+    owner = await scoped_read(client, token)
+    assert owner.status_code == 200, owner.text
+    assert owner.json()["entries"] == []
+    assert owner.headers["cache-control"] == "no-store"
+    other = await scoped_read(client, token, session_id="session-other")
+    assert other.status_code == 404
+    assert other.json()["detail"] == {"error": "chat_scope_refused"}
+
+
+@pytest.mark.parametrize(
+    "forgery,expected",
+    [
+        ({"run_id": "run-other"}, 404),
+        ({"session_id": "session-other"}, 404),
+        ({"user_id": "bob"}, 422),
+        ({"tenant_id": "tenant-other"}, 422),
+        ({"lease_generation": 2}, 422),
+    ],
+)
+async def test_valid_sandbox_capability_cannot_select_forged_claims(scoped_gateway, forgery, expected):
+    client, token, _ = scoped_gateway
+    result = await scoped_read(client, token, **forgery)
+    assert result.status_code == expected, result.text
+
+
+async def test_valid_sandbox_capability_is_fenced_by_current_generation(scoped_gateway):
+    client, token, state = scoped_gateway
+    state["lease_generation"] = 2
+    result = await scoped_read(client, token)
+    assert result.status_code == 404
+    assert result.json()["detail"] == {"error": "chat_scope_refused"}
+
+
+@pytest.mark.parametrize("method,path", [("GET", "/api/admin/organizations"), ("POST", "/api/admin/organizations")])
+async def test_valid_sandbox_capability_is_not_admin_authentication(scoped_gateway, method, path):
+    client, token, _ = scoped_gateway
+    response = await client.request(method, path, headers={"Authorization": f"Bearer {token}", "X-Adp-Workload-Token": "sandbox-token"})
+    assert response.status_code == 401, response.text

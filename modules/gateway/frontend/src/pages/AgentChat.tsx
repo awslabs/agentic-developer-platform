@@ -188,7 +188,7 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, sessionMeta, sendMessage, activeToolCalls, wsRef } = useAgUiEvents({
+  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, sessionMeta, sendMessage, cancelTurn, canCancel, cancelState, activeToolCalls, wsRef } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
@@ -506,6 +506,16 @@ export default function AgentChat() {
               )}
             </div>
 
+            {isAwaitingReply && (
+              <button
+                onClick={() => void cancelTurn()}
+                disabled={!canCancel}
+                className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm disabled:opacity-50"
+                aria-label="Stop current reply"
+              >
+                {cancelState === 'pending' ? 'Requesting stop…' : cancelState === 'requested' ? 'Stop requested' : 'Stop'}
+              </button>
+            )}
             <button
               onClick={handleSend}
               disabled={
@@ -522,6 +532,9 @@ export default function AgentChat() {
               <SendIcon />
             </button>
           </div>
+          {isAwaitingReply && cancelState === 'failed' && (
+            <p role="alert" className="mt-2 text-sm text-red-600">Could not confirm the stop request. The turn may still be running; retry Stop.</p>
+          )}
         </div>
         </FileDropZone>
       </div>

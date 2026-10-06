@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+mkdir -p /tmp/workspace
+cd /tmp/workspace
+exec node /app/dist/chat-sandbox-entrypoint.js

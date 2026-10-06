@@ -36,17 +36,17 @@ data:
   MEMORY_STRATEGY: "dynamo"
   ARTIFACT_STRATEGY: "s3"
 
-  # Scoped chat data switch (#6932). "false" keeps the direct DynamoDB/S3 stores
-  # above exactly as they are today. Enablement is one coordinated change:
+  # Legacy direct store values remain for manifest compatibility, but the
+  # credentialed worker now refuses startup and direct-store construction.
+  # Enablement of scoped data is one coordinated change:
   #   ADP_CHAT_DATA_ENABLED: "true"
   #   CONTEXT_STRATEGY / MEMORY_STRATEGY / ARTIFACT_STRATEGY: "gateway"
   #   ADP_CHAT_DATA_URL: https origin of the gateway (no path/query); the
   #     worker exchanges the projected ADP_WORKLOAD_TOKEN_FILE for a session-
   #     bound capability at <origin>/v1/chat/data/bootstrap.
-  # The worker fails closed when the switch is "true" but any of those values,
-  # the token file or the gateway's own ADP_CHAT_DATA_ENABLED is missing — it
-  # never falls back to the direct stores. The chat_worker role's direct table/
-  # bucket permissions are removed only after live verification (#6931, #6937).
+  # No value enables the legacy worker: delegated model and response paths
+  # require the separate sandbox and supervisor before chat can be served.
+  # Installed permissions and older images require #6937 qualification.
   ADP_CHAT_DATA_ENABLED: "false"
   ADP_CHAT_DATA_URL: ""
 
@@ -56,8 +56,8 @@ data:
   LCM_SUMMARY_MODEL: "global.anthropic.claude-sonnet-5"
   LCM_SUMMARY_ENDPOINT: "bedrock"
   MODEL_ENDPOINT: "bedrock"
-  # The worker starts a local sigv4-proxy with the registered run identity.
-  # Claude and summarization both use it. Startup failure stops inference.
+  # Legacy proxy configuration is inert in the retired worker; its model
+  # router refuses every call. Do not use these values to re-enable chat.
   ADP_BEDROCK_VIA: "gateway"
   SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
   SIGV4_PROXY_PORT: "9090"

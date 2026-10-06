@@ -22,6 +22,9 @@ VERSION = "chat-data-v1"
 MAX_TTL_SECONDS = 300
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 Operation = Literal[
+    "model.invoke",
+    "turn.next",
+    "turn.result",
     "history.read",
     "activity.read",
     "history.expand",
@@ -140,6 +143,14 @@ def _decode(value: str) -> bytes:
     return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
 
 
+def require_sandbox_run(pod: VerifiedPod, run_id: str) -> None:
+    if pod.service_account != "adp-chat-sandbox":
+        return
+    expected = hashlib.sha256(run_id.encode()).hexdigest()
+    if pod.run_hash != expected or not pod.name.startswith(f"chat-turn-{expected[:12]}-"):
+        raise ChatAuthorizationRefusedError("chat sandbox run mismatch")
+
+
 class ChatCapabilityService:
     """Requires fresh root/lease and directory checks for issuance and every use.
 
@@ -189,6 +200,7 @@ class ChatCapabilityService:
         self._member(launch.tenant_id, launch.user_id, launch.team_id)
 
     def issue(self, run_id: str, pod: VerifiedPod, *, now: int) -> str:
+        require_sandbox_run(pod, run_id)
         launch = self.launches.load(run_id)
         if pod.uid != launch.sandbox_uid:
             raise ChatAuthorizationRefusedError("chat workload mismatch")
@@ -203,13 +215,26 @@ class ChatCapabilityService:
         body = _encode(claims.model_dump_json().encode())
         return f"{VERSION}.{body}.{self._sign(body)}"
 
+    def verify_pod(self, token: str, pod: VerifiedPod, *, now: int) -> ChatLaunch:
+        if not isinstance(token, str) or not 1 <= len(token) <= 4096:
+            raise ChatCapabilityInvalidError("chat capability invalid")
+        try:
+            run_id = _Claims.model_validate_json(_decode(token.split(".")[1])).run_id
+        except (ValueError, TypeError, UnicodeError, IndexError):
+            raise ChatCapabilityInvalidError("chat capability invalid") from None
+        launch = self.verify_run(token, run_id=run_id, operation=None, now=now)
+        if pod.uid != launch.sandbox_uid or pod.image_digest != launch.image_digest:
+            raise ChatAuthorizationRefusedError("chat workload mismatch")
+        require_sandbox_run(pod, launch.run_id)
+        return launch
+
     def verify(self, token: str, *, run_id: str, session_id: str, operation: Operation, now: int) -> ChatLaunch:
         launch = self.verify_run(token, run_id=run_id, operation=operation, now=now)
         if launch.session_id != session_id:
             raise ChatAuthorizationRefusedError("chat capability scope refused")
         return launch
 
-    def verify_run(self, token: str, *, run_id: str, operation: Operation, now: int) -> ChatLaunch:
+    def verify_run(self, token: str, *, run_id: str, operation: Operation | None, now: int) -> ChatLaunch:
         """Verify the caller's execution; resource access requires a separate check."""
         if not isinstance(token, str) or not 1 <= len(token) <= 4096:
             raise ChatCapabilityInvalidError("chat capability invalid")
@@ -229,7 +254,7 @@ class ChatCapabilityService:
         launch = self.launches.load(claims.run_id)
         if (
             hashlib.sha256(_launch_json(launch).encode()).hexdigest() != claims.launch_digest
-            or operation not in launch.operations
+            or (operation is not None and operation not in launch.operations)
             or claims.expires_at > launch.expires_at
         ):
             raise ChatAuthorizationRefusedError("chat capability scope refused")

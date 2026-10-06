@@ -15,6 +15,9 @@
 #
 set -euo pipefail
 
+echo "[deploy-chat] Credentialed chat ScaledJob retired; delegated supervisor and model transport required." >&2
+exit 1
+
 NAMESPACE="${NAMESPACE:-adp-gateway-agents}"
 ENVIRONMENT="${ENVIRONMENT:?ENVIRONMENT is required (e.g. dev)}"
 AWS_REGION="${AWS_REGION:-us-east-1}"

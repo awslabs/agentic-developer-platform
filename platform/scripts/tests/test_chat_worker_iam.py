@@ -29,8 +29,16 @@ class ChatWorkerIamTests(unittest.TestCase):
     def test_chat_has_no_bedrock_allow_and_explicit_deny(self):
         runtime = resource(self.chat, "aws_iam_role_policy", "chat_worker_runtime")
         inherited = re.findall(r'aws_iam_role_policy\.(\w+)\.policy', runtime)
-        self.assertEqual(len(inherited), 8)
+        self.assertEqual(set(inherited), {
+            "gateway_agent_execute_api", "gateway_agent_chat_dynamodb",
+            "gateway_agent_chat_s3", "gateway_agent_chat_sqs_fifo",
+        })
+        self.assertNotIn("gateway_agent_sqs", inherited)
+        self.assertNotIn("gateway_agent_bootstrap_logs", inherited)
         sources = self.gateway + (INFRA / "chat-agent-infra.tf").read_text()
+        fifo = resource(sources, "aws_iam_role_policy", "gateway_agent_chat_sqs_fifo")
+        self.assertIn("sqs:ReceiveMessage", fifo)
+        self.assertIn("sqs:SendMessage", fifo)
         for name in inherited:
             self.assertNotIn('bedrock:', resource(sources, "aws_iam_role_policy", name))
         deny = resource(self.chat, "aws_iam_role_policy", "chat_worker_deny_direct_bedrock")
@@ -54,6 +62,16 @@ class ChatWorkerIamTests(unittest.TestCase):
             self.assertIn(f"serviceAccountName: {name}\n", text)
         self.assertIn('Resource = [aws_iam_role.gateway_agent.arn, aws_iam_role.chat_worker.arn]', self.gateway)
         self.assertIn('"bedrock:InvokeModel"', resource(self.gateway, "aws_iam_role_policy", "gateway_agent_bedrock"))
+
+    def test_chat_sandbox_service_account_has_no_aws_role_or_default_token(self):
+        sandbox = resource(self.chat, "kubernetes_service_account", "chat_sandbox")
+        self.assertIn('name      = "adp-chat-sandbox"', sandbox)
+        self.assertIn('automount_service_account_token = false', sandbox)
+        self.assertNotIn('eks.amazonaws.com/role-arn', sandbox)
+        self.assertNotIn('aws_iam_role.', sandbox)
+        self.assertNotIn('adp-chat-sandbox', resource(self.chat, "aws_iam_role", "chat_worker"))
+        self.assertNotIn('adp-chat-sandbox', resource(self.gateway, "aws_iam_role", "gateway_agent"))
+        self.assertIn('serviceAccountName: adp-agent', (ROOT / "modules/agent-factory/agent/k8s/chat-scaledjob.yaml").read_text())
 
 
 if __name__ == "__main__":

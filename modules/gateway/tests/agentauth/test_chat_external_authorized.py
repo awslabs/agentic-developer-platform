@@ -15,6 +15,7 @@ from src.activity.service import WorkActivityPage
 from src.agentauth import chat_data_routes
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential, UserIdentity
+from tests.agentauth.chat_activity_fixtures import HEADERS, workload_runtime
 
 WINDOW = {"run_id": "run-a", "from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezone": "UTC"}
 INSTANCE = "https://gitlab.example.invalid"
@@ -164,12 +165,13 @@ async def test_delegated_read_uses_current_rights_and_keeps_partial_authorized_e
     service.query_work_by_user.return_value = WorkActivityPage(items=[], direct_cursor=None, descendant_cursor=None)
     capabilities = MagicMock()
     capabilities.verify_run.return_value = SimpleNamespace(user_id="owner", tenant_id="tenant-a")
+    services = workload_runtime(capabilities)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
-    app.dependency_overrides[chat_data_routes.runtime] = lambda: (None, capabilities)
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: services
     app.dependency_overrides[get_activity_service] = lambda: service
     async with original_client(transport=httpx.ASGITransport(app=app), base_url="https://gateway.example.invalid") as client:
-        first = await client.post("/v1/chat/data/activity/work", headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        first = await client.post("/v1/chat/data/activity/work", headers=HEADERS, json=WINDOW)
         assert first.status_code == 200, first.text
         assert [event["source_id"] for event in first.json()["external_events"]] == [
             "github:org/granted:commit:sha-one",
@@ -181,19 +183,19 @@ async def test_delegated_read_uses_current_rights_and_keeps_partial_authorized_e
         assert {entry["reason"] for entry in first.json()["coverage"]} >= {"repository_not_authorized"}
         forged = await client.post(
             "/v1/chat/data/activity/work",
-            headers={"Authorization": "Bearer delegated"},
+            headers=HEADERS,
             json={**WINDOW, "user_id": "intruder"},
         )
         assert forged.status_code == 422
         granted = False
-        revoked = await client.post("/v1/chat/data/activity/work", headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        revoked = await client.post("/v1/chat/data/activity/work", headers=HEADERS, json=WINDOW)
         assert revoked.status_code == 200
         assert [event["provider"] for event in revoked.json()["external_events"]] == ["gitlab", "gitlab"]
         org = await seeded.get(Organization, "tenant-a")
         org.github_installation_ids = []
         org.settings = {}
         await seeded.commit()
-        disconnected = await client.post("/v1/chat/data/activity/work", headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        disconnected = await client.post("/v1/chat/data/activity/work", headers=HEADERS, json=WINDOW)
         assert disconnected.status_code == 200
         assert disconnected.json()["external_events"] == []
         assert {(item["source"], item["reason"]) for item in disconnected.json()["coverage"]} >= {
@@ -324,12 +326,13 @@ async def test_delegated_provider_coverage_survives_outage_and_missing_history(
     service.query_work_by_user.return_value = WorkActivityPage(items=[], direct_cursor=None, descendant_cursor=None)
     capabilities = MagicMock()
     capabilities.verify_run.return_value = SimpleNamespace(user_id="owner", tenant_id="tenant-a")
+    services = workload_runtime(capabilities)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
-    app.dependency_overrides[chat_data_routes.runtime] = lambda: (None, capabilities)
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: services
     app.dependency_overrides[get_activity_service] = lambda: service
     async with original_client(transport=httpx.ASGITransport(app=app), base_url="https://gateway.example.invalid") as client:
-        response = await client.post("/v1/chat/data/activity/work", headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        response = await client.post("/v1/chat/data/activity/work", headers=HEADERS, json=WINDOW)
     assert response.status_code == 200, response.text
     payload = response.json()
     assert [event["provider"] for event in payload["external_events"]] == expected_events

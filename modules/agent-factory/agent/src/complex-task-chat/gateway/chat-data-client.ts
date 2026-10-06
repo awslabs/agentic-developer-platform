@@ -1,16 +1,95 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { MODEL_POLICY_AUDIENCE, parseVerificationKeys, verifyEnvelope } from '../../control-envelope';
+import { policyBody } from '../../model-policy-body';
+import { canonicalJson } from '../../invocability-probe/canonical-json';
 import { validateBaseUrl } from '../../lib/url-guard';
+import { ChatModelRequest, modelOutputBlock, modelRequestSchema } from './chat-model-contract';
+import { MODEL_STREAM_TYPE, ModelStreamBinding, ModelStreamError, ModelTextListener, readModelStream } from './chat-model-stream';
 
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/);
 const bootstrapSchema = z.object({
   capability: z.string().min(1).max(4096).regex(/^[A-Za-z0-9_.-]+$/),
   run_id: identifier,
   session_id: identifier,
+  attempt: z.number().int().positive().optional(),
+  lease_generation: z.number().int().positive().optional(),
   expires_at: z.number().int().positive(),
 }).strict();
+const acceptedTurnSchema = z.object({
+  run_id: identifier,
+  session_id: identifier,
+  lease_generation: z.number().int().positive(),
+  turn: z.object({
+    ref: z.string().regex(/^user_[a-f0-9]{64}$/),
+    message: z.object({
+      role: z.literal('user'),
+      content: z.string().max(131_072),
+      ts: z.string().min(1).max(128),
+      tokens: z.number().int().nonnegative(),
+      parts: z.array(z.object({
+        type: z.literal('file'),
+        artifactId: z.string().regex(/^art_[A-Za-z0-9_.:-]{1,128}$/),
+      }).strict()).max(32),
+    }).strict(),
+  }).strict(),
+}).strict();
+
 const missingArtifactErrorSchema = z.object({
   detail: z.object({ error: z.literal('chat_artifact_missing') }).strict(),
 }).strict();
+const modelReplySchema = z.object({
+  result: z.object({
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+    invocation_id: identifier,
+    tenant_id: identifier,
+    attempt: z.number().int().positive(),
+    context: z.object({ lease_generation: z.number().int().positive() }).passthrough(),
+    model_policy: z.object({
+      posture: z.literal('enforcing'),
+      posture_verified: z.literal(true),
+      status: z.literal('proposed'),
+      decision: z.object({
+        runtime_posture: z.literal('enforcing'),
+        invocation_id: identifier,
+        tenant_id: identifier,
+        resolved_model_id: z.string().min(1),
+      }).passthrough(),
+    }).passthrough(),
+  }).passthrough(),
+  assertion: z.string().min(1).max(8192),
+}).strict();
+const modelKeysSchema = z.object({ keys: z.record(z.string(), z.string().min(1).max(4096)) }).strict();
+const textModelRequestSchema = z.object({
+  messages: z.array(z.object({
+    role: z.enum(['user', 'assistant']), content: z.string().min(1).max(32_000),
+  }).strict()).min(1).max(32),
+  system: z.string().max(16_000).optional(),
+  max_tokens: z.number().int().min(1).max(10_000),
+}).strict();
+const modelReceiptSchema = z.object({
+  run_id: identifier, session_id: identifier, operation_id: identifier,
+  request_digest: z.string().regex(/^[a-f0-9]{64}$/), model_id: z.string().min(1).max(256),
+  lease_generation: z.number().int().positive(),
+  status: z.enum(['pending', 'running', 'confirmed', 'unknown', 'rejected']),
+  handoff: z.enum(['not_started', 'prepared', 'confirmed', 'unknown']),
+  reservation_status: z.enum(['unknown', 'pending', 'reserved', 'settled', 'not_reserved', 'released']),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
+    estimated_usd: z.string().regex(/^\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?$/),
+  }).strict().nullable(),
+  automatic_replay_permitted: z.literal(false),
+  content: z.array(modelOutputBlock).min(1).max(64).optional(),
+  stop_reason: z.enum(['end_turn', 'max_tokens', 'stop_sequence', 'tool_use']).optional(),
+  error_code: z.string().max(128).optional(),
+}).strict();
+
+export type TextModelRequest = z.infer<typeof textModelRequestSchema>;
+
+const turnResultSchema = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('completed'), message_id: identifier }).strict(),
+  z.object({ outcome: z.literal('failed') }).strict(),
+]);
 
 type Binding = z.infer<typeof bootstrapSchema>;
 const sessionOperations = {
@@ -62,8 +141,12 @@ export function parseRetryAfterMs(header: string | null, now: number = Date.now(
 }
 
 /** 401 bodies that mean "your bearer capability, not your scope" — refreshable once. */
-const capabilityErrorSchema = z.object({ error: z.enum(['capability_expired', 'capability_invalid']) }).strict();
-type CapabilityReason = z.infer<typeof capabilityErrorSchema>['error'];
+const capabilityReasonSchema = z.enum(['capability_expired', 'capability_invalid']);
+const capabilityErrorSchema = z.union([
+  z.object({ error: capabilityReasonSchema }).strict(),
+  z.object({ detail: z.object({ error: capabilityReasonSchema }).strict() }).strict(),
+]);
+type CapabilityReason = z.infer<typeof capabilityReasonSchema>;
 interface Classified { code: ErrorCode; retryAfterMs?: number; reason?: CapabilityReason }
 
 async function responseErrorCode(response: Response): Promise<Classified> {
@@ -87,7 +170,7 @@ async function responseErrorCode(response: Response): Promise<Classified> {
     return { code: body !== undefined && missingArtifactErrorSchema.safeParse(body).success ? 'missing' : fallback };
   }
   const capability = body === undefined ? undefined : capabilityErrorSchema.safeParse(body);
-  return capability?.success ? { code: 'denied', reason: capability.data.error } : { code: fallback };
+  return capability?.success ? { code: 'denied', reason: 'detail' in capability.data ? capability.data.detail.error : capability.data.error } : { code: fallback };
 }
 
 /** Read a small JSON error envelope; anything non-JSON, oversized or unreadable is `undefined`. */
@@ -134,6 +217,7 @@ export interface ChatDataClientConfig {
   workloadToken: () => Promise<string>;
   allowHttp?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Wait primitive used before the bounded rate-limit retry; injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -143,6 +227,7 @@ export class ChatDataClient {
   readonly #workloadToken: () => Promise<string>;
   readonly #timeoutMs: number;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #signal?: AbortSignal;
   #binding?: Binding;
   #exchange?: Promise<Binding>;
 
@@ -155,6 +240,7 @@ export class ChatDataClient {
       throw new ChatDataError('invalid_request');
     }
     this.#workloadToken = config.workloadToken;
+    this.#signal = config.signal;
     this.#timeoutMs = config.timeoutMs ?? 15_000;
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1 || this.#timeoutMs > 60_000) {
       throw new ChatDataError('invalid_request');
@@ -162,20 +248,32 @@ export class ChatDataClient {
     this.#sleep = config.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   }
 
-  async #request(path: string, body: string | undefined, headers: Record<string, string>, binary = false): Promise<unknown> {
+  async #request(path: string, body: string | undefined, headers: Record<string, string>, binary = false, channel: 'data' | 'model' | 'turn' = 'data',
+    modelStream?: { binding: ModelStreamBinding; onText?: ModelTextListener }): Promise<unknown> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const signal = this.#signal ? AbortSignal.any([controller.signal, this.#signal]) : controller.signal;
+    const timer = setTimeout(() => controller.abort(), channel === 'model' && path === 'invoke' ? 150_000 : this.#timeoutMs);
     try {
-      const response = await fetch(`${this.#origin}/v1/chat/data/${path}`, {
+      signal.throwIfAborted();
+      const boundHeaders = channel === 'data' && path !== 'bootstrap'
+        ? { ...headers, 'X-Adp-Workload-Token': await this.#readWorkloadToken() } : headers;
+      const response = await fetch(`${this.#origin}/v1/chat/${channel}/${path}`, {
         method: body === undefined ? 'GET' : 'POST',
-        headers: body === undefined ? headers : { 'Content-Type': 'application/json', ...headers },
+        headers: body === undefined ? boundHeaders : { 'Content-Type': 'application/json', ...boundHeaders },
         body,
         redirect: 'error',
-        signal: controller.signal,
+        signal,
       });
       if (!response.ok) {
         const classified = await responseErrorCode(response);
         throw new ChatDataError(classified.code, response.status, classified.retryAfterMs, classified.reason);
+      }
+      if (modelStream && response.headers.get('content-type')?.split(';')[0].trim() === MODEL_STREAM_TYPE && response.body) {
+        try {
+          return await readModelStream(response.body, modelStream.binding, signal, modelStream.onText);
+        } catch (error) {
+          throw new ChatDataError(error instanceof ModelStreamError ? error.code : 'incomplete');
+        }
       }
       if ((!binary && response.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') || !response.body) {
         await response.body?.cancel();
@@ -188,13 +286,14 @@ export class ChatDataClient {
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > (binary ? 8 : 2) * 1024 * 1024) {
+        if (size > (channel === 'model' ? 65536 : (binary ? 8 : 2) * 1024 * 1024)) {
           await reader.cancel();
           throw new ChatDataError('invalid_response');
         }
         chunks.push(value);
       }
       const content = Buffer.concat(chunks);
+      signal.throwIfAborted();
       if (binary) {
         const declaredLength = response.headers.get('content-length');
         if (!size || (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) !== size))
@@ -216,14 +315,18 @@ export class ChatDataClient {
     }
   }
 
-  async #bootstrap(): Promise<Binding> {
-    let workloadToken: string;
+  async #readWorkloadToken(): Promise<string> {
     try {
-      workloadToken = (await this.#workloadToken()).trim();
-      if (!workloadToken || workloadToken.length > 16_384 || !/^[A-Za-z0-9_.-]+$/.test(workloadToken)) throw new Error();
+      const token = (await this.#workloadToken()).trim();
+      if (!token || token.length > 16_384 || !/^[A-Za-z0-9_.-]+$/.test(token)) throw new Error();
+      return token;
     } catch {
       throw new ChatDataError('unavailable');
     }
+  }
+
+  async #bootstrap(): Promise<Binding> {
+    const workloadToken = await this.#readWorkloadToken();
     let exchanged: unknown;
     try {
       exchanged = await this.#request('bootstrap', '{}', { 'X-Adp-Workload-Token': workloadToken });
@@ -238,7 +341,9 @@ export class ChatDataClient {
       throw new ChatDataError('invalid_response');
     }
     const binding = parsed.data;
-    if (this.#binding && (this.#binding.run_id !== binding.run_id || this.#binding.session_id !== binding.session_id)) {
+    if (this.#binding && (this.#binding.run_id !== binding.run_id || this.#binding.session_id !== binding.session_id ||
+        (this.#binding.lease_generation !== undefined && this.#binding.lease_generation !== binding.lease_generation) ||
+        (this.#binding.attempt !== undefined && this.#binding.attempt !== binding.attempt))) {
       throw new ChatDataError('scope_mismatch');
     }
     this.#binding = binding;
@@ -302,8 +407,135 @@ export class ChatDataClient {
     ));
   }
 
+  async nextTurn(): Promise<z.infer<typeof acceptedTurnSchema>['turn']> {
+    return this.#withBinding(async binding => {
+      if (!binding.lease_generation || !binding.attempt) throw new ChatDataError('invalid_response');
+      const raw = await this.#request('next', JSON.stringify({
+        run_id: binding.run_id, session_id: binding.session_id,
+      }), {
+        Authorization: `Bearer ${binding.capability}`,
+        'X-Adp-Workload-Token': await this.#readWorkloadToken(),
+      }, false, 'turn');
+      const parsed = acceptedTurnSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.run_id !== binding.run_id ||
+        parsed.data.session_id !== binding.session_id ||
+        parsed.data.lease_generation !== binding.lease_generation ||
+        parsed.data.turn.ref !== `user_${createHash('sha256').update(binding.run_id).digest('hex')}`) {
+        throw new ChatDataError('invalid_response');
+      }
+      return parsed.data.turn;
+    });
+  }
+
+  async submitTurnResult(result: z.input<typeof turnResultSchema>): Promise<void> {
+    const parsed = turnResultSchema.safeParse(result);
+    if (!parsed.success) throw new ChatDataError('invalid_request');
+    await this.#withBinding(async binding => {
+      const raw = await this.#request('turn/result', JSON.stringify({
+        ...parsed.data, run_id: binding.run_id, session_id: binding.session_id,
+      }), { Authorization: `Bearer ${binding.capability}` });
+      const receipt = z.object({
+        run_id: identifier, session_id: identifier, attempt: z.number().int().positive(),
+        lease_generation: z.number().int().positive(), sandbox_uid: identifier,
+        outcome: z.enum(['completed', 'failed']), message_id: identifier.nullable(), terminal: z.literal(false),
+      }).strict().safeParse(raw);
+      if (!receipt.success || receipt.data.run_id !== binding.run_id || receipt.data.session_id !== binding.session_id ||
+          receipt.data.attempt !== binding.attempt || receipt.data.lease_generation !== binding.lease_generation ||
+          receipt.data.outcome !== parsed.data.outcome ||
+          receipt.data.message_id !== (parsed.data.outcome === 'completed' ? parsed.data.message_id : null)) {
+        throw new ChatDataError('invalid_response');
+      }
+    });
+  }
+
+  async modelDecision(): Promise<{ modelId: string; runId: string; tenantId: string; generation: number }> {
+    return this.#withBinding(async binding => {
+      if (!binding.lease_generation || !binding.attempt) throw new ChatDataError('invalid_response');
+      const nonce = randomBytes(32).toString('hex');
+      const headers = {
+        Authorization: `Bearer ${binding.capability}`,
+        'X-Adp-Workload-Token': await this.#readWorkloadToken(),
+      };
+      const raw = await this.#request('decision', JSON.stringify({
+        run_id: binding.run_id, session_id: binding.session_id, nonce, model_policy_contract: 1,
+      }), headers, false, 'model');
+      const reply = modelReplySchema.safeParse(raw);
+      if (!reply.success) throw new ChatDataError('invalid_response');
+      const keysRaw = await this.#request('keys', JSON.stringify({
+        run_id: binding.run_id, session_id: binding.session_id,
+      }), headers, false, 'model');
+      const keys = modelKeysSchema.safeParse(keysRaw);
+      if (!keys.success) throw new ChatDataError('invalid_response');
+      const { result, assertion } = reply.data;
+      const verified = verifyEnvelope(assertion, parseVerificationKeys(JSON.stringify(keys.data.keys)), {
+        runId: binding.run_id, generation: binding.attempt,
+        action: 'model_policy_response', commandId: nonce,
+        audience: MODEL_POLICY_AUDIENCE, body: policyBody(result),
+      });
+      if (!verified.ok || verified.envelope.tenantId !== result.tenant_id ||
+          verified.envelope.principal !== `${binding.run_id}#${binding.attempt}` ||
+          result.invocation_id !== binding.run_id || result.attempt !== binding.attempt ||
+          result.context.lease_generation !== binding.lease_generation || result.nonce !== nonce ||
+          result.model_policy.decision.invocation_id !== binding.run_id ||
+          result.model_policy.decision.tenant_id !== result.tenant_id) {
+        throw new ChatDataError('denied');
+      }
+      return { modelId: result.model_policy.decision.resolved_model_id, runId: binding.run_id,
+        tenantId: result.tenant_id, generation: binding.lease_generation };
+    });
+  }
+
   async sessionScope(): Promise<{ run_id: string; session_id: string }> {
     return this.#withBinding(binding => Promise.resolve({ run_id: binding.run_id, session_id: binding.session_id }));
+  }
+
+  async invokeTextModel(operationId: string, input: TextModelRequest) {
+    const request = textModelRequestSchema.safeParse(input);
+    if (!identifier.safeParse(operationId).success || !request.success) throw new ChatDataError('invalid_request');
+    const result = await this.invokeModel(operationId, request.data);
+    if (result.stopReason === 'tool_use' || result.content.some(block => block.type !== 'text')) throw new ChatDataError('invalid_response');
+    return { text: result.content.map(block => block.type === 'text' ? block.text : '').join('\n'),
+      stopReason: result.stopReason, usage: result.usage, modelId: result.modelId };
+  }
+
+  async invokeModel(operationId: string, input: ChatModelRequest, onText?: ModelTextListener, deliverResponse = false) {
+    const request = modelRequestSchema.safeParse(input);
+    if (!identifier.safeParse(operationId).success || !request.success) throw new ChatDataError('invalid_request');
+    const snapshot = canonicalJson(request.data);
+    if (Buffer.byteLength(snapshot) > 65_536) throw new ChatDataError('invalid_request');
+    const digest = createHash('sha256').update(snapshot).digest('hex');
+    return this.#withBinding(async binding => {
+      if (!binding.lease_generation || !binding.attempt) throw new ChatDataError('invalid_response');
+      const raw = await this.#request('invoke', JSON.stringify({
+        run_id: binding.run_id, session_id: binding.session_id, operation_id: operationId, request: JSON.parse(snapshot),
+        ...(deliverResponse ? { deliver_response: true } : {}),
+      }), {
+        Authorization: `Bearer ${binding.capability}`, 'X-Adp-Workload-Token': await this.#readWorkloadToken(), Accept: MODEL_STREAM_TYPE,
+      }, false, 'model', { binding: { run_id: binding.run_id, session_id: binding.session_id,
+        lease_generation: binding.lease_generation, operation_id: operationId, request_digest: digest }, onText });
+      const parsed = modelReceiptSchema.safeParse(raw);
+      if (!parsed.success) throw new ChatDataError('invalid_response');
+      const receipt = parsed.data;
+      if (receipt.run_id !== binding.run_id || receipt.session_id !== binding.session_id ||
+        receipt.lease_generation !== binding.lease_generation || receipt.operation_id !== operationId || receipt.request_digest !== digest) {
+        throw new ChatDataError('scope_mismatch');
+      }
+      if (receipt.status === 'rejected') throw new ChatDataError('denied');
+      if (receipt.status !== 'confirmed' || receipt.handoff !== 'confirmed' || receipt.reservation_status !== 'settled') {
+        throw new ChatDataError('incomplete');
+      }
+      if (!receipt.content || !receipt.stop_reason || !receipt.usage || receipt.usage.output_tokens > request.data.max_tokens) {
+        throw new ChatDataError('invalid_response');
+      }
+      const calls = receipt.content.filter(block => block.type === 'tool_use');
+      if ((receipt.stop_reason === 'tool_use') !== (calls.length > 0) ||
+        new Set(calls.map(call => call.id)).size !== calls.length ||
+        calls.some(call => !request.data.tools?.some(tool => tool.name === call.name))) {
+        throw new ChatDataError('invalid_response');
+      }
+      return { content: receipt.content, stopReason: receipt.stop_reason,
+        usage: receipt.usage, modelId: receipt.model_id };
+    });
   }
 
   async sessionRequest(operation: SessionOperation, sessionId: string, payload: Record<string, unknown> = {}): Promise<unknown> {

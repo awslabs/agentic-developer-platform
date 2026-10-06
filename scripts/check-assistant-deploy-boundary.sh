@@ -7,7 +7,7 @@
 # named deployment target.
 #
 # Inputs (environment):
-#   ADP_ASSISTANT_DEPLOY_COMPONENT   gateway | chat-worker | agent-worker
+#   ADP_ASSISTANT_DEPLOY_COMPONENT   gateway | chat-worker | agent-worker | chat-infra
 #   ADP_ASSISTANT_DEPLOY_TARGET      exact protected deployment environment name
 #   GITHUB_EVENT_NAME                push | workflow_dispatch (anything else refuses)
 #   GITHUB_SHA                       candidate commit (override: ADP_ASSISTANT_DEPLOY_CANDIDATE)
@@ -54,6 +54,9 @@ case "${ADP_ASSISTANT_DEPLOY_COMPONENT:-}" in
       modules/agent-factory/agent/src/complex-task-chat
       'modules/agent-factory/agent/k8s/chat-*'
       modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh
+      'modules/agent-factory/infra/chat-*'
+      'modules/agent-factory/infra/gateway-chat-*'
+      modules/agent-factory/infra/gateway-main.tf
     )
     ;;
   agent-worker)
@@ -62,6 +65,13 @@ case "${ADP_ASSISTANT_DEPLOY_COMPONENT:-}" in
     protected_paths=(
       modules/agent-factory/agent/src/complex-task-chat
       'modules/agent-factory/agent/k8s/chat-*'
+    )
+    ;;
+  chat-infra)
+    protected_paths=(
+      'modules/agent-factory/infra/chat-*'
+      'modules/agent-factory/infra/gateway-chat-*'
+      modules/agent-factory/infra/gateway-main.tf
     )
     ;;
   *)

@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: adp-chat-supervisor-once
+  namespace: adp-gateway-agents
+spec:
+  suspend: true
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: adp-chat-supervisor
+    spec:
+      serviceAccountName: adp-chat-supervisor
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: supervisor-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  expirationSeconds: 600
+                  path: token
+      containers:
+        - name: supervisor
+          image: REPLACE_WITH_SUPERVISOR_IMAGE
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AGENT_ENTRYPOINT
+              value: chat-supervisor
+            - name: ADP_CHAT_SUPERVISOR_ROLE_ARN
+              value: REPLACE_WITH_SUPERVISOR_ROLE_ARN
+            - name: AWS_ROLE_ARN
+              value: REPLACE_WITH_SUPERVISOR_ROLE_ARN
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/adp-chat-supervisor/token
+            - name: AWS_REGION
+              value: REPLACE_WITH_AWS_REGION
+            - name: ADP_CHAT_SUPERVISOR_QUEUE_URL
+              value: REPLACE_WITH_CHAT_FIFO_URL
+            - name: ADP_CHAT_SANDBOX_IMAGE
+              value: REPLACE_WITH_SANDBOX_IMAGE_DIGEST
+            - name: ADP_CHAT_DATA_URL
+              value: REPLACE_WITH_GATEWAY_HTTPS_ORIGIN
+            - name: ADP_CHAT_SANDBOX_CA_CONFIGMAP
+              value: REPLACE_WITH_SANDBOX_CA_CONFIGMAP
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+          volumeMounts:
+            - name: supervisor-identity
+              mountPath: /var/run/secrets/adp-chat-supervisor
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

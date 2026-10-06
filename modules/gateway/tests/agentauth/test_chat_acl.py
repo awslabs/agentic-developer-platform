@@ -14,15 +14,16 @@ from starlette.concurrency import run_in_threadpool
 
 from src.agentauth import chat_data_routes
 from src.agentauth.chat_capability import ChatLaunch
-from src.agentauth.workload import VerifiedPod
+from src.agentauth.workload import VerifiedPod, WorkloadRefusedError
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, Team, TeamMembership, User
 from tests.agentauth.test_chat_artifact import artifacts as artifacts_fixture
 from tests.agentauth.test_chat_artifact import create
 from tests.agentauth.test_chat_history_routes import capability as capability_fixture
 from tests.agentauth.test_chat_history_routes import client as client_fixture
-from tests.agentauth.test_chat_history_routes import read, seed_history
+from tests.agentauth.test_chat_history_routes import read as history_read
 from tests.agentauth.test_chat_history_routes import runtime as runtime_fixture
+from tests.agentauth.test_chat_history_routes import seed_history
 from tests.agentauth.test_chat_history_routes import store as store_fixture
 from tests.agentauth.test_chat_history_routes import sts as sts_fixture
 from tests.agentauth.test_chat_history_write import HEADER
@@ -37,6 +38,10 @@ ACL = "/v1/chat/data/session/acl"
 DIGEST = "sha256:" + "a" * 64
 FORGED = {"X-User-Id": "human", "X-Tenant-Id": "tenant", "X-Session-Id": "session-a", "X-Owner-User-Id": "human"}
 SYNTHETIC = {"run-b", "run-c", "run-d", "run-e"}
+
+
+def proof_for(run_id):
+    return "chat-token" if run_id == "run-a" else f"member-token-{run_id}"
 
 
 @pytest.fixture
@@ -59,9 +64,22 @@ async def members(runtime, db_session_factory, monkeypatch):
     service = runtime[0]
     original = service.current
     monkeypatch.setattr(service, "current", lambda launch, now: True if launch.run_id in SYNTHETIC else original(launch, now))
+    workloads = runtime[1].workloads
+    original_verify = workloads.verify
+    pod_proofs = {}
+
+    def verify(proof):
+        if proof.startswith("member-token-"):
+            if proof not in pod_proofs:
+                raise WorkloadRefusedError("workload refused")
+            return pod_proofs[proof]
+        return original_verify(proof)
+
+    monkeypatch.setattr(workloads, "verify", verify)
 
     async def credential(run, user, *, tenant="tenant", team="team", session=None):
         pod = VerifiedPod(f"pod-{run}", f"sandbox-{run}", "adp-gateway-agents", "adp-agent", "127.0.0.1", image_digest=DIGEST)
+        pod_proofs[proof_for(run)] = pod
         launch = ChatLaunch(
             run_id=run,
             tenant_id=tenant,
@@ -85,11 +103,21 @@ async def members(runtime, db_session_factory, monkeypatch):
     return credential
 
 
+async def read(client, capability, operation="read", *, headers=None, **fields):
+    return await history_read(
+        client,
+        capability,
+        operation,
+        headers={"X-Adp-Workload-Token": proof_for(fields.get("run_id", "run-a")), **(headers or {})},
+        **fields,
+    )
+
+
 async def acl(client, capability, operation="write", *, headers=None, **fields):
     return await client.post(
         f"{ACL}/{operation}",
         json={"run_id": "run-a", "session_id": "session-a", **fields},
-        headers={"Authorization": f"Bearer {capability}", **(headers or {})},
+        headers={"Authorization": f"Bearer {capability}", "X-Adp-Workload-Token": proof_for(fields.get("run_id", "run-a")), **(headers or {})},
     )
 
 
@@ -109,7 +137,7 @@ async def reads(client, token, run_id, *, session_id="session-a"):
     listing = await client.post(
         "/v1/chat/data/artifact/list",
         json={"run_id": run_id, "session_id": session_id},
-        headers={"Authorization": f"Bearer {token}", **FORGED},
+        headers={"Authorization": f"Bearer {token}", "X-Adp-Workload-Token": proof_for(run_id), **FORGED},
     )
     return page, messages, listing
 

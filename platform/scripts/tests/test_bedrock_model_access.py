@@ -238,7 +238,7 @@ def test_prepare_and_verify_registers_before_invoking(monkeypatch, form):
 
 
 @pytest.mark.parametrize("mode", ["prepare-and-verify", "verify"])
-def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_path, mode):
+def test_retired_chat_rollout_refuses_before_model_or_deployment_calls(tmp_path, mode):
     relative = "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
     script = tmp_path / relative
     script.parent.mkdir(parents=True)
@@ -246,7 +246,7 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
     helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
     helper.parent.mkdir(parents=True)
     helper.write_text(
-        f'#!/bin/bash\n[ "$1" = --{mode} ] || exit 9\necho "model denied" >&2\nexit 1\n'
+        '#!/bin/bash\necho "unexpected model access call" >&2\nexit 9\n'
     )
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -267,7 +267,8 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
         text=True,
     )
     assert result.returncode == 1
-    assert "model denied" in result.stderr
+    assert "Credentialed chat ScaledJob retired" in result.stderr
+    assert "unexpected model access call" not in result.stderr
     assert "unexpected deployment call" not in result.stderr
     assert "Reading Terraform outputs" not in result.stdout
 

@@ -1,0 +1,39 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: adp-chat-supervisor-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["pods"]
+        scope: Namespaced
+  matchConditions:
+    - name: chat-supervisor-only
+      expression: "request.userInfo.username == 'system:serviceaccount:adp-gateway-agents:adp-chat-supervisor'"
+  validations:
+    - expression: >-
+        request.operation == 'DELETE' ?
+          (oldObject != null && oldObject.spec.serviceAccountName == 'adp-chat-sandbox' &&
+           has(oldObject.metadata.labels) && oldObject.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
+           oldObject.metadata.name.matches('^chat-turn-[a-f0-9]{12}-[a-z0-9]{1,20}$')) :
+          (object != null && object.spec.serviceAccountName == 'adp-chat-sandbox' &&
+           has(object.metadata.labels) && object.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
+           has(object.metadata.generateName) &&
+           object.metadata.generateName.matches('^chat-turn-[a-f0-9]{12}-$'))
+      message: Chat supervisor can create, update or delete only restricted sandbox pods
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: adp-chat-supervisor-pods
+spec:
+  policyName: adp-chat-supervisor-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: adp-gateway-agents

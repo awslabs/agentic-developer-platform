@@ -31,7 +31,7 @@ describe('chat data transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('derives scope through workload exchange without forwarding workload credentials to storage routes', async () => {
+  it('derives scope through workload exchange and binds storage calls to the same live pod', async () => {
     fetchMock.mockResolvedValueOnce(json(binding)).mockResolvedValueOnce(json({ status: 'empty' }));
     await expect(client.sessionRequest('draft/read', 'session-a')).resolves.toEqual({ status: 'empty' });
     expect(fetchMock.mock.calls).toEqual([
@@ -41,10 +41,18 @@ describe('chat data transport', () => {
       })],
       ['https://gateway.example.test/v1/chat/data/draft/read', expect.objectContaining({
         body: JSON.stringify({ run_id: 'run-a', session_id: 'session-a' }), redirect: 'error',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability' },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability', 'X-Adp-Workload-Token': 'synthetic.workload.token' },
       })],
     ]);
   });
+
+  it('refuses data requests after the projected pod token disappears', async () => {
+    workloadToken.mockResolvedValueOnce('synthetic.workload.token').mockRejectedValue(new Error('token unavailable'));
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await expect(client.sessionRequest('draft/read', 'session-a')).rejects.toMatchObject({ code: 'unavailable' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
 
   it.each(['run_id', 'session_id', 'user_id', 'tenant_id', 'ownerUserId', 'headers'])('rejects a supplied %s', async field => {
     await expect(client.sessionRequest('draft/write', 'session-a', { [field]: 'victim' })).rejects.toMatchObject({ code: 'invalid_request' });
@@ -64,7 +72,7 @@ describe('chat data transport', () => {
     expect(fetchMock.mock.calls[1]).toEqual([
       'https://gateway.example.test/v1/chat/data/activity/work', expect.objectContaining({
         body: JSON.stringify({ ...window, run_id: 'run-a' }),
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability' },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability', 'X-Adp-Workload-Token': 'synthetic.workload.token' },
       }),
     ]);
   });
@@ -82,7 +90,7 @@ describe('chat data transport', () => {
       expect(fetchMock).toHaveBeenLastCalledWith(
         `https://gateway.example.test/v1/chat/data/${operation}`, expect.objectContaining({
           body: JSON.stringify({ ...input, run_id: 'run-a' }),
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability' },
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability', 'X-Adp-Workload-Token': 'synthetic.workload.token' },
         }),
       );
     }
@@ -92,7 +100,8 @@ describe('chat data transport', () => {
       await expect(client.runRequest(operation, { installation_id: 1234, ...window }))
         .rejects.toMatchObject({ code: 'invalid_request' });
     }
-    expect(workloadToken).toHaveBeenCalledTimes(1);
+    // Bind once, then authenticate the current workload on all three data requests.
+    expect(workloadToken).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
@@ -105,7 +114,7 @@ describe('chat data transport', () => {
   it('shares bootstrap among concurrent requests', async () => {
     fetchMock.mockResolvedValueOnce(json(binding)).mockImplementation(async () => json({}));
     await Promise.all([client.sessionRequest('draft/read', 'session-a'), client.sessionRequest('draft/read', 'session-a')]);
-    expect(workloadToken).toHaveBeenCalledTimes(1);
+    expect(workloadToken).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -116,7 +125,7 @@ describe('chat data transport', () => {
     workloadToken.mockResolvedValue('rotated.workload.token');
     fetchMock.mockResolvedValueOnce(json({ ...binding, run_id: 'run-b', expires_at: NOW / 1000 + 580 }));
     await expect(client.sessionRequest('draft/read', 'session-a')).rejects.toMatchObject({ code: 'scope_mismatch' });
-    expect(workloadToken).toHaveBeenCalledTimes(2);
+    expect(workloadToken).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2][1]?.headers).toMatchObject({ 'X-Adp-Workload-Token': 'rotated.workload.token' });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -229,8 +238,15 @@ describe('chat data transport', () => {
       expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[3][1]?.body);
       expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ Authorization: 'Bearer synthetic.scoped.capability' });
       expect(fetchMock.mock.calls[3][1]?.headers).toMatchObject({ Authorization: 'Bearer renewed.capability' });
-      expect(workloadToken).toHaveBeenCalledTimes(2);
+      expect(workloadToken).toHaveBeenCalledTimes(4);
       expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it.each(['capability_expired', 'capability_invalid'])('recognizes the actual FastAPI 401 detail envelope for %s', async error => {
+      fetchMock.mockResolvedValueOnce(json(binding)).mockResolvedValueOnce(json({ detail: { error } }, 401))
+        .mockResolvedValueOnce(json(renewed)).mockResolvedValueOnce(json({ status: 'ok' }));
+      await expect(client.sessionRequest('draft/read', 'session-a')).resolves.toEqual({ status: 'ok' });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
     it('surfaces denied after exactly one refresh when the retry is refused again', async () => {
@@ -243,7 +259,7 @@ describe('chat data transport', () => {
     it.each([
       () => json({ error: 'scope_refused' }, 401),
       () => json({ error: 'capability_expired', message: 'sensitive' }, 401),
-      () => json({ detail: { error: 'capability_expired' } }, 401),
+      () => json({ detail: { error: 'capability_expired', message: 'sensitive' } }, 401),
       () => new Response('{"error":"capability_expired"}', { status: 401, headers: { 'Content-Type': 'text/plain' } }),
       () => new Response(null, { status: 401 }),
     ])('keeps any other 401 as denied without refreshing', async response => {
@@ -252,7 +268,7 @@ describe('chat data transport', () => {
       await expect(failure).rejects.toMatchObject({ code: 'denied', status: 401 });
       await expect(failure).rejects.not.toThrow('sensitive');
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(workloadToken).toHaveBeenCalledTimes(1);
+      expect(workloadToken).toHaveBeenCalledTimes(2);
     });
 
     it.each(['capability_expired', 'capability_invalid'])('treats a bootstrap 401 %s as denied immediately without looping', async error => {

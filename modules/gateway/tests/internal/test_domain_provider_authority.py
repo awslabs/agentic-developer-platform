@@ -377,7 +377,7 @@ from superplane_contracts.connections import CredentialReference, authorize_dele
 data=json.load(sys.stdin)
 account=RegisterAccountRequest.model_validate(data["account"])
 reference=CredentialReference(account.adp_credential_ids[0], "aws", data["evidence"]["label"])
-reader=AdpVaultClient(base_url="https://synthetic.invalid", api_key="unused")
+reader=AdpVaultClient(base_url="https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev", region="us-east-1")
 wire=data["evidence"]
 evidence=reader._evidence_from(wire, org_id=wire["org_id"], workspace_id=wire["workspace_id"], reference=reference, report_digest=None)
 assert evidence is not None

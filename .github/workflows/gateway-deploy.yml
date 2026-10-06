@@ -585,6 +585,8 @@ jobs:
           # unavailable) rather than reading someone else's table. An empty default
           # would report unavailable even where the resources exist.
           BG_INTAKE_SESSIONS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/sessions-table" "adp-${ENVIRONMENT}-agent-gateway-sessions")
+          ADP_CHAT_RESPONSE_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/response-queue-url" "")
+          ADP_CHAT_INPUT_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/chat-input-queue-url" "")
           BG_INTAKE_CONTEXT_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/context-table" "adp-${ENVIRONMENT}-chat-context")
           BG_INTAKE_INGEST_FUNCTION=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/ingest-function" "adp-${ENVIRONMENT}-agent-gateway-ingest")
 
@@ -653,6 +655,8 @@ jobs:
               -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
               -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
               -e "s|__BG_INTAKE_SESSIONS_TABLE__|${BG_INTAKE_SESSIONS_TABLE}|g" \
+              -e "s|__ADP_CHAT_RESPONSE_QUEUE_URL__|${ADP_CHAT_RESPONSE_QUEUE_URL}|g" \
+              -e "s|__ADP_CHAT_INPUT_QUEUE_URL__|${ADP_CHAT_INPUT_QUEUE_URL}|g" \
               -e "s|__BG_INTAKE_CONTEXT_TABLE__|${BG_INTAKE_CONTEXT_TABLE}|g" \
               -e "s|__BG_INTAKE_INGEST_FUNCTION__|${BG_INTAKE_INGEST_FUNCTION}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -

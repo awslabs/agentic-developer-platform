@@ -148,7 +148,7 @@ describe('gateway artifact port through the real transport', () => {
     expect(await readFile(path.join(workspace, 'download.txt'))).toEqual(content);
     expect(fetchMock.mock.calls[1]).toEqual([
       `https://gateway.example.test${reference.url}`,
-      expect.objectContaining({ method: 'GET', body: undefined, redirect: 'error', headers: { Authorization: 'Bearer synthetic.capability' } }),
+      expect.objectContaining({ method: 'GET', body: undefined, redirect: 'error', headers: { Authorization: 'Bearer synthetic.capability', 'X-Adp-Workload-Token': 'synthetic.workload.token' } }),
     ]);
   });
 

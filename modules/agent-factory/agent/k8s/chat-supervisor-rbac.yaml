@@ -1,0 +1,103 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chat-supervisor-pods
+  namespace: adp-gateway-agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chat-supervisor-pods
+  namespace: adp-gateway-agents
+subjects:
+  - kind: ServiceAccount
+    name: adp-chat-supervisor
+    namespace: adp-gateway-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chat-supervisor-pods
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chat-supervisor-network-controller
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["amazon-vpc-cni"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chat-supervisor-network-controller
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: adp-chat-supervisor
+    namespace: adp-gateway-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chat-supervisor-network-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: adp-chat-supervisor-admission-read
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies"]
+    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods"]
+    verbs: ["get"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicybindings"]
+    resourceNames: ["adp-chat-sandbox-template", "adp-chat-supervisor-pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: adp-chat-supervisor-admission-read
+subjects:
+  - kind: ServiceAccount
+    name: adp-chat-supervisor
+    namespace: adp-gateway-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: adp-chat-supervisor-admission-read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chat-supervisor-gateway-read
+  namespace: adp-gateway
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["chat-sandbox-gateway"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chat-supervisor-gateway-read
+  namespace: adp-gateway
+subjects:
+  - kind: ServiceAccount
+    name: adp-chat-supervisor
+    namespace: adp-gateway-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chat-supervisor-gateway-read

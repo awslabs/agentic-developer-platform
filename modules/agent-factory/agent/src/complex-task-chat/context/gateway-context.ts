@@ -63,6 +63,7 @@ export class GatewayContextManager implements ContextManager {
     const allKept = [...kept, ...freshTail];
     return {
       messages: sanitizeMessages(allKept.map(item => item.message)),
+      protectedMessageCount: freshTail.length,
       meta: {
         rawMessageCount: allKept.filter(item => item.type === 'message').length,
         summaryCount: allKept.filter(item => item.type === 'summary').length,
@@ -73,16 +74,20 @@ export class GatewayContextManager implements ContextManager {
   }
 
   record(input: Parameters<ContextManager['record']>[0]): Promise<void> {
+    return this.recordReply(input).then(() => undefined);
+  }
+
+  recordReply(input: Parameters<ContextManager['record']>[0]): Promise<string> {
     const parsed = recordSchema.safeParse(input);
     if (!parsed.success || Buffer.byteLength(parsed.data.assistantMessage.content) > 131_072) {
       return Promise.reject(new ChatDataError('invalid_request'));
     }
     const operation = this.recording.then(() => this.recordAssistant(parsed.data));
-    this.recording = operation.catch(() => undefined);
+    this.recording = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
-  private async recordAssistant(input: z.infer<typeof recordSchema>): Promise<void> {
+  private async recordAssistant(input: z.infer<typeof recordSchema>): Promise<string> {
     const scope = await this.client.sessionScope();
     if (scope.session_id !== input.sessionId) throw new ChatDataError('scope_mismatch');
     if (!this.pendingAppend) {
@@ -96,14 +101,15 @@ export class GatewayContextManager implements ContextManager {
       };
     }
     if (this.pendingAppend.content !== input.assistantMessage.content) throw new ChatDataError('conflict');
-    await this.history.appendAssistant(input.sessionId, this.pendingAppend);
-    if (this.compactionAttempted) return;
+    const receipt = await this.history.appendAssistant(input.sessionId, this.pendingAppend);
+    if (this.compactionAttempted) return receipt.message_id;
     this.compactionAttempted = true;
     try {
       await this.compact(input.sessionId, scope.run_id);
     } catch {
       console.warn('[gateway-context] Assistant recorded; compaction unavailable');
     }
+    return receipt.message_id;
   }
 
   private async compact(sessionId: string, runId: string): Promise<void> {

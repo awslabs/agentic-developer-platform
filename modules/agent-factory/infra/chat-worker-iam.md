@@ -1,10 +1,10 @@
 # Chat worker model-access boundary
 
 Chat uses service account `adp-agent` and the dedicated
-`adp-<env>-chat-worker-role`. The role retains the existing non-model runtime
-policies and explicitly denies `bedrock:InvokeModel` and
+`adp-<env>-chat-worker-role`. The role retains the chat FIFO queue, gateway invoke and direct chat-store
+policies, but not the unrelated Python task queue or bootstrap-log policy. It explicitly denies `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream`. Model requests must use the ADP gateway.
-This change does not introduce per-user DynamoDB or S3 isolation.
+This change does not introduce per-user DynamoDB or S3 isolation; the legacy worker still runs model tools in its credentialed pod until the supervisor/sandbox handoff replaces that path.
 
 The Python agent-gateway consumer still calls Bedrock directly. It uses service
 account `adp-gateway-worker` and the existing `adp-<env>-gateway-agent-role`.

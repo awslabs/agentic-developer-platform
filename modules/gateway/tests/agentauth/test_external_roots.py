@@ -1,13 +1,14 @@
 """Real protected writes behind source-scoped and body-bound ingress proof."""
 
 import json
+import os
 from datetime import UTC, datetime
 
 import boto3
 import httpx
 import pytest
 from botocore.exceptions import ClientError
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import AsyncClient
 
 from src.agentauth import external_roots
@@ -270,3 +271,52 @@ async def test_chat_cannot_bind_a_native_codex_persona_to_the_claude_harness(roo
     document["envelope"]["persona"] = "agent-codex-reviewer"
     assert (await post(root_client, document)).status_code == 403
     assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+async def test_chat_supervisor_admission_role_cannot_provision_root(root_client, store, sts, monkeypatch):
+    bindings = json.loads(os.environ["ADP_MODEL_ROOT_BINDINGS"])
+    bindings[0]["chat_supervisor_role"] = "arn:aws:iam::123456789012:role/chat-supervisor"
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    sts["role"] = "chat-supervisor"
+    assert (await post(root_client, body())).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+
+
+def test_supervisor_role_cannot_be_registered_for_non_chat_producer(monkeypatch):
+    monkeypatch.setenv(
+        "ADP_MODEL_ROOT_BINDINGS",
+        json.dumps(
+            [
+                {
+                    "source": "gitlab",
+                    "producer_role": ROLE,
+                    "tenant_id": "tenant",
+                    "personas": ["developer"],
+                    "chat_supervisor_role": "arn:aws:iam::123456789012:role/chat-supervisor",
+                }
+            ]
+        ),
+    )
+    with pytest.raises(HTTPException) as refusal:
+        external_roots.root_bindings()
+    assert refusal.value.status_code == 503
+
+
+def test_supervisor_role_cannot_reuse_ingress_producer_identity(monkeypatch):
+    monkeypatch.setenv(
+        "ADP_MODEL_ROOT_BINDINGS",
+        json.dumps(
+            [
+                {
+                    "source": "chat",
+                    "producer_role": ROLE,
+                    "tenant_id": "tenant",
+                    "personas": ["developer"],
+                    "chat_supervisor_role": ROLE,
+                }
+            ]
+        ),
+    )
+    with pytest.raises(HTTPException) as refusal:
+        external_roots.root_bindings()
+    assert refusal.value.status_code == 503

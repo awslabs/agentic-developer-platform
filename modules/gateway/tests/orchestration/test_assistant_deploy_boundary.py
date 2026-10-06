@@ -96,6 +96,15 @@ def repository(tmp_path, monkeypatch):
         ("chat-worker", "modules/agent-factory/agent/src/complex-task-chat/context/store/port.ts", False),
         ("chat-worker", "modules/agent-factory/agent/k8s/chat-scaledjob.yaml", False),
         ("chat-worker", "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh", False),
+        ("chat-worker", "modules/agent-factory/infra/chat-worker-iam.tf", False),
+        ("chat-worker", "modules/agent-factory/infra/gateway-chat-completion-access.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/chat-worker-iam.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/gateway-chat-completion-access.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/gateway-chat-response-access.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/gateway-chat-pending-access.tf", False),
+        ("chat-worker", "modules/agent-factory/infra/gateway-chat-pending-access.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/gateway-main.tf", False),
+        ("chat-infra", "modules/agent-factory/infra/unrelated.tf", True),
         ("agent-worker", "modules/agent-factory/agent/src/complex-task-chat/tools.ts", False),
         ("agent-worker", "modules/agent-factory/agent/src/complex-task-chat/context/store/port.ts", False),
         ("agent-worker", "modules/agent-factory/agent/k8s/chat-scaledjob.yaml", False),
@@ -320,6 +329,7 @@ def test_push_without_approval_and_protected_changes_is_refused(repository, comp
     [
         ("gateway", "modules/gateway/src/agentauth/chat_model.py", "modules/gateway/src/tasks/hotfix.py"),
         ("chat-worker", "modules/agent-factory/agent/src/complex-task-chat/tools.ts", "modules/agent-factory/agent/src/hotfix.ts"),
+        ("chat-worker", "modules/agent-factory/infra/chat-worker-iam.tf", "modules/agent-factory/agent/src/hotfix.ts"),
         ("agent-worker", "modules/agent-factory/agent/k8s/chat-scaledjob.yaml", "modules/agent-factory/agent-worker-image/entrypoint.py"),
     ],
 )
@@ -504,3 +514,42 @@ def test_inventory_lists_every_push_workflow_covering_the_components():
     for workflow, _, component, _ in GUARDED_WORKFLOWS:
         row = next(line for line in text.splitlines() if line.startswith(f"| `{workflow}` |"))
         assert "Guarded" in row and f"`{component}`" in row
+
+
+def test_manual_infra_apply_guards_chat_iam_before_deployment_credentials():
+    config, triggers = load_workflow("agent-factory-infra-apply.yml")
+    assert set(triggers) == {"workflow_dispatch"}
+    approved_revision = triggers["workflow_dispatch"]["inputs"]["adp_approved_revision"]
+    assert approved_revision["description"].startswith("Assistant rollout approval")
+    assert approved_revision["required"] is False
+    assert approved_revision["type"] == "string"
+    assert approved_revision["default"] == ""
+    job = config["jobs"]["apply"]
+    assert job["environment"] == "adp-deploy-${{ inputs.environment || 'dev' }}"
+    steps = job["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    guard_step = next(step for step in steps if step.get("name") == "Guard assistant IAM deployment")
+    credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
+    assert checkout["with"]["fetch-depth"] == 0
+    assert steps.index(checkout) < steps.index(guard_step) < steps.index(credentials)
+    assert guard_step["run"] == "bash scripts/check-assistant-deploy-boundary.sh"
+    assert guard_step["env"] == {
+        "ADP_ASSISTANT_DEPLOY_COMPONENT": "chat-infra",
+        "ADP_ASSISTANT_DEPLOY_TARGET": "adp-deploy-${{ inputs.environment || 'dev' }}",
+        "ADP_ASSISTANT_APPROVED_TARGET": "${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}",
+        "ADP_ASSISTANT_APPROVED_REVISION": "${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}",
+        "ADP_ASSISTANT_DISPATCH_APPROVED_REVISION": "${{ inputs.adp_approved_revision }}",
+    }
+    assert "aws " not in "\n".join(step.get("run", "") for step in steps[: steps.index(guard_step)])
+
+
+def test_manual_infra_apply_requires_approved_iam_revision(repository):
+    approved = git(repository, "rev-parse", "HEAD")
+    held = commit(repository, "modules/agent-factory/infra/chat-worker-iam.tf")
+    refused = guard(repository, approved, event="workflow_dispatch", component="chat-infra")
+    assert refused.returncode == 1
+    assert "Candidate contains held assistant changes" in refused.stdout
+    assert guard(repository, None, event="workflow_dispatch", component="chat-infra").returncode == 1
+    assert guard(repository, held, event="workflow_dispatch", component="chat-infra").returncode == 0
+    assert guard(repository, None, event="workflow_dispatch", component="chat-infra", ADP_ASSISTANT_DISPATCH_APPROVED_REVISION=held).returncode == 0
+    assert guard(repository, approved, event="workflow_dispatch", component="chat-worker").returncode == 1

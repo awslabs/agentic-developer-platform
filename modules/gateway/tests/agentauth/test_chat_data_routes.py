@@ -1,6 +1,8 @@
 """Trusted HTTP admission and workload exchange with real emulator/SQL writes."""
 
+import hashlib
 import json
+import os
 from datetime import UTC, datetime
 
 import httpx
@@ -10,8 +12,9 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import update
 
-from src.agentauth import chat_data_routes
+from src.agentauth import chat_data_routes, chat_model
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.workload import VerifiedPod
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantMembership
 from tests.agentauth.test_chat_authority import runtime as runtime_fixture
@@ -47,6 +50,7 @@ async def client(runtime, sts, db_session_factory, monkeypatch):
     monkeypatch.setattr(chat_data_routes, "clock", lambda: now)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
+    app.include_router(chat_model.router)
     app.dependency_overrides[chat_data_routes.runtime] = lambda: (authority, capabilities)
 
     async def database():
@@ -54,7 +58,9 @@ async def client(runtime, sts, db_session_factory, monkeypatch):
             yield db
 
     app.dependency_overrides[get_db] = database
-    async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway.test") as http:
+    async with AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://gateway.test", headers={"X-Adp-Workload-Token": "chat-token"}
+    ) as http:
         yield http
 
 
@@ -72,6 +78,24 @@ async def exchange(client, **headers):
     return await client.post(EXCHANGE, json={}, headers={"X-Adp-Workload-Token": "chat-token", **headers})
 
 
+async def test_admission_refuses_sandbox_belonging_to_another_run(client, runtime, monkeypatch):
+    other_hash = hashlib.sha256(b"run-other").hexdigest()
+    pod_name = f"chat-turn-{other_hash[:12]}-abcde"
+    other_pod = VerifiedPod(
+        "other-pod",
+        pod_name,
+        "adp-gateway-agents",
+        "adp-chat-sandbox",
+        "127.0.0.1",
+        image_digest=runtime[5].image_digest,
+        run_hash=other_hash,
+    )
+    monkeypatch.setattr(runtime[1].workloads, "verify_bound", lambda **_: other_pod)
+    response = await admit(client, runtime, pod_name=pod_name, pod_uid=other_pod.uid)
+    assert response.status_code == 404, response.text
+    assert runtime[0].launches.store._read("CHAT-LAUNCH#run-a", "LAUNCH") is None
+
+
 async def test_trusted_admission_exchange_refresh_and_retry(client, runtime, monkeypatch):
     before = await exchange(client)
     assert before.status_code == 404
@@ -86,6 +110,7 @@ async def test_trusted_admission_exchange_refresh_and_retry(client, runtime, mon
     first = await exchange(client)
     assert first.status_code == 200, first.text
     assert first.headers["cache-control"] == "no-store"
+    assert first.json()["lease_generation"] == 1
     assert first.json()["expires_at"] == runtime[-1] + 300
     monkeypatch.setattr(chat_data_routes, "clock", lambda: runtime[-1] + 100)
     refreshed = await exchange(client)
@@ -93,6 +118,23 @@ async def test_trusted_admission_exchange_refresh_and_retry(client, runtime, mon
     assert refreshed.json()["expires_at"] == runtime[-1] + 400
     assert refreshed.json()["capability"] != first.json()["capability"]
     assert runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]["chatLease"]["expires_at"] == runtime[-1] + 400
+
+
+async def test_data_route_refuses_missing_or_substituted_workload_with_valid_capability(client, runtime):
+    assert (await admit(client, runtime)).status_code == 200
+    response = await exchange(client)
+    assert response.status_code == 200
+    token = response.json()["capability"]
+    body = {"run_id": "run-a", "session_id": "session-a", "limit": 1}
+    missing = await client.post("/v1/chat/data/history/read", json=body, headers={"Authorization": f"Bearer {token}", "X-Adp-Workload-Token": ""})
+    assert missing.status_code == 404, missing.text
+    runtime[4]["uid"] = "other-pod"
+    stolen = await client.post(
+        "/v1/chat/data/history/read",
+        json=body,
+        headers={"Authorization": f"Bearer {token}", "X-Adp-Workload-Token": "chat-token"},
+    )
+    assert stolen.status_code == 404, stolen.text
 
 
 async def test_ownership_headers_do_not_select_a_principal(client, runtime):
@@ -202,3 +244,45 @@ async def test_admission_preserves_configured_retention(client, runtime, monkeyp
     monkeypatch.setenv("SESSION_TTL_SECONDS", "3600")
     assert (await admit(client, runtime)).status_code == 200
     assert runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]["ttl"] == runtime[-1] + 3600
+
+
+SUPERVISOR_ROLE = "arn:aws:iam::123456789012:role/chat-supervisor"
+
+
+@pytest.mark.parametrize("scope", ["owner", "wrong_tenant", "wrong_persona"])
+async def test_separate_supervisor_role_can_admit_only_registered_chat_scope(client, runtime, sts, monkeypatch, scope):
+    bindings = json.loads(os.environ["ADP_MODEL_ROOT_BINDINGS"])
+    if scope == "owner":
+        bindings[0]["chat_supervisor_role"] = SUPERVISOR_ROLE
+    elif scope == "wrong_tenant":
+        bindings.append(
+            {"source": "chat", "producer_role": ROLE, "tenant_id": "other", "personas": ["developer"], "chat_supervisor_role": SUPERVISOR_ROLE}
+        )
+    else:
+        bindings[0]["chat_supervisor_role"] = SUPERVISOR_ROLE
+        bindings[0]["personas"] = ["different-persona"]
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    sts["role"] = "chat-supervisor"
+    response = await admit(client, runtime)
+    assert response.status_code == (200 if scope == "owner" else 404), response.text
+    assert (runtime[1].store._read("CHAT-LAUNCH#run-a", "LAUNCH") is not None) == (scope == "owner")
+
+
+async def test_supervisor_role_still_requires_body_bound_proof_and_correct_pod(client, runtime, sts, monkeypatch):
+    bindings = json.loads(os.environ["ADP_MODEL_ROOT_BINDINGS"])
+    bindings[0]["chat_supervisor_role"] = SUPERVISOR_ROLE
+    monkeypatch.setenv("ADP_MODEL_ROOT_BINDINGS", json.dumps(bindings))
+    sts["role"] = "chat-supervisor"
+    body = document(runtime)
+    forged = await client.post(
+        ADMIT,
+        json={**body, "pod_uid": "another-pod"},
+        headers={
+            "X-Adp-Producer-Proof": proof(envelope_digest(body)),
+        },
+    )
+    assert forged.status_code == 403
+    assert (await admit(client, runtime, pod_uid="another-pod")).status_code == 404
+    sts["role"] = "worker"
+    assert (await admit(client, runtime)).status_code == 403
+    assert runtime[1].store._read("CHAT-LAUNCH#run-a", "LAUNCH") is None

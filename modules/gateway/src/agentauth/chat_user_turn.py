@@ -72,6 +72,8 @@ def load_user_turn(store, execution, digest: str) -> dict | None:
     protected = metadata.get("chat_user_turn")
     dispatch = store._read(f"INVOCATION#{execution.invocation_id}", "DISPATCH") or {}
     expected_metadata = {"chat_user_turn": protected} if protected is not None else {}
+    if "chat_delivery" in metadata:
+        expected_metadata["chat_delivery"] = metadata["chat_delivery"]
     if dispatch.get("execution_metadata_digest") != {"S": envelope_digest(expected_metadata)}:
         raise ChatAuthorizationUnavailableError("trusted user turn integrity unavailable")
     if protected is None:
@@ -170,6 +172,9 @@ def user_turn_records(table, header: dict | None, launch, payload: dict) -> tupl
         "ref": reference,
         "ordinal": ordinal,
         "inputDigest": envelope_digest(payload),
+        "status": "accepted",
+        "acceptedHistoryVersion": version + 1,
+        "acceptedNextOrdinal": ordinal + 1,
     }
     item = {**provenance, "SK": f"item#{ordinal:08d}", "type": "msg", "ref": reference, "ordinal": ordinal, "tokens": message["tokens"]}
     return [message, item, receipt], version + 1, ordinal + 1

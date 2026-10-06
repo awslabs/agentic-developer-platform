@@ -351,6 +351,7 @@ async def test_authority_and_configuration_fail_closed(client, capability, memor
     assert (await call(client, capability, run_id="other-run")).status_code == 404
     monkeypatch.setattr(chat_data_routes, "clock", lambda: runtime[-1] + 300)
     assert (await call(client, capability)).status_code == 401
+    monkeypatch.setattr(chat_data_routes, "clock", lambda: runtime[-1])
     monkeypatch.delenv("MEMORY_TABLE")
     assert (await call(client, capability)).status_code == 503
     monkeypatch.delenv("ADP_CHAT_DATA_ENABLED")

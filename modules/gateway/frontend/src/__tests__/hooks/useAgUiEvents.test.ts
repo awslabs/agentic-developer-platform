@@ -12,6 +12,7 @@ import { renderHook, act } from '@testing-library/react';
 import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 import type { Conversation, ChatMessage } from '@/types/chat';
 import { AgUiEventType } from '@/types/ag-ui-events';
+import { apiClient } from '@/services/api';
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket
@@ -168,6 +169,70 @@ describe('useAgUiEvents', () => {
     expect(result.current.connectionStatus).toBe('disconnected');
   });
 
+  it('requests owner cancellation over the authenticated API without claiming completion', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ status: 'cancellation_requested', session_id: 'test-session', task_id: 'task-1' });
+    const conv = makeConversation();
+    const { result } = renderHook(() => useAgUiEvents({ conversation: conv, onMessagesChange: vi.fn() }));
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    act(() => result.current.sendMessage('hello'));
+    expect(result.current.canCancel).toBe(false);
+    await act(async () => result.current.cancelTurn());
+    expect(post).not.toHaveBeenCalled();
+    act(() => getLastWs().simulateMessage({ type: 'response', status: 'notification', task_id: 'task-1', content: 'Working' }));
+    expect(result.current.canCancel).toBe(true);
+    await act(async () => result.current.cancelTurn());
+    expect(post).toHaveBeenCalledWith('/v1/chat/turns/cancel', { session_id: 'test-session', task_id: 'task-1' });
+    expect(result.current.cancelState).toBe('requested');
+    expect(result.current.canCancel).toBe(false);
+    expect(result.current.isAwaitingReply).toBe(true);
+    act(() => getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, runId: 'task-1', threadId: 'thread-a' })));
+    await act(async () => result.current.cancelTurn());
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(getLastWs().sent.map(value => JSON.parse(value).action)).not.toContain('cancel');
+  });
+
+  it.each(['failure', 'foreign-receipt'])('retains a running turn when cancellation returns %s', async mode => {
+    const post = vi.spyOn(apiClient, 'post');
+    if (mode === 'failure') post.mockRejectedValue(new Error('unavailable'));
+    else post.mockResolvedValue({ status: 'cancellation_requested', session_id: 'other', task_id: 'task-1' });
+    const conv = makeConversation();
+    const { result } = renderHook(() => useAgUiEvents({ conversation: conv, onMessagesChange: vi.fn() }));
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    act(() => getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, runId: 'task-1', threadId: 'thread-a' })));
+    await act(async () => result.current.cancelTurn());
+    expect(result.current.cancelState).toBe('failed');
+    expect(result.current.canCancel).toBe(true);
+    expect(result.current.isAwaitingReply).toBe(true);
+    post.mockResolvedValue({ status: 'cancellation_requested', session_id: 'test-session', task_id: 'task-1' });
+    await act(async () => result.current.cancelTurn());
+    expect(result.current.cancelState).toBe('requested');
+  });
+
+  it('does not apply an old cancellation receipt to a different conversation', async () => {
+    let resolve!: (value: unknown) => void;
+    const post = vi.spyOn(apiClient, 'post').mockReturnValue(new Promise(done => { resolve = done; }));
+    const { result, rerender } = renderHook(({ conv }) => useAgUiEvents({ conversation: conv, onMessagesChange: vi.fn() }), {
+      initialProps: { conv: makeConversation() },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    act(() => getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, runId: 'task-1', threadId: 'thread-a' })));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.cancelTurn(); });
+    expect(result.current.cancelState).toBe('pending');
+    await act(async () => result.current.cancelTurn());
+    expect(post).toHaveBeenCalledTimes(1);
+    rerender({ conv: makeConversation('other-session') });
+    await act(async () => {
+      resolve({ status: 'cancellation_requested', session_id: 'test-session', task_id: 'task-1' });
+      await pending;
+    });
+    expect(result.current.cancelState).toBe('idle');
+    expect(result.current.canCancel).toBe(false);
+  });
+
   // ----- AG-UI: RUN_STARTED -----
 
   it('handles RUN_STARTED — sets isAwaitingReply', async () => {
@@ -251,6 +316,78 @@ describe('useAgUiEvents', () => {
     // Still streaming until RUN_FINISHED
     msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
     expect(msgs[msgs.length - 1].status).toBe('streaming');
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)('renders protected %s once and ignores late provisional frames', async status => {
+    const onMsg = vi.fn();
+    const conversation = makeConversation();
+    const { result } = renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    act(() => getLastWs().simulateOpen());
+    act(() => {
+      getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, threadId: 'test-session', runId: 'task-1' }));
+      getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.TEXT_MESSAGE_START, messageId: 'msg-1', role: 'assistant' }));
+    });
+    expect(result.current.isAwaitingReply).toBe(true);
+    const terminal = {
+      type: 'response', terminal_delivery: true, delivery_id: `chat-terminal-${'a'.repeat(64)}`,
+      session_id: 'test-session', task_id: 'task-1', status, content: `Owner-visible ${status}`,
+      retryable: status === 'interrupted', accounting_status: 'not_used',
+    };
+    act(() => {
+      getLastWs().simulateMessage(terminal);
+      getLastWs().simulateMessage(terminal);
+      getLastWs().simulateMessage({ type: 'response', task_id: 'task-1', status: 'notification', content: 'late acknowledgement' });
+      getLastWs().simulateMessage({ type: 'progress', task_id: 'task-1', status: 'progress' });
+      getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'msg-1', delta: 'late text' }));
+      getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, threadId: 'test-session', runId: 'task-1' }));
+    });
+    const messages = onMsg.mock.calls.at(-1)![1] as ChatMessage[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ taskId: 'task-1', content: terminal.content, terminalOutcome: status, terminalDeliveryId: terminal.delivery_id });
+    expect(messages[0].status).toBe(['failed', 'interrupted'].includes(status) ? 'error' : 'complete');
+    expect(result.current.isAwaitingReply).toBe(false);
+    expect(result.current.canCancel).toBe(false);
+  });
+
+  it('deduplicates scoped queue redelivery without completing provisional output', async () => {
+    const onMsg = vi.fn();
+    const { result } = renderHook(() => useAgUiEvents({ conversation: makeConversation(), onMessagesChange: onMsg }));
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    const frames = [
+      { event_type: AgUiEventType.RUN_STARTED, threadId: 'test-session', runId: 'task-1' },
+      { event_type: AgUiEventType.TEXT_MESSAGE_START, messageId: 'msg-1', role: 'assistant' },
+      { event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'msg-1', delta: 'hello' },
+    ].map((event, stream_sequence) => ({ ...event, stream_id: 'a'.repeat(64), stream_sequence }));
+    act(() => {
+      for (const event of frames) getLastWs().simulateMessage(agUiFrame(event));
+      for (const event of frames) getLastWs().simulateMessage(agUiFrame(event));
+      getLastWs().simulateMessage(agUiFrame({ ...frames[2], stream_sequence: 3, delta: ' world' }));
+      getLastWs().simulateMessage(agUiFrame(frames[2]));
+    });
+    const messages = onMsg.mock.calls.at(-1)![1] as ChatMessage[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('hello world');
+    expect(messages[0].status).toBe('streaming');
+    expect(result.current.isAwaitingReply).toBe(true);
+  });
+
+  it.each([
+    { stream_id: 'invalid', stream_sequence: 1 },
+    { stream_id: 'a'.repeat(64) },
+    { stream_sequence: 1 },
+    { stream_id: 'a'.repeat(64), stream_sequence: -1 },
+    { stream_id: 'a'.repeat(64), stream_sequence: 0.5 },
+    { stream_id: 'a'.repeat(64), stream_sequence: 16_384 },
+  ])('ignores malformed scoped stream identity: %j', async binding => {
+    const onMsg = vi.fn();
+    const { result } = renderHook(() => useAgUiEvents({ conversation: makeConversation(), onMessagesChange: onMsg }));
+    await vi.advanceTimersByTimeAsync(10);
+    act(() => getLastWs().simulateOpen());
+    act(() => getLastWs().simulateMessage(agUiFrame({ event_type: AgUiEventType.RUN_STARTED, ...binding })));
+    expect(result.current.isAwaitingReply).toBe(false);
+    expect(onMsg).not.toHaveBeenCalled();
   });
 
   // ----- AG-UI: RUN_FINISHED -----

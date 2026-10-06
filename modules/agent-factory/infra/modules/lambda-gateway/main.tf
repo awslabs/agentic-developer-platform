@@ -301,8 +301,9 @@ resource "aws_lambda_function" "response" {
 }
 
 resource "aws_lambda_event_source_mapping" "response_sqs" {
-  event_source_arn = var.response_queue_arn
-  function_name    = aws_lambda_function.response.arn
+  event_source_arn         = var.response_queue_arn
+  function_name           = aws_lambda_function.response.arn
+  function_response_types = ["ReportBatchItemFailures"]
   # Issue #164: batch_size=10 reduces per-message polling overhead. The handler
   # already iterates `event["Records"]` so multi-record batches work as-is.
   # For FIFO, all records in a batch share the same MessageGroupId, so

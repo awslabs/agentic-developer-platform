@@ -7,7 +7,8 @@ import { Hash } from '@smithy/hash-node';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { MODEL_POLICY_AUDIENCE, parseVerificationKeys, verifyEnvelope } from './control-envelope';
 import { readControlKeyring } from './control-keyring';
-import { canonicalJson } from './invocability-probe/canonical-json';
+import { policyBody } from './model-policy-body';
+export { policyBody } from './model-policy-body';
 import { gatewaySigningRegion, readIdentityToken, workerAwsCredentialProvider, workerIdentityHeaders } from './lib/runIdentity';
 
 type QueryParams = Parameters<typeof query>[0];
@@ -20,12 +21,6 @@ export class ModelPolicyRefused extends Error {
 function object(value: unknown): ObjectValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ModelPolicyRefused();
   return value as ObjectValue;
-}
-
-/** Match the gateway's sorted, ASCII-escaped JSON byte representation. */
-export function policyBody(value: unknown): Buffer {
-  return Buffer.from(canonicalJson(value).replace(/[\u007f-\uffff]/g,
-    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
 }
 
 async function readBoundedResponse(response: Response): Promise<unknown> {

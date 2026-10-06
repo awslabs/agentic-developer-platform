@@ -13,6 +13,7 @@ from src.activity.routes import get_activity_service
 from src.activity.schemas import InvocationItem
 from src.activity.service import WorkActivityPage
 from src.agentauth import chat_data_routes
+from tests.agentauth.chat_activity_fixtures import HEADERS, workload_runtime
 
 URL = "/v1/chat/data/activity/work"
 WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezone": "UTC", "run_id": "run-a"}
@@ -35,9 +36,10 @@ def event(kind, source_id, when, *, actor="17", actor_kind="human", on_behalf_of
 def app_with_work(service):
     capabilities = MagicMock()
     capabilities.verify_run.return_value = SimpleNamespace(user_id="owner", tenant_id="tenant-a")
+    services = workload_runtime(capabilities)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
-    app.dependency_overrides[chat_data_routes.runtime] = lambda: (None, capabilities)
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: services
     app.dependency_overrides[get_activity_service] = lambda: service
     return app
 
@@ -74,7 +76,7 @@ def test_delegated_summary_merges_distinct_provider_history_and_preserves_run_pr
 
     monkeypatch.setattr(chat_work, "read_external_work", authorized)
     with TestClient(app_with_work(service)) as client:
-        response = client.post(URL, headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        response = client.post(URL, headers=HEADERS, json=WINDOW)
         assert response.status_code == 200, response.text
         result = response.json()
         assert response.headers["cache-control"] == "no-store"
@@ -86,7 +88,7 @@ def test_delegated_summary_merges_distinct_provider_history_and_preserves_run_pr
         assert [entry["source_type"] for entry in result["timeline"]] == ["adp", "github", "github"]
         assert result["timeline"][1]["source_id"] == result["external_events"][0]["source_id"]
         assert result["status"] == "partial" and result["last_key"]
-        continuation = client.post(URL, headers={"Authorization": "Bearer delegated"}, json={**WINDOW, "last_key": result["last_key"]})
+        continuation = client.post(URL, headers=HEADERS, json={**WINDOW, "last_key": result["last_key"]})
         assert continuation.status_code == 200
         assert continuation.json()["external_events"] == []
     assert calls == [(URL, "owner", "tenant-a", "2026-10-01T00:00:00+00:00", "2026-10-04T00:00:00+00:00")]
@@ -98,7 +100,7 @@ def test_default_external_reader_fails_closed_with_explicit_coverage(monkeypatch
     service = MagicMock()
     service.query_work_by_user.return_value = WorkActivityPage(items=[], direct_cursor=None, descendant_cursor=None)
     with TestClient(app_with_work(service)) as client:
-        response = client.post(URL, headers={"Authorization": "Bearer delegated"}, json=WINDOW)
+        response = client.post(URL, headers=HEADERS, json=WINDOW)
     assert response.status_code == 200
     assert response.json()["external_events"] == []
     assert {(entry["source"], entry["reason"]) for entry in response.json()["coverage"]} >= {

@@ -12,6 +12,8 @@ from src.activity.schemas import InvocationItem
 from src.activity.service import WorkActivityPage, _decode_cursor
 from src.agentauth import chat_data_routes
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
+from src.agentauth.workload import WORKLOAD_HEADER
+from tests.agentauth.chat_activity_fixtures import HEADERS, workload_runtime
 
 URL = "/v1/chat/data/activity/work"
 WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-10-04T00:00:00Z", "timezone": "UTC"}
@@ -40,12 +42,26 @@ def test_delegated_work_uses_verified_identity_and_retains_lineage(monkeypatch):
         direct_cursor="next",
         descendant_cursor=None,
     )
+    services = workload_runtime(capabilities)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
-    app.dependency_overrides[chat_data_routes.runtime] = lambda: (None, capabilities)
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: services
     app.dependency_overrides[get_activity_service] = lambda: service
     with TestClient(app) as client:
-        response = client.post(URL, headers={"Authorization": "Bearer delegated"}, json={**WINDOW, "run_id": "run-a"})
+        for workload in (None, "foreign-workload"):
+            headers = {"Authorization": "Bearer delegated"}
+            if workload is not None:
+                headers[WORKLOAD_HEADER] = workload
+            refused = client.post(URL, headers=headers, json={**WINDOW, "run_id": "run-a"})
+            assert refused.status_code == 404
+        capabilities.verify_pod.assert_not_called()
+        refused = client.post(URL, headers={**HEADERS, "Authorization": "Bearer forged"}, json={**WINDOW, "run_id": "run-a"})
+        assert refused.status_code == 404
+        assert refused.headers["cache-control"] == "no-store"
+        capabilities.verify_pod.assert_called_once()
+        capabilities.verify_run.assert_not_called()
+        service.query_work_by_user.assert_not_called()
+        response = client.post(URL, headers=HEADERS, json={**WINDOW, "run_id": "run-a"})
         assert response.status_code == 200, response.text
         assert response.headers["cache-control"] == "no-store"
         assert response.json()["runs"][0]["parent_invocation_id"] == "root"
@@ -55,9 +71,9 @@ def test_delegated_work_uses_verified_identity_and_retains_lineage(monkeypatch):
         assert service.query_work_by_user.call_args.kwargs["tenant_id"] == "tenant-a"
         capabilities.verify_run.assert_called_with("delegated", run_id="run-a", operation="activity.read", now=chat_data_routes.clock())
         for forged in ({"user_id": "victim"}, {"tenant_id": "tenant-b"}):
-            assert client.post(URL, headers={"Authorization": "Bearer delegated"}, json={**WINDOW, "run_id": "run-a", **forged}).status_code == 422
+            assert client.post(URL, headers=HEADERS, json={**WINDOW, "run_id": "run-a", **forged}).status_code == 422
         capabilities.verify_run.side_effect = ChatAuthorizationRefusedError("scope refused")
-        assert client.post(URL, headers={"Authorization": "Bearer delegated"}, json={**WINDOW, "run_id": "forged"}).status_code == 404
+        assert client.post(URL, headers=HEADERS, json={**WINDOW, "run_id": "forged"}).status_code == 404
     assert service.query_work_by_user.call_count == 1
 
 
@@ -104,12 +120,13 @@ def test_delegated_task_read_uses_canonical_owner_and_active_policy(monkeypatch)
     policy = MagicMock()
     policy.get.return_value = {"status": "active", "task_scopes": ["read"]}
     monkeypatch.setattr(chat_work, "TaskServicePolicyStore", lambda: policy)
+    services = workload_runtime(capabilities)
     app = FastAPI()
     app.include_router(chat_data_routes.router)
-    app.dependency_overrides[chat_data_routes.runtime] = lambda: (None, capabilities)
+    app.dependency_overrides[chat_data_routes.runtime] = lambda: services
     app.dependency_overrides[get_activity_service] = lambda: service
     with TestClient(app) as client:
-        response = client.post(URL, headers={"Authorization": "Bearer delegated"}, json={**WINDOW, "run_id": "run-a"})
+        response = client.post(URL, headers=HEADERS, json={**WINDOW, "run_id": "run-a"})
     assert response.status_code == 200, response.text
     assert [run["invocation_id"] for run in response.json()["runs"]] == ["task-run"]
     assert response.json()["runs"][0]["task_result"] == {"report": {"summary": "Created a patch"}}

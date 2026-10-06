@@ -1,0 +1,20 @@
+[
+  {"name":"fixed-small","input":{"amount":0.000001},"digest":"90fe08aab05cf18c0fcb64a0eaeca7c882f2ecd21fea78c2a797a5ba2071b6c2"},
+  {"name":"exponential-small","input":{"amount":1e-7},"digest":"4878306440c521838ff5c1fd18286845e21aec77b2c2ff255601c0de5a11837a"},
+  {"name":"utf16-key-order","input":{"\ue000":1,"\ud83d\ude00":2},"digest":"f48bf8a35b97bc79c9734228691402be90fd8721a85090903efd579a373359da"},
+  {"name":"integer-float","input":{"amount":1.0},"digest":"22107c31883acab6b4ae2ff54a7e5bcd128ce2abc848be4861d1d715c955f51e"},
+  {"name":"negative-zero","input":{"amount":-0.0},"digest":"b057f310abec81ab39ac5d83b542b7a00da033225a03a64cfa0aba409695639a"},
+  {"name":"exponential-large","input":{"amount":1e21},"digest":"49fecda8cef84f573e23e8dbc54c0727426270b074c6bb9aa3d8a79afd666845"},
+  {"name":"shortest-float","input":{"amount":333333333.33333329},"digest":"1cacc9000350b21a2a3dff68dbd82c9bcdbeba5c58827902619c2ae12140d637"},
+  {"name":"unicode-nested","input":{"\ue000":{"\ud83d\ude00":"Résumé 😀","\ue000":"\n\t\"\\"},"\ud83d\ude00":[1e-7,0.000001]},"digest":"455df039bbaa8180cbf3b129870de10bdd7e9f2f7e8983c70f756ac6bcdd6612"},
+  {"name":"safe-integer-max","input":{"amount":9007199254740991},"wireInput":"{\"amount\":9007199254740991}","digest":"572f94f08ba1b3c1eccad495e9c0c1058321be39a61692383d077accef6b7cdf"},
+  {"name":"first-unsafe-integer","input":{"amount":9007199254740992},"wireInput":"{\"amount\":9007199254740992}","digest":"2ce76a01f91cfcaeb6978c19f04606fac565383a753606721210db25339b0fc5"},
+  {"name":"next-binary64-integer","input":{"amount":9007199254740994},"wireInput":"{\"amount\":9007199254740994}","digest":"f25878e8f2f243f52cde4a90a180523e6644150b07dd0f218e24b4d31efa1fb4"},
+  {"name":"fixed-large","input":{"amount":100000000000000000000},"wireInput":"{\"amount\":100000000000000000000}","digest":"e456866bd36955c5eb4fb1218eb3a8ba1301f202430a593845e56965dbe2f404"},
+  {"name":"below-exponential-boundary","input":{"amount":999999999999999900000},"wireInput":"{\"amount\":999999999999999900000}","digest":"7c69e515afc15ed0aacf0653e0525227981cc746b786e474c9f6e904a1512564"},
+  {"name":"negative-fixed-large","input":{"amount":-100000000000000000000},"wireInput":"{\"amount\":-100000000000000000000}","digest":"33c199d509a5ebc1e2e5be0b0bdee60d9b1047f7fd44e9e700f04fc06f6206ce"},
+  {"name":"above-exponential-boundary","input":{"amount":1.0000000000000001e+21},"wireInput":"{\"amount\":1.0000000000000001e+21}","digest":"09edcb4ca368c0dd1d60d102aa711d5f87abc6adc3ddc909bdaf2ad9f156f7b7"},
+  {"name":"nested-binary64","input":{"values":[9007199254740992,100000000000000000000,{"amount":-999999999999999900000}],"reference":"9007199254740993","enabled":true},"wireInput":"{\"values\":[9007199254740992,100000000000000000000,{\"amount\":-999999999999999900000}],\"reference\":\"9007199254740993\",\"enabled\":true}","digest":"f2003592409424ef0cbcdf5bc93dba2b9b13ffea4c487de2a5559993f38efd9a"},
+  {"name":"maximum-finite","input":{"amount":1.7976931348623157e+308},"wireInput":"{\"amount\":1.7976931348623157e+308}","digest":"7ecb0723c8afd2ccf00559026af2d43dda3a7d3d8937076db7467d8751f73e87"},
+  {"name":"minimum-positive","input":{"amount":5e-324},"wireInput":"{\"amount\":5e-324}","digest":"f6a2ac61626ae0bb98550289ee2bb46cb30766cf7dbf20d0f95ef78f43762755"}
+]
