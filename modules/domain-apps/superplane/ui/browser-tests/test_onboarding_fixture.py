@@ -130,6 +130,26 @@ def test_retirement_inventory_never_authorizes_admission():
     assert review["preserved"] == ["Operator-owned cluster survives"]
 
 
+@pytest.mark.parametrize("denied", [False, True])
+def test_retirement_review_replay_keeps_original_identity_without_approval(denied):
+    requests = []
+    transport = fixture_transport(requests, False, retirement_denied=denied)
+    path = PREFIX + f"/workspaces/{WORKSPACE}/retirement/preview"
+    body = {"operation_id": "fixture-original-removal"}
+    for _ in range(2):
+        route = fixture_route(path, "POST", body)
+        transport(route)
+        if denied:
+            assert route.fulfill.call_args.kwargs["status"] == 403
+            assert "json" in route.fulfill.call_args.kwargs
+        else:
+            review = route.fulfill.call_args.kwargs["json"]
+            assert review["request_id"] == body["operation_id"]
+            assert review["admission_available"] is False
+            assert review["approval_request"] is None
+    assert requests == [{"method": "POST", "path": path, "body": body}] * 2
+
+
 @pytest.mark.parametrize("continuation", [False, True])
 @pytest.mark.parametrize("failure", [False, True])
 @pytest.mark.parametrize(

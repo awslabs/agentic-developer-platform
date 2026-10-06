@@ -157,11 +157,13 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
         <Button variant="secondary" disabled={recovery.phase === 'loading'}
           onClick={() => void recoverRequest()}>Recover removal request</Button>
         {recovery.phase === 'loading' && <p role="status">Checking the original request without submitting another removal…</p>}
-        {recovery.phase === 'failed' && <Alert variant="warning" title="Removal request status unavailable">
-          {recovery.unavailable.detail} Keep the original request ID and retry the lookup; no new removal was submitted.
-          Provider absence is not verified; residual cost is unknown.
-        </Alert>}
-        {recovery.phase === 'observed' && <div role="status">
+        {recovery.phase === 'failed' && <section aria-label="Retirement outcome" aria-live="polite">
+          <Alert variant="warning" title="Removal request status unavailable">
+            {recovery.unavailable.detail} Keep the original request ID and retry the lookup; no new removal was submitted.
+            Provider absence is not verified; residual cost is unknown.
+          </Alert>
+        </section>}
+        {recovery.phase === 'observed' && <section aria-label="Retirement outcome" role="status">
           <p>Operation state: {recovery.receipt.state}</p>
           <p className="break-all">Server operation ID: {recovery.receipt.operationId ?? 'Not yet assigned'}</p>
           <p>Last observed: {Number.isFinite(Date.parse(recovery.receipt.observedAt))
@@ -169,7 +171,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
           <p>{OPERATION_PROGRESS[recovery.receipt.state]}</p>
           <p>Verified removal: Not established. Operation status alone does not prove resource deletion or preservation.</p>
           <p>Residual cost: Unknown. Preserved or partially cleaned resources may continue to incur charges.</p>
-        </div>}
+        </section>}
       </div>
       <p className="mt-2 text-sm">Review owned deletions and resources that must survive before requesting removal. Reviewing does not delete anything.</p>
       {!ENDPOINTS.previewRetirement.served && (
@@ -219,11 +221,13 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
             )}
             <p className="text-sm">These are planned survivors, not verified preservation evidence.</p>
           </div>
-          <Alert variant="warning" title="Removal cannot be submitted">
-            The service requires separately approved cleanup access before it can admit a complete removal plan. No approval request is available and no deletion was submitted.
-          </Alert>
-          <Button disabled aria-describedby="retirement-admission-unavailable">Remove workspace</Button>
-          <p id="retirement-admission-unavailable" className="text-sm">Unavailable until the service provides a complete approved retirement plan.</p>
+          <section aria-label="Retirement approval" className="space-y-2">
+            <Alert variant="warning" title="Removal cannot be submitted">
+              The service requires separately approved cleanup access before it can admit a complete removal plan. No approval request is available and no deletion was submitted.
+            </Alert>
+            <Button disabled aria-describedby="retirement-admission-unavailable">Remove workspace</Button>
+            <p id="retirement-admission-unavailable" className="text-sm">Unavailable until the service provides a complete approved retirement plan.</p>
+          </section>
         </div>
       )}
     </section>

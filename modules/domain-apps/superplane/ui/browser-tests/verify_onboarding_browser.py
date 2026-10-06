@@ -145,7 +145,7 @@ def lifecycle_transport(failure):
     return transport
 
 
-def fixture_transport(requests, failure, *, continuation=False, expire_action=None):
+def fixture_transport(requests, failure, *, continuation=False, expire_action=None, retirement_denied=False):
     assert expire_action is None or expire_action in EXPIRY_PATHS
     expired = False
     lifecycle = lifecycle_transport(failure) if continuation else None
@@ -262,9 +262,10 @@ def fixture_transport(requests, failure, *, continuation=False, expire_action=No
             path == PREFIX + f"/workspaces/{WORKSPACE}/retirement/preview"
             and method == "POST"
         ):
-            if failure:
+            if failure or retirement_denied:
                 route.fulfill(
-                    status=503, json={"detail": "fixture retirement unavailable"}
+                    status=403 if retirement_denied else 503,
+                    json={"detail": "fixture retirement access denied" if retirement_denied else "fixture retirement unavailable"},
                 )
             else:
                 route.fulfill(
@@ -339,7 +340,9 @@ def exercise(page, requests, failure):
         expect(page.get_by_role("group", name="Removal review problem")).to_be_focused()
     else:
         expect(page.get_by_role("group", name="Retirement review")).to_be_focused()
-        expect(page.get_by_role("button", name="Remove workspace")).to_be_disabled()
+        approval = page.get_by_role("region", name="Retirement approval")
+        expect(approval).to_contain_text("No approval request is available")
+        expect(approval.get_by_role("button", name="Remove workspace")).to_be_disabled()
     assert not any(item["path"].endswith("/retirement") for item in requests)
     creates = [
         item
@@ -520,6 +523,51 @@ def exercise_expiry(page, requests, action):
         ]
         assert len(attempts) == 2 and attempts[0] == attempts[1]
         check_layout(page, "continuation-after-sign-in")
+    elif action == "retirement":
+        page.goto(entry)
+        activate(page, page.get_by_role("button", name="Recover removal request"))
+        outcome = page.get_by_role("region", name="Retirement outcome")
+        expect(outcome).to_contain_text("no removal was submitted")
+        expect(outcome).to_contain_text("residual cost is unknown")
+        activate(page, page.get_by_role("button", name="Review removal"))
+        expect(page.get_by_role("group", name="Retirement review")).to_be_focused()
+        expect(page.get_by_role("region", name="Retirement approval").get_by_role(
+            "button", name="Remove workspace"
+        )).to_be_disabled()
+        previews = [item["body"] for item in requests if item["path"] == EXPIRY_PATHS[action]]
+        assert len(previews) == 2 and previews[0] == previews[1]
+        check_layout(page, "retirement-after-sign-in")
+    assert_no_creation_or_removal(requests)
+
+
+def exercise_retirement_reentry(page, requests, denied):
+    from playwright.sync_api import expect
+
+    page.route("**/*", fixture_transport(requests, False, retirement_denied=denied))
+    entry = ORIGIN + "/onboarding-browser-check.html"
+    page.goto(entry)
+    activate(page, page.get_by_role("button", name="Review removal"))
+    if denied:
+        expect(page.get_by_role("group", name="Removal review problem")).to_be_focused()
+        expect(page.get_by_role("region", name="Retirement approval")).to_have_count(0)
+    else:
+        expect(page.get_by_role("group", name="Retirement review")).to_be_focused()
+        expect(page.get_by_role("region", name="Retirement approval").get_by_role(
+            "button", name="Remove workspace"
+        )).to_be_disabled()
+    page.reload()
+    activate(page, page.get_by_role("button", name="Recover removal request"))
+    outcome = page.get_by_role("region", name="Retirement outcome")
+    expect(outcome).to_contain_text("no removal was submitted")
+    expect(outcome).to_contain_text("residual cost is unknown")
+    activate(page, page.get_by_role("button", name="Review removal"))
+    expect(page.get_by_role(
+        "group", name="Removal review problem" if denied else "Retirement review"
+    )).to_be_focused()
+    previews = [item["body"] for item in requests if item["path"] == EXPIRY_PATHS["retirement"]]
+    assert len(previews) == 2 and previews[0] == previews[1]
+    assert not any("/operations/by-idempotency/" in item["path"] for item in requests)
+    check_layout(page, "retirement-denied" if denied else "retirement-review-reentry")
     assert_no_creation_or_removal(requests)
 
 
@@ -583,6 +631,8 @@ def main():
                         "refusal",
                         "continuation",
                         "continuation-refusal",
+                        "retirement-review-reentry",
+                        "retirement-denied",
                     ] + [f"expired-{action}" for action in EXPIRY_PATHS]
                     for scenario in scenarios:
                         page = browser.new_page(viewport={"width": 360, "height": 800})
@@ -599,6 +649,10 @@ def main():
                             elif scenario.startswith("continuation"):
                                 exercise_continuation(
                                     page, requests, scenario == "continuation-refusal"
+                                )
+                            elif scenario.startswith("retirement-"):
+                                exercise_retirement_reentry(
+                                    page, requests, scenario == "retirement-denied"
                                 )
                             else:
                                 exercise(page, requests, scenario == "refusal")

@@ -151,6 +151,9 @@ describe('C1 retirement preview and admission refusal', () => {
     expect(within(review).getByText(/supplied cluster remains owned by its operator/)).toBeInTheDocument();
     expect(within(review).getByText(/Unknown; this preview has no cost estimate/)).toBeInTheDocument();
     expect(within(review).getByText(/No approval request is available/)).toBeInTheDocument();
+    expect(within(review).getByRole('region', { name: 'Retirement approval' })).toContainElement(
+      screen.getByRole('button', { name: 'Remove workspace' }),
+    );
     expect(within(review).getByRole('button', { name: 'Remove workspace' })).toBeDisabled();
     expect(admissions).toBe(0);
     await user.click(screen.getByRole('button', { name: 'Review removal' }));
@@ -284,6 +287,7 @@ describe('source-backed removal request re-entry', () => {
     mount(store);
     await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
     expect(await screen.findByText('Operation state: running')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Retirement outcome' })).toHaveTextContent('Verified removal: Not established');
     expect(screen.getByText('Server operation ID: server-operation-id')).toBeInTheDocument();
     expect(screen.getByText(/Operation status alone does not prove resource deletion/i)).toBeInTheDocument();
     cleanup();
@@ -314,6 +318,7 @@ describe('source-backed removal request re-entry', () => {
     mount(store);
     await userEvent.click(screen.getByRole('button', { name: 'Recover removal request' }));
     expect(await screen.findByText(/original removal review is saved, but no removal was submitted/i)).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Retirement outcome' })).toHaveTextContent('residual cost is unknown');
     expect(screen.getByText(`Saved removal request ID: ${originalRequestId}`)).toBeInTheDocument();
     expect(readReceipt(store, scope, `retire-workspace:${workspaceId}`)?.idempotencyKey).toBe(originalRequestId);
   });
