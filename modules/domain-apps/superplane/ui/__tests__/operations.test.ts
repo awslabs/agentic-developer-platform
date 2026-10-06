@@ -27,6 +27,7 @@ import {
   readReceipt,
   receiptIsSecretFree,
   recordObservation,
+  recordRetirementLineage,
   type ExclusiveSection,
   type ReceiptScope,
   type ReceiptStore,
@@ -743,4 +744,42 @@ it('allows draft edits but preserves an identity once approval has been requeste
   const conflicting = await claimPreviewIdentity(store, SCOPE, INTENT, { name: 'third' }, () => 'request-3', 'now', section);
   expect(conflicting.kind).toBe('conflict');
   expect(readReceipt(store, SCOPE, INTENT)).toMatchObject({ idempotencyKey: 'request-2', approvalId: 'approval-2' });
+});
+
+describe('retirement identity lineage', () => {
+  const intent = 'retire-workspace:workspace-a';
+  const principalScope = { ...SCOPE, principalId: 'principal-a' };
+  const otherPrincipal = { ...SCOPE, principalId: 'principal-b' };
+
+  it('isolates the same workspace and organization across principals without deleting the original', async () => {
+    const store = memoryReceiptStore();
+    await claimPreviewIdentity(store, principalScope, intent, { workspaceId: 'workspace-a' }, () => 'request-a', NOW_ISO);
+    expect(readReceipt(store, otherPrincipal, intent)).toBeNull();
+    await claimPreviewIdentity(store, otherPrincipal, intent, { workspaceId: 'workspace-a' }, () => 'request-b', NOW_ISO);
+    expect(readReceipt(store, principalScope, intent)?.idempotencyKey).toBe('request-a');
+    expect(readReceipt(store, otherPrincipal, intent)?.idempotencyKey).toBe('request-b');
+    pruneOtherScopes(store, otherPrincipal);
+    expect(readReceipt(store, principalScope, intent)?.idempotencyKey).toBe('request-a');
+    expect(store.keys()).toHaveLength(2);
+  });
+
+  it('binds distinct access and retirement IDs once, then refuses conflicting replay', async () => {
+    const store = memoryReceiptStore();
+    await claimPreviewIdentity(store, principalScope, intent, { workspaceId: 'workspace-a' }, () => 'request-a', NOW_ISO);
+    const identities = {
+      accessRequestId: 'access-request-a', accessOperationId: 'access-operation-a',
+      retirementOperationId: 'retirement-operation-a',
+    };
+    const first = await recordRetirementLineage(store, principalScope, intent, 'request-a', 'workspace-a', identities);
+    expect(first).toMatchObject({ idempotencyKey: 'request-a', ...identities });
+    expect(receiptIsSecretFree(first!)).toBe(true);
+    expect(await recordRetirementLineage(store, principalScope, intent, 'request-a', 'workspace-a', identities)).toMatchObject(identities);
+    expect(await recordRetirementLineage(store, principalScope, intent, 'request-a', 'workspace-a', {
+      accessOperationId: 'other-operation',
+    })).toBeNull();
+    expect(await recordRetirementLineage(store, otherPrincipal, intent, 'request-a', 'workspace-a', identities)).toBeNull();
+    expect(await recordRetirementLineage(store, principalScope, intent, 'request-a', 'other-workspace', identities)).toBeNull();
+    expect(await recordRetirementLineage(store, principalScope, intent, 'other-request', 'workspace-a', identities)).toBeNull();
+    expect(readReceipt(store, principalScope, intent)).toEqual(first);
+  });
 });

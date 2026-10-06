@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .demo1_c1 import inspect_original_details, inspect_reentry, retirement_preview
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant
+from .demo1_lineage import lineage_report
 
 PREFIX = "/api/superplane/v1"
 
@@ -20,6 +21,10 @@ class BrowserTransport(Protocol):
 
     def request(
         self, method: str, path: str, body: dict | None = None
+    ) -> tuple[int, object]: ...
+
+    def create_workspace(
+        self, body: dict, before_send: Callable[[], None]
     ) -> tuple[int, object]: ...
 
     def browser_page(self): ...
@@ -56,8 +61,20 @@ class PlaywrightBrowserTransport:
     def browser_page(self):
         return self.page
 
+    def create_workspace(
+        self, body: dict, before_send: Callable[[], None]
+    ) -> tuple[int, object]:
+        return self.request(
+            "POST", PREFIX + "/workspaces", body, before_send=before_send
+        )
+
     def request(
-        self, method: str, path: str, body: dict | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        *,
+        before_send: Callable[[], None] | None = None,
     ) -> tuple[int, object]:
         from playwright.sync_api import Error as PlaywrightError
 
@@ -82,6 +99,8 @@ class PlaywrightBrowserTransport:
         timeout = min(30_000, self.remaining_ms())
         if timeout <= 0:
             raise EvidenceError("browser: authorized runtime exhausted")
+        if before_send is not None:
+            before_send()
         try:
             result = self.page.evaluate(
                 """async ({method, path, body, timeout}) => {
@@ -137,10 +156,18 @@ def checked_origin(origin: str) -> str:
 
 
 def _response(
-    transport: BrowserTransport, method: str, path: str, body: dict | None = None
+    transport: BrowserTransport,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    *,
+    before_send: Callable[[], None] | None = None,
 ) -> dict:
     try:
-        status, value = transport.request(method, path, body)
+        if before_send is None:
+            status, value = transport.request(method, path, body)
+        else:
+            status, value = transport.create_workspace(body, before_send)
     except (OSError, RuntimeError, ValueError):
         raise EvidenceError(
             "browser: response unavailable; retain original request"
@@ -226,6 +253,7 @@ def advance_creation(
     origin: str,
     checkpoint: CreationCheckpoint | None = None,
     persist: Callable[[CreationCheckpoint], None] | None = None,
+    verify_lineage: Callable[[CreationCheckpoint, str, str], dict] | None = None,
     effects_authorized: bool = False,
     now: datetime | None = None,
 ) -> tuple[CreationCheckpoint | None, dict]:
@@ -345,11 +373,33 @@ def advance_creation(
             "plan_revision": selected.plan_revision,
             "approval_id": checkpoint.approval_id,
         }
-        checkpoint = CreationCheckpoint(**{**vars(checkpoint), "submitted": True})
-        persist(checkpoint)
+        preflight_completed = False
+
+        def mark_submitted():
+            nonlocal checkpoint, preflight_completed
+            preflight_completed = True
+            submitted = CreationCheckpoint(**{**vars(checkpoint), "submitted": True})
+            persist(submitted)
+            checkpoint = submitted
+
         try:
-            result = _response(transport, "POST", PREFIX + "/workspaces", body)
+            result = _response(
+                transport,
+                "POST",
+                PREFIX + "/workspaces",
+                body,
+                before_send=mark_submitted,
+            )
         except EvidenceError:
+            if not preflight_completed:
+                return checkpoint, {
+                    "status": "BLOCKED",
+                    "reason": "creation not sent; retry original request after pre-send checks succeed",
+                }
+            if not checkpoint.submitted:
+                raise EvidenceError(
+                    "browser: checkpoint persistence failed; retain original request for reconciliation"
+                ) from None
             return checkpoint, {
                 "status": "BLOCKED",
                 "reason": "creation reply uncertain; recover original request",
@@ -389,9 +439,27 @@ def advance_creation(
         workspace.get("id") != checkpoint.workspace_id
         or workspace.get("org_id") != selected.org_id
         or workspace.get("name") != selected.workspace_name
-        or workspace.get("provisioning_operation_id") != operation_id
     ):
         raise EvidenceError("browser: workspace re-entry differs from original target")
+    current_id = identifier(
+        workspace.get("provisioning_operation_id"), "current operation"
+    )
+    current_request = selected.request_id
+    lineage = None
+    if current_id != operation_id:
+        if verify_lineage is None:
+            raise EvidenceError("browser: immutable continuation lineage required")
+        lineage = verify_lineage(checkpoint, operation_id, current_id)
+        current_request = lineage["current_request_id"]
+        current = _response(transport, "GET", PREFIX + f"/operations/{current_id}")
+        if (
+            current.get("request_id") != current_request
+            or current.get("provisioning_operation_id") != current_id
+            or current.get("workspace_id") != checkpoint.workspace_id
+        ):
+            raise EvidenceError(
+                "browser: current operation differs from verified continuation"
+            )
     page = transport.browser_page()
     if (
         inspect_reentry(page, selected.workspace_name)["reason"]
@@ -403,14 +471,26 @@ def advance_creation(
         }
     if (
         inspect_original_details(
-            page, checkpoint.workspace_id, selected.request_id, operation_id
+            page, checkpoint.workspace_id, current_request, current_id
         )["reason"]
         != "original identities visible; session and provider authority unverified"
     ):
         return checkpoint, {
             "status": "BLOCKED",
-            "reason": "original operation not verified after refresh",
+            "reason": "workspace operation not verified after refresh",
         }
+    if lineage is not None:
+        refreshed = _response(
+            transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
+        )
+        if any(
+            refreshed.get(key) != workspace.get(key)
+            for key in ("id", "org_id", "name", "provisioning_operation_id")
+        ):
+            raise EvidenceError(
+                "browser: workspace changed during continuation re-entry"
+            )
+        workspace = refreshed
     retirement_id = checkpoint.retirement_request_id
     status, preview = transport.request(
         "POST",
@@ -421,14 +501,14 @@ def advance_creation(
         review = retirement_preview(
             selected,
             checkpoint.workspace_id,
-            operation_id,
+            current_id,
             retirement_id,
             status,
             preview,
         )
     except EvidenceError:
         raise EvidenceError(
-            "browser: retirement preview differs from original operation"
+            "browser: retirement preview differs from verified workspace operation"
         ) from None
     readiness = workspace_reading(workspace, now)
     return checkpoint, {
@@ -437,4 +517,5 @@ def advance_creation(
         "creation_observed": True,
         "readiness": readiness,
         "retirement": review["status"],
+        **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
     }

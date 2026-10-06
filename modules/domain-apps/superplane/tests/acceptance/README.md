@@ -101,7 +101,14 @@ plan and pending approval. Hand that exact approval to the designated human
 through the maintained approval UI; do not edit the checkpoint or reuse another
 person's session. Rerun the command with the same selection, authority and
 checkpoint and a **new report filename** after approval. The checkpoint is
-durably marked submitted before the creation POST. If its reply is lost, reruns
+durably marked submitted after the final pre-send release/origin/runtime checks
+and before browser evaluation can send the creation POST. If those pre-send
+checks refuse, the checkpoint stays unsubmitted and a healthy retry uses the same
+request, workspace and approval. Once request evaluation may have begun, errors
+remain uncertain; neither an error nor a recovery 404 resets the submitted flag.
+If checkpoint persistence fails, no creation request is sent; preserve the file
+and original identities for reconciliation rather than editing its state.
+If the creation reply is lost, reruns
 read the original operation rather than submit another creation. Pending
 registration, unknown readiness and unavailable retirement stay BLOCKED. The
 exit status is always **2** for this incomplete lifecycle, including when the
@@ -116,6 +123,22 @@ for cleanup-owner reconciliation; never delete or rewrite them to force a new
 request. A runtime/authority change requires reconciliation, not an automatic
 rebind. Provider inventory/cleanup integration and positive removal remain
 unfinished; this command cannot close AC-02 or any live acceptance row.
+
+Re-entry keeps the original creation request in that checkpoint even after an
+admitted apply or bootstrap continuation becomes the workspace's current
+operation. Before accepting the newer operation, the driver runs a fixed,
+read-only probe inside the exact selected API runtime. It traces each admitted
+request through the maintained immutable artifact validator back to the original
+preparation, checking the target, request parameters, successful parent attempts
+and artifact times. It then checks the current operation's request and workspace
+in the authenticated API and browser details, and re-reads the workspace after
+refresh. A changed current operation or unverifiable ancestry stops the phase;
+it never replaces or replays the original request. Private `browser.lineage`
+output contains hashed identities, not a new approval or Ready/cleanup receipt.
+Historical parent artifacts may be older than the admission freshness window:
+this verifies work already admitted, not permission to submit a continuation.
+The command still does not approve or submit apply/bootstrap continuations or
+positive retirement; those orchestration steps remain unfinished.
 
 Provider integration requires authenticated **observed ownership**
 for the original managed workspace. The existing lifecycle-proposals API
@@ -157,11 +180,42 @@ false: this subset does not account for all compute, storage, IAM and networking
 resources. Missing artifacts or denied reads remain blocked, never an empty
 inventory. The documented command is covered by offline producer/transport doubles.
 
-Connecting these verified resource identities to the browser recovery path, AWS
-observer and criterion reporting remains harness implementation work. The browser
-driver does not invoke the AWS inventory reader yet. Do not substitute planned
-resources, names, tags or operator assertions. This source gap is separate from
-#5540's live evaluation and the missing positive retirement contract.
+To read the current provider state for those verified identities, explicitly
+authorize the selected read-only provider connection in the same private envelope.
+The selection's `survivors` must contain exact supported AWS resource ARNs, not
+names or tags. Use the same original submitted v3 checkpoint and a new report:
+
+```bash
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --observe-provider --report "$DEMO1_PRIVATE_DIR/provider-report.json"
+```
+
+This command first revalidates the runtime and immutable ownership, then uses the
+selected provider broker label and exact assumed role for each AWS read. Supplied
+network identities join the survivor baseline rather than the owned-resource
+list. Runtime verification and provider calls share one finite time budget.
+Add `--observe-provider` to the documented `--advance-creation` command to collect
+these observations after authenticated browser creation/re-entry; pending approval,
+uncertain replies or failed browser verification prevent provider reads in that
+combined invocation. Neither mode approves or submits retirement.
+
+The private report links hashed provider observations to the ownership artifact
+and original workspace. Missing selected peers fail the survivor check; denied or
+incomplete lookups establish no absence. Successful lookups of every recorded
+resource still leave `inventory_complete` false: storage and other resources are
+not fully inventoried. An absent recorded subset is not complete cleanup. Cost
+remains unknown, and the cleanup check and AC-02 remain `BLOCKED`. Provider-only
+invocation exits 2 without rewriting the checkpoint; the combined browser path
+retains its normal creation effects and checkpoint writes. Offline CLI tests exercise this command
+and combined browser/provider wiring through doubles, not live acceptance.
+
+Full continuation lineage and positive retirement integration remain harness
+work. Do not substitute planned resources or invented authority. These remaining
+source requirements are separate from #5540's later live evaluation.
 
 The existing diagnostic AWS reader treats an error as absence only for a matching
 resource-kind error, exact AWS operation and selected resource identity in a

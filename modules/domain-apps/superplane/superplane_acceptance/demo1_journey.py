@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from .demo1_browser import PREFIX, PlaywrightBrowserTransport, advance_creation
 from .demo1_evidence import EvidenceError
+from .demo1_lineage import observe_lineage
 from .demo1_report import reference
 from .demo1_runtime import RuntimeReader
 
@@ -42,9 +43,19 @@ def advance_browser(
         return max(1, int(remaining * 1000))
 
     saved = store.load()
-    runtime = RuntimeReader(selected, envelope.runtime_target).observe(
-        remaining_ms() / 1000
-    )
+    reader = RuntimeReader(selected, envelope.runtime_target)
+    runtime = reader.observe(remaining_ms() / 1000)
+
+    def verify_lineage(checkpoint, original_operation, current_operation):
+        return observe_lineage(
+            reader,
+            checkpoint,
+            original_operation,
+            current_operation,
+            remaining_ms() / 1000,
+            now=clock(),
+        )
+
     if runtime.get("status") != "OBSERVED" or runtime.get("release_ref") != reference(
         envelope.runtime_target.release_id
     ):
@@ -84,6 +95,7 @@ def advance_browser(
                     origin=envelope.origin,
                     checkpoint=saved,
                     persist=store.save,
+                    verify_lineage=verify_lineage,
                     effects_authorized=True,
                     now=clock(),
                 )

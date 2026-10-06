@@ -31,6 +31,10 @@ class Transport:
             get_by_role=lambda *args, **kwargs: SimpleNamespace(is_visible=lambda: True)
         )
 
+    def create_workspace(self, body, before_send):
+        before_send()
+        return self.request("POST", "/api/superplane/v1/workspaces", body)
+
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
         if path == "/api/auth/me":
@@ -340,7 +344,12 @@ def test_reentry_requires_the_recovered_operation_identity(
         "/workspaces/" + identity(10),
         {"provisioning_operation_id": operation_id},
     )
-    with pytest.raises(EvidenceError, match="workspace re-entry differs"):
+    reason = (
+        "immutable continuation lineage required"
+        if operation_id
+        else "current operation: invalid value"
+    )
+    with pytest.raises(EvidenceError, match=reason):
         advance(selected, transport, checkpoint)
     assert all(method == "GET" for method, _, _ in transport.calls)
 

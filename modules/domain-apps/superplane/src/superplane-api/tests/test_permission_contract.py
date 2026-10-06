@@ -301,13 +301,18 @@ def test_approval_delegation_and_domain_human_checks_stay_separate():
 
 def test_maintained_ui_action_names_and_routes_are_real():
     ui_contract = (DOMAIN / "ui/contract.ts").read_text()
-    ui_actions = {
-        match.group(1): f"{match.group(2)} {match.group(3)}"
-        for match in re.finditer(
-            r"(?m)^  (\w+): \{\s*method: '(\w+)',\s*path: '([^']+)'",
-            ui_contract,
-        )
-    }
+    ui_actions = {}
+    unserved_routes = set()
+    for match in re.finditer(
+        r"(?m)^  (\w+): \{\s*method: '(\w+)',\s*path: '([^']+)',\s*served: (true|false)",
+        ui_contract,
+    ):
+        name, method, path, served = match.groups()
+        route = f"{method} {path}"
+        if served == "true":
+            ui_actions[name] = route
+        else:
+            unserved_routes.add(route)
     assert len(ui_actions) > 30
     mapped = {}
     for action in MATRIX["actions"]:
@@ -317,6 +322,7 @@ def test_maintained_ui_action_names_and_routes_are_real():
                 assert ui_actions[name] in action["routes"]
                 mapped[name] = ui_actions[name]
     assert mapped == ui_actions
+    assert not unserved_routes & {route for action in MATRIX["actions"] for route in action["routes"]}
 
 
 

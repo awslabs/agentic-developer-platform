@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -164,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authority")
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--observe-provider", action="store_true")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--observe-runtime", action="store_true")
     action.add_argument("--observe-ownership", action="store_true")
@@ -171,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
+            if arguments.observe_provider and (
+                arguments.observe_runtime or arguments.observe_ownership
+            ):
+                raise EvidenceError(
+                    "provider: choose provider observation alone or with browser advancement"
+                )
             if arguments.fixture or not all(
                 (
                     arguments.private_input,
@@ -190,14 +198,21 @@ def main(argv: list[str] | None = None) -> int:
             envelope = LiveEnvelope.parse(_read_private(arguments.authority), selected)
             session = _read_private(arguments.browser_state)
             report = preflight_report(selected, envelope, session)
-            if arguments.advance_creation or arguments.observe_ownership:
+            expires = time.monotonic() + envelope.max_runtime_seconds
+            if (
+                arguments.advance_creation
+                or arguments.observe_ownership
+                or arguments.observe_provider
+            ):
                 _new_report_path(arguments.report)
             with PrivateCheckpoint(
                 arguments.checkpoint,
                 selected,
                 envelope.origin,
                 envelope=envelope
-                if arguments.advance_creation or arguments.observe_ownership
+                if arguments.advance_creation
+                or arguments.observe_ownership
+                or arguments.observe_provider
                 else None,
             ) as store:
                 if arguments.advance_creation:
@@ -211,6 +226,35 @@ def main(argv: list[str] | None = None) -> int:
                     except EvidenceError as error:
                         report["reason"] = str(error)
                 saved = store.load()
+                if arguments.observe_provider:
+                    from .demo1_current import observe_current_provider
+
+                    report["evidence_mode"] = "current-provider-unverified"
+                    if arguments.advance_creation and not report.get("browser", {}).get(
+                        "creation_observed"
+                    ):
+                        report["provider"] = {
+                            "status": "BLOCKED",
+                            "reason": "browser creation/re-entry unverified; provider reads not attempted",
+                        }
+                    else:
+                        try:
+                            report.update(
+                                observe_current_provider(
+                                    selected,
+                                    envelope,
+                                    saved,
+                                    expires - time.monotonic(),
+                                )
+                            )
+                        except EvidenceError as error:
+                            report["provider"] = {
+                                "status": "BLOCKED",
+                                "reason": str(error),
+                            }
+                            report["reason"] = (
+                                "provider observation blocked; no cleanup or live acceptance established"
+                            )
                 if arguments.observe_ownership:
                     from .demo1_ownership import observe_ownership, ownership_report
                     from .demo1_runtime import RuntimeReader
@@ -268,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
             label = "Live browser phase"
         elif arguments.observe_ownership:
             label = "Live historical ownership observation"
+        elif arguments.observe_provider:
+            label = "Live selected provider observation"
         else:
             label = "Live selection preflight"
         print(f"{label}: BLOCKED (not lifecycle acceptance)")
@@ -277,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments.observe_runtime
             or arguments.advance_creation
             or arguments.observe_ownership
+            or arguments.observe_provider
         ):
             raise EvidenceError("runtime: live mode and explicit authority required")
         if not all((arguments.private_input, arguments.fixture, arguments.report)):

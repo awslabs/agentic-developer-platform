@@ -418,3 +418,129 @@ def test_changed_release_in_creation_reply_retains_submitted_identity(
         )
         == 1
     )
+
+
+@pytest.mark.parametrize("failure", ["release", "denied", "unavailable"])
+def test_final_presend_refusal_keeps_checkpoint_retryable(driver, monkeypatch, failure):
+    driver.run()
+    driver.page.service.approved = True
+    checkpoint = driver.path / "checkpoint.json"
+    original = checkpoint.read_bytes()
+    evaluate = driver.page.evaluate
+    approval_checked = False
+
+    def refuse_final_probe(script, arguments):
+        nonlocal approval_checked
+        result = evaluate(script, arguments)
+        if arguments["path"].endswith("/operation-approvals/" + identity(11)):
+            approval_checked = True
+        elif approval_checked and arguments["path"].endswith("/capabilities"):
+            assert checkpoint.read_bytes() == original
+            if failure == "unavailable":
+                raise RuntimeError("private probe failure")
+            if failure == "release":
+                result[2] = "f" * 64
+            else:
+                result[0] = 503
+        return result
+
+    monkeypatch.setattr(driver.page, "evaluate", refuse_final_probe)
+    result = driver.run()
+    assert approval_checked
+    assert result["checkpoint"]["submitted"] is False
+    assert checkpoint.read_bytes() == original
+    assert "not sent" in result["browser"]["reason"]
+    assert "private probe failure" not in json.dumps(result)
+    assert not any(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls
+    )
+
+    monkeypatch.setattr(driver.page, "evaluate", evaluate)
+    assert driver.run()["browser"]["creation_observed"] is True
+    assert driver.run()["browser"]["creation_observed"] is True
+    persisted = json.loads(checkpoint.read_bytes())["checkpoint"]
+    original_state = json.loads(original)["checkpoint"]
+    assert persisted == {**original_state, "submitted": True}
+    assert (
+        sum(
+            method == "POST" and path.endswith("/workspaces")
+            for method, path, _ in driver.page.service.calls
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("written", [False, True])
+def test_checkpoint_write_failure_never_sends_creation(driver, monkeypatch, written):
+    driver.run()
+    driver.page.service.approved = True
+    checkpoint = driver.path / "checkpoint.json"
+    save = PrivateCheckpoint.save
+
+    def fail_save(store, state):
+        assert state.submitted
+        if written:
+            save(store, state)
+        raise EvidenceError("private persistence failure")
+
+    monkeypatch.setattr(PrivateCheckpoint, "save", fail_save)
+    result = driver.run()
+    assert "checkpoint persistence failed" in result["reason"]
+    assert "private persistence failure" not in json.dumps(result)
+    assert json.loads(checkpoint.read_bytes())["checkpoint"]["submitted"] is written
+    assert not any(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls
+    )
+
+    monkeypatch.setattr(PrivateCheckpoint, "save", save)
+    if written:
+        request = driver.page.service.request
+
+        def missing_operation(method, path, body=None):
+            result = request(method, path, body)
+            if "/operations/by-idempotency/" in path:
+                return 404, {"detail": "not found"}
+            return result
+
+        monkeypatch.setattr(driver.page.service, "request", missing_operation)
+        prior = checkpoint.read_bytes()
+        assert "response" in driver.run()["reason"]
+        assert checkpoint.read_bytes() == prior
+    else:
+        assert driver.run()["browser"]["creation_observed"] is True
+    assert sum(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls
+    ) == (0 if written else 1)
+
+
+def test_uncertain_evaluation_is_durably_marked_and_recovery_404_never_replays(
+    driver, monkeypatch
+):
+    driver.run()
+    driver.page.service.approved = True
+    checkpoint = driver.path / "checkpoint.json"
+    evaluate = driver.page.evaluate
+
+    def uncertain_evaluation(script, arguments):
+        if arguments["method"] == "POST" and arguments["path"].endswith("/workspaces"):
+            assert (
+                json.loads(checkpoint.read_bytes())["checkpoint"]["submitted"] is True
+            )
+            raise RuntimeError("uncertain browser evaluation")
+        result = evaluate(script, arguments)
+        if "/operations/by-idempotency/" in arguments["path"]:
+            result[0] = 404
+        return result
+
+    monkeypatch.setattr(driver.page, "evaluate", uncertain_evaluation)
+    assert "uncertain" in driver.run()["browser"]["reason"]
+    saved = checkpoint.read_bytes()
+    assert "response" in driver.run()["reason"]
+    assert checkpoint.read_bytes() == saved
+    assert not any(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls
+    )
