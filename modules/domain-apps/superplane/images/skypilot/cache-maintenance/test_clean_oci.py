@@ -202,3 +202,25 @@ def test_label_cannot_use_verifier_from_another_checkout(tmp_path):
     _, module, _, revision = source_checkout(tmp_path)
     with pytest.raises(D.Invalid, match="same source checkout"):
         module.verify_source(D, revision)
+
+
+def test_loader_ignores_harmless_untracked_cached_module_bytes(tmp_path):
+    import marshal
+    import struct
+
+    root, module, verifier, revision = source_checkout(tmp_path)
+    for name in ("exact_image_disposition.py", "exact_image_components.py"):
+        path = root / "codebuild" / name
+        stat = path.stat()
+        cached = Path(importlib.util.cache_from_source(str(path)))
+        cached.parent.mkdir(exist_ok=True)
+        harmless = compile("CACHED_ALTERNATE = True\n", str(path), "exec")
+        cached.write_bytes(
+            importlib.util.MAGIC_NUMBER
+            + struct.pack("<III", 0, int(stat.st_mtime), stat.st_size)
+            + marshal.dumps(harmless)
+        )
+    verifier = module.load_verifier(root / "codebuild/exact_image_disposition.py")
+    assert not hasattr(verifier, "CACHED_ALTERNATE")
+    assert not hasattr(verifier.component_verifier(), "CACHED_ALTERNATE")
+    assert module.verify_source(verifier, revision)["revision"] == revision

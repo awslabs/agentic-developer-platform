@@ -3,20 +3,36 @@
 
 import argparse
 import copy
-import importlib.util
+import hashlib
 import io
 import json
 import posixpath
 import re
 import subprocess
 import tarfile
+import types
 from pathlib import Path
 
 
 def load_verifier(path):
-    spec = importlib.util.spec_from_file_location("cache_cleanup_verifier", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Execute selected source bytes, never an untracked timestamp-valid .pyc.
+    loaded = {}
+
+    def source_module(name, source_path):
+        source_path = source_path.resolve()
+        raw = source_path.read_bytes()
+        module = types.ModuleType(name)
+        module.__file__ = str(source_path)
+        exec(compile(raw, str(source_path), "exec"), module.__dict__)
+        loaded[str(source_path)] = hashlib.sha256(raw).hexdigest()
+        return module
+
+    module = source_module("cache_cleanup_verifier", path)
+    components = source_module(
+        "cache_cleanup_components", path.with_name("exact_image_components.py")
+    )
+    module.component_verifier = lambda: components
+    module.cleanup_loaded_sources = loaded
     return module
 
 
@@ -69,6 +85,11 @@ def verify_source(d, revision):
             committed == path.read_bytes(),
             "executed source differs from committed bytes",
         )
+        if path != recipe:
+            d.require(
+                d.cleanup_loaded_sources.get(str(path)) == d.sha(committed),
+                "executed module bytes differ from committed source",
+            )
         context[relative] = d.sha(committed)
     return {"revision": revision, "executed_source_files": context}
 
@@ -77,6 +98,8 @@ def build(d, archive, platform, output, source_revision=None):
     """Bind all inputs, write a finite layer, reconstruct and verify the result."""
     d.require(not output.exists(), "output directory already exists")
     c = d.component_verifier()
+    for path, digest in d.cleanup_loaded_sources.items():
+        d.require(d.file_sha(Path(path)) == digest, "loaded verifier source changed")
     source_context = verify_source(d, source_revision) if source_revision else None
     source_hashes = {
         "recipe_sha256": d.file_sha(Path(__file__)),
