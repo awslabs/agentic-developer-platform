@@ -377,6 +377,10 @@ def compose(request, reviewed, env, lock, operator):
     closed(
         worker,
         {
+            "mode",
+            "lifecycle_policy_configmap",
+            "lifecycle_state_claim",
+            "lifecycle_policy_sha256",
             "database_secret",
             "workspace_credentials_secret",
             "provider_secret",
@@ -389,6 +393,14 @@ def compose(request, reviewed, env, lock, operator):
             "active_deadline_seconds",
         },
         "runtime preparation worker input",
+    )
+    require(
+        worker["mode"] == "native-lifecycle"
+        and worker["lifecycle_policy_configmap"] == operator["policy_configmap"]
+        and worker["lifecycle_state_claim"] == operator["state_claim"]
+        and isinstance(worker["lifecycle_policy_sha256"], str)
+        and re.fullmatch(r"[0-9a-f]{64}", worker["lifecycle_policy_sha256"]),
+        "Runtime preparation requires the reviewed native lifecycle policy and state references",
     )
     require(
         isinstance(env.get("database"), dict)
@@ -408,7 +420,6 @@ def compose(request, reviewed, env, lock, operator):
     )
     selected = dict(
         worker,
-        mode="native-controller",
         namespace=request["namespace"],
         role_arn=resources["worker_role_arn"],
         queue_observer_role_arn=resources["observer_role_arn"],

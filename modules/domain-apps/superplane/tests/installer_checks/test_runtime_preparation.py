@@ -139,7 +139,13 @@ def contract_input(native):
             "queue_arn",
         }
     }
-    worker["operation_schema"] = "superplane_operations"
+    worker.update(
+        mode="native-lifecycle",
+        operation_schema="superplane_operations",
+        lifecycle_policy_configmap="superplane-lifecycle-policy",
+        lifecycle_state_claim="superplane-lifecycle-state",
+        lifecycle_policy_sha256="5" * 64,
+    )
     operator = {
         "review_id": "change-001",
         "keda_operator_role_arn": f"arn:aws:iam::{env['account_id']}:role/existing-keda-operator",
@@ -323,4 +329,24 @@ def test_shared_operation_and_domain_ports_cannot_be_aliased(contract_input, fie
         else operator["worker"]["operation_schema"]
     )
     with pytest.raises(Refusal, match="separate"):
+        compose(request, reviewed, env, lock, operator)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("mode", "native-controller"),
+        ("lifecycle_policy_configmap", "foreign-policy"),
+        ("lifecycle_state_claim", "foreign-state"),
+        ("lifecycle_policy_sha256", "mutable"),
+    ],
+)
+def test_lifecycle_proposal_requires_exact_policy_state_contract(
+    contract_input, field, value
+):
+    from installation.runtime_preparation import compose
+
+    request, reviewed, env, lock, operator = contract_input
+    operator["worker"][field] = value
+    with pytest.raises(Refusal, match="native lifecycle policy"):
         compose(request, reviewed, env, lock, operator)

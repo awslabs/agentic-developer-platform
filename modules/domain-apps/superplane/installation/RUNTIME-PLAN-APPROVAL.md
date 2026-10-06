@@ -85,3 +85,15 @@ command reports `apply_supported: false` for older preparation implementations
 and refuses before any resumed Terraform command. Obtain reviewed source with
 the saved-plan preservation fix and create a fresh plan; do not edit the receipt
 to imitate that contract.
+
+
+## Authentication availability for operations runs
+
+The GitHub reader uses only the caller's legitimately configured GitHub identity.
+A personal-repository installation token that cannot read private `aws-e/adp`
+metadata cannot execute this approval bridge. A real user-owned vault GitHub
+connection with that access, or a separately maintained authenticated review
+service, must be established first. Do not borrow a supervisor's/root session
+token, replace authority with a cached approval dict, or change the trusted
+repository to evade this requirement. The source tests do not attest that live
+credential path for any operations run.
