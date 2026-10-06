@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-06T00:24:56Z",
+  "updated_at": "2026-10-06T00:47:52.952Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -133,10 +133,8 @@
       "title": "Expose fixture-mode CLI and sanitized criterion reports",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
-      ],
-      "note": "Merged fixture mode remains offline.",
+      "files": [],
+      "note": "Merged; fixture mode remains offline.",
       "commits": [
         "8116dfc"
       ]
@@ -148,9 +146,7 @@
       "title": "Bind read-only browser probes to pinned C1 targets and report unsupported retirement",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_c1.py"
-      ],
+      "files": [],
       "note": "Merged read-only contract.",
       "commits": [
         "a1d1fa0"
@@ -240,7 +236,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
       ],
-      "note": "9c7a3ec covers source creation/recovery; positive retirement and complete released lifecycle interfaces remain unavailable.",
+      "note": "Source creation/recovery exists; positive retirement and complete released lifecycle interfaces remain unavailable.",
       "commits": [
         "9c7a3ec"
       ]
@@ -267,7 +263,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Merged offline guidance; preflight wording corrected at 44e99f9.",
+      "note": "Merged offline guidance; tested operator handoff remains under AC-04-c2.",
       "commits": [
         "68d882c"
       ]
@@ -282,7 +278,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Public-doc checker found 0 issues at 44e99f9; prior fixture-command result retained."
+      "note": "Prior fixture-command result; public-doc checker found 0 issues."
     },
     {
       "id": "AC-02-c-provider",
@@ -294,7 +290,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_aws.py"
       ],
-      "note": "7e918e6 adds broker-scoped, identity-checked read-only lookups; no live read claimed.",
+      "note": "Broker-scoped, read-only source; no live provider read claimed.",
       "commits": [
         "7e918e6"
       ]
@@ -311,7 +307,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
       ],
-      "note": "Source fixtures pass; positive removal is not covered."
+      "note": "Source fixtures passed; positive removal is not covered."
     },
     {
       "id": "AC-02-t9",
@@ -325,7 +321,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_aws.py"
       ],
-      "note": "Fake-CLI cases passed; no provider-backed absence claim."
+      "note": "Fake-CLI fixtures passed; no provider-backed absence claim."
     },
     {
       "id": "AC-02-c-live-cli",
@@ -338,7 +334,7 @@
         "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py",
         "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py"
       ],
-      "note": "44e99f9 adds fail-closed preflight, private checkpoint storage and sanitized reporting. No effects path is enabled; producer-dependent execution stays under AC-02-c-browser.",
+      "note": "Fail-closed preflight and private checkpoints; effects path remains disabled.",
       "commits": [
         "44e99f9"
       ]
@@ -355,7 +351,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py"
       ],
-      "note": "Private-envelope, expiry, unsafe-file, checkpoint replay/resume and CLI refusal fixtures passed within the 178-test offline suite."
+      "note": "Passed in the prior 178-test offline acceptance suite."
     },
     {
       "id": "AC-03-c1",
@@ -440,7 +436,10 @@
         "AC-02-c-live-cli"
       ],
       "files": [],
-      "note": "Source head 563a298: remote run 37391572253 passed the Superplane / domain and Superplane domain tests checks; selector skipped unrelated browser, controller and persona jobs. Local Python 3.12 full offline domain: 6625 passed, 11 manifest skips, 4 live deselected, 12 subtests passed with the system CA bundle, venv pip and PATH; no live run."
+      "note": "Local full offline domain: 6625 passed, 11 skipped, 4 live deselected, 12 subtests passed. Remote domain job passed on source head 563a298 and board-only head d4deb9c; summary check on d4deb9c was queued at last check.",
+      "commits": [
+        "d4deb9c"
+      ]
     },
     {
       "id": "AC-04-c1",
@@ -477,7 +476,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Ready PR #7052 updated; exact preflight/operator handoff and future executable lifecycle command remain pending."
+      "note": "Next task: update the operator handoff without claiming an executable lifecycle journey."
     },
     {
       "id": "AC-04-t2",
@@ -489,7 +488,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Final-head checks and evaluator handoff pending; foreground owns review/merge."
+      "note": "Final PR-head summary check and handoff verification pending; foreground owns review/merge."
     }
   ]
 }
