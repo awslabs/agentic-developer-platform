@@ -1,5 +1,6 @@
 """Bind recorded cleanup grants and destroy-plan hashes to the original admission."""
 
+from .demo1_cleanup_grants import observe_grants
 from .demo1_evidence import EvidenceError, digest, identifier, instant
 from .demo1_report import reference
 
@@ -11,7 +12,7 @@ def require(condition):
         )
 
 
-def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
+def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, provider):
     selected, original, saved = reader.selected, store.original, store.load()
     require(
         saved is not None
@@ -68,6 +69,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
             "producer_attempt_id",
             "producer_fence_token",
             "grant_count",
+            "grants",
         }
         and observed["status"] == "OBSERVED"
         and observed["scope"] == scope
@@ -85,9 +87,17 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
     identifier(observed["producer_attempt_id"], "cleanup producer attempt")
     for key in hashes:
         digest(observed[key], "cleanup artifact digest")
+    require(
+        isinstance(observed["grants"], list)
+        and observed["grant_count"] == len(observed["grants"])
+    )
+    current = observe_grants(
+        provider, selected, observed["grants"], observed["grant_set_sha256"]
+    )
+    require(store.load() == saved)
     return {
         "status": "OBSERVED",
-        "scope": "immutable preparation and canonical recorded deletion plan only; current grants, fence, provider inventory, plan bytes and cleanup unverified",
+        "scope": "immutable preparation and canonical recorded deletion plan, plus current EKS cleanup entry; Kubernetes grants, fence, provider inventory, plan bytes and cleanup unverified",
         "release_ref": runtime["release_ref"],
         "observed_at": now.isoformat(),
         "recorded_at": observed["recorded_at"],
@@ -95,6 +105,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now):
         "producer_attempt_ref": reference(observed["producer_attempt_id"]),
         "producer_fence_token": observed["producer_fence_token"],
         "grant_count": observed["grant_count"],
+        "current_eks_grants": current,
         **{
             key.removesuffix("_sha256").removesuffix("_id") + "_ref": reference(
                 observed[key]

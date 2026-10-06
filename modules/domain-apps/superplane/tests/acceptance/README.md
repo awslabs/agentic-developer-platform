@@ -470,10 +470,19 @@ request or checkpoints.
 
 `browser.cleanup_preparation.artifact` contains sanitized references for the stored
 grant identities, fence readback, inventory digest, destroy-plan file/JSON/backend
-hashes and producer attempt/fence token. These are **historical preparation records**:
-the reader does not fetch the plan bytes, re-observe live grant or fence state,
-establish complete current resource coverage, or authorize deletion. The original
-private target and operation bindings are checked but not copied into the report.
+hashes and producer attempt/fence token. These are **historical preparation records**.
+The same command then uses the selected provider connection and exact observer role
+to read the recorded cleanup EKS access entry. It checks the immutable entry ARN,
+generation, principal, group mapping and username against the verified artifact,
+requires an empty and complete associated-policy response, then re-reads the entry
+to detect replacement during the observation. The account and role are checked
+before every EKS read; denied, missing, changed or incomplete responses refuse.
+`browser.cleanup_preparation.artifact.current_eks_grants` records only sanitized
+references and the observation time. This read does not establish current Kubernetes
+grants or fence state, fetch plan bytes, establish complete resource coverage, or
+authorize deletion. The original private target and operation bindings and raw grant
+records are checked but not copied into the report. Both checkpoints remain unchanged
+if the observation refuses; no new preparation or deletion is submitted to recover it.
 After that read, the command requests the maintained public retirement preview.
 `browser.retirement_review` matches its exact request inputs to the immutable
 preparation record, including the source lineage, allocations, artifact, policy,
@@ -490,7 +499,9 @@ membership refuses the review. This observer does not acquire the execution
 locks: its database snapshot is evidence, not ongoing authority to delete.
 This is a review read only: it neither requests deletion approval nor submits
 retirement. Canonical recorded coverage does not prove complete current provider
-inventory, live grant/fence state, exact plan-file bytes or successful cleanup.
+inventory, current Kubernetes grant/fence state, exact plan-file bytes or successful
+cleanup. The EKS mapping read is a point-in-time observation, not a lock or continuing
+execution authority.
 Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
 and provider-verified cleanup remain unfinished harness work. Do not remove the
 fence, grant or checkpoints to force another attempt; retain cleanup ownership for

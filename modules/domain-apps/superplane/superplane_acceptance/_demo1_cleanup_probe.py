@@ -280,6 +280,7 @@ async def collect(connect, scope, policy):
                 "producer_attempt_id": row["producer_attempt_id"],
                 "producer_fence_token": row["producer_fence_token"],
                 "grant_count": len(metadata["grants"]),
+                "grants": metadata["grants"],
                 "grant_set_sha256": digest(metadata["grants"]),
                 "fence_sha256": digest(fence),
                 "inventory_sha256": plan.inventory_sha256,

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-06T05:38:11.305Z",
+  "updated_at": "2026-10-06T05:51:28.147Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained merged implementation and prior offline evidence.",
+      "note": "Retained accepted implementation and offline evidence.",
       "commits": [
         "0c74add"
       ]
@@ -37,7 +37,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained implementation and prior linked-evidence verification.",
+      "note": "Retained implementation and linked-evidence verification.",
       "commits": [
         "c7d2d6a"
       ]
@@ -65,7 +65,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Affected foreign-input negatives pass again. New cases reject self-consistent but added, reordered or replaced execution steps and foreign canonical ownership.",
+      "note": "Retained canonical-ownership evidence. Full-plan mismatch regressions pass in this milestone's focused selection.",
       "commits": [
         "023c2a3"
       ]
@@ -81,7 +81,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Affected cleanup and creation recovery regressions pass again. Canonical-review refusals preserve the original checkpoints.",
+      "note": "Affected cleanup and creation recovery regressions pass again. Current-grant refusals preserve both original checkpoints.",
       "commits": [
         "1481dd2"
       ]
@@ -97,7 +97,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Retained evidence. Canonical recorded deletion coverage does not establish provider absence, serving acceptance or zero cost.",
+      "note": "Retained evidence. Current EKS access does not establish cleanup, serving acceptance or zero cost.",
       "commits": [
         "76fa319"
       ]
@@ -112,7 +112,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Retained prior focused provider-evidence results."
+      "note": "Retained prior provider-evidence results."
     },
     {
       "id": "AC-01-t6",
@@ -124,7 +124,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Retained passing report/evidence fixtures."
+      "note": "Retained passing report fixtures."
     },
     {
       "id": "AC-01-c-approval",
@@ -133,10 +133,8 @@
       "title": "Reject foreign-plan and malformed browser approval evidence before creation",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
-      ],
-      "note": "Exact independent approval and decision-before-expiry checks preserved."
+      "files": [],
+      "note": "Accepted independent-approval and expiry checks preserved."
     },
     {
       "id": "AC-01-t7",
@@ -147,10 +145,8 @@
       "covers": [
         "AC-01-c-approval"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
-      "note": "Retained 104 passing browser tests, including executed-JavaScript token-isolation cases; unchanged suite was not repeated."
+      "files": [],
+      "note": "Retained 104-test browser evidence, including executed-JavaScript token isolation; unchanged suite not repeated."
     },
     {
       "id": "AC-01-c-provider-errors",
@@ -160,7 +156,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Accepted error-attribution repair retained."
+      "note": "Accepted error-attribution repair preserved."
     },
     {
       "id": "AC-01-t8",
@@ -172,10 +168,8 @@
         "AC-01-c-provider-errors",
         "AC-02-c-provider"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_aws.py"
-      ],
-      "note": "Retained 40 passing AWS-reader tests; unchanged suite was not repeated."
+      "files": [],
+      "note": "Retained 40-test AWS-reader evidence; unchanged suite not repeated."
     },
     {
       "id": "AC-02-c1",
@@ -184,10 +178,8 @@
       "title": "Expose fixture-mode CLI and sanitized criterion reports",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
-      ],
-      "note": "Fixture behavior retained. Reports now distinguish verified canonical recorded deletion plans from unverified current provider state and cleanup.",
+      "files": [],
+      "note": "Fixture behavior and sanitized reporting preserved. Current EKS evidence remains separate from deletion authority.",
       "commits": [
         "8116dfc"
       ]
@@ -200,7 +192,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained visibility-wait repair and retirement refusal.",
+      "note": "Accepted visibility-wait repair and retirement refusal preserved.",
       "commits": [
         "a1d1fa0"
       ]
@@ -214,10 +206,8 @@
       "covers": [
         "AC-02-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py"
-      ],
-      "note": "Retained prior fixture-CLI evidence; unchanged suite was not repeated."
+      "files": [],
+      "note": "Retained prior fixture-CLI evidence."
     },
     {
       "id": "AC-02-t2",
@@ -229,10 +219,8 @@
         "AC-02-c1",
         "AC-02-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py"
-      ],
-      "note": "Retained CLI refusal evidence. Affected cleanup and journey negatives pass again.",
+      "files": [],
+      "note": "Affected cleanup and journey refusal tests pass again.",
       "commits": [
         "984c5b7"
       ]
@@ -247,7 +235,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Retained C1 fixtures and redraw regression evidence."
+      "note": "Retained C1 and redraw-regression evidence."
     },
     {
       "id": "AC-02-c-preview",
@@ -257,7 +245,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained read-only bindings."
+      "note": "Accepted read-only bindings preserved."
     },
     {
       "id": "AC-02-t6",
@@ -291,12 +279,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_teardown.py"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
       ],
-      "note": "R6 remains repaired. Canonical recorded ownership now compiles the entire teardown request for comparison with the public review. R1 remains open: current provider grant/fence and coverage checks, independent readiness, separately approved destruction/recovery and cleanup reporting are unfinished.",
+      "note": "R1 remains open. Current cleanup EKS entry verification is implemented and tested. Kubernetes grants/fence, resource coverage, readiness, exact plan bytes, separately approved destruction/recovery and cleanup reporting remain unfinished.",
       "commits": [
         "9c7a3ec"
       ]
@@ -311,7 +296,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "deployed-target: #5540 operations evaluator; requires compatible release, working admission, exact target and separate live authorization. Not attempted."
+      "note": "deployed-target: #5540 operations evaluator; requires compatible release, exact target, working admission and separate live authorization. Not attempted."
     },
     {
       "id": "AC-02-c2",
@@ -323,7 +308,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Documented canonical snapshot loading, full compiled-request comparison, sharing/peer and incomplete-ownership refusal, and the distinction between snapshot evidence and ongoing execution authority.",
+      "note": "Updated the existing preparation command's guidance with current EKS mapping checks, refusal behavior and explicit remaining Kubernetes/fence/deletion limitations.",
       "commits": [
         "68d882c"
       ]
@@ -338,11 +323,9 @@
         "AC-02-c2"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_teardown.py",
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Documented cleanup-command tests pass again. Public-documentation checker examined 1,434 files with zero findings."
+      "note": "Documented cleanup CLI fixtures pass. Public-documentation checker examined 1,435 files with zero findings."
     },
     {
       "id": "AC-02-c-provider",
@@ -352,7 +335,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained selected, bounded read-only behavior.",
+      "note": "Accepted selected-connection, bounded read-only behavior preserved.",
       "commits": [
         "7e918e6"
       ]
@@ -366,10 +349,8 @@
       "covers": [
         "AC-02-c-browser"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
-      "note": "Retained 104 passing browser tests. Positive removal remains uncovered."
+      "files": [],
+      "note": "Retained browser evidence. Positive removal remains uncovered."
     },
     {
       "id": "AC-02-t9",
@@ -380,10 +361,7 @@
       "covers": [
         "AC-02-c-provider"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_aws.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_evidence.py"
-      ],
+      "files": [],
       "note": "Retained reader, census and evidence-test results."
     },
     {
@@ -393,11 +371,8 @@
       "title": "Gate live invocation on private authority and persist resumable sanitized evidence",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
-      ],
-      "note": "Checkpoint schemas, scope bindings and current-invocation unsent-restoration safeguards preserved.",
+      "files": [],
+      "note": "Accepted private authority, checkpoint scope and proven-unsent restoration safeguards preserved.",
       "commits": [
         "44e99f9"
       ]
@@ -411,10 +386,8 @@
       "covers": [
         "AC-02-c-live-cli"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py"
-      ],
-      "note": "Retained accepted checkpoint/preflight evidence; unchanged persistence suite was not repeated."
+      "files": [],
+      "note": "Retained accepted checkpoint/preflight evidence."
     },
     {
       "id": "AC-02-c-recovery",
@@ -423,10 +396,8 @@
       "title": "Bind browser recovery to the published operation response and original workspace lineage",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
-      ],
-      "note": "Uncertain creation recovery remains GET-only. Canonical review does not change original request identities."
+      "files": [],
+      "note": "Uncertain creation recovery remains GET-only with original request identities."
     },
     {
       "id": "AC-02-t11",
@@ -437,10 +408,8 @@
       "covers": [
         "AC-02-c-recovery"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
-      "note": "Retained accepted browser recovery evidence; affected journey integrations pass again."
+      "files": [],
+      "note": "Accepted recovery evidence retained; affected journey integrations pass again."
     },
     {
       "id": "AC-02-t12",
@@ -453,11 +422,8 @@
         "AC-02-c2",
         "AC-04-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py",
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Retained scope and legacy-refusal evidence. Full-plan mismatch tests preserve both original checkpoints."
+      "files": [],
+      "note": "Retained scope and preflight evidence. Full-plan and current-grant refusals preserve checkpoints."
     },
     {
       "id": "AC-02-t13",
@@ -468,9 +434,7 @@
       "covers": [
         "AC-02-c-recovery"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
+      "files": [],
       "note": "Retained delayed-recovery and earlier PostgreSQL evidence."
     },
     {
@@ -483,7 +447,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "Preparation, recovery, immutable artifacts and full canonical teardown-request comparison have focused evidence. Complete readiness-to-retirement orchestration and positive provider cleanup remain unverified."
+      "note": "Preparation, recovery, canonical teardown comparison and current EKS mapping have focused evidence. Complete readiness-to-retirement orchestration and positive provider cleanup remain unverified."
     },
     {
       "id": "AC-02-c-runtime",
@@ -492,10 +456,8 @@
       "title": "Verify the selected running API artifact through broker-scoped producer probes",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_runtime.py"
-      ],
-      "note": "Accepted runtime selection and account/role/source/image/schema checks preserved. The cleanup probe reads the selected tenant policy in the pinned runtime; no live probe executed."
+      "files": [],
+      "note": "Accepted runtime selection and exact account/role/source/image/schema bindings preserved; no live probe executed."
     },
     {
       "id": "AC-02-t15",
@@ -508,10 +470,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_runtime.py"
-      ],
-      "note": "Retained runtime-suite evidence. Affected cleanup integration passes with the additional full-request digest."
+      "files": [],
+      "note": "Runtime-suite evidence retained; affected cleanup CLI integration passes with current EKS evidence."
     },
     {
       "id": "AC-02-c-browser-driver",
@@ -523,7 +483,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
       ],
-      "note": "Successful preparation now validates canonical recorded deletion coverage before reporting the matched public review. No deletion approval or retirement submission is performed."
+      "note": "Successful cleanup preparation now verifies the recorded cleanup EKS entry before public teardown review. No deletion approval or submission occurs."
     },
     {
       "id": "AC-02-t16",
@@ -536,10 +496,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py"
-      ],
-      "note": "Journey tests pass again, including accepted timeout retry and no-replay safeguards."
+      "files": [],
+      "note": "Journey integration, timeout retry and no-replay safeguards pass again."
     },
     {
       "id": "AC-02-c-ownership",
@@ -548,11 +506,8 @@
       "title": "Read immutable applied ownership through the exact selected runtime and original request lineage",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_ownership_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_ownership.py"
-      ],
-      "note": "Existing immutable ownership reader preserved; provider-wide current coverage remains separate."
+      "files": [],
+      "note": "Accepted immutable ownership reader preserved; complete current provider coverage remains separate."
     },
     {
       "id": "AC-02-t17",
@@ -566,10 +521,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_ownership.py"
-      ],
-      "note": "Retained accepted ownership evidence; unchanged suite was not repeated."
+      "files": [],
+      "note": "Retained accepted ownership evidence; unchanged suite not repeated."
     },
     {
       "id": "AC-02-c-presend",
@@ -578,9 +531,7 @@
       "title": "Keep definite pre-send refusal retryable without replaying uncertain creation",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
-      ],
+      "files": [],
       "note": "Accepted R6 repair preserved."
     },
     {
@@ -594,10 +545,8 @@
         "AC-02-c-browser-driver",
         "AC-02-c-live-cli"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py"
-      ],
-      "note": "Affected pre-send, safe retry, persistence failure and uncertain-response regressions pass again."
+      "files": [],
+      "note": "Affected pre-send, persistence failure, safe retry and uncertain-response regressions pass again."
     },
     {
       "id": "AC-02-c-provider-wire",
@@ -606,11 +555,8 @@
       "title": "Wire verified ownership to bounded current-provider observations and criterion reporting",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_current.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
-      ],
-      "note": "Accepted census wiring and mode separation retained."
+      "files": [],
+      "note": "Accepted census wiring and mode separation preserved."
     },
     {
       "id": "AC-02-t19",
@@ -626,9 +572,7 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_current.py"
-      ],
+      "files": [],
       "note": "Retained current-provider integration evidence."
     },
     {
@@ -638,12 +582,8 @@
       "title": "Verify admitted continuation ancestry without replacing the original browser request",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_lineage_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_lineage.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
-      ],
-      "note": "Existing lineage paths preserved. Canonical teardown compilation uses the already verified original bootstrap source."
+      "files": [],
+      "note": "Accepted lineage paths and original bootstrap-source binding preserved."
     },
     {
       "id": "AC-02-t20",
@@ -658,11 +598,8 @@
         "AC-02-c-recovery",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_lineage.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
-      "note": "Retained accepted lineage and browser evidence; unchanged suites were not repeated."
+      "files": [],
+      "note": "Retained accepted lineage and browser evidence."
     },
     {
       "id": "AC-02-c-continuation",
@@ -671,11 +608,7 @@
       "title": "Submit one separately approved lifecycle continuation with durable no-replay recovery",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_continuation.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py"
-      ],
+      "files": [],
       "note": "Accepted continuation admission and proven-unsent restoration preserved."
     },
     {
@@ -691,10 +624,8 @@
         "AC-02-c-lineage",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py"
-      ],
-      "note": "Retained 104 passing continuation tests; unchanged suite was not repeated."
+      "files": [],
+      "note": "Retained 104 passing continuation tests; unchanged suite not repeated."
     },
     {
       "id": "AC-02-c-discovery",
@@ -703,11 +634,8 @@
       "title": "Discover bounded compute, storage and network candidates without claiming complete ownership",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_discovery.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_current.py"
-      ],
-      "note": "Accepted census retained; it does not replace canonical ownership, fencing or cleanup authority."
+      "files": [],
+      "note": "Accepted census preserved; it does not replace canonical ownership, fencing or cleanup authority."
     },
     {
       "id": "AC-02-t22",
@@ -721,10 +649,7 @@
         "AC-02-c-provider",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_discovery.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_current.py"
-      ],
+      "files": [],
       "note": "Retained census and provider-integration evidence."
     },
     {
@@ -734,12 +659,8 @@
       "title": "Restore requester authentication using maintained tab-session storage",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_session.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
-      ],
-      "note": "One-time tab-session import, logout behavior and persistent-token exclusion preserved."
+      "files": [],
+      "note": "Accepted one-time session import, logout and persistent-token exclusion preserved."
     },
     {
       "id": "AC-02-t23",
@@ -754,12 +675,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_session.py",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_demo1_browser.py",
-        ".github/workflows/superplane-ui-browser-ci.yml"
-      ],
-      "note": "Earlier Chromium and Node token-isolation evidence retained. This milestone supplies no new Chromium lifecycle or deployed evidence."
+      "files": [],
+      "note": "Earlier Chromium and Node evidence retained; no new Chromium lifecycle or deployed evidence in this milestone."
     },
     {
       "id": "AC-02-c-registration",
@@ -768,10 +685,8 @@
       "title": "Reconcile admitted continuation registration using original saved identities",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_continuation.py"
-      ],
-      "note": "Accepted registration repair preserved; original identities and authority are not renewed."
+      "files": [],
+      "note": "Accepted registration repair preserved; identities and authority are not renewed."
     },
     {
       "id": "AC-02-t24",
@@ -786,11 +701,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py"
-      ],
-      "note": "Retained continuation registration and prior PostgreSQL contract results; unchanged tests were not repeated."
+      "files": [],
+      "note": "Retained registration and PostgreSQL contract evidence."
     },
     {
       "id": "AC-02-c-progress",
@@ -799,11 +711,7 @@
       "title": "Report runtime-bound preparation, apply and bootstrap execution snapshots",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_lineage_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_lineage.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_report.py"
-      ],
+      "files": [],
       "note": "Execution snapshots and unknown-outcome qualifications preserved."
     },
     {
@@ -818,13 +726,8 @@
         "AC-02-c-browser-driver",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_lineage.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py"
-      ],
-      "note": "Affected journey tests pass again; prior lineage, browser and continuation evidence retained."
+      "files": [],
+      "note": "Affected journey tests pass; prior lineage, browser and continuation evidence retained."
     },
     {
       "id": "AC-02-c-checkpoint",
@@ -833,11 +736,8 @@
       "title": "Keep checkpoint persistence bound to the locked private directory",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py"
-      ],
-      "note": "Accepted locked atomic persistence and narrow proven-unsent restoration retained. Canonical observation does not modify checkpoints."
+      "files": [],
+      "note": "Accepted locked atomic persistence and narrow proven-unsent restoration preserved."
     },
     {
       "id": "AC-02-t26",
@@ -852,13 +752,8 @@
         "AC-02-c-presend",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py"
-      ],
-      "note": "Retained accepted persistence evidence. Affected journey refusals and full-plan mismatch checkpoint-preservation tests pass."
+      "files": [],
+      "note": "Retained persistence evidence. Affected journey, teardown mismatch and new grant-refusal checkpoint tests pass."
     },
     {
       "id": "AC-02-c-base",
@@ -868,7 +763,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Controller-prepared base a0b357fded446df2031b221e5a0e75367a3bc173 contains no conflicts. Its staged changes are outside this harness and remain intact over head 6056a0ed2ba4fdac286cd465ac001364bd4c41b5."
+      "note": "Controller-prepared base 941490408d3cb6ea70164e06460f84d58229cb84 has no conflicts. Its two staged documentation changes remain untouched over HEAD c7bed2ab83d55f07b39a81e85af67975bdab5085."
     },
     {
       "id": "AC-02-t27",
@@ -885,7 +780,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Retained accepted merge-reconciliation results. Current prepared base has no unmerged entries; only affected harness checks were run, not unrelated base-package suites."
+      "note": "Prior reconciliation evidence retained. No unmerged entries; staged and unstaged diff checks pass."
     },
     {
       "id": "AC-02-c-access-review",
@@ -894,12 +789,8 @@
       "title": "Read managed cleanup preparation through the guarded browser CLI",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_retirement.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
-      ],
-      "note": "Accepted preparation review-only behavior and request validation retained."
+      "files": [],
+      "note": "Accepted preparation review and request validation preserved."
     },
     {
       "id": "AC-02-t28",
@@ -913,11 +804,8 @@
         "AC-02-c-live-cli",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_retirement.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_access_review.py"
-      ],
-      "note": "Retained accepted preparation-preview and producer-compatibility evidence; unchanged suites were not repeated."
+      "files": [],
+      "note": "Retained preparation-preview and PostgreSQL compatibility evidence."
     },
     {
       "id": "AC-02-c-access-admission",
@@ -926,15 +814,8 @@
       "title": "Admit separately approved cleanup preparation with durable original-request recovery",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_retirement.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py",
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Admission and R6 recovery boundaries preserved. Canonical plan observation neither renews preparation approval nor authorizes deletion."
+      "files": [],
+      "note": "Accepted admission and recovery boundaries preserved. Provider observation does not renew approval."
     },
     {
       "id": "AC-02-t29",
@@ -950,12 +831,8 @@
         "AC-02-c-presend",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py"
-      ],
-      "note": "Cleanup admission/recovery fixtures pass again. Prior three disposable-PostgreSQL checks and independently established inherited-lint diagnosis retained."
+      "files": [],
+      "note": "Cleanup admission/recovery fixtures pass again; prior PostgreSQL checks and inherited-lint diagnosis retained."
     },
     {
       "id": "AC-02-c-unsent-retry",
@@ -964,13 +841,8 @@
       "title": "Restore only transport-proven unsent submissions after persistence timeout",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_continuation.py"
-      ],
-      "note": "Accepted R6 repair preserved at controller checkpoint 6056a0e. Only the current locked, proven-unsent transition can restore its previous state; uncertain transmission remains non-replayable."
+      "files": [],
+      "note": "Accepted R6 repair preserved. Uncertain transmission remains non-replayable."
     },
     {
       "id": "AC-02-t30",
@@ -987,13 +859,8 @@
         "AC-02-c-browser-driver",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py"
-      ],
-      "note": "Retained accepted 337-test R6 milestone. Its cleanup and creation timeout/recovery regressions pass again in the current affected selection."
+      "files": [],
+      "note": "Retained accepted 337-test R6 evidence; affected cleanup and creation regressions pass again."
     },
     {
       "id": "AC-02-c-cleanup-evidence",
@@ -1004,11 +871,9 @@
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_runtime.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py"
       ],
-      "note": "Accepted immutable validation retained. JSON sequence fields are reconstructed to the maintained plan types before compilation. The report adds a sanitized full-request digest; current provider authority and cleanup remain unverified."
+      "note": "The probe now returns verified grant records for independent EKS comparison. Raw records are not copied into the public report."
     },
     {
       "id": "AC-02-t31",
@@ -1027,7 +892,7 @@
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py"
       ],
-      "note": "Artifact CLI and producer-compatibility tests pass again. A new compiler compatibility failure exposed JSON list/tuple reconstruction and was repaired. The compiler fixture uses synthetic provider facts and a supplied canonical inventory; the new snapshot suite independently exercises real disposable-PostgreSQL inventory reads."
+      "note": "Artifact CLI and producer-compatibility tests pass, including exported grant-record/digest consistency and malformed grant refusal."
     },
     {
       "id": "AC-02-c-teardown-review",
@@ -1036,14 +901,8 @@
       "title": "Match public teardown review to verified preparation and saved destroy metadata",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_teardown.py",
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Public review now additionally requires the full canonical compiled-request digest. Its evidence remains BLOCKED for current grants, fencing, provider coverage, separate approval and cleanup."
+      "files": [],
+      "note": "Full canonical request matching preserved. Deletion approval, admission and cleanup remain incomplete."
     },
     {
       "id": "AC-02-t32",
@@ -1058,12 +917,8 @@
         "AC-02-c-access-review",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_teardown.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py"
-      ],
-      "note": "Retained prior 159-test milestone. Affected teardown, artifact and compiler tests pass again, including new full-request comparisons."
+      "files": [],
+      "note": "Affected teardown, artifact and compiler tests pass again."
     },
     {
       "id": "AC-02-c-canonical-review",
@@ -1072,14 +927,8 @@
       "title": "Compile and verify the complete recorded teardown plan from a canonical snapshot",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_teardown.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Added as a bounded prerequisite for AC-02-c-browser before deletion submission. Reuses the maintained canonical inventory loader inside the existing repeatable read-only snapshot, without acquiring execution locks. Loads registration, sharing/peer state and completed bootstrap ownership; compiles the complete recorded teardown request with the selected tenant policy and verified original source/artifact; matches every ordered execution step through the full request digest. Does not claim current provider coverage or ongoing deletion authority."
+      "files": [],
+      "note": "Accepted read-only canonical snapshot and full compiled-request comparison preserved. No execution locks or ongoing deletion authority claimed."
     },
     {
       "id": "AC-02-t33",
@@ -1094,13 +943,43 @@
         "AC-02-c-browser-driver",
         "AC-02-c2"
       ],
+      "files": [],
+      "note": "Retained prior 138-test milestone, including real PostgreSQL snapshot tests. Full-plan mismatch tests pass again; unchanged snapshot suite not repeated."
+    },
+    {
+      "id": "AC-02-c-current-grants",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Verify the recorded cleanup EKS entry through the selected provider connection",
+      "status": "done",
+      "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_canonical_snapshot.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_teardown.py"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_grants.py",
+        "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "From /work/repo, using /tmp/adp-5539-review-venv/bin/python: pytest workspace_provisioning/tests/{test_demo1_cleanup_probe,test_demo1_canonical_snapshot}.py and tests/acceptance/{test_demo1_cleanup_evidence,test_demo1_teardown}.py under modules/domain-apps/superplane with -q -x --tb=short: 69 passed. Separate affected tests/acceptance/{test_demo1_cleanup,test_demo1_journey}.py: 69 passed. Real disposable-PostgreSQL cases verify read-only repeatable isolation, no advisory locks, parity with the maintained locked loader, foreign/shared/peer/incomplete ownership refusal and consistent snapshots across concurrent changes. Compiler tests reject incomplete inventory and changed policy; CLI tests reject added, reordered or replaced steps with self-consistent public hashes. Eight-file Ruff lint/format, public-doc checker and staged/unstaged diff checks passed. Local work is over 6056a0ed2ba4fdac286cd465ac001364bd4c41b5 with controller-prepared base a0b357fded446df2031b221e5a0e75367a3bc173."
+      "note": "Added as a bounded prerequisite for AC-02-c-browser. Reuses maintained EksGrants validation, checks selected account/role before each bounded read, compares immutable entry identity, rejects associated policies or incomplete responses, and rechecks the entry after policy enumeration. Reports sanitized point-in-time evidence only; Kubernetes grants, fence and deletion authority remain unverified."
+    },
+    {
+      "id": "AC-02-t34",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run current cleanup EKS mapping and checkpoint-preserving refusal offline fixtures",
+      "status": "done",
+      "covers": [
+        "AC-02-c-current-grants",
+        "AC-02-c-cleanup-evidence",
+        "AC-02-c-browser-driver",
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_grants.py",
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py"
+      ],
+      "note": "From /work/repo, /tmp/adp-5539-review-venv/bin/python -m pytest modules/domain-apps/superplane/tests/acceptance/{test_demo1_cleanup_grants,test_demo1_cleanup_evidence,test_demo1_teardown,test_demo1_cleanup,test_demo1_journey}.py modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py -q -x --tb=short: 161 passed, no skips, one XDG_RUNTIME_DIR fallback warning. Synthetic responses cover wrong role/account, foreign or replaced entries, changed grants, broadened policies, incomplete reads, denied/missing responses, timeouts, expired scope and checkpoint preservation. Seven-file Ruff lint/format, public-doc checker and staged/unstaged diff checks passed. No live calls executed."
     },
     {
       "id": "AC-03-c1",
@@ -1123,7 +1002,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Retained implementation; Chromium remains a separate executable check."
+      "note": "Accepted implementation preserved; Chromium remains a separate executable check."
     },
     {
       "id": "AC-03-t1",
@@ -1158,9 +1037,7 @@
       "covers": [
         "AC-03-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py"
-      ],
+      "files": [],
       "note": "Dependency-refusal regression passes again."
     },
     {
@@ -1173,7 +1050,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Historical CI and Chromium evidence retained; final-head CI remains pending."
+      "note": "Historical CI and Chromium evidence retained; final-head CI pending."
     },
     {
       "id": "AC-03-t5",
@@ -1206,10 +1083,11 @@
         "AC-02-c-unsent-retry",
         "AC-02-c-cleanup-evidence",
         "AC-02-c-teardown-review",
-        "AC-02-c-canonical-review"
+        "AC-02-c-canonical-review",
+        "AC-02-c-current-grants"
       ],
       "files": [],
-      "note": "This milestone has 138 passing focused tests across two selections. Full affected offline suites, maintained Chromium lifecycle coverage and required CI on the final published head remain pending.",
+      "note": "This milestone has 161 passing focused tests. Full affected suites, maintained Chromium lifecycle coverage and required CI on the final published head remain pending.",
       "commits": [
         "d4deb9c"
       ]
@@ -1249,7 +1127,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Controller supplied checkpoint 6056a0ed2ba4fdac286cd465ac001364bd4c41b5. This canonical-review milestone and the newly prepared base remain local for controller publication; no GitHub operations were performed.",
+      "note": "Prior publication retained at controller-supplied HEAD c7bed2ab83d55f07b39a81e85af67975bdab5085. This milestone remains local for controller publication; no commit, GitHub or credential operations performed.",
       "commits": [
         "63e9cdd"
       ]
@@ -1264,7 +1142,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Prepared base and accepted repairs remain preserved with no conflicts. Final implementation, functional/security review, published-head checks, verified #7057 merge and controller merge verification remain pending. No live acceptance or issue closure claimed.",
+      "note": "Final implementation, functional/security review, final-head checks, verified #7057 merge and controller merge verification remain pending. Prepared base is conflict-free and preserved. No live acceptance or issue closure claimed.",
       "commits": [
         "24d2a7a"
       ]

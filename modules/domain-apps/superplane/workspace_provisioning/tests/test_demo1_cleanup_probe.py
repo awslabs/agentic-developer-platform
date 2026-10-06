@@ -205,6 +205,10 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
     assert result["status"] == "OBSERVED" and result["scope"] == records.scope
     assert result["artifact_id"] == records.row["artifact_id"]
     assert result["grant_count"] == len(records.plan.grants)
+    assert (
+        result["grants"] == json.loads(records.row["artifact_metadata_json"])["grants"]
+    )
+    assert digest(result["grants"]) == result["grant_set_sha256"]
     assert result["plan_file_sha256"] == "d" * 64
     inventory, plan, _, _, policy, _ = composed
     source = SimpleNamespace(

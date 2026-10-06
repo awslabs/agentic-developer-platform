@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from datetime import UTC, datetime
 
@@ -154,18 +155,38 @@ def advance_browser(
                         clock=clock,
                     )
                     if result["cleanup_preparation"].get("state") == "succeeded":
+                        from .demo1_aws import AwsProviderReader
                         from .demo1_cleanup_evidence import observe_cleanup
                         from .demo1_teardown import read_teardown_review
 
+                        def provider_run(command, **options):
+                            options["timeout"] = min(
+                                options.get("timeout", 30), remaining_ms() / 1000
+                            )
+                            options.pop("check", None)
+                            response = subprocess.run(command, check=False, **options)
+                            remaining_ms()
+                            return response
+
+                        provider = AwsProviderReader(
+                            connection_id=selected.connection_id,
+                            broker_label=envelope.broker_label,
+                            account=selected.account,
+                            role_name=selected.role,
+                            region=selected.region,
+                            runner=provider_run,
+                            clock=clock,
+                        )
                         result["cleanup_preparation"]["artifact"] = observe_cleanup(
                             reader,
                             cleanup_store,
                             result["cleanup_preparation"],
                             remaining_ms() / 1000,
                             now=clock(),
+                            provider=provider,
                         )
                         result["cleanup_preparation"]["reason"] = (
-                            "immutable preparation and canonical recorded deletion plan verified; current grants, fence, provider inventory and deletion remain unverified"
+                            "immutable preparation, canonical recorded deletion plan and current EKS cleanup entry verified; Kubernetes grants, fence, provider inventory and deletion remain unverified"
                         )
                         _, result["retirement_review"] = read_teardown_review(
                             selected,
