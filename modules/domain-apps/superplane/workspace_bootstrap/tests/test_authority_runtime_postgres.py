@@ -12,6 +12,7 @@ from superplane_bootstrap.authority_backend import BootstrapClients
 from superplane_bootstrap.authority_runtime import BootstrapAuthorityFactory
 from superplane_bootstrap.grant_plan import ADMIN_POLICY, BootstrapRelease
 from superplane_bootstrap.registry import SqlRegistrationStore
+from superplane_bootstrap.retirement_fence import WORKLOADS
 from superplane_bootstrap.target import verify_target
 from superplane_bootstrap.workspace import recover_interrupted_bootstrap
 
@@ -56,6 +57,12 @@ RESOURCES = {
     "ClusterRole": ("rbac.authorization.k8s.io", "clusterroles"),
     "ClusterRoleBinding": ("rbac.authorization.k8s.io", "clusterrolebindings"),
 }
+RESOURCES.update(
+    {
+        kind: (version.split("/")[0] if "/" in version else "", resource)
+        for version, kind, resource in WORKLOADS
+    }
+)
 
 
 class Cloud:
@@ -245,8 +252,64 @@ class Cloud:
                 ):
                     raise ApiError(403)
 
-            def get(self, *, name=None, namespace=None):
+            def get(self, *, name=None, namespace=None, limit=None, _continue=None):
                 self.check("get" if name else "list", namespace, name)
+                if limit is not None:
+                    assert name is None and type(limit) is int and 1 <= limit <= 100
+                    observed = {
+                        key: value
+                        for key, value in cloud.objects.items()
+                        if key[0] == self.kind
+                    }
+                    observed.update(
+                        {
+                            key: value
+                            for key, value in getattr(
+                                cloud.cluster, "components", {}
+                            ).items()
+                            if key[0] == self.kind
+                        }
+                    )
+                    if self.kind == "Deployment":
+                        for (
+                            ns,
+                            deployment,
+                        ), value in cloud.cluster.deployments.items():
+                            observed.setdefault(
+                                ("Deployment", ns, deployment),
+                                {
+                                    "apiVersion": "apps/v1",
+                                    "kind": "Deployment",
+                                    "metadata": {
+                                        "name": deployment,
+                                        "namespace": ns,
+                                        "uid": "fixture-system-"
+                                        + ns
+                                        + "-"
+                                        + deployment,
+                                    },
+                                    "spec": {
+                                        "template": {
+                                            "spec": {
+                                                "containers": [
+                                                    {"image": value["image"]}
+                                                ]
+                                            }
+                                        }
+                                    },
+                                },
+                            )
+                    items = [
+                        deepcopy(value)
+                        for key, value in sorted(observed.items())
+                        if namespace is None or key[1] == namespace
+                    ]
+                    start = int(_continue or 0)
+                    end = start + limit
+                    return {
+                        "items": items[start:end],
+                        "metadata": {"continue": str(end) if end < len(items) else ""},
+                    }
                 if name is None and self.kind == "Deployment":
                     if hasattr(cloud.cluster, "components"):
                         items = []
@@ -940,11 +1003,54 @@ def test_managed_bootstrap_journals_dormant_exact_cleanup_grants(runtime):
         assert identity["generation"] == spec["generation"]
         assert progress[spec["key"]]["phase"] == "granted"
         rules = spec["body"].get("rules", [])
-        assert all(set(rule["verbs"]) == {"get", "delete"} for rule in rules)
-        assert all(rule.get("resourceNames") for rule in rules)
+        for rule in rules:
+            if set(rule["verbs"]) == {"get", "list"}:
+                assert spec["key"] == "cleanup-cluster-role"
+                assert not rule.get("resourceNames")
+                expected = {
+                    "": {
+                        "pods",
+                        "persistentvolumeclaims",
+                        "persistentvolumes",
+                        "services",
+                    },
+                    "apps": {
+                        "deployments",
+                        "replicasets",
+                        "statefulsets",
+                        "daemonsets",
+                    },
+                    "batch": {"jobs", "cronjobs"},
+                }
+                assert set(rule["resources"]) == expected[rule["apiGroups"][0]]
+            elif set(rule["verbs"]) == {"list"}:
+                assert spec["key"] == "cleanup-namespace-role"
+                assert rule["apiGroups"] == [""]
+                assert rule["resources"] == ["secrets"]
+                assert not rule.get("resourceNames")
+            elif "patch" in rule["verbs"]:
+                assert spec["key"] == "cleanup-cluster-role"
+                assert set(rule["verbs"]) == {"get", "patch"}
+                assert rule["apiGroups"] == ["admissionregistration.k8s.io"]
+                assert set(rule["resources"]) == {
+                    "validatingadmissionpolicies",
+                    "validatingadmissionpolicybindings",
+                }
+                fence = next(
+                    s for s in plan["grants"] if s["key"] == "retirement-fence-policy"
+                )
+                assert rule["resourceNames"] == [fence["body"]["metadata"]["name"]]
+            else:
+                assert set(rule["verbs"]) == {"get", "delete"}
+                assert rule.get("resourceNames")
     cluster = next(s for s in grants if s["key"] == "cleanup-cluster-role")
-    assert cluster["body"]["rules"][0]["resourceNames"] == [NAMESPACE]
-    assert all("*" not in rule["resourceNames"] for rule in cluster["body"]["rules"])
+    namespace = next(
+        rule for rule in cluster["body"]["rules"] if rule["resources"] == ["namespaces"]
+    )
+    assert namespace["resourceNames"] == [NAMESPACE]
+    assert all(
+        "*" not in rule.get("resourceNames", []) for rule in cluster["body"]["rules"]
+    )
 
 
 def test_existing_eks_mapping_refuses_dormant_cleanup_grant(runtime, monkeypatch):

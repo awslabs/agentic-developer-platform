@@ -82,6 +82,10 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
 ):
     harness = bootstrap_harness
     cluster = _FakeCluster()
+    # This scenario starts from the maintained fresh managed module. The generic
+    # adopted-cluster fixture adds EBS CSI, which this module does not provision;
+    # the original workload baseline must not claim that unrelated deployment.
+    cluster.deployments.pop(("kube-system", "ebs-csi-controller"))
     config = runtime_config()
     config.update(
         namespace=identities.NAMESPACE,
