@@ -31,7 +31,7 @@ run "skypilot_release_is_bounded" {
   }
   assert {
     condition     = module.superplane_skypilot_deployment.access_associations[0].policy_arn == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-    error_message = "The namespace-scoped association must permit its own Namespace security labels."
+    error_message = "Retain namespace workload administration; Namespace security labels require separately authorized installer/bootstrap access."
   }
   assert {
     condition     = jsondecode(module.superplane_skypilot_deployment.deployment_roles[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:aws-e/adp:environment:adp-skypilot-deploy-test"

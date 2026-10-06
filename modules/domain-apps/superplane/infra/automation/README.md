@@ -11,7 +11,10 @@ installer does not manage automation identities or enable these capabilities.
 - `skypilot-deployment` owns the dedicated deployment role, its SSM/cluster
   discovery policy, EKS access entry and namespace-scoped access association.
   It retains the protected `adp-skypilot-deploy-<environment>` OIDC subject and
-  cannot deploy the Superplane control plane.
+  cannot deploy the Superplane control plane. Namespace-scoped access administers
+  workloads, but does not authorize writes to the cluster-scoped Namespace
+  object. Namespace creation and security labels require a separately authorized
+  installer/bootstrap path.
 
 The wrapper retains all existing public inputs and default-off behavior. The
 platform's explicit selected build inventory is still an authorization input:
