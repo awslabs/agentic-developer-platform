@@ -6,6 +6,7 @@ unmodified. Only cloud and subprocess transports are doubled.
 """
 
 import json
+from builtins import ExceptionGroup
 
 import pytest
 from harness_jobs.identity import ContractViolation
