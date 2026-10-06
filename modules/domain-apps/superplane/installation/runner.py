@@ -2784,10 +2784,18 @@ class Installer:
             "Receipt has no retained lock or temporary namespace",
         )
         self.target(verify_source=False)
-        for doc in (
+        recovery_jobs = [
             migration_job(self.env, self.lock, self.run_id),
             bootstrap_job(self.env, self.lock, self.run_id),
-        ):
+        ]
+        state = self.receipt.get("lifecycle_foundations", {}).get(
+            "PersistentVolumeClaim"
+        )
+        if self.env.get("lifecycle_foundations") and state:
+            from .lifecycle_foundations import probe_job
+
+            recovery_jobs.append(probe_job(self, state["uid"]))
+        for doc in recovery_jobs:
             job = self.existing(doc)
             require(
                 job is None

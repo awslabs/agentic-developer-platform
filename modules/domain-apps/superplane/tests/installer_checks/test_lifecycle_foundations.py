@@ -110,7 +110,15 @@ class Cluster:
     def apply(self, docs):
         for doc in docs:
             self.writes.append(copy.deepcopy(doc))
-            self.put(doc)
+            current = self.put(doc)
+            self.receipt["objects"].append(
+                {
+                    "kind": doc["kind"],
+                    "name": doc["metadata"]["name"],
+                    "namespace": doc["metadata"]["namespace"],
+                    "uid": current["metadata"]["uid"],
+                }
+            )
 
     def wait_job(self, job):
         pvc = next(
@@ -153,7 +161,10 @@ def test_owned_create_and_replay_are_idempotent_and_pin_live_storage(setup):
     ]
     assert cluster.receipt[owner.KEY]["PersistentVolume"]["uid"] == "pv-1"
     assert cluster.receipt[owner.KEY]["retained"] is True
-    assert cluster.receipt["objects"] == []  # state is never cleanup workload inventory
+    assert {value["kind"] for value in cluster.receipt["objects"]} == {
+        "Job",
+        "ServiceAccount",
+    }  # state is never cleanup workload inventory
     owner.prepare(cluster)
     assert len(cluster.writes) == 4
     job = cluster.writes[-1]
@@ -328,3 +339,38 @@ def test_probe_service_account_cannot_carry_ambient_aws_identity(setup):
     account["metadata"]["annotations"] = {"eks.amazonaws.com/role-arn": "unreviewed"}
     with pytest.raises(Refusal, match="unexpected authority"):
         owner.prepare(cluster)
+
+
+def test_lock_recovery_waits_for_existing_storage_probe(setup):
+    from installation.runner import Installer
+
+    env, lock = setup
+    installer = SimpleNamespace(
+        env=env,
+        lock=lock,
+        owner=identity(env),
+        run_id="0123456789abcdef",
+        bucket="owned-state",
+        lock_key="owned-lock",
+        target=Mock(),
+        save=Mock(),
+        release_lock=Mock(),
+        terminal=Installer.terminal,
+        receipt={
+            "remote_lock": {
+                "bucket": "owned-state",
+                "key": "owned-lock",
+                "etag": "exact",
+            },
+            owner.KEY: {"PersistentVolumeClaim": {"uid": "claim-1"}},
+        },
+    )
+    probe = owner.probe_job(installer, "claim-1")
+    installer.existing = (
+        lambda doc: probe
+        if doc["metadata"]["name"] == probe["metadata"]["name"]
+        else None
+    )
+    with pytest.raises(Refusal, match="nonterminal"):
+        Installer.recover_lock(installer, installer.run_id)
+    installer.release_lock.assert_not_called()
