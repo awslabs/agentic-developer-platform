@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.middleware.auth import get_current_org
 from app.database import get_session
+from app.middleware.auth import get_current_org
 from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
 from app.services.retirement import admit_retirement, preview_retirement
 

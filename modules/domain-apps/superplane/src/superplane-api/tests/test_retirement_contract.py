@@ -3,8 +3,6 @@
 import uuid
 
 import pytest
-from pydantic import ValidationError
-
 from app.routers.retirement import (
     RetirementAdmission,
     RetirementAdmissionResponse,
@@ -12,6 +10,7 @@ from app.routers.retirement import (
     RetirementReviewResponse,
     router,
 )
+from pydantic import ValidationError
 
 
 def test_retirement_http_contract_keeps_approval_and_idempotency_explicit():
@@ -49,7 +48,9 @@ def test_admission_receipt_cannot_claim_terminal_cleanup():
         "original_allocation_id": "original",
         "control_allocation_id": "control",
     }
-    assert RetirementAdmissionResponse.model_validate(receipt).retirement_complete is False
+    assert (
+        RetirementAdmissionResponse.model_validate(receipt).retirement_complete is False
+    )
     with pytest.raises(ValidationError):
         RetirementAdmissionResponse.model_validate(
             {**receipt, "retirement_complete": True}
