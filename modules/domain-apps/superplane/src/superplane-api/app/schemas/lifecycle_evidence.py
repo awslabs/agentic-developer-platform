@@ -52,3 +52,4 @@ class CleanupPreparationEvidence(HistoricalEvidence):
     plan_json_sha256: Sha256
     backend_sha256: Sha256
     retirement_plan_sha256: Sha256
+    retirement_revision_sha256: Sha256

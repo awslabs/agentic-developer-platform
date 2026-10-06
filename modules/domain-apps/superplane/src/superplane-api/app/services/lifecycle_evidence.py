@@ -222,4 +222,5 @@ async def cleanup_preparation(
         plan_json_sha256=destroy["plan_json_sha256"],
         backend_sha256=destroy["backend_sha256"],
         retirement_plan_sha256=request.parameters["plan_revision"],
+        retirement_revision_sha256=payload_digest(request),
     )

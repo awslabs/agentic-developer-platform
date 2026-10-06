@@ -186,6 +186,7 @@ def test_preview_retains_concrete_approval_and_compiled_revision(
                         proof.retirement_plan_sha256
                         == request.parameters["plan_revision"]
                     )
+                    assert proof.retirement_revision_sha256 == review["revision"]
                     assert proof.preparation_revision == paid["plan_digest"]
                     assert proof.artifact_id == case.access["artifact_id"]
                     assert (

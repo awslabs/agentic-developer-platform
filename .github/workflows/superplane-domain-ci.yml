@@ -355,6 +355,8 @@ jobs:
         # No AWS: the suite uses aiosqlite in-memory and fakes its clients, which is what
         # keeps it runnable on this credential-free hosted runner.
         working-directory: modules/domain-apps/superplane/src/superplane-api
+        env:
+          WORKSPACE_PROVISIONING_REQUIRE_POSTGRES: '1'
         run: |
           set -euo pipefail
           # The domain authorization policy (#5044, U9) that `app/auth.py` imports to
