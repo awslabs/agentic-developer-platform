@@ -22,7 +22,9 @@ def test_dedicated_bootstrap_refuses_unverified_reference_before_effects(admitte
     )
 
     def forbidden():
-        raise AssertionError("mismatched reference must refuse before authority/effects")
+        raise AssertionError(
+            "mismatched reference must refuse before authority/effects"
+        )
 
     with pytest.raises(LifecycleRefused, match="admitted vault reference"):
         bootstrap(

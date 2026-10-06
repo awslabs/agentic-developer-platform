@@ -19,9 +19,10 @@ from workspace_provisioning.retirement_runtime import RetirementRecoveryObserver
 from .postgres_bridge import Harness, requires_harness_postgres
 from .test_retirement_adapters import owned as _owned
 from .test_retirement_execution_postgres import _Cloud, _open, _principal, _Worker
-from .test_retirement_terraform import reviewed as reviewed
+from . import test_retirement_terraform as terraform_fixtures
 
 ownership_fixture = _owned
+reviewed = terraform_fixtures.reviewed
 
 pytestmark = requires_harness_postgres
 
@@ -206,8 +207,10 @@ def test_successor_requires_original_reviewed_destroy_before_observing(
             if changed == "missing":
                 return inventory, remover, None
             if changed == "allocation":
-                return inventory, remover, replace(
-                    artifact, original_allocation_id="another-allocation"
+                return (
+                    inventory,
+                    remover,
+                    replace(artifact, original_allocation_id="another-allocation"),
                 )
             return inventory, remover, artifact
 

@@ -55,7 +55,17 @@ pytestmark = requires_harness_postgres
 
 
 async def _execute_managed_revoke(
-    harness, facade, principal, arguments, plan, artifact, paid_operation_id, monkeypatch, case, cloud, deployment
+    harness,
+    facade,
+    principal,
+    arguments,
+    plan,
+    artifact,
+    paid_operation_id,
+    monkeypatch,
+    case,
+    cloud,
+    deployment,
 ):
     output = StringIO()
     context = MigrationContext.configure(
@@ -111,7 +121,9 @@ async def _execute_managed_revoke(
     )
     lease = await harness.lease(progress.operation_id, holder="retirement-worker")
     async with harness.connect() as connection:
-        record = await OperationStore().get(connection, principal, progress.operation_id)
+        record = await OperationStore().get(
+            connection, principal, progress.operation_id
+        )
     operation = SimpleNamespace(
         grant=SimpleNamespace(lease=lease, principal=principal),
         request=record.admitted_request(),
@@ -131,9 +143,9 @@ async def _execute_managed_revoke(
             policy=deployment,
             policy_fixture=True,
         )
-        access_for = lambda current, inventory: resolve_managed_control(
-            current, inventory, trusted_context
-        )
+
+        def access_for(current, inventory):
+            return resolve_managed_control(current, inventory, trusted_context)
     else:
         access_for = AsyncMock(return_value=(plan, paid_operation_id))
     if case == "confirmed":
@@ -196,7 +208,8 @@ async def _execute_managed_revoke(
         async with harness.connect() as connection:
             await connection.execute(
                 "UPDATE harness_approval_consumption SET reservation_state='released' "
-                "WHERE operation_id=$1", artifact["source_operation_id"]
+                "WHERE operation_id=$1",
+                artifact["source_operation_id"],
             )
     elif case == "missing":
         async with harness.connect() as connection:
@@ -225,10 +238,13 @@ async def _execute_managed_revoke(
         assert cloud.mutations == before
         assert arguments["eks"].observe(plan.grants[0]) is not None
     async with harness.connect() as connection:
-        assert await connection.fetchval(
-            "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
-            plan.original_allocation_id,
-        ) == "reviewed-paid-apply"
+        assert (
+            await connection.fetchval(
+                "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
+                plan.original_allocation_id,
+            )
+            == "reviewed-paid-apply"
+        )
 
 
 @pytest.mark.parametrize(

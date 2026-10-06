@@ -13,8 +13,12 @@ from .test_retirement_plan import inventory
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed", ["action", "adopted", "tenant", "allocation", "receipt"])
-async def test_control_resolution_refuses_unapproved_scope_before_artifact_read(changed):
+@pytest.mark.parametrize(
+    "changed", ["action", "adopted", "tenant", "allocation", "receipt"]
+)
+async def test_control_resolution_refuses_unapproved_scope_before_artifact_read(
+    changed,
+):
     owned = inventory()
     parameters = {
         "original_allocation_id": "paid-allocation",

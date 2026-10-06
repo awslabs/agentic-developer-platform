@@ -102,7 +102,9 @@ async def registration_values(
         allocation.operation_id == source.operation_id
         or parameters["retirement_prepare_destroy"] != "v1"
     ):
-        raise LifecycleRefused("destroy preparation requires original managed ownership")
+        raise LifecycleRefused(
+            "destroy preparation requires original managed ownership"
+        )
     try:
         retirement_id = str(uuid.UUID(str(request_id)))
         derived_request, derived_allocation = access_identity(

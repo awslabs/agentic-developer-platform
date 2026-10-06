@@ -164,7 +164,9 @@ def access_request(
     }
     if prepare_destroy:
         if not managed or plan.fence_recipe is None:
-            raise LifecycleRefused("destroy preparation requires approved managed fence")
+            raise LifecycleRefused(
+                "destroy preparation requires approved managed fence"
+            )
         parameters["retirement_prepare_destroy"] = "v1"
     parameters["plan_revision"] = request_revision(parameters)
     parameters["execution_steps"] = execution_steps(

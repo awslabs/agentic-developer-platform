@@ -166,7 +166,9 @@ async def record_access_artifact(facts, effects, identities, **prepared):
 
     operation, plan = facts.operation, facts.plan
     lease = operation.grant.lease
-    if bool(prepared) != (operation.request.parameters.get("retirement_prepare_destroy") == "v1"):
+    if bool(prepared) != (
+        operation.request.parameters.get("retirement_prepare_destroy") == "v1"
+    ):
         raise LifecycleRefused("cleanup preparation evidence differs from approval")
     metadata = access_metadata(plan, identities, **prepared)
     confirmed = dict(identities)
