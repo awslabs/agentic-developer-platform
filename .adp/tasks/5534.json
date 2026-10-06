@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:43:48.186Z",
+  "updated_at": "2026-10-06T00:54:12.524Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,10 +11,10 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_inventory.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py"
       ],
-      "note": "bc6d025 adds pre-create and post-readback mapping guards. Allocation-bound production activation and exact revocation remain unwired.",
+      "note": "73430b4 adds managed review and live rechecks; admitted PostgreSQL activation and exact revocation remain.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -22,7 +22,8 @@
         "44742a1",
         "1e0168e",
         "46ba891",
-        "bc6d025"
+        "bc6d025",
+        "73430b4"
       ]
     },
     {
@@ -37,7 +38,7 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
       ],
-      "note": "22 managed tests passed with zero skips; effect tests use a doubled EKS transport and in-memory journal, not admitted PostgreSQL control execution."
+      "note": "32 managed tests passed with no skips; production allocation-bound activation and revocation are not proved."
     },
     {
       "id": "AC-01-c2",
@@ -76,7 +77,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Not run for the production producer."
+      "note": "Not run against the production retirement producer."
     },
     {
       "id": "AC-01-t4",
@@ -89,7 +90,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Offline mapping denial passes; admitted-effect denial remains."
+      "note": "Review/live-drift denial passes offline; admitted-effect denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -99,7 +100,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Review-only refusal remains."
+      "note": "Retirement admission remains review-only."
     },
     {
       "id": "AC-02-c2",
@@ -128,10 +129,8 @@
       "title": "Expose the admitted retirement producer contract",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/retirement_access.py"
-      ],
-      "note": "007a599 publishes unmounted access preview and receipt models; managed producer and worker wiring remain.",
+      "files": [],
+      "note": "Access review and guarded worker path advanced; managed producer registration remains.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -151,9 +150,9 @@
         "AC-02-c-wire"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_contract.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py"
       ],
-      "note": "Access contract and adopted-access API selection passed 10/10; no admitted managed API-to-producer test."
+      "note": "10 API contract tests passed; no admitted managed API-to-producer test."
     },
     {
       "id": "AC-02-t2",
@@ -188,7 +187,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Focused local suites passed; final-head full suites and required CI remain."
+      "note": "Changed-package checks passed locally; full suites and required CI remain."
     },
     {
       "id": "AC-04-c1",
