@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-06T00:45:49.638Z",
+  "updated_at": "2026-10-06T01:28:25.615Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -370,7 +370,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Fixture browser workflow 37392225344 passed; not live acceptance.",
+      "note": "Fixture browser workflow passed; not live acceptance.",
       "commits": [
         "194af4a",
         "c277efb",
@@ -423,7 +423,7 @@
         "AC-05-c3"
       ],
       "files": [],
-      "note": "Fixture browser workflow 37392735728 passed; not live acceptance.",
+      "note": "Fixture browser workflow passed; not live acceptance.",
       "commits": [
         "e08e3cd"
       ]
@@ -453,10 +453,11 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
         "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
       ],
-      "note": "Open: 7a05251 CLI parity repair and 3e1e18d UI/API contract-format repairs. Local 178 frontend suites/2971 tests, TypeScript, domain-UI lint, 136 CLI onboarding, 46 browser fixture and 21 UI contract tests pass. Gateway CI 37394778280 succeeded on 7a05251; browser in domain run 37397760708 passed on 3e1e18d, but its UI/API matrix jobs are still queued. Full npm lint fails on five unchanged base directives tracked in #7066; do not claim final affected CI or AC-06 acceptance yet.",
+      "note": "Repairs 7a05251 and 3e1e18d. Local 178 frontend suites/2,971 tests, TypeScript, domain-UI lint, 136 CLI tests, 46 fixture tests and 21 UI contract tests pass. Gateway CI 37394778280 succeeds; browser in domain run 37397760708 succeeds, but its UI/API jobs remain queued. Full npm lint fails on five unchanged base directives (#7066). Final affected CI and AC-06 acceptance are not established.",
       "commits": [
         "cc2b40a",
         "7a05251",
+        "4caaf18",
         "3e1e18d"
       ]
     },
