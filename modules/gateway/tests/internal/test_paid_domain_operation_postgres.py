@@ -127,6 +127,8 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         "org/repo",
         "https://domain.example",
         "observer-secret",
+        domain_database_secret_id="separate-domain-secret",
+        domain_database_schema="superplane_domain",
     )
     monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps([asdict(binding)]))
     for key, value in ENV.items():
@@ -141,6 +143,8 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
             yield session
 
     monkeypatch.setattr(controller_routes, "operation_session", operation_session)
+    for module in (routes, dispatch_module):
+        monkeypatch.setattr(module, "domain_connect", connect)
     for module in (routes, runtime_module, dispatch_module):
         monkeypatch.setattr(module, "operation_connect", connect)
     for module in (routes, runtime_module):
@@ -700,3 +704,28 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
         async with admin.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()
+async def test_paid_dispatch_uses_disjoint_domain_and_harness_schemas(paid, monkeypatch):
+    domain_tables = ("organizations", "operation_budget_reservations", "operation_approvals", "workspaces", "workspace_grants", "organization_grants")
+    async with paid.connect() as connection:
+        await connection.execute("CREATE SCHEMA domain_only")
+        for table in domain_tables:
+            await connection.execute(f"ALTER TABLE {table} SET SCHEMA domain_only")
+
+    @asynccontextmanager
+    async def domain_connect(binding):
+        async with paid.connect() as connection:
+            await connection.execute("SET search_path TO domain_only,pg_catalog")
+            assert await connection.fetchval("SELECT to_regclass('harness_operations')") is None
+            yield connection
+
+    monkeypatch.setattr(dispatch_module, "domain_connect", domain_connect)
+    monkeypatch.setattr(routes, "domain_connect", domain_connect)
+    _, credential = await start(paid)
+    lease = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert lease.status_code == 200, lease.text
+    response = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 200, response.text
+    async with domain_connect(None) as connection:
+        await connection.execute("UPDATE workspace_grants SET revoked_at=clock_timestamp() WHERE principal='human'")
+    response = await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 403
