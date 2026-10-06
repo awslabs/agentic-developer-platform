@@ -174,3 +174,7 @@ Claude Code's ADP wiring from `adp claude setup` is unaffected.
 | `--model` per-call override | reply identifies as the Haiku id |
 | ADP usage ledger | the call is recorded under the user's id with tokens and cost |
 | Service | `User=ubuntu`, loopback :5476, AppArmor profile attached, `/api/health` ok |
+
+## See also
+
+- [Kiro Crew memory architecture](memory-architecture.md) — how memory, consolidation, recall and the knowledge graph work, and what that means under ADP.
