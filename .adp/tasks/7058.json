@@ -1,33 +1,36 @@
 {
   "version": 1,
   "issue": 7058,
-  "updated_at": "2026-10-06T00:02:52.587Z",
+  "updated_at": "2026-10-06T00:04:55.566Z",
   "tasks": [
     {
       "id": "PREP01-c1",
       "kind": "code",
       "criterion": "PREP01",
       "title": "Define closed reviewed preparation inputs and owned-only plan",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Reject unknown inputs, name collisions, mismatched account/cluster and unsupported authority."
+      "note": "Commit a31f930; review-only output does not grant authority.",
+      "commits": [
+        "a31f930"
+      ]
     },
     {
       "id": "PREP01-t1",
       "kind": "test",
       "criterion": "PREP01",
       "title": "Run unit fixtures for closed input, collision and identity rejection",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP01-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": ""
+      "note": "10 passed with uv-provided pytest/PyYAML."
     },
     {
       "id": "PREP02-c1",
@@ -39,7 +42,7 @@
       "files": [
         "modules/domain-apps/superplane/infra/domain-runtime"
       ],
-      "note": "No existing control-plane Terraform ownership files will change."
+      "note": "Next task; no existing control-plane Terraform ownership files will change."
     },
     {
       "id": "PREP02-t1",
@@ -65,7 +68,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Inspect registry, schema/bootstrap, producer and Gateway mechanisms first; stop at an explicit proposal where no maintained operator route exists."
+      "note": "Gateway binding is deployment configuration; maintained write path remains to be confirmed."
     },
     {
       "id": "PREP03-c-wire",
@@ -77,7 +80,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Staged readiness remains disabled; activation requires independent real proof."
+      "note": "Staged readiness must remain disabled; activation requires independent real proof."
     },
     {
       "id": "PREP03-t1",
@@ -158,7 +161,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md"
       ],
-      "note": "Describe private inputs, disabled readiness and independent proof; never imply live readiness."
+      "note": "Describe private inputs, disabled readiness and independent proof."
     },
     {
       "id": "PREP05-t1",
