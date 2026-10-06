@@ -5,14 +5,18 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import select
-
 from app.config import settings
 from app.main import app
 from app.models.cluster import Cluster
+from app.models.cluster_grant_scope import OrganizationGrantClusterScope
+from app.models.cluster_membership import ClusterMembership
+from app.models.observation import ObservationLease, ObservationReceipt
 from app.models.organization import Organization
+from app.models.organization_grant import OrganizationGrantRecord
 from app.models.workspace import Workspace
-from app.models.observation import ObservationLease
+from app.models.workspace_grant import WorkspaceGrantRecord
+from sqlalchemy import select
+
 from tests.conftest import async_session_test
 from tests.test_heartbeat_auth import _observation, _submit
 
@@ -96,6 +100,224 @@ async def test_same_workspace_name_in_two_orgs_cannot_expand_grant(client, monke
             .all()
         )
     assert set(orgs) == {org_a} and org_b not in orgs
+
+
+async def test_cluster_use_does_not_grant_shared_member_observations(
+    client, monkeypatch
+):
+    from app import auth
+    from app.current_identity import CurrentIdentity
+    from superplane_auth.policy import DomainTokenPolicy
+
+    org_id = uuid.uuid4()
+    own_workspace, peer_workspace, other_member, dedicated_peer = (
+        uuid.uuid4() for _ in range(4)
+    )
+    own_cluster, shared_cluster, peer_cluster = (uuid.uuid4() for _ in range(3))
+    async with async_session_test() as db:
+        db.add(
+            Organization(id=org_id, name="scoped-sharing", adp_org_id="selected-org")
+        )
+        await db.flush()
+        db.add_all(
+            [
+                Cluster(id=own_cluster, org_id=org_id, name="own", status="Active"),
+                Cluster(
+                    id=shared_cluster,
+                    org_id=org_id,
+                    name="shared",
+                    status="Ready",
+                    sharing_enabled=True,
+                ),
+                Cluster(
+                    id=peer_cluster,
+                    org_id=org_id,
+                    name="peer-dedicated",
+                    status="Active",
+                ),
+            ]
+        )
+        await db.flush()
+        db.add_all(
+            [
+                Workspace(
+                    id=own_workspace,
+                    org_id=org_id,
+                    name="own",
+                    isolation_mode="dedicated",
+                    status="Active",
+                    cluster_id=own_cluster,
+                ),
+                Workspace(
+                    id=peer_workspace,
+                    org_id=org_id,
+                    name="peer",
+                    isolation_mode="namespace",
+                    status="Active",
+                    shared_cluster_id=shared_cluster,
+                ),
+                Workspace(
+                    id=other_member,
+                    org_id=org_id,
+                    name="other",
+                    isolation_mode="namespace",
+                    status="Active",
+                    shared_cluster_id=shared_cluster,
+                ),
+                Workspace(
+                    id=dedicated_peer,
+                    org_id=org_id,
+                    name="peer-dedicated",
+                    isolation_mode="dedicated",
+                    status="Active",
+                    cluster_id=peer_cluster,
+                ),
+            ]
+        )
+        await db.flush()
+        db.add_all(
+            [
+                ClusterMembership(
+                    org_id=org_id,
+                    workspace_id=peer_workspace,
+                    cluster_id=shared_cluster,
+                    generation="a" * 64,
+                    namespace="peer",
+                    state="active",
+                    credential_reference_id="peer-reference",
+                ),
+                ClusterMembership(
+                    org_id=org_id,
+                    workspace_id=other_member,
+                    cluster_id=shared_cluster,
+                    generation="b" * 64,
+                    namespace="other",
+                    state="active",
+                    credential_reference_id="other-reference",
+                ),
+                WorkspaceGrantRecord(
+                    org_id=org_id,
+                    workspace_id=own_workspace,
+                    principal="alice",
+                    principal_type="human",
+                    permissions="workspace:read",
+                ),
+            ]
+        )
+        grant = OrganizationGrantRecord(
+            org_id=org_id,
+            principal="alice",
+            principal_type="human",
+            permissions="organization:read",
+            granted_by="fixture",
+        )
+        db.add(grant)
+        await db.flush()
+        db.add(
+            OrganizationGrantClusterScope(
+                org_id=org_id,
+                grant_id=grant.id,
+                cluster_id=shared_cluster,
+                permissions="cluster:use",
+                generation="c" * 64,
+            )
+        )
+        await db.commit()
+
+    monkeypatch.setattr(
+        auth,
+        "verify_access_token",
+        lambda token: {
+            "sub": token,
+            "custom:org_id": "selected-org",
+            "custom:account_type": "human",
+            "token_use": "access",
+            "iss": "https://issuer.example",
+            "client_id": "adp-client",
+        },
+    )
+    monkeypatch.setattr(
+        app.state,
+        "domain_policy",
+        DomainTokenPolicy(
+            allowed_client_ids=["adp-client"],
+            expected_issuer="https://issuer.example",
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class CurrentMemberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(
+                subject, principal_type, adp_org_id, "alice-membership", True, True
+            )
+
+    monkeypatch.setattr(
+        app.state, "current_identity_reader", CurrentMemberships(), raising=False
+    )
+    human = {"Authorization": "Bearer alice"}
+    eligible = await client.get("/workspaces?view=eligible-clusters", headers=human)
+    assert eligible.status_code == 200, eligible.text
+    assert [
+        (entry["id"], entry["member_count"]) for entry in eligible.json()["clusters"]
+    ] == [(str(shared_cluster), 2)]
+    assert (
+        await client.get(f"/workspaces/{own_workspace}", headers=human)
+    ).status_code == 200
+    assert (
+        await client.get(f"/workspaces/{peer_workspace}", headers=human)
+    ).status_code == 403
+    assert (
+        await client.get(f"/workspaces/{other_member}", headers=human)
+    ).status_code == 403
+    assert (
+        await client.get(f"/workspaces/{dedicated_peer}", headers=human)
+    ).status_code == 403
+
+    configure(monkeypatch, [own_workspace])
+    assert (
+        await _submit(
+            client,
+            _observation(own_cluster, workspace=str(own_workspace)),
+            credential=CREDENTIAL,
+            key=KEY,
+        )
+    ).status_code == 202
+    refused = await _submit(
+        client,
+        _observation(shared_cluster, workspace=str(peer_workspace)),
+        credential=CREDENTIAL,
+        key=KEY,
+    )
+    assert refused.status_code == 403
+    refused_peer = await _submit(
+        client,
+        _observation(peer_cluster, workspace=str(dedicated_peer)),
+        credential=CREDENTIAL,
+        key=KEY,
+    )
+    assert refused_peer.status_code == 403
+    assert (
+        await client.get(
+            f"/internal/observations/{shared_cluster}",
+            headers={"authorization": CREDENTIAL},
+        )
+    ).status_code == 404
+    assert (
+        await client.get(
+            f"/internal/observations/{peer_cluster}",
+            headers={"authorization": CREDENTIAL},
+        )
+    ).status_code == 404
+    visible = await client.get(
+        "/internal/observations/clusters", headers={"authorization": CREDENTIAL}
+    )
+    assert visible.status_code == 200
+    assert [entry["cluster_id"] for entry in visible.json()] == [str(own_cluster)]
+    async with async_session_test() as db:
+        assert await db.get(ObservationReceipt, shared_cluster) is None
+        assert await db.get(ObservationReceipt, peer_cluster) is None
 
 
 async def test_display_name_grant_does_not_authorize_a_cluster(client, monkeypatch):
