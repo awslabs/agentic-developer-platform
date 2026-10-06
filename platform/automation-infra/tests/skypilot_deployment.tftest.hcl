@@ -26,19 +26,43 @@ run "skypilot_release_is_bounded" {
   command = plan
   variables { enable_skypilot_deployment = true }
   assert {
-    condition     = aws_eks_access_policy_association.skypilot_deployment[0].access_scope[0].type == "namespace" && toset(aws_eks_access_policy_association.skypilot_deployment[0].access_scope[0].namespaces) == toset(["skypilot"])
+    condition     = module.superplane_skypilot_deployment.access_associations[0].access_scope[0].type == "namespace" && toset(module.superplane_skypilot_deployment.access_associations[0].access_scope[0].namespaces) == toset(["skypilot"])
     error_message = "SkyPilot release must not administer the control plane or cluster."
   }
   assert {
-    condition     = aws_eks_access_policy_association.skypilot_deployment[0].policy_arn == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    condition     = module.superplane_skypilot_deployment.access_associations[0].policy_arn == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
     error_message = "The namespace-scoped association must permit its own Namespace security labels."
   }
   assert {
-    condition     = jsondecode(aws_iam_role.skypilot_deployment[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:aws-e/adp:environment:adp-skypilot-deploy-test"
+    condition     = jsondecode(module.superplane_skypilot_deployment.deployment_roles[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:aws-e/adp:environment:adp-skypilot-deploy-test"
     error_message = "Only the dedicated protected environment can obtain the role."
   }
   assert {
-    condition     = toset(flatten([for statement in jsondecode(aws_iam_role_policy.skypilot_deployment[0].policy).Statement : statement.Action])) == toset(["eks:DescribeCluster", "ssm:GetParameter"])
+    condition     = toset(flatten([for statement in jsondecode(module.superplane_skypilot_deployment.deployment_policies[0].policy).Statement : statement.Action])) == toset(["eks:DescribeCluster", "ssm:GetParameter"])
     error_message = "The manifest lane must not acquire secrets, IAM or publishing authority."
+  }
+}
+
+run "skypilot_is_absent_by_default" {
+  command = plan
+  assert {
+    condition     = length(module.superplane_skypilot_deployment.deployment_roles) == 0 && length(module.superplane_skypilot_deployment.deployment_policies) == 0 && length(module.superplane_skypilot_deployment.access_associations) == 0
+    error_message = "Moving app definitions must not activate the deployment identity."
+  }
+}
+
+run "skypilot_preserves_existing_identity_and_parameter_scope" {
+  command = plan
+  variables { enable_skypilot_deployment = true }
+  assert {
+    condition     = module.superplane_skypilot_deployment.deployment_roles[0].name == "adp-test-skypilot-trusted-deployment" && module.superplane_skypilot_deployment.deployment_policies[0].name == "release-existing-skypilot"
+    error_message = "A source ownership move must retain existing IAM identities."
+  }
+  assert {
+    condition = toset(one([for s in jsondecode(module.superplane_skypilot_deployment.deployment_policies[0].policy).Statement : s if contains(s.Action, "ssm:GetParameter")]).Resource) == toset([for name in [
+      "control-plane-role-arn", "skypilot-role-arn", "namespace", "skypilot-namespace", "skypilot-image",
+      "database-secret-name", "jwt-secret-name", "workspace-cluster-context", "aws-region"
+    ] : "arn:aws:ssm:us-east-1:123456789012:parameter/adp/test/superplane/${name}"])
+    error_message = "The extracted role must retain exact environment-scoped SSM references."
   }
 }

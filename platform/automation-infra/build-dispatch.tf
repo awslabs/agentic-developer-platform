@@ -49,19 +49,26 @@ variable "enable_superplane_paid_release" {
   nullable    = false
 }
 
+module "superplane_build_dispatch" {
+  source                 = "../../modules/domain-apps/superplane/infra/automation/build-dispatch"
+  environment            = var.environment
+  account_id             = data.aws_caller_identity.current.account_id
+  repository             = var.repository
+  name_prefix            = var.name_prefix
+  enable_operator_source = var.enable_superplane_operator_source
+  enable_paid_release    = var.enable_superplane_paid_release
+}
+
 locals {
-  superplane_build_enabled = var.enable_superplane_operator_source || var.enable_superplane_paid_release
   build_dispatch_projects = distinct(concat(var.build_project_names,
-  var.enable_superplane_paid_release ? ["adp-${var.environment}-superplane-paid-worker"] : []))
-  superplane_source_prefix = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/superplane/releases/operator-source/${var.environment}"
-  superplane_claim_prefix  = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/superplane/releases/paid-worker/dispatch"
+  module.superplane_build_dispatch.project_names))
 
   build_layer_artifact_keys = [for project, key in {
     "adp-${var.environment}-pyjwt-layer"    = "lambda-layers/pyjwt-py313.zip"
     "adp-${var.environment}-psycopg2-layer" = "lambda-layers/psycopg2-py312.zip"
   } : key if contains(var.build_project_names, project)]
   build_ecr_read_names = var.build_ecr_repository_names == null ? ["adp-*"] : distinct(concat(
-  var.build_ecr_repository_names, var.enable_superplane_paid_release ? ["adp-superplane-paid-worker"] : []))
+  var.build_ecr_repository_names, module.superplane_build_dispatch.ecr_repository_names))
 }
 
 resource "aws_iam_role" "build" {
@@ -79,10 +86,7 @@ resource "aws_iam_role" "build" {
 resource "aws_iam_role_policy" "build_dispatch" {
   lifecycle {
     precondition {
-      condition = !local.superplane_build_enabled || (
-        var.repository == "aws-e/adp" && var.name_prefix == "adp-${var.environment}" &&
-        can(regex("^[a-z0-9]+(-[a-z0-9]+)*$", var.environment))
-      )
+      condition     = module.superplane_build_dispatch.publisher_identity_valid
       error_message = "Superplane publication requires aws-e/adp, an exact environment and its canonical adp-<environment>-trusted-build identity."
     }
   }
@@ -109,22 +113,7 @@ resource "aws_iam_role_policy" "build_dispatch" {
     {
       Sid = "ImageAuthentication", Effect = "Allow", Action = ["ecr:GetAuthorizationToken", "sts:GetCallerIdentity"], Resource = "*"
     },
-    ], [for _ in range(var.enable_superplane_operator_source ? 1 : 0) : {
-      Sid      = "SuperplaneReviewedSource", Effect = "Allow",
-      Action   = ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"],
-      Resource = [for kind in ["bundles", "consumers", "manifests"] : "${local.superplane_source_prefix}/*/${kind}/*"]
-      }], [for _ in range(var.enable_superplane_operator_source ? 1 : 0) : {
-      Sid      = "SuperplaneSourceBucketChecks", Effect = "Allow",
-      Action   = ["s3:GetBucketVersioning", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetBucketLocation"],
-      Resource = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-      }], [for _ in range(var.enable_superplane_paid_release ? 1 : 0) : {
-      Sid      = "SuperplanePaidDispatchEvidence", Effect = "Allow", Action = ["s3:PutObject"],
-      Resource = [for name in ["claim.json", "child.json"] : "${local.superplane_claim_prefix}/*/${name}"]
-      }], [for _ in range(var.enable_superplane_paid_release ? 1 : 0) : {
-      Sid      = "SuperplanePaidRetentionChecks", Effect = "Allow",
-      Action   = ["s3:GetBucketVersioning", "s3:GetLifecycleConfiguration"],
-      Resource = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-      }], [for _ in range(length(local.build_layer_artifact_keys) > 0 ? 1 : 0) : {
+    ], module.superplane_build_dispatch.policy_statements, [for _ in range(length(local.build_layer_artifact_keys) > 0 ? 1 : 0) : {
       Sid      = "VerifyPublishedLayerArtifacts", Effect = "Allow", Action = ["s3:GetObject"],
       Resource = [for key in local.build_layer_artifact_keys : "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/${key}"]
       }], [for _ in range(var.build_publish_worker_image_tag ? 1 : 0) : {

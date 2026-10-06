@@ -492,3 +492,14 @@ To retry a failed rollout, rerun the failed workflow job. Trust additions are
 idempotent. If gateway verification fails, workers retain their previous image.
 Manual rollback must select a reviewed source revision and update the persisted
 pin as well as the templates; changing a mutable `latest` tag does not roll out.
+
+### Superplane automation source ownership
+
+Superplane's build publication contract and dedicated SkyPilot deployment
+resources are defined in
+[`modules/domain-apps/superplane/infra/automation`](../../modules/domain-apps/superplane/infra/automation/README.md).
+This root remains their composition/state owner and owns the shared build role.
+Existing inputs, default-off flags, protected OIDC subjects and permissions are
+unchanged. Retain the four `moved` blocks in `skypilot-deployment.tf` so existing
+states upgrade without replacing IAM roles or EKS access. No backend transfer or
+cloud mutation is performed by the source move.
