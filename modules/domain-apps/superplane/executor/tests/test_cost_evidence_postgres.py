@@ -6,6 +6,7 @@
 import json
 
 import pytest
+from harness_jobs.identity import OperationRefused
 from tests.conftest import requires_postgres
 
 from test_lifecycle_postgres import system as system  # noqa: F401
@@ -41,10 +42,14 @@ async def test_paid_cleanup_records_each_cost_category_even_when_resources_are_g
     )
     cloud.leaked_volume = leaked_volume
     cleanup, token = await admit("teardown")
-    result = await server.dispatch(
-        {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
-    )
-    assert result[1] == "settle"
+    request = {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
+    if leaked_volume:
+        with pytest.raises(
+            OperationRefused, match="allocation reconciliation requires recovery"
+        ):
+            await server.dispatch(request)
+    else:
+        assert (await server.dispatch(request))[1] == "settle"
     after = await read(cleanup)
     assert after["release_permitted"] is (not leaked_volume)
     # This legacy fixture has no recorded source operation parameter. The report
