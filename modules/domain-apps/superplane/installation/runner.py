@@ -38,6 +38,7 @@ from .config import (
     require,
     verify_cluster_dns,
 )
+from .image_provenance import ImageProvenance
 from .manifests import bootstrap_job, migration_job, render
 
 sys.path.insert(0, str(MODULE / "infra/scripts"))
@@ -430,37 +431,33 @@ class Installer:
         self.receipt["reused_image_sources"] = evidence
         self.save()
 
+    def registry_provenance(self, name):
+        source = self.lock["image_sources"][name]
+        provenance = ImageProvenance.from_source(name, source)
+        data = self.json(
+            self.aws(
+                "ecr",
+                "describe-images",
+                "--repository-name",
+                source["repository"],
+                "--image-ids",
+                f"imageDigest={self.lock['images'][name]}",
+            )
+        )
+        details = data.get("imageDetails", [])
+        require(
+            len(details) == 1
+            and details[0]["imageDigest"] == self.lock["images"][name],
+            f"Release image unavailable: {name}",
+        )
+        provenance.verify_tags(details[0].get("imageTags", []))
+        return provenance
+
     def images(self):
         if self.env.get("image_execution") == "cluster":
             return self.cluster_images()
         for name in self.image_components[:-1]:
-            source = self.lock["image_sources"][name]
-            data = self.json(
-                self.aws(
-                    "ecr",
-                    "describe-images",
-                    "--repository-name",
-                    source["repository"],
-                    "--image-ids",
-                    f"imageDigest={self.lock['images'][name]}",
-                )
-            )
-            details = data.get("imageDetails", [])
-            require(
-                len(details) == 1
-                and details[0]["imageDigest"] == self.lock["images"][name],
-                f"Release image unavailable: {name}",
-            )
-            # Build lanes tag artifacts with the source commit. This verifies the
-            # registry observation, not only a source claim in a local lock file.
-            require(
-                any(
-                    tag == source["source_revision"]
-                    or tag == source["source_revision"][:12]
-                    for tag in details[0].get("imageTags", [])
-                ),
-                f"Registry does not bind image to source: {name}",
-            )
+            provenance = self.registry_provenance(name)
             self.commands.call(
                 ["docker", "pull", image(self.lock, name)],
                 timeout=self.env["timeout_seconds"],
@@ -470,15 +467,8 @@ class Installer:
                     ["docker", "image", "inspect", image(self.lock, name)]
                 )
             )
-            require(
-                len(inspected) == 1
-                and inspected[0]
-                .get("Config", {})
-                .get("Labels", {})
-                .get("org.opencontainers.image.revision")
-                == source["source_revision"],
-                f"Image OCI provenance does not match source: {name}",
-            )
+            require(len(inspected) == 1, "Image inspection is ambiguous: " + name)
+            provenance.verify_labels(inspected[0].get("Config", {}).get("Labels", {}))
         self.commands.call(
             ["docker", "pull", image(self.lock, "superplane-api")],
             timeout=self.env["timeout_seconds"],
@@ -608,6 +598,7 @@ class Installer:
     def cluster_images(self):
         for name in self.image_components[:-1]:
             source = self.lock["image_sources"][name]
+            provenance = self.registry_provenance(name)
             result = self.json(
                 self.aws(
                     "ecr",
@@ -651,14 +642,10 @@ class Installer:
             )
             config = response.json()
             require(
-                config.get("architecture") == "amd64"
-                and config.get("os") == "linux"
-                and config.get("config", {})
-                .get("Labels", {})
-                .get("org.opencontainers.image.revision")
-                == source["source_revision"],
-                "Image OCI provenance does not match source: " + name,
+                config.get("architecture") == "amd64" and config.get("os") == "linux",
+                "Image platform does not match linux/amd64: " + name,
             )
+            provenance.verify_labels(config.get("config", {}).get("Labels", {}))
         with ClusterProbe(self) as probe:
             probe.prove_network_policy()
             probe.isolate()

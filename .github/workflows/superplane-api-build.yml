@@ -100,9 +100,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          registry_tag="$GITHUB_SHA"
           if [[ -n "$PYTHON_IMAGE" ]]; then
             [[ "$PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "::error::Python base must be digest-pinned"; exit 1; }
+            registry_tag="$GITHUB_SHA-py-${PYTHON_IMAGE##*@sha256:}"
           fi
+          echo "ECR_IMAGE_TAG=$registry_tag" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v7
 
@@ -232,7 +235,7 @@ jobs:
           set -euo pipefail
           DIGEST=$(aws ecr describe-images \
             --repository-name "${ECR_REPO}" \
-            --image-ids "imageTag=${{ github.sha }}" \
+            --image-ids "imageTag=${ECR_IMAGE_TAG}" \
             --region "${AWS_REGION}" \
             --query 'imageDetails[0].imageDigest' --output text)
           {
@@ -243,6 +246,7 @@ jobs:
             echo "- **Origin provenance**: \`${ORIGIN_REPOSITORY}\` @ \`${ORIGIN_REVISION}\`"
             echo "- **Selected Python base**: \`${PYTHON_IMAGE:-maintained Dockerfile default}\`"
             echo "- **ECR repository**: \`${ECR_REPO}\`"
+            echo "- **Registry tag**: \`${ECR_IMAGE_TAG}\`"
             echo "- **Digest**: \`${DIGEST}\`"
             echo ""
             echo "Update \`images.${LOCK_IMAGE}\` in the release lock to this digest and"

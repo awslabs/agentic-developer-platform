@@ -66,3 +66,22 @@ base reference in `org.opencontainers.image.base.name`. Selection is not a secur
 approval: qualify the final image, its migration head and its dependencies before
 installation. An empty input retains the Dockerfile default. Local release-script
 callers use the equivalent `PYTHON_IMAGE` environment variable.
+
+An explicitly selected API base uses registry tag
+`<ADP commit>-py-<full base sha256>` so it can coexist with the automatic default
+build in an immutable ECR repository. The source revision label stays the exact
+40-character ADP commit. The workflow reports and looks up the derived tag; it
+does not overwrite or relabel a prior image. Rebuilding identical source/base
+inputs still uses the same tag and follows the repository's immutability policy.
+
+For an explicitly selected API base, record its full digest-pinned reference as
+`image_sources.superplane-api.python_image` in the reviewed release lock. This
+optional field is API-only; omit it for the default build. Null, empty, malformed,
+placeholder and oversized values are refused. Both installer image-verification
+paths require the exact derived registry tag, the original source revision OCI
+label and a base-name OCI label equal to this full reference. A plain source tag
+cannot satisfy a selected-base release, and a matching tag cannot override a
+missing or different base label. Default builds continue to accept the full or
+12-character source tag. These identity checks complement completed build and
+exact-image qualification evidence; image labels alone do not establish that a
+base was independently reviewed or that the resulting image is safe to deploy.

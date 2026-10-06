@@ -48,6 +48,7 @@ context="$maintained_root/$SOURCE_PATH"
 
 build_context="$context"
 build_options=()
+registry_tag="$IMAGE_TAG"
 if [[ "$component" == "superplane-executor" || "$component" == "superplane-paid-worker" ]]; then
   [[ "${PYTHON_IMAGE:-}" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "Executor requires an explicitly reviewed digest-pinned Python 3.12 image" >&2; exit 1; }
   # The trusted service consumes two maintained shared packages. Its Dockerfile
@@ -63,6 +64,8 @@ fi
 if [[ "$component" == "superplane-api" && -n "${PYTHON_IMAGE:-}" ]]; then
   [[ "$PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "API Python base must be digest-pinned" >&2; exit 1; }
   build_options+=(--build-arg "PYTHON_IMAGE=$PYTHON_IMAGE" --label "org.opencontainers.image.base.name=$PYTHON_IMAGE")
+  # Default and reviewed-base builds of one source must coexist in immutable ECR.
+  registry_tag="$IMAGE_TAG-py-${PYTHON_IMAGE##*@sha256:}"
 fi
 
 # Sibling packages are generated build inputs and absent from a clean checkout.
@@ -73,7 +76,7 @@ fi
 
 aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-tag="$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+tag="$REGISTRY/$ECR_REPO:$registry_tag"
 # Two labels, kept distinct on purpose: `image.revision` is the ADP commit that produced
 # this image (what a rebuild changes), and `source.origin.revision` is the upstream revision
 # the source was transferred from (what never changes unless someone re-transfers). Collapse
@@ -86,4 +89,4 @@ docker build \
   --label "com.adp.superplane.origin.revision=$ORIGIN_REVISION" \
   -t "$tag" "$build_context"
 docker push "$tag"
-aws ecr describe-images --repository-name "$ECR_REPO" --image-ids "imageTag=$IMAGE_TAG" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text
+aws ecr describe-images --repository-name "$ECR_REPO" --image-ids "imageTag=$registry_tag" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text

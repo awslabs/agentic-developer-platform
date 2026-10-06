@@ -258,10 +258,31 @@ def test_buildspec_runs_only_the_selected_domain_build(
         calls = trace.read_text()
         # Tagged by the ADP commit; the origin revision rides along as a label. Both are
         # asserted because collapsing them is the regression this guards.
+        expected_tag = adp_commit
+        if component == "superplane-api" and api_python_image:
+            expected_tag += "-py-" + api_python_image.rsplit("@sha256:", 1)[1]
         assert (
-            "docker push " + env["REGISTRY"] + "/" + env["ECR_REPO"] + ":" + adp_commit
+            "docker push "
+            + env["REGISTRY"]
+            + "/"
+            + env["ECR_REPO"]
+            + ":"
+            + expected_tag
+            + "\n"
             in calls
         )
+        assert "--image-ids imageTag=" + expected_tag + " " in calls
+        # The actual build's published tag/labels must satisfy installer inputs.
+        from installation.image_provenance import ImageProvenance
+
+        source = {"source_revision": adp_commit}
+        labels = {"org.opencontainers.image.revision": adp_commit}
+        if component == "superplane-api" and api_python_image:
+            source["python_image"] = api_python_image
+            labels["org.opencontainers.image.base.name"] = api_python_image
+        provenance = ImageProvenance.from_source(component, source)
+        provenance.verify_tags([expected_tag])
+        provenance.verify_labels(labels)
         assert "org.opencontainers.image.revision=" + adp_commit in calls
         assert "com.adp.superplane.origin.revision=" + "a" * 40 in calls
         assert (
@@ -353,7 +374,9 @@ def test_api_selected_python_base_is_forwarded_or_refused_before_aws(
         ("example.invalid/python@sha256:" + "d" * 64 + "\nOTHER=value", False),
     ],
 )
-def test_api_workflow_validates_base_before_trusted_build(python_image, accepted):
+def test_api_workflow_validates_base_before_trusted_build(
+    tmp_path, python_image, accepted
+):
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/superplane-api-build.yml").read_text()
     )
@@ -369,11 +392,32 @@ def test_api_workflow_validates_base_before_trusted_build(python_image, accepted
         if step.get("uses") == "./.github/actions/trusted-build"
     )
     assert validation < authorization
+    environment_file = tmp_path / "github-env"
+    source = "c" * 40
     result = subprocess.run(
         ["bash", "-c", steps[validation]["run"]],
-        env={"PATH": os.defpath, "PYTHON_IMAGE": python_image},
+        env={
+            "PATH": os.defpath,
+            "PYTHON_IMAGE": python_image,
+            "GITHUB_SHA": source,
+            "GITHUB_ENV": str(environment_file),
+        },
         capture_output=True,
         text=True,
         check=False,
     )
     assert (result.returncode == 0) is accepted
+    if accepted:
+        expected_tag = source
+        if python_image:
+            expected_tag += "-py-" + python_image.rsplit("@sha256:", 1)[1]
+        assert environment_file.read_text() == "ECR_IMAGE_TAG=" + expected_tag + "\n"
+        assert len(expected_tag) <= 128
+        reporting = next(
+            step["run"]
+            for step in steps
+            if step.get("name") == "Report produced digest"
+        )
+        assert "imageTag=${ECR_IMAGE_TAG}" in reporting
+    else:
+        assert not environment_file.exists()
