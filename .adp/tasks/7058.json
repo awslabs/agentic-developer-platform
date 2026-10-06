@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7058,
-  "updated_at": "2026-10-06T00:04:55.566Z",
+  "updated_at": "2026-10-06T00:07:18.238Z",
   "tasks": [
     {
       "id": "PREP01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit a31f930; review-only output does not grant authority.",
+      "note": "Commit a31f930; role and environment validation tightened in c82cd9a.",
       "commits": [
         "a31f930"
       ]
@@ -30,33 +30,37 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "10 passed with uv-provided pytest/PyYAML."
+      "note": "10 focused fixtures pass."
     },
     {
       "id": "PREP02-c1",
       "kind": "code",
       "criterion": "PREP02",
       "title": "Define dedicated standard queue and scoped worker/observer roles in isolated Terraform root",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/infra/domain-runtime"
+        "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
+        ".github/workflows/superplane-infra-plan.yml"
       ],
-      "note": "Next task; no existing control-plane Terraform ownership files will change."
+      "note": "Commit c82cd9a, pushed SHA verified; separate S3 backend has no embedded target.",
+      "commits": [
+        "c82cd9a"
+      ]
     },
     {
       "id": "PREP02-t1",
       "kind": "test",
       "criterion": "PREP02",
       "title": "Run Terraform validation and unit fixtures for resource and IAM scope",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP02-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+        "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
       ],
-      "note": ""
+      "note": "Terraform validate passes; 3 mock-provider runs pass; 22 Python tests including CI matrix coverage pass."
     },
     {
       "id": "PREP03-c1",
@@ -68,7 +72,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Gateway binding is deployment configuration; maintained write path remains to be confirmed."
+      "note": "Next: inspect maintained registry, schema/bootstrap, producer and Gateway owner interfaces."
     },
     {
       "id": "PREP03-c-wire",
@@ -80,7 +84,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Staged readiness must remain disabled; activation requires independent real proof."
+      "note": "Staged readiness remains disabled; activation requires independent real proof."
     },
     {
       "id": "PREP03-t1",
