@@ -306,6 +306,11 @@ if [ "$UPDATE_MODE" = true ]; then
       || fail "Cannot reach the existing gateway namespace. Verify network reachability and operator EKS access; see platform_upgrades.md (operator access)."
   fi
 
+  if [ "$DEPLOY_WEBHOOK" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
+      --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" --verify-live-workers \
+      || fail "Live worker identity differs from the preserved upgrade configuration"
+  fi
   if [ "$WORKER_MIGRATION" = true ]; then
     [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Worker migration requires gateway and webhook"
     worker_migration pause

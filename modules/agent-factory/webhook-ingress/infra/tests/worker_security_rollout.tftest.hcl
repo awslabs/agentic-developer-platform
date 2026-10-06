@@ -678,6 +678,33 @@ run "codex_alarms_use_bounded_outcome_dimensions" {
   }
 }
 
+run "existing_legacy_upgrade_preserves_mode_without_claiming_qualification" {
+  command = plan
+  variables {
+    agent_worker_admission_paused = false
+    agent_legacy_upgrade_role_arn = "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role"
+  }
+  assert {
+    condition = (
+      terraform_data.worker_security_rollout.input.active == false &&
+      terraform_data.worker_security_rollout.input.paused == false &&
+      length(aws_iam_role_policy_attachments_exclusive.legacy_worker) == 0 &&
+      aws_iam_role.agent_scaledjob.permissions_boundary == null &&
+      var.agent_authority_runtime_ready == false
+    )
+    error_message = "A legacy code upgrade must retain identity without claiming protected runtime qualification."
+  }
+}
+
+run "legacy_upgrade_refuses_a_foreign_role" {
+  command = plan
+  variables {
+    agent_worker_admission_paused = false
+    agent_legacy_upgrade_role_arn = "arn:aws:iam::999999999999:role/adp-dev-agent-scaledjob-role"
+  }
+  expect_failures = [terraform_data.worker_security_rollout]
+}
+
 run "unprotected_admission_is_rejected" {
   command = plan
   variables {

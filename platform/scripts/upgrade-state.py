@@ -48,6 +48,52 @@ def write_json(path, data):
     path.chmod(0o600)
 
 
+def legacy_worker_settings(state):
+    """Recognize an installed serving legacy identity, never infer it from defaults.
+
+    Ordinary code upgrades preserve this mode. Activating protected authority is
+    a separate migration; an activated or partially retired identity cannot use
+    this compatibility path.
+    """
+    rollout = output(state, 'worker_security_rollout', {})
+    saved = output(state, 'release_configuration', {})
+    if not isinstance(rollout, dict) or not isinstance(saved, dict):
+        return {}
+    if not (rollout.get('active') is False and rollout.get('admission_paused') is False
+            and rollout.get('legacy_admin_retired') is False
+            and rollout.get('service_account') == 'agent-scaledjob-sa'):
+        return {}
+    if saved:
+        if not all(saved.get(k) is False for k in (
+                'agent_authority_enabled', 'agent_legacy_worker_admin_retired',
+                'agent_task_source_isolation_confirmed', 'agent_worker_admission_paused')):
+            return {}
+    else:
+        # Releases predating release_configuration still record the deployed
+        # ConfigMap. Recover its actual flags rather than assuming defaults.
+        maps = [a.get('data', {}) for r, a in resources(state, 'kubernetes_config_map') if r['name'] == 'worker_gateway']
+        if len(maps) != 1 or any(maps[0].get(k) != 'false' for k in (
+                'AGENT_AUTHORITY_ENABLED', 'AGENT_TASK_SOURCE_ISOLATION_CONFIRMED')):
+            return {}
+    arn = rollout.get('worker_role_arn', '')
+    if not re.fullmatch(r'arn:aws:iam::[0-9]{12}:role/adp-(dev|staging|prod)-agent-scaledjob-role', arn):
+        return {}
+    roles = [a for r, a in resources(state, 'aws_iam_role') if r['name'] == 'agent_scaledjob']
+    accounts = [a for r, a in resources(state, 'kubernetes_service_account') if r['name'] == 'agent_scaledjob_sa']
+    if len(roles) != 1 or roles[0].get('arn') != arn or roles[0].get('permissions_boundary'):
+        return {}
+    if len(accounts) != 1:
+        return {}
+    metadata = (accounts[0].get('metadata') or [{}])[0]
+    if (metadata.get('name') != 'agent-scaledjob-sa' or metadata.get('namespace') != 'adp-agents'
+            or metadata.get('annotations', {}).get('eks.amazonaws.com/role-arn') != arn):
+        return {}
+    return dict(agent_legacy_upgrade_role_arn=arn, agent_authority_enabled=False,
+                agent_worker_admission_paused=False, agent_legacy_worker_admin_retired=False,
+                agent_task_source_isolation_confirmed=False, agent_authority_runtime_ready=False,
+                agent_authority_legacy_workers_drained=False)
+
+
 def release_settings(state, module):
     """Retain account-local inputs; never import platform dev activation flags."""
     if os.environ.get("ADP_PORTABLE_RELEASE_CONFIG") != "true":

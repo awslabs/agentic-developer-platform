@@ -70,6 +70,14 @@ def check(directory, environment, upgrade_directory):
     functions.update({'github-auth-broker': 'bedrockgw-dev-github-auth-broker', 'webhook-github': 'adp-dev-github-webhook'})
     # GitLab is optional; validate its package if Terraform says it is installed.
     state = json.loads((upgrade_directory / 'webhook-ingress-after.tfstate').read_text())
+    worker_rollout = state.get('outputs', {}).get('worker_security_rollout', {}).get('value', {})
+    before = json.loads((upgrade_directory / 'webhook-ingress-before.tfstate').read_text())
+    prior_rollout = before.get('outputs', {}).get('worker_security_rollout', {}).get('value', {})
+    require(isinstance(worker_rollout.get('active'), bool), 'Worker identity mode is unknown')
+    require(worker_rollout.get('active') is prior_rollout.get('active') or
+            (upgrade_directory / 'worker-migration.json').exists(), 'Worker identity changed outside the migration flow')
+    worker_mode = 'protected' if worker_rollout.get('active') is True else 'legacy'
+    checks.append('worker_identity_mode_' + worker_mode)
     if any(r['type'] == 'aws_lambda_function' and r['name'] == 'gitlab_webhook' and r.get('instances') for r in state['resources']):
         functions['webhook-gitlab'] = 'adp-dev-gitlab-webhook'
     for name, deployed in functions.items():

@@ -315,20 +315,24 @@ an error; only a positively identified missing function, absent from gateway
 state, is eligible for installation. A live engine outside Terraform state needs
 review and import, not replacement.
 
-Worker security is also an upgrade prerequisite. If webhook state still reports
-legacy worker admission, the compatibility preflight stops before gateway code,
-model agreements, network access or Terraform resources change. Complete the
-[staged worker migration](../security/terraform-worker-rollout.md#stages) first:
-pause admission through a reviewed Terraform apply, reconcile queued work and
-drain running legacy jobs, qualify the protected runtimes, isolate the source
-role, and retire its administrator grants. Readiness settings are assertions
-backed by private evidence, not switches to bypass the preflight. An ordinary
-upgrade does not perform or certify this migration. Gateway-only upgrades also
-check installed webhook state because authentication changes affect its workers.
+Worker identity is preserved during an ordinary software upgrade. A serving
+legacy deployment can update using its existing identity after the script matches
+the observed Terraform role, service account and rollout, then verifies live
+Kubernetes admission and gateway mode. Unknown state, a changed identity or an
+existing permissions boundary cannot be treated as legacy compatibility. Fresh
+installs do not receive this exception. Gateway-only upgrades also check installed
+webhook state because authentication changes affect its workers.
+
+The [staged worker migration](../security/terraform-worker-rollout.md#stages)
+remains separate: reconcile queued work, drain running legacy jobs, qualify the
+protected runtimes, isolate the source role and retire its administrator grants.
+Readiness settings are assertions backed by private evidence. A software upgrade
+that retains legacy mode does not perform or certify this security migration;
+release acceptance records the installed identity mode explicitly.
 
 An already paused deployment can receive a direct maintenance update during the
-staged migration. A release requires the completed migration and enabled
-admission; final acceptance rejects KEDA pause annotations or a reported paused
+staged migration. A release requires enabled admission in its retained or
+explicitly migrated mode; final acceptance rejects KEDA pause annotations or a reported paused
 condition even when worker images and Ready conditions look correct. Resume
 rechecks current state rather than trusting the original upgrade snapshot.
 The saved-plan gate also rejects an implicit admission pause or protected-identity
@@ -337,7 +341,7 @@ downgrade, including with `--confirm-destructive`.
 The reviewed shared-caller-identity migration retires only the obsolete SSM
 `/adp/<environment>/gateway/internal-api-key` mirror. The plan gate checks its
 exact resource address, target ARN, SecureString type and provenance tags, and
-requires paused or protected admission in the plan. It does not authorize deletion
+requires paused, protected or verified retained legacy admission in the plan. It does not authorize deletion
 of the Secrets Manager source, other parameters, databases or clusters. The
 associated exact rollout-script hash transition replaces a Terraform marker
 and runs a bounded gateway rollout; the marker has no destroy provisioner.
