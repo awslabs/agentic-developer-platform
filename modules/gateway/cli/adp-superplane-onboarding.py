@@ -192,13 +192,13 @@ ENDPOINTS = {
     "previewRetirementAccess": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/retirement/access/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing separate cleanup access for workspace removal",
     },
     "admitRetirementAccess": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/retirement/access",
-        "served": False,
+        "served": True,
         "capability": "requesting approved cleanup access for workspace removal",
     },
     "adoptWorkspace": {
