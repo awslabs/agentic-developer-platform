@@ -388,20 +388,27 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["fetch-depth"] == 0
     baseline_step = next(step for step in steps if step.get("id") == "deployed")
-    assert baseline_step["env"] == {"GH_TOKEN": "${{ github.token }}"}
-    assert f"actions/workflows/{workflow}/runs?" in baseline_step["run"]
-    assert "status=success" in baseline_step["run"] and "per_page=10" in baseline_step["run"]
-    assert "branch=${{ github.ref_name }}" in baseline_step["run"]
-    # Job-level selection: the GitHub jobs API matches on the job's display name.
-    assert "/actions/runs/${run_id}/jobs" in baseline_step["run"]
-    assert f'.name == "{job_config["name"]}" and .conclusion == "success"' in baseline_step["run"]
-    if workflow == "chat-agent-deploy.yml":
-        # skip_deploy=true leaves the job successful but skips the rollout step.
-        rollout = next(step for step in steps if step.get("name") == "Update chat ScaledJob manifest")
-        assert rollout["if"] == "${{ inputs.skip_deploy != true }}"
-        assert '.name == "Update chat ScaledJob manifest" and .conclusion == "success"' in baseline_step["run"]
-    assert '.workflow_runs[] | "\\(.id) \\(.head_sha)"' in baseline_step["run"]
-    guard_step = next(step for step in steps if step.get("run") == "bash scripts/check-assistant-deploy-boundary.sh")
+    if workflow == "gateway-deploy.yml":
+        assert baseline_step["run"] == 'python3 "$RUNNER_TEMP/adp-gateway-control/receipt.py" resolve'
+        assert baseline_step["env"]["ADP_RECEIPT_TARGET"] == target
+        assert baseline_step["env"]["GH_TOKEN"] == "${{ github.token }}"
+        guard_step = next(step for step in steps if step.get("name") == "Guard assistant auto-deployment")
+        assert guard_step["run"] == 'bash "$RUNNER_TEMP/adp-gateway-control/assistant-guard.sh"'
+    else:
+        assert baseline_step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+        assert f"actions/workflows/{workflow}/runs?" in baseline_step["run"]
+        assert "status=success" in baseline_step["run"] and "per_page=10" in baseline_step["run"]
+        assert "branch=${{ github.ref_name }}" in baseline_step["run"]
+        # Job-level selection: the GitHub jobs API matches on the job's display name.
+        assert "/actions/runs/${run_id}/jobs" in baseline_step["run"]
+        assert f'.name == "{job_config["name"]}" and .conclusion == "success"' in baseline_step["run"]
+        if workflow == "chat-agent-deploy.yml":
+            # skip_deploy=true leaves the job successful but skips the rollout step.
+            rollout = next(step for step in steps if step.get("name") == "Update chat ScaledJob manifest")
+            assert rollout["if"] == "${{ inputs.skip_deploy != true }}"
+            assert '.name == "Update chat ScaledJob manifest" and .conclusion == "success"' in baseline_step["run"]
+        assert '.workflow_runs[] | "\\(.id) \\(.head_sha)"' in baseline_step["run"]
+        guard_step = next(step for step in steps if step.get("run") == "bash scripts/check-assistant-deploy-boundary.sh")
     expected = {
         "ADP_ASSISTANT_DEPLOY_COMPONENT": component,
         "ADP_ASSISTANT_DEPLOY_TARGET": target,
@@ -412,8 +419,8 @@ def test_workflows_bind_guard_to_protected_target_before_credentials(workflow, j
     }
     if workflow == "gateway-deploy.yml":
         # The engine may dispatch an explicit source revision; the guard must judge that checkout.
-        expected["ADP_ASSISTANT_DEPLOY_CANDIDATE"] = "${{ inputs.adp_source_revision || github.sha }}"
-        assert checkout["with"]["ref"] == "${{ inputs.adp_source_revision || github.sha }}"
+        expected["ADP_ASSISTANT_DEPLOY_CANDIDATE"] = "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
+        assert checkout["with"]["ref"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
     assert guard_step["env"] == expected
     credentials = next(step for step in steps if step.get("uses") == "./.github/actions/trusted-deployment")
     assert steps.index(checkout) < steps.index(baseline_step) < steps.index(guard_step) < steps.index(credentials)

@@ -9,7 +9,7 @@ from test_demo1_cli import fixture_documents, identifier
 
 from superplane_acceptance.demo1_aws import AwsProviderReader
 from superplane_acceptance.demo1_evidence import DemoInput, EvidenceError
-from superplane_acceptance.demo1_provider import observe_provider
+from superplane_acceptance.demo1_provider import InventoryQuery, observe_provider
 
 
 def arn(service, kind, name):
@@ -55,7 +55,7 @@ class AwsCli:
             assert operation == "get-caller-identity"
             output = {
                 "Account": self.account,
-                "Arn": f"arn:aws:sts:{self.account}:assumed-role/{self.role}/example-session",
+                "Arn": f"arn:aws:sts::{self.account}:assumed-role/{self.role}/example-session",
             }
             return subprocess.CompletedProcess(command, 0, json.dumps(output), "")
         assert command[-4:-2] == ["--region", "us-east-1"]
@@ -114,6 +114,65 @@ def query(selection, executor, owned=OWNED):
         reader(selection, executor),
         origin="provider-unverified",
     )
+
+
+def test_standard_sts_identity_permits_scoped_inventory_reads(selection):
+    executor = AwsCli()
+    observed = reader(selection, executor).read_inventory(
+        InventoryQuery(
+            selection.connection_id,
+            selection.role,
+            selection.account,
+            selection.region,
+            identifier(6),
+            OWNED,
+            SURVIVORS,
+        )
+    )
+    assert observed["status"] == "complete"
+    assert observed["owned_present"] == []
+    assert observed["survivors_present"] == list(SURVIVORS)
+    assert observed["cost_usd"] is None
+    assert [command[8] for command in executor.calls] == [
+        "sts",
+        "eks",
+        "sts",
+        "ec2",
+        "sts",
+        "ec2",
+        "sts",
+        "eks",
+    ]
+
+
+@pytest.mark.parametrize(
+    "identity_arn",
+    [
+        "arn:aws:sts:123456789012:assumed-role/ExampleObserver/example-session",
+        "arn:aws:sts:us-east-1:123456789012:assumed-role/ExampleObserver/example-session",
+        "arn:aws:sts::000000000000:assumed-role/ExampleObserver/example-session",
+        "arn:aws:sts::123456789012:assumed-role/ExampleOtherRole/example-session",
+        "arn:aws:iam::123456789012:role/ExampleObserver",
+        "arn:aws:sts::123456789012:assumed-role/ExampleObserver/",
+    ],
+)
+def test_malformed_or_foreign_arn_refuses_before_resource_reads(
+    selection, identity_arn
+):
+    executor = AwsCli()
+
+    def respond(command, **options):
+        result = executor(command, **options)
+        if command[8] == "sts":
+            result.stdout = json.dumps(
+                {"Account": selection.account, "Arn": identity_arn}
+            )
+        return result
+
+    outcome = query(selection, respond)
+    assert outcome.cleanup == outcome.survivors == outcome.cost == "BLOCKED"
+    assert len(executor.calls) == 1
+    assert executor.calls[0][8:10] == ["sts", "get-caller-identity"]
 
 
 def test_no_resource_observation_without_matching_sts_identity(selection):
@@ -178,8 +237,6 @@ def test_swapped_selection_or_invented_ownership_refused_before_network(
 ):
     executor = AwsCli()
     provider = reader(selection, executor)
-    from superplane_acceptance.demo1_provider import InventoryQuery
-
     fields = {
         "connection_id": selection.connection_id,
         "role": selection.role,

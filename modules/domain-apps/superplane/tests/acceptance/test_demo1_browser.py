@@ -459,6 +459,103 @@ def test_saved_approval_can_expire_before_creation(selected):
     assert not any(path.endswith("/workspaces") for _, path, _ in transport.calls)
 
 
+@pytest.mark.parametrize("lost_response", [False, True])
+@pytest.mark.parametrize("ticket_state", ["expired", "revoked", "unavailable"])
+def test_submitted_operation_resumes_after_approval_expiry_without_recreation(
+    selected, monkeypatch, lost_response, ticket_state
+):
+    transport = Transport(selected)
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.lost = lost_response
+    saved = []
+    checkpoint, report = advance_creation(
+        selected,
+        transport,
+        origin=transport.origin,
+        checkpoint=checkpoint,
+        persist=saved.append,
+        effects_authorized=True,
+        now=datetime(2026, 10, 5, 11, 2, tzinfo=UTC),
+    )
+    assert checkpoint.submitted and saved == [checkpoint]
+    assert report["status"] == "BLOCKED"
+    assert sum(path.endswith("/workspaces") for _, path, _ in transport.calls) == 1
+    transport.lost = False
+    transport.calls.clear()
+    original = transport.request
+
+    def request(method, path, body=None):
+        status, response = original(method, path, body)
+        if path.endswith("/operation-approvals/" + checkpoint.approval_id):
+            if ticket_state == "unavailable":
+                return 503, None
+            if ticket_state == "revoked":
+                response["revoked"] = True
+        return status, response
+
+    monkeypatch.setattr(transport, "request", request)
+    for _attempt in range(2):
+        resumed, report = advance_creation(
+            selected,
+            transport,
+            origin=transport.origin,
+            checkpoint=checkpoint,
+            effects_authorized=True,
+            now=datetime(2026, 10, 5, 11, 59, 30, tzinfo=UTC),
+        )
+        assert resumed == checkpoint
+        assert report["status"] == "BLOCKED" and report["creation_observed"] is True
+    assert (
+        sum(
+            path.endswith("/operations/by-idempotency/" + selected.request_id)
+            for _, path, _ in transport.calls
+        )
+        == 2
+    )
+    assert (
+        sum(
+            path.endswith("/workspaces/" + checkpoint.workspace_id)
+            for _, path, _ in transport.calls
+        )
+        == 2
+    )
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
+    assert not any(path.endswith("/workspaces") for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize("field", ["user_id", "org_id"])
+def test_submitted_recovery_still_requires_selected_authenticated_principal(
+    selected, uncertain_creation, monkeypatch, field
+):
+    transport, checkpoint = uncertain_creation
+    replace_response(monkeypatch, transport, "/api/auth/me", {field: identity(99)})
+    with pytest.raises(EvidenceError, match="requester or organization differs"):
+        advance_creation(
+            selected,
+            transport,
+            origin=transport.origin,
+            checkpoint=checkpoint,
+            effects_authorized=True,
+            now=datetime(2026, 10, 5, 11, 59, 30, tzinfo=UTC),
+        )
+    assert transport.calls == [("GET", "/api/auth/me", None)]
+
+
 def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright", SimpleNamespace())
     monkeypatch.setitem(

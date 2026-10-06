@@ -1,4 +1,4 @@
-"""Demo 1 fixture driver and guarded live-selection preflight."""
+"""Demo 1 fixture diagnostics, private preflight and gated runtime observations."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ def _publish(document: dict, filename: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Offline dedicated-workspace acceptance diagnostics"
+        description="Dedicated-workspace diagnostics and gated runtime observations"
     )
     parser.add_argument("--mode", choices=("fixture", "live"), required=True)
     parser.add_argument("--private-input")
@@ -157,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authority")
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--observe-runtime", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
@@ -190,15 +191,32 @@ def main(argv: list[str] | None = None) -> int:
                         "approval_ref": reference(saved.approval_id),
                         "submitted": saved.submitted,
                     }
+                if arguments.observe_runtime:
+                    from .demo1_runtime import RuntimeReader
+
+                    if envelope.runtime_target is None:
+                        raise EvidenceError(
+                            "runtime: explicit v2 authority target required before reads"
+                        )
+                    try:
+                        report["runtime"] = RuntimeReader(
+                            selected, envelope.runtime_target
+                        ).observe(envelope.max_runtime_seconds)
+                    except EvidenceError as error:
+                        report["runtime"] = {"status": "BLOCKED", "reason": str(error)}
+                    report["reason"] = (
+                        "runtime observation attempted; public route binding and positive "
+                        "retirement admission unverified; no lifecycle effects"
+                    )
                 _publish(report, arguments.report)
         except EvidenceError as error:
             print(f"BLOCKED: {error}")
             return 2
-        print(
-            "Live selection preflight: BLOCKED (no runtime admission or release verification)"
-        )
+        print("Live selection preflight: BLOCKED (not lifecycle acceptance)")
         return 2
     try:
+        if arguments.observe_runtime:
+            raise EvidenceError("runtime: live mode and explicit authority required")
         if not all((arguments.private_input, arguments.fixture, arguments.report)):
             raise EvidenceError(
                 "fixture: private input, fixture and new report path required"

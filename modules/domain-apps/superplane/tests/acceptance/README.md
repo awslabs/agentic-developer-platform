@@ -62,6 +62,59 @@ operations owner authorizes an exact target, identity, release, budget,
 deadline and cleanup continuation. Do not invoke it against a real target in
 this source-only assignment.
 
+### Independent API runtime observation
+
+This is an optional **read-only API artifact check**, not a create/Ready/remove
+driver. It uses the installer's maintained `app.installation readiness` and
+`database` commands inside existing API pods. It neither installs resources nor
+runs migrations. Public-origin routing, other release components, browser
+creation/recovery, provider cleanup and positive retirement remain unverified.
+
+After separate authorization for these reads, use the private files described
+below, changing the authority version to `demo1-live-v2` and adding the required
+`runtime_target` object. Its exact fields are `connection_id` (UUID),
+`broker_label`, `account`, `role` (exact assumed role name), `region`,
+`cluster_name`, `namespace`, and `release_id` (the installer's 64-character
+release-lock digest). These select the existing management runtime, which may
+use a different connection/account from the workspace. Operations must approve
+that selection; do not copy a workspace identity or invent a release digest.
+The original selection still pins the API image digest, source and schema.
+
+The operator needs Python 3.12+, `adp-cred`, AWS CLI, `kubectl`, and a selected
+connection authorized for STS identity, EKS DescribeCluster, Kubernetes reads
+of the API deployment/pods/ReplicaSets, and execution of the two read-only
+installer probes. The command creates only a temporary owner-private local
+kubeconfig, built from the selected EKS endpoint and CA. Each remote call uses
+the selected broker label, with account and exact assumed role checked first;
+there is no ambient kubeconfig or credential fallback. It checks actual running
+image IDs and deployment ownership, and rejects rollout/replacement during the
+probe. No such remote call runs in the offline tests.
+
+From the repository root, with `DEMO1_PRIVATE_DIR` set as described below:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --observe-runtime --report "$DEMO1_PRIVATE_DIR/runtime-report.json"
+```
+
+The exit status remains **2/BLOCKED**. A matching runtime produces only
+`runtime.status: OBSERVED`; denied, incomplete or mismatched reads produce
+`runtime.status: BLOCKED` without exposing tool errors. Neither result enables
+mutations, asserts approval, proves public-route binding or completes a live
+criterion. Use a new report filename for each attempt. Without
+`--observe-runtime`, even a v2 envelope performs no remote calls. A v1 envelope
+cannot authorize this option. Offline coverage of the real CLI wiring and
+producer-shaped responses is runnable with:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_runtime.py -q
+```
+
 ### Guarded live-selection preflight (no effects)
 
 After separate operations authorization, an operator may run the preflight

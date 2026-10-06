@@ -286,15 +286,15 @@ def advance_creation(
         in (checkpoint.request_id, checkpoint.approval_id)
     ):
         raise EvidenceError("browser: saved creation checkpoint differs")
-    approval = _response(
-        transport, "GET", PREFIX + f"/operation-approvals/{checkpoint.approval_id}"
-    )
-    if _approval(approval, selected, checkpoint, now) == "pending":
-        return checkpoint, {
-            "status": "BLOCKED",
-            "reason": "awaiting independent human approval",
-        }
     if not checkpoint.submitted:
+        approval = _response(
+            transport, "GET", PREFIX + f"/operation-approvals/{checkpoint.approval_id}"
+        )
+        if _approval(approval, selected, checkpoint, now) == "pending":
+            return checkpoint, {
+                "status": "BLOCKED",
+                "reason": "awaiting independent human approval",
+            }
         if persist is None:
             raise EvidenceError(
                 "browser: private checkpoint writer required before creation"

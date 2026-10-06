@@ -56,6 +56,7 @@ on:
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
+      - 'modules/gateway/frontend/eslint.config.js'
       - 'modules/gateway/frontend/tests/**'
       # Superplane borrows this frontend toolchain. Its own CI runs focused
       # UI and browser checks; Gateway CI also verifies the integrated build.
@@ -440,6 +441,12 @@ jobs:
       - name: Install dependencies
         working-directory: modules/gateway/frontend
         run: npm ci
+
+      - name: Lint frontend
+        # Keep configuration and suppression directives validated in CI.
+        # Dependency findings remain warnings, matching the local lint command.
+        working-directory: modules/gateway/frontend
+        run: npm run lint
 
       - name: Run Vitest
         working-directory: modules/gateway/frontend
