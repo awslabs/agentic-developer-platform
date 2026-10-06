@@ -2,7 +2,7 @@
   "issue": 6998,
   "sourceRevision": "fa75f1c407ffeb075d43271eb8a18accaa6458b3",
   "sourceReportSha256": "4b77d2237eb6864e2228eb433a6ec314a94aad858417f7ee094248c9ad6227bd",
-  "sourceVerification": "pending authorized private SARIF read; selectors transcribed from issue",
+  "sourceVerification": "pending authorized private SARIF read; named customer role returned 403 Forbidden for frozen report HeadObject; selectors transcribed from issue",
   "buildConsumers": {
     "agent/src/": "agent-worker-image/Dockerfile builder: /app/dist/",
     "codex-harness/src/": "agent-worker-image/Dockerfile codex-harness-builder: /app/codex-harness/dist/",
@@ -36,24 +36,24 @@
     "source": "Current r/all download; scan-time ruleset not verified"
   },
   "candidateRawSarifSha256": "dc7466bb5b4a2d873407f08b8f4419feb7b093f3e57616da99b67024908ca63a",
-  "candidateRawRetention": "Worker-local /tmp/issue-6998-candidate-semgrep.sarif only; not uploaded to the private evidence store",
+  "candidateRawRetention": "Previous run recorded a worker-local /tmp/issue-6998-candidate-semgrep.sarif; not recovered in this run or uploaded to the private evidence store",
   "candidateScope": "Affected agent, codex-harness and codex-reviewer source trees; 223 tracked files scanned, 176 ignored by .semgrepignore",
   "candidateImageDigest": null,
   "deploymentStatus": "Source candidate only; no worker image built or deployed",
   "integrationHandoff": {
-    "testedRevision": "ce049bdfcbc22c47eb5abf32857ce3e0e693da4d",
+    "testedRevision": "ccea17784f36313476f788fc4610a45d61aeb88b",
     "buildInput": "modules/agent-factory/agent-worker-image/Dockerfile copies built agent, codex-harness and codex-reviewer packages; deployed image digest and pinned release input not verified",
     "localChecks": {
-      "agent": "npm ci --include=dev and npm run build passed; clean-environment npm test -- --runInBand: 140/141 suites and 2856/2859 tests passed; three pre-existing experience-save-hook assertions expect the old context URL and forwarded identity headers",
+      "agent": "npm ci --include=dev and npm run build passed; minimal-environment npm test -- --runInBand: 141/142 suites and 2859/2862 tests passed; three existing experience-save-hook assertions expect the old context URL and forwarded identity headers; focused token isolation 50/50 and HTTP boundaries 68/68 passed with inherited worker credentials removed",
       "codexHarness": "npm ci --include=dev and npm test (including build) passed: 156/156 tests",
       "codexReviewer": "npm ci --include=dev and npm test (including build) ran: 196/198 tests passed; two installed-skill fixture tests cannot find the expected superplane/SKILL.md reference",
-      "security": "Focused HTTP-boundary and caller checks passed; candidate Semgrep mapped 18 native-critical results, none accepted as resolved"
+      "security": "Focused HTTP-boundary and caller checks passed; four selector/catalog tests passed; prior current-registry candidate Semgrep mapped 18 native-critical results, none accepted as resolved; original SARIF HeadObject returned 403 Forbidden"
     },
     "acceptance": {
-      "AC-01": "blocked: original private SARIF requires authorized scan-reader connection",
+      "AC-01": "blocked: selected customer role is verified but frozen report HeadObject returned 403 Forbidden; original private SARIF requires separately authorized scan-reader access",
       "AC-02": "local boundary fixtures pass; no live destination or image claim",
-      "AC-03": "blocked: original report and scan-time ruleset unavailable, raw candidate SARIF retained only on worker",
-      "AC-04": "pending: full agent and reviewer suites fail; no ready PR, merged composition, deployed digest or rollout verified"
+      "AC-03": "blocked: original report and scan-time ruleset unavailable; prior worker-local candidate SARIF is not recovered or durably retained",
+      "AC-04": "pending: ready PR #7023 exists but full agent and reviewer suites fail; no merged composition, deployed digest or rollout verified"
     },
     "rollback": "For an approved release, the image owner restores the previously verified pinned image input if needed; source rollback requires reviewing and reverting abb4039, 3f2661b and 03d35c3 without undoing merged PR #6733",
     "nextOwner": "Component image maintainer identifies the release/build consumer and pinned deployment input; epic coordinator repeats affected checks on merged composition. Production rollout requires separate approval."

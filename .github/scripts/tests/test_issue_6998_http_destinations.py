@@ -115,8 +115,12 @@ class Issue6998MappingTest(unittest.TestCase):
         self.assertIn("blocked", handoff["acceptance"]["AC-01"])
         self.assertIn("blocked", handoff["acceptance"]["AC-03"])
         self.assertIn("pending", handoff["acceptance"]["AC-04"])
-        self.assertIn("140/141", handoff["localChecks"]["agent"])
+        self.assertIn("141/142", handoff["localChecks"]["agent"])
+        self.assertIn("2859/2862", handoff["localChecks"]["agent"])
         self.assertIn("196/198", handoff["localChecks"]["codexReviewer"])
+        self.assertIn("403 Forbidden", catalog["sourceVerification"])
+        self.assertIn("not recovered", catalog["candidateRawRetention"])
+        self.assertIn("ready PR #7023", handoff["acceptance"]["AC-04"])
         self.assertIsNone(catalog["candidateImageDigest"])
         self.assertTrue(all(record["disposition"] == "unresolved" for record in catalog["records"]))
 
