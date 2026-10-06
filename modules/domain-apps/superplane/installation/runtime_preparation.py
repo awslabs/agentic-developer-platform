@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import stat
 
 from .api_adapters import closed
 from .config import EKS_NAME, IDENTIFIER, deployment_identity, digest, identity, require
@@ -862,6 +864,22 @@ def inspect_state(state, proposal, inspector):
     }
 
 
+def binary_plan_digest(path):
+    """Hash exact private saved-plan bytes, refusing links and missing artifacts."""
+    require(
+        not path.is_symlink() and path.is_file(),
+        "Saved binary runtime plan is missing or linked; obtain a fresh review",
+    )
+    info = path.stat()
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_mode & 0o077 == 0
+        and 0 < info.st_size <= 32 * 1024 * 1024,
+        "Saved binary runtime plan is not private or exceeds the size bound",
+    )
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def prepare(
     request,
     env,
@@ -953,6 +971,7 @@ def prepare(
                         "proposal_sha256",
                         "review_id",
                         "plan_sha256",
+                        "binary_plan_sha256",
                         "resources",
                         "worker_ready",
                         "source_sha256",
@@ -965,6 +984,7 @@ def prepare(
                         "proposal_sha256",
                         "review_id",
                         "plan_sha256",
+                        "binary_plan_sha256",
                         "resources",
                         "worker_ready",
                         "source_sha256",
@@ -1016,10 +1036,21 @@ def prepare(
             terraform_dir / "installation.auto.tfvars.json",
             proposal["terraform_variables"],
         )
+        saved_plan = terraform_dir / "installation.tfplan"
+        if receipt:
+            require(
+                binary_plan_digest(saved_plan) == receipt["binary_plan_sha256"],
+                "Saved binary runtime plan changed; obtain a fresh independent review",
+            )
         prefix = ["terraform", f"-chdir={terraform_dir}"]
 
         def call(*args):
             verify_operator(request, selected_identity, commands)
+            if args[0] == "apply":
+                require(
+                    binary_plan_digest(saved_plan) == receipt["binary_plan_sha256"],
+                    "Saved binary runtime plan changed before apply",
+                )
             return commands.call([*prefix, *args], timeout=120)
 
         def structured(*args):
@@ -1051,7 +1082,11 @@ def prepare(
             receipt["status"] = "applied"
             atomic(receipt_file, receipt)
             return receipt
-        call("plan", "-input=false", "-lock-timeout=60s", "-out=installation.tfplan")
+        if receipt is None:
+            call(
+                "plan", "-input=false", "-lock-timeout=60s", "-out=installation.tfplan"
+            )
+        binary_hash = binary_plan_digest(saved_plan)
         plan = structured("show", "-json", "installation.tfplan")
         plan_hash = inspect_plan(plan, proposal)
         if receipt:
@@ -1069,6 +1104,7 @@ def prepare(
                 "source_sha256": source_sha256,
                 "review_id": operator["review_id"],
                 "plan_sha256": plan_hash,
+                "binary_plan_sha256": binary_hash,
                 "resources": reviewed["resources"],
                 "worker_ready": False,
             }
@@ -1109,6 +1145,10 @@ def prepare(
             "Runtime target identity or name inventory changed before apply",
         )
         verify_operator(request, selected_identity, commands)
+        require(
+            binary_plan_digest(saved_plan) == receipt["binary_plan_sha256"],
+            "Saved binary runtime plan changed after approval",
+        )
         receipt["status"] = "apply-attempted"
         atomic(receipt_file, receipt)
         call("apply", "-input=false", "-lock-timeout=60s", "installation.tfplan")

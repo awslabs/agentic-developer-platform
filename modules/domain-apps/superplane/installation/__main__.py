@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from .config import Refusal, control_plane_mode, load, prepare_database_sql, validate
@@ -10,6 +11,11 @@ from .runner import Installer, local_lock
 
 
 def main(argv=None):
+    selected_args = list(sys.argv[1:] if argv is None else argv)
+    if "--prepare-domain-runtime" in selected_args:
+        from .runtime_cli import main as runtime_main
+
+        return runtime_main(selected_args)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--environment", required=True, type=Path)
     parser.add_argument("--release-lock", type=Path)

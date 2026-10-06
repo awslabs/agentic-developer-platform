@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -291,6 +292,10 @@ class FakeTerraform:
             raise AssertionError(args)
         self.calls.append(args)
         action = args[2]
+        if action == "plan":
+            target = Path(args[1].removeprefix("-chdir=")) / "installation.tfplan"
+            target.write_text(json.dumps(self.plan, sort_keys=True))
+            target.chmod(0o600)
         if action == "show" and args[-1] == "installation.tfplan":
             return SimpleNamespace(stdout=json.dumps(self.plan))
         if action == "show":
@@ -786,3 +791,82 @@ def test_replay_refuses_changed_live_role_id(execution, tmp_path):
             proposal,
             inspector,
         )
+
+
+def test_planned_resume_never_regenerates_reviewed_binary(execution, tmp_path):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    receipt = prepare(
+        selected_request, env, lock, operator, inspector, terraform, tmp_path
+    )
+    binary = tmp_path / "terraform/installation.tfplan"
+    original = binary.read_bytes()
+    second = prepare(
+        selected_request, env, lock, operator, inspector, terraform, tmp_path
+    )
+    assert second == receipt
+    assert binary.read_bytes() == original
+    assert [args[2] for args in terraform.calls].count("plan") == 1
+    import hashlib
+
+    assert receipt["binary_plan_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "problem", ["changed", "missing", "linked", "public", "legacy"]
+)
+def test_saved_binary_problem_refuses_before_resumed_terraform(
+    execution, tmp_path, problem
+):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    receipt = prepare(
+        selected_request, env, lock, operator, inspector, terraform, tmp_path
+    )
+    binary = tmp_path / "terraform/installation.tfplan"
+    if problem == "changed":
+        binary.write_bytes(binary.read_bytes() + b"changed")
+    elif problem == "missing":
+        binary.unlink()
+    elif problem == "linked":
+        saved = binary.with_suffix(".original")
+        binary.rename(saved)
+        binary.symlink_to(saved)
+    elif problem == "public":
+        binary.chmod(0o644)
+    else:
+        receipt.pop("binary_plan_sha256")
+        (tmp_path / "runtime-preparation.json").write_text(json.dumps(receipt))
+    terraform.calls.clear()
+    with pytest.raises(Refusal):
+        prepare(selected_request, env, lock, operator, inspector, terraform, tmp_path)
+    assert terraform.calls == []
+
+
+def test_binary_changed_during_approval_cannot_apply(execution, tmp_path):
+    selected_request, env, lock, operator, _, _, _, inspector, terraform = execution
+    receipt = prepare(
+        selected_request, env, lock, operator, inspector, terraform, tmp_path
+    )
+
+    def approve(**data):
+        (tmp_path / "terraform/installation.tfplan").write_bytes(
+            b"changed after inspection"
+        )
+        return {"approved": True, **data, "approver": "independent-operator"}
+
+    with pytest.raises(Refusal, match="binary runtime plan changed"):
+        prepare(
+            selected_request,
+            env,
+            lock,
+            operator,
+            inspector,
+            terraform,
+            tmp_path,
+            approved_plan_digest=receipt["plan_sha256"],
+            approval_check=SimpleNamespace(verify_plan=approve),
+        )
+    assert "apply" not in [args[2] for args in terraform.calls]
+    assert (
+        json.loads((tmp_path / "runtime-preparation.json").read_text())["status"]
+        == "planned"
+    )
