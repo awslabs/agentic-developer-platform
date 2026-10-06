@@ -27,6 +27,11 @@ on:
         description: 'Deployment environment.'
         required: false
         default: 'dev'
+      plan_only:
+        description: 'Preview and validate the plan without applying it. A later apply creates a fresh plan.'
+        required: false
+        default: false
+        type: boolean
       target:
         description: 'Optional Terraform address to scope the apply, e.g. module.arc_runner. Empty = whole module (~61 resources).'
         required: false
@@ -88,30 +93,8 @@ jobs:
           for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
-      - name: Pre-create stub GitHub App secrets (idempotent)
-        run: |
-          set -e
-          GITHUB_ORG="${GITHUB_ORG:-aws-e}"
-          for role in dev pm ops; do
-            for kind in id key; do
-              SECRET_NAME="adp/${GITHUB_ORG}/gh-app-${role}-${kind}"
-              if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-                echo "✓ ${SECRET_NAME} exists"
-              else
-                if [ "$kind" = "id" ]; then
-                  VALUE="999999"
-                else
-                  VALUE="-----BEGIN RSA PRIVATE KEY-----
-          PLACEHOLDER
-          -----END RSA PRIVATE KEY-----"
-                fi
-                aws secretsmanager create-secret \
-                  --name "$SECRET_NAME" --region "$AWS_REGION" \
-                  --secret-string "$VALUE" >/dev/null
-                echo "✓ Created stub: ${SECRET_NAME}"
-              fi
-            done
-          done
+      # GitHub App wiring is a separate, final onboarding step. Existing ARC
+      # installations must already have real credentials; never create stubs.
 
       - uses: actions/setup-node@v6
         with:
@@ -165,7 +148,7 @@ jobs:
           fi
 
       - name: Destroy-safety label gate
-        if: steps.plan.outputs.detailed_exitcode == '2'
+        if: steps.plan.outputs.detailed_exitcode == '2' && !inputs.plan_only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -203,23 +186,32 @@ jobs:
 
       - name: Terraform Apply
         id: apply
+        if: ${{ !inputs.plan_only }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply tfplan
 
       - name: Summary
         if: always()
         env:
-          ADP_INPUT_1F64C4B060: ${{ inputs.target }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          REQUESTED_TARGET: ${{ inputs.target }}
         run: |
-          echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
-          # Record scope explicitly: a targeted apply leaves the rest of the
-          # module unconverged, and that has to be visible afterwards rather
-          # than only in the dispatch inputs.
-          if [ -n "${ADP_INPUT_1F64C4B060}" ]; then
-            echo "- **Scope**: TARGETED — \`${ADP_INPUT_1F64C4B060}\` only. Remaining resources in this module were NOT reconciled." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- **Scope**: full module (all resources reconciled)" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          set -euo pipefail
+          {
+            if [[ "$PLAN_ONLY" == true ]]; then
+              echo '## Agent factory plan only'
+              printf -- '- Plan step: %s\n' "$PLAN_OUTCOME"
+              echo '- Terraform Apply was skipped. No infrastructure convergence is claimed.'
+              echo '- A later apply run creates and validates a fresh plan.'
+            else
+              echo '## Agent factory apply'
+              printf -- '- Apply step: %s\n' "$APPLY_OUTCOME"
+            fi
+            if [[ -n "$REQUESTED_TARGET" ]]; then
+              printf -- '- Requested scope: `%s` only; other module resources are outside this operation.\n' "$REQUESTED_TARGET"
+            else
+              echo '- Requested scope: full module.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
