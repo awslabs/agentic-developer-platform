@@ -188,6 +188,52 @@ for an environment already running on the removed placeholder follow
 
 For a fresh installation, `adp_org_id` names the actual ADP organization (for example `aws-e`); the three UUIDs identify the new domain organization, workspace and cluster. After migration, a one-shot bootstrap Job verifies the signed ADP access token and current `org_admin` membership through `/api/auth/workspaces`, checks both again before commit, and stores an explicit organization binding and one initial `administer` workspace grant for that human subject. The policy defines the permissions implied by this grant. Resume is idempotent and never restores a revoked grant, rebinds an existing organization, or adopts an unbound legacy organization. The temporary token Secret is deleted with UID preconditions after terminal bootstrap success; an interrupted or failed Job requires recovery inspection. U21's historical identity mapping, migration and cutover remain separate.
 
+## Selected deployment role
+
+Offline planning and SQL emission remain available without AWS authority. Every
+live phase, including preflight probes, requires a `deployment_identity` mapping
+in the private environment file:
+
+```yaml
+deployment_identity:
+  service: aws
+  connection_label: <authorized connection label>
+  expected_role_arn: <independently verified full IAM role ARN, including path>
+  expected_role_id: <independently verified immutable IAM RoleId>
+```
+
+Resolve these values from the authenticated connection owner and its reviewed
+role inventory **before** requesting a deployment session. Do not populate the
+expected values from whichever identity happens to be active. Keep the selected
+connection, tenant and role evidence with the private installation plan. The
+label is an operator-selected assertion; the installer does not authenticate an
+ADP invocation or prove which broker connection issued the AWS session.
+
+Execute the maintained entry point inside that connection's session, for example
+`adp-cred assume --service aws --label <selected-label> --exec bash
+modules/domain-apps/superplane/deploy.sh ...`. Preserve the broker's separate
+transport identity and private credential store. The selected role requires
+`iam:GetRole` for its own exact ARN in addition to the reviewed domain authority;
+a denial is a readiness failure, never permission to fall back to ambient AWS
+credentials or widen grants automatically.
+
+Before each phase and AWS/Kubernetes mutation, the installer compares STS
+account, assumed-role ARN and `UserId` with the expected role name and immutable
+RoleId, then verifies IAM `GetRole` returns the exact ARN and RoleId. This catches
+a different role in the same account, a role recreated under the same name, and
+credential refresh to another identity. Compensation, probe cleanup, route
+updates and lock recovery use the same check. When identity is lost, cleanup may
+retain resources and the recovery receipt rather than mutate through another
+role. Resume preserves the exact environment and rechecks live authority before
+continuing; a saved successful identity observation cannot authorize a new phase.
+The receipt stores only selected metadata and sanitized observed identity.
+
+Older receipts without this metadata remain readable for offline inspection but
+cannot authorize live recovery. Do not edit their history to manufacture proof;
+reconcile their ownership and prepare an explicit reviewed recovery with the
+installation owner. This guard does not replace cluster/server/CA checks, source
+and plan validation, human bootstrap authorization or workspace runtime grants.
+
 ## Organization bootstrap before the first workspace
 
 The API bootstrap command accepts `control_plane_only: true` in
