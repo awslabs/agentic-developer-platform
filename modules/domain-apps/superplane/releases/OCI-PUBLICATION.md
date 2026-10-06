@@ -60,8 +60,9 @@ python3 modules/domain-apps/superplane/releases/publish_oci.py \
   --receipt "$SKYPILOT_PUBLICATION_RECEIPT" --publish
 ```
 
-A successful receipt says `published` or `reused`, binds the review/tool hashes,
-and confirms exact registry manifest bytes. A conflicting immutable tag fails.
+A successful receipt says `published` or `reused`, binds the review and publisher
+script hashes, and confirms exact registry manifest bytes. A copied image also
+records the Skopeo version. A conflicting immutable tag fails.
 The private ECR authfile is deleted on exit and tokens never appear in arguments
 or receipts. Receipt files are private, exclusively reserved, atomically updated
 and flushed before the upload. Keep them outside public documentation.
