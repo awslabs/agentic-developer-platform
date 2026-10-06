@@ -204,7 +204,10 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         mode="execution",
     )
     try:
-        yield SimpleNamespace(post=post, connect=connect, store=store, runtime=runtime, body=body, kubernetes=kubernetes, sqs=sqs, queue=queue)
+        yield SimpleNamespace(
+            post=post, client=client, connect=connect, store=store, runtime=runtime,
+            body=body, kubernetes=kubernetes, sqs=sqs, queue=queue,
+        )
     finally:
         await client.aclose()
         await engine.dispose()
@@ -505,3 +508,165 @@ async def test_original_human_membership_is_rechecked_before_dispatch_and_paid_e
     async with paid.connect() as connection:
         assert await connection.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
         assert await connection.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 0
+
+
+async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db_session, pg_url, monkeypatch):  # noqa: F811
+    import hmac
+    import uuid
+
+    import botocore.auth
+    import botocore.awsrequest
+    from botocore.credentials import Credentials
+    from sqlalchemy import text
+
+    from src.shared.database import get_db
+
+    for dependency in (
+        "harness/jobs",
+        "domain-apps/superplane/contracts",
+        "domain-apps/superplane/auth",
+        "domain-apps/superplane/src/superplane-api",
+    ):
+        monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / dependency))
+    monkeypatch.setenv("DATABASE_URL", to_async_url(pg_url))
+    monkeypatch.setenv("SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS", "true")
+    from superplane_auth.policy import DomainPrincipal, Permission
+
+    from app.adapters.operation_authority_source import (
+        ActingPrincipal,
+        GrantBackedAuthority,
+        reset_acting_principal,
+        set_acting_principal,
+    )
+    from app.adapters.operation_dispatch import ProducerTransport
+    from app.auth import VerifiedCaller, authorize_workspace_operation
+    from app.config import settings as domain_settings
+    from app.current_identity import MappedProducerIdentityReader, require_current_identity
+    from app.database import Base
+    from app.models.cloud_account import CloudAccount
+    from app.models.cluster import Cluster
+    from app.models.organization import Organization as DomainOrganization
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+
+    db_session.add(Organization(id="tenant", name="ADP selected organization"))
+    await db_session.flush()
+    for subject in ("human", "approver"):
+        user = User(id=f"adp-{subject}", org_id="tenant", team_id="", email=f"{subject}@example.test", cognito_sub=subject)
+        db_session.add(user)
+        await db_session.flush()
+        db_session.add(TenantMembership(user_id=user.id, tenant_id="tenant", is_active=True))
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def membership_session():
+        yield db_session
+
+    async def gateway_database():
+        yield db_session
+
+    paid.client._transport.app.dependency_overrides[get_db] = gateway_database
+    monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
+    monkeypatch.setattr(domain_current_identity, "cognito_user_pool_id", lambda: "fixture-pool")
+    cognito = MagicMock()
+    cognito.list_users.side_effect = lambda **kwargs: {"Users": [{"Username": kwargs["Filter"].split('"')[1]}]}
+    cognito.admin_get_user.side_effect = lambda **kwargs: {
+        "Enabled": True,
+        "UserAttributes": [
+            {"Name": "sub", "Value": kwargs["Username"]},
+            {"Name": "custom:org_id", "Value": "tenant"},
+        ],
+    }
+    monkeypatch.setattr(domain_current_identity, "aws_client", lambda service: cognito)
+    bindings = json.loads(os.environ["ADP_DOMAIN_OPERATION_BINDINGS"])
+    bindings[0]["current_identity_enforced"] = True
+    monkeypatch.setenv("ADP_DOMAIN_OPERATION_BINDINGS", json.dumps(bindings))
+
+    credentials = Credentials("fixture-access", "fixture-signing")
+
+    async def trusted_edge(request):
+        unsigned = botocore.awsrequest.AWSRequest(
+            method=request.method, url=str(request.url), data=request.content,
+            headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
+        )
+        timestamp = request.headers.get("X-Amz-Date")
+        if not timestamp:
+            return httpx.Response(403)
+        unsigned.context["timestamp"] = timestamp
+        signer = botocore.auth.SigV4Auth(credentials, "execute-api", "us-east-1")
+        signer._modify_request_before_signing(unsigned)
+        signature = signer.signature(signer.string_to_sign(unsigned, signer.canonical_request(unsigned)), unsigned)
+        if not hmac.compare_digest(request.headers.get("Authorization", "").split("Signature=")[-1], signature):
+            return httpx.Response(403)
+        response = await paid.client.post(
+            request.url.path, content=request.content,
+            headers={
+                "Content-Type": "application/json",
+                "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/producer/pod",
+                "X-Adp-Edge-Provenance": "edge-proof",
+                "X-Adp-Workload-Token": "pod-token",
+            },
+        )
+        return httpx.Response(response.status_code, content=response.content)
+
+    producer = ProducerTransport(
+        "https://gateway.example", "us-east-1",
+        session=SimpleNamespace(get_credentials=lambda: credentials),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(trusted_edge)),
+    )
+    schema = "identity_composition_" + uuid.uuid4().hex
+    admin = create_async_engine(to_async_url(pg_url))
+    async with admin.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    domain_engine = create_async_engine(to_async_url(pg_url), connect_args={"server_settings": {"search_path": schema}})
+    sessions = async_sessionmaker(domain_engine, expire_on_commit=False)
+    workspace_id = uuid.UUID(WORKSPACE)
+    try:
+        async with domain_engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all, tables=[
+                DomainOrganization.__table__, CloudAccount.__table__, Cluster.__table__,
+                Workspace.__table__, WorkspaceGrantRecord.__table__,
+            ])
+        async with sessions() as session:
+            session.add(DomainOrganization(id=uuid.UUID(ORG), name="mapped", adp_org_id="tenant"))
+            session.add(Workspace(id=workspace_id, org_id=uuid.UUID(ORG), name="workspace", status="Ready", isolation_mode="dedicated"))
+            await session.flush()
+            session.add(WorkspaceGrantRecord(
+                org_id=uuid.UUID(ORG), workspace_id=workspace_id, principal="human",
+                principal_type="human", permissions="workspace:provision",
+            ))
+            await session.commit()
+
+        monkeypatch.setattr(domain_settings, "current_identity_enforced", True)
+        reader = MappedProducerIdentityReader(producer, sessions)
+        identity = await require_current_identity(reader, subject="human", principal_type="human", adp_org_id="tenant")
+        assert identity.membership_id
+        caller = VerifiedCaller(
+            DomainPrincipal("human", ORG, "adp-client", "human"), {},
+            source_org_id="tenant", identity_evidence=identity.membership_id,
+        )
+        async with sessions() as session:
+            assert await authorize_workspace_operation(session, caller, workspace_id, Permission.PROVISION)
+        authority = GrantBackedAuthority(sessions)
+        token = set_acting_principal(ActingPrincipal(
+            "human", ORG, WORKSPACE, adp_org_id="tenant",
+            membership_id=identity.membership_id, identity_reader=reader,
+        ))
+        try:
+            assert await authority.resolve(org_id=ORG, workspace_id=WORKSPACE, permission="workspace:provision")
+        finally:
+            reset_acting_principal(token)
+
+        dispatched, credential = await start(paid)
+        assert dispatched["org_id"] == ORG
+        assert (await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)).status_code == 200
+        assert (await paid.post("/authority", {"operation_id": "original-operation"}, credential=credential)).status_code == 200
+        assert cognito.admin_get_user.call_count >= 6
+        async with paid.connect() as connection:
+            assert await connection.fetchval("SELECT fence_token FROM harness_operation_leases") == 1
+    finally:
+        await producer.aclose()
+        await domain_engine.dispose()
+        async with admin.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await admin.dispose()
