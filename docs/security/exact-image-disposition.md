@@ -83,6 +83,17 @@ config diffIDs. It reconstructs a file inventory in memory without extracting
 paths to the host. Package identity and ownership come from the final image's
 dpkg status and package `.list` files, cross-checked against the SBOM. Every owned
 file is recorded, including absent paths removed from minimal container images.
+Only Syft `dpkg-db-cataloger` artifacts with `dpkg-db-entry` metadata and primary
+evidence at the root `/var/lib/dpkg/status` map to this package inventory.
+Debian identities reported by `elf-binary-package-cataloger` describe an ELF
+file's source-package note, such as an AWS CLI bundled `libuuid.so.1`; their
+names and versions do not establish root dpkg ownership. These artifacts are
+retained separately in `embedded_packages`, keyed by artifact ID, with their
+exact scanner locations and resolved installed file hashes. Their native/SARIF
+locations must agree, and their findings remain active and ineligible for
+disposition, even when a root package has the identical name, version or PURL.
+Missing embedded files and unknown Debian cataloger/metadata combinations fail
+closed. Shared root/embedded rules retain the existing complete-group checks.
 Symlink resolution is bounded; hardlinks capture bytes at creation time.
 Whole-filesystem and complete package inventories are part of the approved
 observation. This release supports Linux OCI archives with gzip/uncompressed

@@ -1,0 +1,24 @@
+{
+  "id": "ecbe5bef2df2e8c8",
+  "name": "util-linux",
+  "version": "2.41.5-0+deb13u1",
+  "type": "deb",
+  "purl": "pkg:deb/Debian/util-linux@2.41.5-0%2Bdeb13u1?distro=Debian",
+  "foundBy": "elf-binary-package-cataloger",
+  "locations": [
+    {
+      "path": "/opt/awscli-adp/lib/aws-cli/libuuid.so.1",
+      "layerID": "sha256:24d27620ff6be43b081eb647822ceef0a1332956def7c745e2d413e911c13a61",
+      "accessPath": "/opt/awscli-adp/lib/aws-cli/libuuid.so.1",
+      "annotations": {
+        "evidence": "primary"
+      }
+    }
+  ],
+  "metadataType": "elf-binary-package-note-json-payload",
+  "metadata": {
+    "type": "deb",
+    "architecture": "amd64",
+    "os": "Debian"
+  }
+}
