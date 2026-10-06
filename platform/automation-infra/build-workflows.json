@@ -8,5 +8,7 @@
   "pyjwt-layer-build.yml",
   "superplane-api-build.yml",
   "superplane-controller-build.yml",
-  "superplane-monitor-build.yml"
+  "superplane-monitor-build.yml",
+  "superplane-operator-source.yml",
+  "superplane-paid-worker-build.yml"
 ]
