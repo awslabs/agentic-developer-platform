@@ -40,3 +40,28 @@ or error statuses. Expiration is not waived by the ZIP checksum.
 
 Key SHA-256: `b3cef249c50f7e26254ffd91bc7453d7424247cc98c372840e70297060c0e146`.
 The key is public; no signing secret or credential is included.
+
+## Runtime libuuid maintenance
+
+The tools build can bundle an older util-linux library than the selected
+executor runtime base. After copying the portable executable, the runtime build
+replaces only its `libuuid.so.1` with the exact reviewed `libuuid1` payload from
+that base. `libuuid-lock.json` binds the original and replacement bytes, package
+version, architecture and file paths. The installer checks dpkg ownership and
+the vendor fixed-version minimum before copying; a different base payload or
+upstream bundle fails the build and needs renewed review.
+
+The replacement retains the complete ELF bytes, including its original build ID
+and source-package note. `libuuid-maintenance.json` records the additional ADP
+maintenance separately from the AWS CLI source-build record. No metadata is
+removed and no scanner findings are suppressed. Source-package notes remain
+embedded identities distinct from root dpkg ownership during qualification.
+
+The ordinary compatibility probe loads the bundle's own Python 3.14.7 and
+`_uuid` extension, calls `generate_time_safe`, and checks that the versioned
+`UUID_2.20` symbol was loaded from the bundled library path. It is compiled in
+the tools stage and bind-mounted only for the final nonroot, network-disabled
+build check; the probe is not installed in the runtime. Independent qualification
+also compares all original exported/versioned symbols, the SONAME, actual CLI
+startup/service-model behavior and installed library hashes against the selected
+runtime-base package. The final merged-source image still needs a fresh raw scan.
