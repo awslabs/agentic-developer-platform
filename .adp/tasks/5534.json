@@ -1,20 +1,19 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:28:19.312Z",
+  "updated_at": "2026-10-06T01:36:15.258Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Preserve original sealed allocation and establish separate exact-name cleanup authority",
-      "status": "open",
+      "status": "blocked",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_adapters.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_control.py"
       ],
-      "note": "ed2882e adds guarded admitted revocation; trusted producer composition remains.",
+      "note": "Trusted production composition remains; reviewer owns disposition after operator-directed handoff.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -30,7 +29,8 @@
         "aac4f18",
         "a3ea318",
         "b277612",
-        "ed2882e"
+        "ed2882e",
+        "340e296"
       ]
     },
     {
@@ -45,7 +45,7 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
       ],
-      "note": "84 changed-package tests pass; the new RPC test uses a digested inserted receipt and stubbed live callbacks, not full production composition.",
+      "note": "Production management-mode execution remains unproved.",
       "commits": [
         "b92e027"
       ]
@@ -87,7 +87,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Not run against a production retirement producer."
+      "note": "Production-producer coverage remains."
     },
     {
       "id": "AC-01-t4",
@@ -100,7 +100,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Admitted revoke rejects stale approval and missing receipt; remaining production denial paths need coverage."
+      "note": "Remaining production denial paths need coverage."
     },
     {
       "id": "AC-02-c1",
@@ -140,7 +140,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Producer composition remains; coordinate native worker registration with #5535.",
+      "note": "No run_retirement producer or native worker registration exists.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -160,7 +160,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "No admitted managed API-to-producer test yet."
+      "note": "No admitted managed API-to-producer test."
     },
     {
       "id": "AC-02-t2",
@@ -173,7 +173,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "Not run against production composition."
+      "note": "Production negative integration remains."
     },
     {
       "id": "AC-03-c1",
@@ -183,7 +183,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Workflow enforcement remains to inspect."
+      "note": "Workflow enforcement remains."
     },
     {
       "id": "AC-03-t1",
@@ -195,7 +195,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Changed-package tests pass; full relevant suites and required CI remain."
+      "note": "Full suites and final-head CI result remain."
     },
     {
       "id": "AC-04-c1",
@@ -205,7 +205,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Evaluator handoff remains."
+      "note": "PR contains source handoff; evaluator documentation remains."
     },
     {
       "id": "AC-04-t1",
@@ -217,7 +217,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Public-documentation check and final evidence matrix remain."
+      "note": "Final documentation and evidence checks remain."
     },
     {
       "id": "AC-04-t2",
@@ -229,7 +229,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Foreground owns review and merge; neither is claimed."
+      "note": "Reviewer/foreground owns review and merge."
     }
   ]
 }
