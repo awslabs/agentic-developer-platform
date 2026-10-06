@@ -154,6 +154,28 @@ def test_service_selectors_match_policy_peers(environment, release, management_o
         assert peer["podSelector"]["matchLabels"].items() <= selector.items()
 
 
+@pytest.mark.parametrize("management_only", [False, True])
+def test_rendered_pod_env_has_unique_server_apply_keys(
+    environment, release, management_only
+):
+    """Kubernetes rejects duplicate env names before considering field ownership."""
+    env = dict(environment, control_plane_only=management_only)
+    docs = [
+        *render(env, release),
+        migration_job(env, release, "env-keys"),
+        bootstrap_job(env, release, "env-keys"),
+    ]
+    for doc in docs:
+        if doc["kind"] not in {"Deployment", "Job"}:
+            continue
+        pod = doc["spec"]["template"]["spec"]
+        for container in [*pod.get("initContainers", []), *pod["containers"]]:
+            names = [item["name"] for item in container.get("env", [])]
+            assert len(names) == len(set(names)), (doc["metadata"]["name"], names)
+            for item in container.get("env", []):
+                assert not ("value" in item and "valueFrom" in item)
+
+
 def test_skypilot_database_config_does_not_override_secret(environment, release):
     docs = render(environment, release)
     configmap = next(
@@ -192,6 +214,9 @@ def test_skypilot_username_resolves_without_a_passwd_entry(environment, release)
         if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "skypilot-api"
     )
     container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert [item for item in container["env"] if item["name"] == "USER"] == [
+        {"name": "USER", "value": "skypilot"}
+    ]
     values = {
         item["name"]: item["value"] for item in container["env"] if "value" in item
     }
