@@ -76,8 +76,16 @@ class AwsCli:
                 "volume": "InvalidVolume.NotFound",
                 "vpc": "InvalidVpcID.NotFound",
             }[kind]
+            api_operation = {
+                "cluster": "DescribeCluster",
+                "volume": "DescribeVolumes",
+                "vpc": "DescribeVpcs",
+            }[kind]
             return subprocess.CompletedProcess(
-                command, 255, "", f"An error occurred ({error})"
+                command,
+                255,
+                "",
+                f"An error occurred ({error}) when calling the {api_operation} operation: The resource '{name}' does not exist.",
             )
         output = {
             "cluster": {"cluster": {"arn": resource}},
@@ -143,6 +151,107 @@ def test_standard_sts_identity_permits_scoped_inventory_reads(selection):
         "sts",
         "eks",
     ]
+
+
+@pytest.mark.parametrize(
+    "exit_code,error",
+    [
+        (255, "broker connection lookup failed (ResourceNotFoundException)"),
+        (
+            255,
+            "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: private-connection missing",
+        ),
+        (
+            255,
+            "An error occurred (InvalidVolume.NotFound) when calling the DescribeVolumes operation: vol-12345678 missing",
+        ),
+        (255, "An error occurred (ResourceNotFoundException)"),
+        (
+            255,
+            "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: another-cluster missing",
+        ),
+        (
+            255,
+            "warning: (ResourceNotFoundException)\nAn error occurred (AccessDeniedException) when calling the DescribeCluster operation: denied",
+        ),
+        (
+            255,
+            "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: example-owned missing\nprivate broker error",
+        ),
+        (
+            1,
+            "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: example-owned missing",
+        ),
+    ],
+)
+def test_unrelated_or_ambiguous_errors_cannot_prove_resource_absence(
+    selection, exit_code, error
+):
+    executor = AwsCli()
+
+    def respond(command, **options):
+        result = executor(command, **options)
+        if command[8] != "sts":
+            return subprocess.CompletedProcess(command, exit_code, "", error)
+        return result
+
+    observed = reader(selection, respond).read_inventory(
+        InventoryQuery(
+            selection.connection_id,
+            selection.role,
+            selection.account,
+            selection.region,
+            identifier(6),
+            OWNED,
+            SURVIVORS,
+        )
+    )
+    assert observed["status"] == "denied"
+    assert observed["cost_usd"] is None
+    assert len(executor.calls) == 2
+    assert error not in json.dumps(observed)
+
+
+@pytest.mark.parametrize(
+    "kind,name,code,operation",
+    [
+        ("cluster", "example-owned", "ResourceNotFoundException", "DescribeCluster"),
+        ("instance", "i-12345678", "InvalidInstanceID.NotFound", "DescribeInstances"),
+        ("volume", "vol-12345678", "InvalidVolume.NotFound", "DescribeVolumes"),
+        ("vpc", "vpc-12345678", "InvalidVpcID.NotFound", "DescribeVpcs"),
+        ("subnet", "subnet-12345678", "InvalidSubnetID.NotFound", "DescribeSubnets"),
+        (
+            "network-interface",
+            "eni-12345678",
+            "InvalidNetworkInterfaceID.NotFound",
+            "DescribeNetworkInterfaces",
+        ),
+        (
+            "security-group",
+            "sg-12345678",
+            "InvalidGroup.NotFound",
+            "DescribeSecurityGroups",
+        ),
+    ],
+)
+@pytest.mark.parametrize("exit_code", [254, 255])
+def test_exact_resource_error_is_recognized_for_each_supported_kind(
+    selection, kind, name, code, operation, exit_code
+):
+    executor = AwsCli()
+
+    def respond(command, **options):
+        if command[8] == "sts":
+            return executor(command, **options)
+        return subprocess.CompletedProcess(
+            command,
+            exit_code,
+            "",
+            f"An error occurred ({code}) when calling the {operation} operation: The resource '{name}' does not exist.",
+        )
+
+    resource = arn("eks" if kind == "cluster" else "ec2", kind, name)
+    assert reader(selection, respond)._lookup(kind, name, resource) == "absent"
 
 
 @pytest.mark.parametrize(
