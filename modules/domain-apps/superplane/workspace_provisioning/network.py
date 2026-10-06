@@ -173,6 +173,50 @@ def network_recipe(operation, config, outputs):
 
 
 async def establish_network(operation, context, config, outputs, session):
+    if config.get("management_public_access") is not None:
+        from .authority import current_operation
+        from .public_network import observe_public_api
+
+        async def public_read(service, method, **arguments):
+            await current_operation(operation, context)
+            result = await asyncio.to_thread(
+                getattr(
+                    session.client(service, region_name=outputs["aws_region"]), method
+                ),
+                **arguments,
+            )
+            await current_operation(operation, context)
+            return result
+
+        await verify_network_target(outputs, public_read)
+        retained = await observe_retained_sts_rule(outputs, public_read)
+        loop = asyncio.get_running_loop()
+
+        def verify():
+            future = asyncio.run_coroutine_threadsafe(
+                current_operation(operation, context), loop
+            )
+            try:
+                future.result(timeout=20)
+            except BaseException:
+                future.cancel()
+                raise
+
+        def read(service, method, **arguments):
+            verify()
+            result = getattr(
+                session.client(service, region_name=outputs["aws_region"]), method
+            )(**arguments)
+            verify()
+            return result
+
+        observed = await asyncio.to_thread(
+            observe_public_api, config, outputs, read, verify
+        )
+        return {
+            "public-api-endpoint": observed,
+            "private-sts-rule": {"rule_id": retained, "created": False},
+        }
     recipe = network_recipe(operation, config, outputs)
     journal = LifecycleEffects(
         operation, context, phase="bootstrap-workspace", recipe=recipe
@@ -293,8 +337,9 @@ async def establish_network(operation, context, config, outputs, session):
 
 
 class OwnedNetworkObservations:
-    def __init__(self, access, evidence):
+    def __init__(self, access, evidence, *, public_reader=None):
         self.access = access
+        self.public_reader = public_reader
         self.owned = {
             value["rule_id"] for value in evidence.values() if value["created"] is True
         }
@@ -306,3 +351,16 @@ class OwnedNetworkObservations:
         result = dict(self.access.security_group_rule(*args))
         result["created_by_bootstrap"] = result.get("rule_id") in self.owned
         return result
+
+    def public_endpoint(self, target):
+        if self.public_reader is None:
+            raise LifecycleRefused("fresh public endpoint observer is unavailable")
+        observed = self.public_reader()
+        if (observed.get("cluster_arn"), observed.get("endpoint")) != (
+            target.cluster_arn,
+            target.endpoint,
+        ):
+            raise LifecycleRefused(
+                "public endpoint observation names another workspace"
+            )
+        return observed

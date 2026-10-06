@@ -22,9 +22,9 @@ from harness_jobs.approval import (
 from harness_jobs.identity import OperationRequest, ResolvedPrincipal
 
 from app import auth
-from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.config import settings
 from app.current_identity import MappedProducerIdentityReader
+from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
     DOMAIN_ROUTES,
     PRIVATE_DOMAIN_ROUTES,
@@ -150,6 +150,12 @@ def test_absent_generalized_effective_access_and_grant_administration_surfaces()
         assert actions[name]["permission"] == permission
         assert actions[name]["surface"] == "absent"
         assert actions[name]["routes"] == []
+    workspace_grants = actions["workspace.access.manage"]
+    assert workspace_grants["scope"] == "workspace"
+    assert workspace_grants["permission"] == Permission.ADMINISTER.value
+    assert workspace_grants["surface"] == "ui:grantWorkspaceAccess"
+    assert workspace_grants["routes"] == ["POST /workspaces/{workspace_id}/access/v1/grants"]
+    assert {"typed_target", "same_tenant", "current_membership", "assignable_ceiling"} <= set(workspace_grants["extra"])
     assert actions["org.access.manage"]["organization_grant"] == ORGANIZATION_ADMINISTER
     assert actions["org.access.effective"]["organization_grant"] == ORGANIZATION_READ
     for name in ("org.access.effective", "workspace.access.effective"):

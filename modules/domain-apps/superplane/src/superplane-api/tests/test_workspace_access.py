@@ -153,7 +153,7 @@ async def test_removed_administrator_and_missing_reader_refused(access, monkeypa
     assert (await client.post(url, json=_grant_request(), headers=token())).status_code == 403
     membership.allowed.add("owner")
     monkeypatch.delattr(app.state, "current_identity_reader")
-    assert (await client.post(url, json=_grant_request(), headers=token())).status_code == 403
+    assert (await client.post(url, json=_grant_request(), headers=token())).status_code == 503
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,8 @@ It produces a scenario report and an AC-01–AC-04 matrix. The report is labelle
 `offline-fixture` and can only say `FAIL`, `BLOCKED`, or `NOT RUN`: a completed
 fixture command (exit 0) **does not mean the workspace is Ready or removed**.
 No cloud, browser, database, approval, or provider action is performed by this
-command. Its live mode currently refuses before reading inputs or making effects.
+command. Live mode validates owner-only private selection, authority and browser
+state, then reports `BLOCKED` without browser, provider or resource effects.
 
 From the repository root, with Python 3.12+ and no private credentials, run
 the same fictional input builder used by the acceptance tests. `mktemp -d`
@@ -53,10 +54,119 @@ For an operator-supplied **offline** fixture, substitute *absolute* paths to
 two previously prepared, non-symlink, owner-only regular files in the command
 above; supply a new report path in an existing private directory. Do not use
 this fixture path as a shortcut to a live authorization or a real cleanup
-receipt. There is no supported live invocation command until #5534/#5535,
+receipt. The separately gated live-selection **preflight** below is runnable, but is
+not a lifecycle invocation: it does not create, approve, observe or remove a
+workspace. There is no supported live *journey* invocation until #5534/#5535,
 #5730 and #5538 provide compatible reviewed interfaces and the Wave 6
 operations owner authorizes an exact target, identity, release, budget,
-deadline and cleanup continuation. Do not run `--mode live` in this assignment.
+deadline and cleanup continuation. Do not invoke it against a real target in
+this source-only assignment.
+
+### Independent API runtime observation
+
+This is an optional **read-only API artifact check**, not a create/Ready/remove
+driver. It uses the installer's maintained `app.installation readiness` and
+`database` commands inside existing API pods. It neither installs resources nor
+runs migrations. Public-origin routing, other release components, browser
+creation/recovery, provider cleanup and positive retirement remain unverified.
+
+After separate authorization for these reads, use the private files described
+below, changing the authority version to `demo1-live-v2` and adding the required
+`runtime_target` object. Its exact fields are `connection_id` (UUID),
+`broker_label`, `account`, `role` (exact assumed role name), `region`,
+`cluster_name`, `namespace`, and `release_id` (the installer's 64-character
+release-lock digest). These select the existing management runtime, which may
+use a different connection/account from the workspace. Operations must approve
+that selection; do not copy a workspace identity or invent a release digest.
+The original selection still pins the API image digest, source and schema.
+
+The operator needs Python 3.12+, `adp-cred`, AWS CLI, `kubectl`, and a selected
+connection authorized for STS identity, EKS DescribeCluster, Kubernetes reads
+of the API deployment/pods/ReplicaSets, and execution of the two read-only
+installer probes. The command creates only a temporary owner-private local
+kubeconfig, built from the selected EKS endpoint and CA. Each remote call uses
+the selected broker label, with account and exact assumed role checked first;
+there is no ambient kubeconfig or credential fallback. It checks actual running
+image IDs and deployment ownership, and rejects rollout/replacement during the
+probe. No such remote call runs in the offline tests.
+
+From the repository root, with `DEMO1_PRIVATE_DIR` set as described below:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --observe-runtime --report "$DEMO1_PRIVATE_DIR/runtime-report.json"
+```
+
+The exit status remains **2/BLOCKED**. A matching runtime produces only
+`runtime.status: OBSERVED`; denied, incomplete or mismatched reads produce
+`runtime.status: BLOCKED` without exposing tool errors. Neither result enables
+mutations, asserts approval, proves public-route binding or completes a live
+criterion. Use a new report filename for each attempt. Without
+`--observe-runtime`, even a v2 envelope performs no remote calls. A v1 envelope
+cannot authorize this option. Offline coverage of the real CLI wiring and
+producer-shaped responses is runnable with:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_runtime.py -q
+```
+
+### Guarded live-selection preflight (no effects)
+
+After separate operations authorization, an operator may run the preflight
+**from the repository root** using Python 3.12+. Prepare `DEMO1_PRIVATE_DIR`
+as an *absolute path* to an existing owner-owned directory with mode 0700;
+set it in the operator's private shell, not in a published script. Put three
+owner-only 0600, regular, non-symlink JSON files there: `selection.json` with
+the `demo1-v1` fields above; `authority.json` with the exact matching
+`demo1-live-v1` bindings plus reviewed HTTPS `origin`, selected
+`broker_label`, authority UUID, positive `max_runtime_seconds` (at most
+14,400, fitting inside the deadline), and `cleanup_deadline` no later than
+24 hours after the selection deadline; and `requester-state.json` containing
+an independently authenticated requester browser storage state for that
+exact origin. The authority also binds the original request, plan, approved
+release, target, distinct approver, budget and cleanup owner. A file that
+merely claims those bindings does **not** independently verify approval or
+release. Never put a second human's browser state in this directory.
+
+Use new `report.json` for each attempt (the CLI refuses overwrites). A
+`checkpoint.json` may be absent on first preflight; if it exists, it must be
+the original scope's owner-only checkpoint. Preserve it and its `.lock` file
+across retries; never reset an uncertain original request to force a pass.
+New checkpoints use `demo1-checkpoint-v2`, binding the exact HTTPS origin and
+every validated selection field, including target, credentials, principals,
+release, limits, cleanup ownership and survivor baseline. A changed selection
+or a legacy `demo1-checkpoint-v1` file is refused without overwriting the
+checkpoint. Legacy files lack enough bindings for safe automatic migration.
+Retain the file and original request identity for reconciliation by the cleanup
+owner; do not rewrite its version or scope, discard it, or create a replacement
+request to bypass the refusal.
+The command below reads those files but makes **no** browser, broker, AWS,
+provisioning or retirement call:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --report "$DEMO1_PRIVATE_DIR/report.json"
+```
+
+With structurally valid private inputs, expect exit **2** and
+`Live selection preflight: BLOCKED (no runtime admission or release
+verification)`. The new 0600 report has version `demo1-live-preflight-v1`,
+`evidence_mode: live-selection-unverified`, `live_acceptance: false` and
+`status: BLOCKED`; its references are hashes, not private identities.
+Malformed, foreign, expired or unsafe files also exit 2, typically without
+creating a report. No effect, authenticated provider observation, human
+approval, Ready receipt, removal or cost proof follows a successful preflight.
+The operations evaluator must wait for the producer-backed lifecycle driver
+before attempting a real journey; do not substitute this preflight for one.
 
 ### Private schema and provenance
 
@@ -110,8 +220,9 @@ that the released browser create/removal controls and backend admission exist,
 obtain the named Wave 6 authorization, and observe each original operation,
 approval, attempt and fence together with provider inventory. An unavailable
 interface or denied/incomplete read is `BLOCKED`, not a reason to fill in a
-fixture or issue a retry. There is **no** executable live command to hand off
-until those capabilities have been reviewed and implemented.
+fixture or issue a retry. There is **no** executable create → Ready → remove command to hand off
+until those capabilities have been reviewed and implemented; the guarded
+preflight above checks inputs and reports BLOCKED without effects.
 
 Reverting this harness changes reporting code only: it does not undo a
 workspace, close an account, or discharge cleanup ownership. Before a tooling
@@ -1042,3 +1153,24 @@ executed against the real boundary by someone authorized to do so. U12's baselin
 and serving criteria now have an implemented check (above), but it has not been
 run: capture requires a registered environment and authorized access, which remain
 open.
+
+Native managed recovery retains the original create checkpoint while the workspace
+advances through separately approved prepare, apply and bootstrap operations. The
+authenticated recovery endpoint optionally returns `lifecycle_lineage`: a bounded,
+contiguous chain verified against each original paid admission and immutable
+artifact digest. The browser follows only those verified current request/operation
+IDs; it never substitutes an arbitrary latest operation. Missing or invalid native
+lineage refuses recovery evidence. A partial chain reports readiness as unknown,
+even if a workspace row claims Ready. Completed bootstrap still requires fresh
+workspace observations, independent readiness evidence and the maintained removal
+flow; lineage alone cannot establish a working or cleaned-up demo. Historical
+artifact expiry is ignored only for these read-only identity checks, never for
+new continuation previews, approval or admission.
+
+A saved `submitted` creation checkpoint may read its original admitted operation
+when the original approval has since expired. Historical ticket scope and the
+independent decision before expiry are still checked, followed by authenticated
+operation/workspace recovery. This path performs GETs only and reports BLOCKED;
+it cannot resubmit creation, preview retirement or grant another effect. An
+unsubmitted checkpoint still needs a currently valid approval. Retirement must
+use its own maintained preview and separately approved operation.

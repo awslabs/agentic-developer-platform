@@ -41,6 +41,8 @@ CI_DEFINITIONS = frozenset(
         ".github/workflows/superplane-domain-ci.yml",
         ".github/scripts/superplane_ci_scope.py",
         ".github/scripts/tests/test_superplane_ci_scope.py",
+        ".github/scripts/superplane_postgres_gate.py",
+        ".github/scripts/tests/test_superplane_postgres_gate.py",
     }
 )
 WORKER_DEPENDENCIES = frozenset(

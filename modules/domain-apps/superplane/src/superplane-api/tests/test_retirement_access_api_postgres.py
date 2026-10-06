@@ -36,7 +36,7 @@ from tests.test_lifecycle_api_postgres import (
 from tests.test_operation_dispatch_postgres import GatewayTransport
 
 
-def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
+def test_cleanup_access_routes_are_mounted_and_allowlisted_under_runtime_gate():
     from pathlib import Path
 
     from app.main import app
@@ -44,12 +44,20 @@ def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
 
     paths = {route.path for route in router.routes}
     assert paths
-    assert paths.isdisjoint({route.path for route in app.routes})
+
+    def mounted_paths(routes):
+        for route in routes:
+            if hasattr(route, "path"):
+                yield route.path
+            else:
+                yield from mounted_paths(route.original_router.routes)
+
+    assert paths <= set(mounted_paths(app.routes))
     gateway = (
         Path(__file__).resolve().parents[5]
         / "gateway/src/domain_proxy/superplane_routes.json"
     )
-    assert paths.isdisjoint({path for _, path in json.loads(gateway.read_text())})
+    assert paths <= {path for _, path in json.loads(gateway.read_text())}
 
 
 @pytest.fixture
@@ -149,7 +157,8 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
         components_complete=True,
     )
 
-    async def facts(composition, db, org_id, workspace_id):
+    async def facts(composition, db, org_id, workspace_id, *, access_review=False):
+        assert access_review
         current = await db.get(Workspace, workspace_id)
         principal = await GrantBackedAuthority(fixture.sessions).resolve(
             org_id=str(org_id),
@@ -273,6 +282,7 @@ async def test_approved_cleanup_control_dispatches_after_registration(cleanup):
     dispatcher = OperationDispatcher(
         cleanup.fixture.connections.connect,
         transport,
+        domain_connect=cleanup.fixture.connections.connect,
         policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
     )
     async with cleanup.fixture.connections.connect() as connection:

@@ -66,6 +66,8 @@
     {"id":"workspace.share","scope":"workspace","permission":"workspace:administer","principal":"human","extra":["typed_target","same_tenant","cluster_use_authority_separate"],"surface":"absent","routes":[]},
     {"id":"cluster.use","scope":"cluster","permission":"cluster:use","principal":"human_or_service","extra":["owning_organization","explicit_eligibility","executor_admission"],"surface":"absent","routes":[]},
     {"id":"cluster.administer","scope":"cluster","permission":"cluster:administer","principal":"human_or_service","extra":["owning_organization"],"surface":"absent","routes":[]},
-    {"id":"cluster.observe","scope":"cluster","permission":"cluster:observe","principal":"human_or_service","extra":["owning_organization","explicit_cluster_scope","machine_observation_transport_separate"],"surface":"absent","routes":[]}
+    {"id":"cluster.observe","scope":"cluster","permission":"cluster:observe","principal":"human_or_service","extra":["owning_organization","explicit_cluster_scope","machine_observation_transport_separate"],"surface":"absent","routes":[]},
+    {"id":"workspace.retirement_access","scope":"workspace","permission":"workspace:provision","principal":"human_or_service","extra":["admission","exact_operation_authority","original_managed_ownership","separate_removal_approval"],"surface":"ui:previewRetirementAccess,admitRetirementAccess","routes":["POST /workspaces/{workspace_id}/retirement/access/preview","POST /workspaces/{workspace_id}/retirement/access"]},
+    {"id":"installation.organization_bootstrap","scope":"organization","permission":"workspace:administer","principal":"human","extra":["private_domain_route","management_only","dispatch_disabled","current_membership","explicit_organization_grant","installed_adapter_capabilities"],"surface":"absent","routes":["GET /internal/installation/organization-bootstrap"],"organization_grant":"organization:administer"}
   ]
 }

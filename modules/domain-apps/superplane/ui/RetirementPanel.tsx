@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Alert, Button } from '@/components/ui';
 import { getAccessToken } from '@/services/auth';
+import { RetirementApproval } from './RetirementApproval';
+import { RetirementPreparation } from './RetirementPreparation';
 
 import { isSuperseded, previewRetirement, recoverOperation, type ScopeGuard } from './client';
 import { ENDPOINTS, type OperationReceipt, type OperationState, type RetirementReview, unavailableFor, type Unavailable } from './contract';
@@ -173,6 +175,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
           <p>Residual cost: Unknown. Preserved or partially cleaned resources may continue to incur charges.</p>
         </section>}
       </div>
+      <RetirementPreparation workspaceId={workspaceId} scope={scope} store={store} guard={guard} sessionToken={sessionToken} />
       <p className="mt-2 text-sm">Review owned deletions and resources that must survive before requesting removal. Reviewing does not delete anything.</p>
       {!ENDPOINTS.previewRetirement.served && (
         <Alert variant="warning" title="Removal review unavailable">
@@ -222,11 +225,20 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
             <p className="text-sm">These are planned survivors, not verified preservation evidence.</p>
           </div>
           <section aria-label="Retirement approval" className="space-y-2">
+            {review.admission_available && review.approval_request && requestId ? (() => {
+              let saved;
+              try { saved = readReceipt(store, scope, `retire-workspace:${workspaceId}`); } catch { saved = null; }
+              return saved?.idempotencyKey === requestId
+                ? <RetirementApproval key={review.revision} workspaceId={workspaceId} retirementId={requestId}
+                    review={review} initialReceipt={saved} scope={scope} store={store} guard={guard} sessionToken={sessionToken} />
+                : <Alert variant="warning" title="Saved removal request unavailable">Recover the original request before submitting removal.</Alert>;
+            })() : <>
             <Alert variant="warning" title="Removal cannot be submitted">
               The service requires separately approved cleanup access before it can admit a complete removal plan. No approval request is available and no deletion was submitted.
             </Alert>
             <Button disabled aria-describedby="retirement-admission-unavailable">Remove workspace</Button>
             <p id="retirement-admission-unavailable" className="text-sm">Unavailable until the service provides a complete approved retirement plan.</p>
+            </>}
           </section>
         </div>
       )}

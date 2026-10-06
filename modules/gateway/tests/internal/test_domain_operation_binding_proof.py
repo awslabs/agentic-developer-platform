@@ -26,7 +26,9 @@ def installed(tmp_path):
         producer_registry_id="producer",
         worker_registry_id="worker",
         database_secret_id="domain-db",
-        database_schema="superplane",
+        database_schema="superplane_operations",
+        domain_database_secret_id="domain-port",
+        domain_database_schema="superplane",
         queue_url=queue,
         worker_namespace="domain-system",
         worker_service_account="superplane-paid-worker",
@@ -45,6 +47,15 @@ def installed(tmp_path):
                 "template": {
                     "spec": {
                         "serviceAccountName": binding.worker_service_account,
+                        "volumes": [
+                            {
+                                "name": "database",
+                                "secret": {
+                                    "secretName": "paid-database",
+                                    "items": [{"key": key, "path": key} for key in ("domain-dsn", "execution-dsn", "ca.pem")],
+                                },
+                            }
+                        ],
                         "containers": [
                             {
                                 "name": binding.worker_container,
@@ -70,7 +81,7 @@ def installed(tmp_path):
     }
     config = {
         "metadata": {"name": "superplane-paid-worker-config", "namespace": binding.worker_namespace},
-        "data": {"SUPERPLANE_OPERATION_SCHEMA": binding.database_schema},
+        "data": {"SUPERPLANE_OPERATION_SCHEMA": binding.database_schema, "SUPERPLANE_DOMAIN_SCHEMA": binding.domain_database_schema},
     }
     responses = {"scaledjobs": job, "serviceaccounts": account, "configmaps": config}
     calls = []
@@ -122,7 +133,7 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
     registry._iam.get_role.return_value = {"Role": {"Arn": role, "RoleId": role_id}}
     store = SimpleNamespace(table="authority-table", client=SimpleNamespace(describe_table=lambda **_: {"Table": {"TableStatus": "ACTIVE"}}))
     queue = SimpleNamespace(get_queue_attributes=lambda **_: {"Attributes": {"QueueArn": "arn:aws:sqs:us-east-1:123456789012:paid-operations"}})
-    monkeypatch.setattr(proof, "operation_connect", connect)
+    monkeypatch.setattr(proof, "domain_connect", connect)
     monkeypatch.setattr(proof, "bootstrap_store", lambda: store)
     monkeypatch.setattr(proof, "runtime_for", lambda _binding: runtime)
     monkeypatch.setattr(proof, "get_agent_registry_service", lambda: registry)
@@ -285,3 +296,121 @@ def test_proof_route_requires_internal_iam_authentication():
     from src.internal.auth_deps import verify_internal_or_irsa
 
     assert any(dependency.call is verify_internal_or_irsa for dependency in proof.router.routes[0].dependant.dependencies)
+
+
+def test_prepared_worker_is_attested_only_while_paused(installed):
+    binding, responses, _, runtime = installed
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "prepared")
+    job = responses["scaledjobs"]
+    job["metadata"]["annotations"] = {"autoscaling.keda.sh/paused": "true"}
+    job["spec"]["maxReplicaCount"] = 0
+    assert proof.installed_worker(binding, runtime, "prepared")[0] == binding.worker_image_digests[0]
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "executable")
+    responses["configmaps"]["data"]["SUPERPLANE_DOMAIN_SCHEMA"] = binding.database_schema
+    with pytest.raises(HTTPException):
+        proof.installed_worker(binding, runtime, "prepared")
+
+
+@pytest.mark.asyncio
+async def test_prepared_proof_refuses_existing_shared_work_before_workload_reads(installed, monkeypatch):
+    binding, _, calls, _ = installed
+    monkeypatch.setattr(proof, "producer", lambda *_: binding)
+
+    @asynccontextmanager
+    async def domain(_):
+        async def mapped(*_):
+            return binding.adp_org_id
+
+        yield SimpleNamespace(fetchval=mapped)
+
+    @asynccontextmanager
+    async def shared(_):
+        async def outstanding(*_):
+            return True
+
+        yield SimpleNamespace(fetchval=outstanding)
+
+    monkeypatch.setattr(proof, "domain_connect", domain)
+    monkeypatch.setattr(proof, "operation_connect", shared)
+    with pytest.raises(HTTPException) as refused:
+        await proof.binding_proof(proof.BindingProofRequest(domain="superplane", org_id=binding.org_id, state="prepared"), Mock())
+    assert refused.value.status_code == 409
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_quiescence_proof_does_not_claim_installed_or_read_worker(installed, monkeypatch):
+    binding, _, calls, _ = installed
+    produced = Mock(return_value=binding)
+    monkeypatch.setattr(proof, "producer", produced)
+
+    @asynccontextmanager
+    async def domain(_):
+        async def mapped(*_):
+            return binding.adp_org_id
+
+        yield SimpleNamespace(fetchval=mapped)
+
+    @asynccontextmanager
+    async def shared(_):
+        async def outstanding(*_):
+            return False
+
+        yield SimpleNamespace(fetchval=outstanding)
+
+    monkeypatch.setattr(proof, "domain_connect", domain)
+    monkeypatch.setattr(proof, "operation_connect", shared)
+    result = await proof.binding_proof(proof.BindingProofRequest(domain="superplane", org_id=binding.org_id, state="quiescent"), Mock())
+    assert result["quiescent"] is True
+    assert result["installed"] is False
+    assert result["org_id"] == binding.org_id
+    assert produced.call_count == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize("fault", ["legacy-secret", "sidecar", "legacy-env", "projected-secret", "missing-domain-dsn"])
+def test_native_proof_refuses_legacy_or_extra_credential_mounts(installed, fault):
+    binding, responses, _, runtime = installed
+    pod = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]
+    if fault == "legacy-secret":
+        pod["volumes"].append({"name": "provider", "secret": {"secretName": "legacy"}})
+    if fault == "sidecar":
+        pod["initContainers"] = [{"name": "controller", "image": "unneeded"}]
+    if fault == "legacy-env":
+        pod["containers"][0]["env"].append({"name": "SKYPILOT_SERVICE_TOKEN_FILE", "value": "/run/provider/token"})
+    if fault == "projected-secret":
+        pod["volumes"].append({"name": "extra", "projected": {"sources": [{"secret": {"name": "legacy"}}]}})
+    if fault == "missing-domain-dsn":
+        pod["volumes"][0]["secret"]["items"].pop(0)
+    with pytest.raises(HTTPException) as refused:
+        proof.installed_worker(binding, runtime)
+    assert refused.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "name,attribute", [("SUPERPLANE_OPERATION_SCHEMA", "database_schema"), ("SUPERPLANE_DOMAIN_SCHEMA", "domain_database_schema")]
+)
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"value": "wrong_schema"},
+        {"value": ""},
+        {"value": "$(SCHEMA)"},
+        {"valueFrom": {"configMapKeyRef": {"name": "other", "key": "schema"}}},
+        {"valueFrom": {"secretKeyRef": {"name": "other", "key": "schema"}}},
+        {"valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
+        None,
+    ],
+)
+def test_binding_proof_checks_container_schema_overrides(installed, name, attribute, override):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": name, **(override or {"value": getattr(binding, attribute)})})
+    if override is None:
+        assert proof.installed_worker(binding, runtime)[0] == binding.worker_image_digests[0]
+    else:
+        with pytest.raises(HTTPException) as refusal:
+            proof.installed_worker(binding, runtime)
+        assert refusal.value.status_code == 503

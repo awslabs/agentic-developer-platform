@@ -223,6 +223,7 @@ def validate(
         "credential_controller",
         "api_adapters",
         "paid_worker",
+        "lifecycle_foundations",
         "api_producer_role",
     }
     require(
@@ -237,6 +238,9 @@ def validate(
     from .paid_worker import validate as validate_paid_worker
 
     validate_paid_worker(env, lock)
+    from .lifecycle_foundations import validate as validate_lifecycle_foundations
+
+    validate_lifecycle_foundations(env)
     from .producer_role import validate as validate_producer_role
 
     validate_producer_role(env)
@@ -429,6 +433,7 @@ def validate(
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         # #6048 advances it to 038 for explicit cluster grant scopes.
+        # #6127 advances it to 043 for current workspace grant-change evidence.
         require(
             head == "044_organization_grant_changes",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",

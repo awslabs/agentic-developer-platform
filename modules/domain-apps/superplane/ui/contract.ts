@@ -161,13 +161,13 @@ export const ENDPOINTS = {
   previewRetirementAccess: {
     method: 'POST',
     path: '/workspaces/{workspace_id}/retirement/access/preview',
-    served: false,
+    served: true,
     capability: 'reviewing separate cleanup access for workspace removal',
   },
   admitRetirementAccess: {
     method: 'POST',
     path: '/workspaces/{workspace_id}/retirement/access',
-    served: false,
+    served: true,
     capability: 'requesting approved cleanup access for workspace removal',
   },
 
@@ -470,13 +470,14 @@ export interface RetirementReview {
     target: string;
   }[];
   preserved: readonly string[];
-  admission_available: false;
-  blocked_reason: 'staged_cleanup_access_required';
-  approval_request: null;
+  admission_available: boolean;
+  blocked_reason: string | null;
+  approval_request: Record<string, unknown> | null;
   revision: string;
 }
 
 export interface RetirementAccessReview {
+  admission_available?: boolean;
   retirement_request_id: string;
   request_id: string;
   workspace_id: string;

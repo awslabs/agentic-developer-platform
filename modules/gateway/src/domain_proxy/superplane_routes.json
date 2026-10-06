@@ -362,5 +362,13 @@
   [
     "GET",
     "/events/workspaces/{workspace_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement/access/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement/access"
   ]
 ]

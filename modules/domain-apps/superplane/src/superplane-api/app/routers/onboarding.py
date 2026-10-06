@@ -53,7 +53,7 @@ async def lifecycle_proposals(
     composition = _composition(request)
     try:
         workspace, _ = await workspace_scope(db, org_id, workspace_id)
-        async with composition.operation_connect() as connection:
+        async with composition.domain_connect() as connection:
             rows = await connection.fetch(
                 "SELECT artifact_id FROM workspace_lifecycle_artifacts WHERE org_id=$1 AND workspace_id=$2 "
                 "AND source_operation_id=$3 ORDER BY created_at DESC LIMIT 20",
@@ -242,7 +242,7 @@ async def operation_response(request, db, org_id, identity, *, by_request):
                     Workspace.org_id == org_id,
                 )
             )
-            return {
+            result = {
                 "request_id": row["idempotency_key"],
                 "provisioning_operation_id": row["operation_id"],
                 "workspace_id": str(workspace.id) if workspace is not None else None,
@@ -254,6 +254,25 @@ async def operation_response(request, db, org_id, identity, *, by_request):
                 "observed_at": datetime.now(UTC),
                 "retryable": False,
             }
+        if "lifecycle_request" in admitted.parameters:
+            # Optional history must never overwrite the queried admission's state.
+            # Failure leaves recovery available but supplies no continuation proof.
+            result["lifecycle_lineage"] = None
+            if workspace is not None:
+                from workspace_provisioning.lineage import verified_native_lineage
+
+                try:
+                    result["lifecycle_lineage"] = await verified_native_lineage(
+                        composition.operation_connect,
+                        composition.domain_connect,
+                        org_id=str(org_id),
+                        workspace_id=str(workspace.id),
+                        root_operation_id=row["operation_id"],
+                        current_operation_id=workspace.provisioning_operation_id,
+                    )
+                except Exception:
+                    pass
+        return result
     except HTTPException:
         raise
     except Exception:

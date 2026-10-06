@@ -20,65 +20,27 @@ from app.operation_activation import dispatch_enabled
 logger = logging.getLogger(__name__)
 PREFIX = "/internal/v1/controller-execution"
 
-# A workload operation has its own immutable registration. Workspace lifecycle
-# pointers remain reserved for workspace bootstrap/retirement.
-_WORKLOAD_REGISTERED = """EXISTS (
- SELECT 1 FROM controller_deployment_operations cd
- JOIN deployments dep ON dep.id::text=cd.deployment_id
-  AND dep.org_id::text=cd.org_id AND dep.workspace_id::text=cd.workspace_id
- WHERE cd.operation_id=o.operation_id AND cd.org_id=o.org_id
-  AND cd.workspace_id=o.workspace_id AND cd.action=o.action
-)"""
-_CONTROL_REGISTERED = """EXISTS (
- SELECT 1 FROM workspace_lifecycle_control_operations control
- WHERE control.operation_id=o.operation_id AND control.org_id=o.org_id
-  AND control.workspace_id=o.workspace_id AND control.plan_digest=o.plan_digest
-  AND control.source_bootstrap_operation_id=w.provisioning_operation_id
-  AND control.phase='prepare-retirement-access'
-  AND w.status IN ('Active','active') AND w.is_default=false
-)"""
-_REGISTERED = (
-    "((o.action='provision' AND w.provisioning_operation_id=o.operation_id) OR "
-    "(o.action='teardown' AND w.teardown_operation_id=o.operation_id) OR "
-    + _WORKLOAD_REGISTERED
-    + " OR "
-    + _CONTROL_REGISTERED
-    + ")"
-)
-
-# Historical paid identity is sufficient for observation. Execution additionally
-# requires a current confirmed reservation; Gateway rechecks live human approval.
-# The same query selects candidates and rereads each candidate just before dispatch.
-_RECOVERABLE = (
-    """
-SELECT o.*, d.adp_org_id,
+# Candidate selection reads only the shared authority. Domain registration and
+# budget remain independent owner reads before dispatch; Gateway rechecks both
+# current authority and lease eligibility before queue publication.
+_RECOVERABLE = """
+SELECT o.*, a.reservation_id, a.reservation_state,
+       a.max_resource_units, a.max_runtime_seconds, a.max_cost_micros,
        CASE WHEN l.holder IS NULL THEN 'execution' ELSE 'recovery' END AS mode
 FROM harness_operations o
-JOIN workspaces w ON w.id::text=o.workspace_id AND w.org_id::text=o.org_id
-JOIN organizations d ON d.id=w.org_id
 JOIN harness_approval_consumption a ON a.operation_id=o.operation_id
  AND a.org_id=o.org_id AND a.workspace_id=o.workspace_id AND a.plan_digest=o.plan_digest
-JOIN operation_budget_reservations r ON r.reservation_id=a.reservation_id
- AND r.job_id=o.job_id AND r.attempt_id=o.attempt_id
- AND r.org_id=o.org_id AND r.workspace_id=o.workspace_id
- AND r.max_resource_units=a.max_resource_units
- AND r.max_runtime_seconds=a.max_runtime_seconds AND r.max_cost_micros=a.max_cost_micros
 JOIN harness_dispatch_outbox b ON b.operation_id=o.operation_id
 LEFT JOIN harness_operation_leases l ON l.operation_id=o.operation_id
-WHERE """
-    + _REGISTERED
-    + """
- AND a.reservation_state IN ('confirmed','retained','released')
- AND r.state IN ('confirmed','retained','released')
+WHERE a.reservation_state IN ('confirmed','retained','released')
  AND l.closed_at IS NULL
  AND ((l.holder IS NOT NULL AND (l.expires_at<=clock_timestamp()
                                OR l.runtime_deadline<=clock_timestamp()))
       OR (l.holder IS NULL AND b.delivered_at IS NOT NULL
           AND b.abandoned_at IS NULL AND o.state IN ('pending','running')
           AND o.cancel_requested_at IS NULL AND NOT o.cleanup_required
-          AND a.reservation_state='confirmed' AND r.state='confirmed'))
+          AND a.reservation_state='confirmed'))
 """
-)
 
 
 class ProducerRefusedError(Exception):
@@ -154,9 +116,17 @@ class ProducerTransport:
 
 class OperationDispatcher:
     def __init__(
-        self, connect, transport, *, policy_for=None, interval=5, enabled=True
+        self,
+        connect,
+        transport,
+        *,
+        domain_connect=None,
+        policy_for=None,
+        interval=5,
+        enabled=True,
     ):
         self.connect, self.transport, self.policy_for = connect, transport, policy_for
+        self.domain_connect = domain_connect
         self.outbox = DispatchOutbox()
         if type(enabled) is not bool:
             raise ValueError("operation dispatch enabled must be a boolean")
@@ -164,13 +134,14 @@ class OperationDispatcher:
         self.interval = interval
         self._task = None
         self._recovery_cursor = ""
+        self._dispatch_cursor = ""
 
     async def _policy(self, org_id):
         if self.policy_for is not None:
             return self.policy_for(org_id)
         # Organization transport identity is canonical installed state, not a
         # workspace lifecycle profile. Workload-only installations use it too.
-        async with self.connect() as connection:
+        async with self.domain_connect() as connection:
             adp_org_id = await connection.fetchval(
                 "SELECT adp_org_id FROM organizations WHERE id::text=$1", org_id
             )
@@ -178,13 +149,93 @@ class OperationDispatcher:
             raise RuntimeError("operation organization binding unavailable")
         return SimpleNamespace(adp_org_id=adp_org_id)
 
+    async def _domain_registration(self, row):
+        if self.domain_connect is None:
+            return None
+        async with self.domain_connect() as connection:
+            workspace = await connection.fetchrow(
+                "SELECT w.*, d.adp_org_id FROM workspaces w "
+                "JOIN organizations d ON d.id=w.org_id "
+                "WHERE w.id::text=$1 AND w.org_id::text=$2",
+                row["workspace_id"],
+                row["org_id"],
+            )
+            if workspace is None:
+                return None
+            if (
+                row["action"] == "provision"
+                and workspace["provisioning_operation_id"] == row["operation_id"]
+            ) or (
+                row["action"] == "teardown"
+                and workspace["teardown_operation_id"] == row["operation_id"]
+            ):
+                return workspace
+            if await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM controller_deployment_operations cd "
+                "JOIN deployments d ON d.id::text=cd.deployment_id "
+                "AND d.org_id::text=cd.org_id AND d.workspace_id::text=cd.workspace_id "
+                "WHERE cd.operation_id=$1 AND cd.org_id=$2 AND cd.workspace_id=$3 AND cd.action=$4)",
+                row["operation_id"],
+                row["org_id"],
+                row["workspace_id"],
+                row["action"],
+            ):
+                return workspace
+            if (
+                workspace["status"] in ("Active", "active")
+                and not workspace["is_default"]
+                and await connection.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM workspace_lifecycle_control_operations "
+                    "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 AND plan_digest=$4 "
+                    "AND source_bootstrap_operation_id=$5 AND phase='prepare-retirement-access')",
+                    row["operation_id"],
+                    row["org_id"],
+                    row["workspace_id"],
+                    row["plan_digest"],
+                    workspace["provisioning_operation_id"],
+                )
+            ):
+                return workspace
+        return None
+
+    async def _budget_current(self, row):
+        async with self.domain_connect() as connection:
+            reservation = await connection.fetchrow(
+                "SELECT * FROM operation_budget_reservations WHERE reservation_id=$1",
+                row["reservation_id"],
+            )
+        return (
+            reservation is not None
+            and all(
+                reservation[key] == row[key]
+                for key in (
+                    "job_id",
+                    "attempt_id",
+                    "org_id",
+                    "workspace_id",
+                    "max_resource_units",
+                    "max_runtime_seconds",
+                    "max_cost_micros",
+                )
+            )
+            and reservation["state"]
+            in (
+                ("confirmed",)
+                if row["mode"] == "execution"
+                else ("confirmed", "retained", "released")
+            )
+        )
+
     async def _registration(self, row):
         request = decode_payload(row["request_payload"])
         if request.parameters.get("lifecycle_phase") == "prepare-retirement-access":
             from workspace_provisioning.control_registry import registration_values
 
-            async with self.connect() as connection:
-                registered = await connection.fetchrow(
+            async with (
+                self.connect() as connection,
+                self.domain_connect() as domain_connection,
+            ):
+                registered = await domain_connection.fetchrow(
                     "SELECT * FROM workspace_lifecycle_control_operations "
                     "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3",
                     row["operation_id"],
@@ -195,6 +246,7 @@ class OperationDispatcher:
                     return False
                 values = await registration_values(
                     connection,
+                    domain_connection=domain_connection,
                     operation_id=row["operation_id"],
                     org_id=row["org_id"],
                     workspace_id=row["workspace_id"],
@@ -306,13 +358,13 @@ class OperationDispatcher:
         # independently; a lost API transaction must not dispatch an orphan request.
         async with self.connect() as connection:
             row = await connection.fetchrow(
-                "SELECT o.*,d.adp_org_id FROM harness_operations o "
-                "JOIN workspaces w ON w.id::text=o.workspace_id AND w.org_id::text=o.org_id "
-                "JOIN organizations d ON d.id=w.org_id "
-                "WHERE o.operation_id=$1 AND " + _REGISTERED,
+                "SELECT * FROM harness_operations WHERE operation_id=$1",
                 envelope.operation_id,
             )
         if row is None or row["state"] not in {"pending", "running"}:
+            return False
+        binding = await self._domain_registration(row)
+        if binding is None:
             return False
         if (
             any(
@@ -334,7 +386,7 @@ class OperationDispatcher:
         if not await self._registration(row) or not await self._lifecycle_ready(row):
             return False
         policy = await self._policy(envelope.org_id)
-        if policy.adp_org_id != row["adp_org_id"]:
+        if policy.adp_org_id != binding["adp_org_id"]:
             return False
         request = {
             "domain": "superplane",
@@ -408,12 +460,15 @@ class OperationDispatcher:
                     != row["plan_digest"]
                 ):
                     continue
+                binding = await self._domain_registration(row)
+                if binding is None or not await self._budget_current(row):
+                    continue
                 if not await self._registration(row) or not await self._lifecycle_ready(
                     row
                 ):
                     continue
                 policy = await self._policy(row["org_id"])
-                if policy.adp_org_id != row["adp_org_id"]:
+                if policy.adp_org_id != binding["adp_org_id"]:
                     continue
                 request = {
                     "domain": "superplane",
@@ -442,19 +497,24 @@ class OperationDispatcher:
             return ()
         async with self.connect() as connection:
             rows = await connection.fetch(
-                "SELECT o.operation_id FROM harness_dispatch_outbox b "
+                "SELECT o.* FROM harness_dispatch_outbox b "
                 "JOIN harness_operations o ON o.operation_id=b.operation_id "
                 "AND o.org_id=b.org_id AND o.workspace_id=b.workspace_id "
-                "JOIN workspaces w ON w.id::text=o.workspace_id AND w.org_id::text=o.org_id "
                 "WHERE b.delivered_at IS NULL AND b.abandoned_at IS NULL "
                 "AND (b.claimed_until IS NULL OR b.claimed_until<now()) "
-                "AND " + _REGISTERED + " ORDER BY b.id LIMIT 100",
+                "AND o.operation_id>$1 ORDER BY o.operation_id LIMIT 100",
+                self._dispatch_cursor,
             )
+            self._dispatch_cursor = rows[-1]["operation_id"] if len(rows) == 100 else ""
+            eligible = []
+            for row in rows:
+                if await self._domain_registration(row) is not None:
+                    eligible.append(row["operation_id"])
             return await self.outbox.drain_once(
                 connection,
                 self,
                 limit=10,
-                operation_ids=tuple(row["operation_id"] for row in rows),
+                operation_ids=tuple(eligible),
             )
 
     def start(self):

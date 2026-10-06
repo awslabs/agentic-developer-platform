@@ -215,6 +215,18 @@ class GatewayAuthority:
         }
 
     async def preflight(self, operation):
+        if getattr(self, "brokered_provider", False):
+            lifecycle = json.loads(operation.request.parameters["lifecycle_request"])
+            result = await self.post(
+                "/internal/v1/controller-execution/provider-preflight",
+                {
+                    "operation_id": operation.grant.lease.operation_id,
+                    "region": lifecycle["region"],
+                },
+            )
+            if result.get("admits_work") is not True:
+                raise OperationRefused("paid provider credential unavailable")
+            return
         result = await self.post(
             "/internal/v1/credential-delivery/preflight",
             self.credential_request(operation),
@@ -223,6 +235,11 @@ class GatewayAuthority:
             raise OperationRefused(
                 "approved provider credential revoked or unavailable"
             )
+
+    async def provider_session(self, operation, region, *, verify=None):
+        from .provider_session import session_for
+
+        return await session_for(self, operation, region, verify=verify)
 
     async def delivery_role(self, operation):
         request = self.credential_request(operation)

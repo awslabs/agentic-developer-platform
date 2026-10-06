@@ -1608,11 +1608,14 @@ class Installer:
             self.save()
 
     def foundations(self):
+        from .lifecycle_foundations import managed
+
         self.apply(
             [
                 d
                 for d in self.docs
-                if d["kind"]
+                if not managed(self.env, d)
+                and d["kind"]
                 in {
                     "Namespace",
                     "ServiceAccount",
@@ -1620,6 +1623,8 @@ class Installer:
                     "ConfigMap",
                     "Service",
                     "PodDisruptionBudget",
+                    "ScaledJob",
+                    "TriggerAuthentication",
                 }
             ]
         )
@@ -2257,7 +2262,12 @@ class Installer:
                 )
             )
             require(
-                runtime.get("mode") == "management"
+                runtime.get("mode")
+                == (
+                    "full"
+                    if self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                    else "management"
+                )
                 and runtime.get("release_id") == self.release
                 and runtime.get("source_revision") == self.lock["source_revision"]
                 and runtime.get("domain_auth_enforced") is True,
@@ -2532,7 +2542,10 @@ class Installer:
                 if self.env.get("api_adapters"):
                     from .adapter_staging import require_quiescent
 
-                    self.phase("adapter-quiescence", lambda: require_quiescent(self))
+                    self.phase(
+                        "adapter-quiescence",
+                        lambda: require_quiescent(self, shared=False),
+                    )
                 self.phase(
                     "infrastructure",
                     lambda: self.commands.call(
@@ -2552,7 +2565,23 @@ class Installer:
                     self.phase(
                         "api-producer-role-verified", lambda: verify_applied(self)
                     )
+                from . import lifecycle_worker
+
+                if lifecycle_worker.enabled(self.env):
+                    self.phase(
+                        "shared-execution-quiescence",
+                        lambda: lifecycle_worker.quiescence_job(self),
+                    )
                 self.phase("foundations", self.foundations)
+                from .lifecycle_foundations import (
+                    prepare as prepare_lifecycle_foundations,
+                )
+
+                if self.env.get("lifecycle_foundations"):
+                    self.phase(
+                        "lifecycle-foundations",
+                        lambda: prepare_lifecycle_foundations(self),
+                    )
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))
                 self.phase("rollout", self.rollout)
@@ -2565,10 +2594,17 @@ class Installer:
                     self.phase(
                         "adapter-stage-verification", lambda: verify(self, token)
                     )
-                    if not self.control_plane_only:
+                    if (
+                        not self.control_plane_only
+                        or self.env.get("paid_worker", {}).get("mode")
+                        == "native-lifecycle"
+                    ):
                         self.phase("adapter-activation", lambda: activate(self))
                 self.phase("private-verification", self.private_services)
-                if self.env.get("api_adapters") and not self.control_plane_only:
+                if self.env.get("api_adapters") and (
+                    not self.control_plane_only
+                    or self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                ):
                     from .adapter_staging import verify_active
 
                     self.phase(
@@ -2684,6 +2720,13 @@ class Installer:
             and self.receipt["verification"]["registered_workspaces"] == expected_count,
             "Durable organization/registrations changed across management restart",
         )
+        from . import lifecycle_worker
+
+        if lifecycle_worker.enabled(self.env):
+            lifecycle_worker.installed_snapshot(self, active=True)
+            self.receipt["adapter_stage"]["native_executable_proof"] = (
+                lifecycle_worker.proof(self, "executable")
+            )
         self.receipt["verification"]["restart_persistence_verified"] = True
 
     def resume(self, previous):
@@ -2741,10 +2784,18 @@ class Installer:
             "Receipt has no retained lock or temporary namespace",
         )
         self.target(verify_source=False)
-        for doc in (
+        recovery_jobs = [
             migration_job(self.env, self.lock, self.run_id),
             bootstrap_job(self.env, self.lock, self.run_id),
-        ):
+        ]
+        state = self.receipt.get("lifecycle_foundations", {}).get(
+            "PersistentVolumeClaim"
+        )
+        if self.env.get("lifecycle_foundations") and state:
+            from .lifecycle_foundations import probe_job
+
+            recovery_jobs.append(probe_job(self, state["uid"]))
+        for doc in recovery_jobs:
             job = self.existing(doc)
             require(
                 job is None

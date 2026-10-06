@@ -1,9 +1,9 @@
 """Refuse authority substitution before ownership reads or provider effects."""
 
+from contextlib import asynccontextmanager
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from dataclasses import asdict, replace
-from contextlib import asynccontextmanager
 
 import pytest
 from harness_jobs.identity import OperationRefused
@@ -19,7 +19,7 @@ from .test_retirement_plan import component, inventory
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed", ["allocation", "attempt", "fence", "tenant"])
+@pytest.mark.parametrize("changed", ["allocation", "attempt", "fence", "tenant", "job"])
 async def test_runtime_refuses_original_authority_substitution(changed):
     identity = {
         "operation_id": "op",
@@ -28,7 +28,9 @@ async def test_runtime_refuses_original_authority_substitution(changed):
         "attempt_id": "attempt",
         "fence_token": 2,
     }
-    call = SimpleNamespace(**identity)
+    call = SimpleNamespace(**identity, job_id="job")
+    if changed == "job":
+        call.job_id = "other-job"
     if changed == "attempt":
         call.attempt_id = "new-attempt"
     if changed == "fence":
@@ -41,6 +43,7 @@ async def test_runtime_refuses_original_authority_substitution(changed):
     operation = SimpleNamespace(
         grant=SimpleNamespace(lease=SimpleNamespace(**identity)),
         request=SimpleNamespace(action="teardown", parameters=parameters),
+        job_id="job",
     )
     connect = AsyncMock()
     remover = SimpleNamespace(execute=AsyncMock())
@@ -125,6 +128,9 @@ async def test_old_adopted_admission_cannot_start_partial_retirement_with_global
     )
     operation = SimpleNamespace(
         grant=SimpleNamespace(lease=lease),
+        job_id="original-job",
+        plan_digest="approved-digest",
+        request_payload="approved-payload",
         request=SimpleNamespace(
             action="teardown",
             parameters={
@@ -162,7 +168,7 @@ async def test_old_adopted_admission_cannot_start_partial_retirement_with_global
         artifact_for=artifact,
     )
     with pytest.raises(OperationRefused, match="independent exact-name"):
-        await runtime(SimpleNamespace(**vars(lease)))
+        await runtime(SimpleNamespace(**vars(lease), job_id="original-job"))
     artifact.assert_not_called()
     lifecycle.status.assert_not_called()
     lifecycle.drain.assert_not_called()

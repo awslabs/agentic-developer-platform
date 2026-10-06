@@ -33,6 +33,7 @@ LIFECYCLE_PHASES = frozenset(
     {"prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"}
 )
 RETIREMENT_ACCESS_PHASE = "prepare-retirement-access"
+RETIREMENT_PHASE = "retire-workspace"
 
 
 def require_selected_task_mode(*, lifecycle, phase=None):
@@ -44,7 +45,8 @@ def require_selected_task_mode(*, lifecycle, phase=None):
         if mode != "native-lifecycle":
             raise OperationRefused("paid worker refuses workspace lifecycle tasks")
         if phase is not None and phase not in LIFECYCLE_PHASES | {
-            RETIREMENT_ACCESS_PHASE
+            RETIREMENT_ACCESS_PHASE,
+            RETIREMENT_PHASE,
         }:
             raise OperationRefused("paid worker lifecycle phase is unavailable")
 
@@ -102,12 +104,21 @@ async def bootstrap(transport):
 
 
 async def pools(stack):
-    schema = required("SUPERPLANE_OPERATION_SCHEMA")
-    if not schema.replace("_", "a").isalnum() or schema == "public":
-        raise OperationRefused("dedicated operation schema required")
+    import re
+
+    operation_schema = required("SUPERPLANE_OPERATION_SCHEMA")
+    domain_schema = required("SUPERPLANE_DOMAIN_SCHEMA")
+    for schema in (operation_schema, domain_schema):
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema) or schema == "public":
+            raise OperationRefused("dedicated database schemas required")
+    if operation_schema == domain_schema:
+        raise OperationRefused("domain and operation schemas must be separate")
     tls = ssl.create_default_context(cafile=required("SUPERPLANE_DATABASE_CA_FILE"))
     result = []
-    for name in ("SUPERPLANE_DOMAIN_DSN_FILE", "SUPERPLANE_EXECUTION_DSN_FILE"):
+    for name, schema in (
+        ("SUPERPLANE_DOMAIN_DSN_FILE", domain_schema),
+        ("SUPERPLANE_EXECUTION_DSN_FILE", operation_schema),
+    ):
         pool = await stack.enter_async_context(
             await asyncpg.create_pool(
                 read_token(Path(required(name))),
@@ -120,7 +131,18 @@ async def pools(stack):
             )
         )
         async with pool.acquire() as connection:
-            await check_schema_version(connection)
+            if await connection.fetchval("SELECT current_schema()") != schema:
+                raise OperationRefused("database schema selection differs")
+            if name == "SUPERPLANE_EXECUTION_DSN_FILE":
+                await check_schema_version(connection)
+            else:
+                heads = await connection.fetch(
+                    "SELECT version_num FROM alembic_version"
+                )
+                if len(heads) != 1 or heads[0]["version_num"] != required(
+                    "SUPERPLANE_DOMAIN_SCHEMA_HEAD"
+                ):
+                    raise OperationRefused("domain migration head unavailable")
         result.append(pool)
     return result
 
@@ -280,17 +302,28 @@ async def execute(transport, original, deadline, stop):
         phase = parameters.get("lifecycle_phase")
         lifecycle = "runtime_config_sha256" in parameters or phase is not None
         require_selected_task_mode(lifecycle=lifecycle, phase=phase)
+        transport.brokered_provider = lifecycle
         if lifecycle and phase is None:
             raise OperationRefused("paid worker lifecycle phase is missing")
-        if phase in LIFECYCLE_PHASES and "runtime_config_sha256" not in parameters:
+        if (
+            phase in LIFECYCLE_PHASES | {RETIREMENT_PHASE}
+            and "runtime_config_sha256" not in parameters
+        ):
             raise OperationRefused("paid worker lifecycle configuration is missing")
         domain, execution = await pools(stack)
-        if phase == RETIREMENT_ACCESS_PHASE:
+        if phase in {RETIREMENT_ACCESS_PHASE, RETIREMENT_PHASE}:
             from workspace_provisioning.retirement_access_runtime import (
                 run_retirement_access,
             )
 
-            await run_retirement_access(
+            if phase == RETIREMENT_PHASE:
+                from workspace_provisioning.retirement_composer import run_retirement
+
+                runner = run_retirement
+            else:
+                runner = run_retirement_access
+
+            await runner(
                 operation,
                 SimpleNamespace(
                     connect=execution.acquire,
@@ -299,6 +332,7 @@ async def execute(transport, original, deadline, stop):
                     policy_file=Path(required("SUPERPLANE_LIFECYCLE_POLICY_FILE")),
                     state_root=Path(required("SUPERPLANE_LIFECYCLE_STATE_DIR")),
                     base_session=boto3.Session(),
+                    brokered_provider=True,
                 ),
             )
         elif phase in LIFECYCLE_PHASES:
@@ -314,6 +348,7 @@ async def execute(transport, original, deadline, stop):
                     policy_file=policy_file,
                     state_root=Path(required("SUPERPLANE_LIFECYCLE_STATE_DIR")),
                     base_session=boto3.Session(),
+                    brokered_provider=True,
                 ),
             )
         else:

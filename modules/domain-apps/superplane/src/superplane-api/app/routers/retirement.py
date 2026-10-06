@@ -1,13 +1,14 @@
 """Public retirement preview and exact human-approved admission."""
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.middleware.auth import get_current_org
 from app.database import get_session
+from app.middleware.auth import get_current_org
 from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
 from app.services.retirement import admit_retirement, preview_retirement
 
@@ -22,6 +23,39 @@ class RetirementPreview(BaseModel):
 class RetirementAdmission(RetirementPreview):
     plan_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     approval_id: str = Field(min_length=1, max_length=255)
+
+
+class RetirementReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    workspace_id: uuid.UUID
+    source_operation_id: str
+    source_payload_digest: str
+    lifecycle_artifact_id: str
+    account_id: str
+    region: str
+    inventory_sha256: str
+    lifecycle_policy_sha256: str
+    runtime_config_sha256: str
+    steps: list[dict]
+    preserved: list[str]
+    admission_available: bool
+    blocked_reason: str | None = None
+    approval_request: dict | None = None
+    revision: str
+
+
+class RetirementAdmissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    workspace_id: uuid.UUID
+    operation_id: str
+    phase: Literal["retire-workspace"]
+    state: str
+    retryable: bool
+    retirement_complete: Literal[False]
+    original_allocation_id: str
+    control_allocation_id: str
 
 
 async def _call(request, invoke):
@@ -45,7 +79,10 @@ async def _call(request, invoke):
         ) from None
 
 
-@router.post("/workspaces/{workspace_id}/retirement/preview")
+@router.post(
+    "/workspaces/{workspace_id}/retirement/preview",
+    response_model=RetirementReviewResponse,
+)
 async def retirement_preview(
     workspace_id: uuid.UUID,
     body: RetirementPreview,
@@ -63,7 +100,10 @@ async def retirement_preview(
     return await _call(request, invoke)
 
 
-@router.post("/workspaces/{workspace_id}/retirement")
+@router.post(
+    "/workspaces/{workspace_id}/retirement",
+    response_model=RetirementAdmissionResponse,
+)
 async def retirement_admission(
     workspace_id: uuid.UUID,
     body: RetirementAdmission,
