@@ -17,7 +17,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 GIT = shutil.which("git")
 BASH = shutil.which("bash")
-SOURCE_SELECTION = "${{ inputs.adp_source_revision || github.sha }}"
+SOURCE_SELECTION = "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
 
 
 def workflow(name):
