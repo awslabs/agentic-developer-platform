@@ -307,7 +307,7 @@ async def test_grant_audit_carries_tenant_scoped_safe_provenance(access):
 
     from app.models.event import Event
 
-    client, workspace_id, _, token = access
+    client, workspace_id, membership, token = access
     body = _grant_request()
     response = await client.post(
         f"/workspaces/{workspace_id}/access/v1/grants", json=body, headers=token(),
@@ -319,6 +319,7 @@ async def test_grant_audit_carries_tenant_scoped_safe_provenance(access):
         assert event.org_id == (await db.get(Workspace, workspace_id)).org_id
         assert event.principal == "owner"
         assert event.resource_id == uuid.UUID(response.json()["grant_id"])
+        assert event.request_path == f"/workspaces/{workspace_id}/access/v1/grants"
         assert event.created_at is not None
         details = json.loads(event.details_json)
         assert details == {
@@ -330,6 +331,13 @@ async def test_grant_audit_carries_tenant_scoped_safe_provenance(access):
         assert "authorization" not in event.details_json.lower()
         assert "credential" not in event.details_json.lower()
         assert "token" not in event.details_json.lower()
+        event_id = str(event.id)
+    stream = await client.get(f"/events/workspaces/{workspace_id}", headers=token("approver"))
+    assert stream.status_code == 200, stream.text
+    assert event_id in [row["id"] for row in stream.json()["events"]]
+    membership.allowed.add("viewer")
+    denied = await client.get(f"/events/workspaces/{workspace_id}", headers=token("viewer"))
+    assert denied.status_code == 403
 
 
 @pytest.mark.asyncio

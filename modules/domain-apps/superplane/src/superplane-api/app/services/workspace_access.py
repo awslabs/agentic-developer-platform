@@ -151,6 +151,7 @@ async def grant_human_access(
     event = Event(
         org_id=org_id, principal=caller.principal.subject, outcome="allowed",
         action="assigned", resource_type="workspace_grant", resource_id=target.id,
+        request_path=f"/workspaces/{workspace_id}/access/v1/grants",
         event_type="workspace_access", details_json=json.dumps({
             "actor_type": "human", "target": body.target_subject, "target_type": "human",
             "workspace_id": str(workspace_id), "org_id": str(org_id),

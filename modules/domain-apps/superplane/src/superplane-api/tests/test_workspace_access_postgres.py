@@ -243,16 +243,21 @@ async def test_audit_failure_rolls_back_update_and_retry_postgres(postgres_acces
         assert len(changes) == 2
         audit = await session.get(Event, changes[-1].event_id)
         details = json.loads(audit.details_json)
-        assert audit.org_id is not None
+        assert audit.org_id == (await session.get(Workspace, workspace_id)).org_id
         assert audit.principal == "owner"
         assert audit.created_at is not None
         assert audit.resource_id == uuid.UUID(updated.json()["grant_id"])
+        assert audit.request_path == f"/workspaces/{workspace_id}/access/v1/grants"
         assert details["before"] == ["workspace:read"]
         assert details["after"] == ["workspace:read", "workspace:spend"]
         assert details["target"] == "approver"
         assert details["target_type"] == details["actor_type"] == "human"
         assert details["reason"] == "approver_setup"
         assert details["request_id"] == replacement["request_id"]
+        event_id = str(audit.id)
+    stream = await client.get(f"/events/workspaces/{workspace_id}", headers=token("approver"))
+    assert stream.status_code == 200, stream.text
+    assert event_id in [row["id"] for row in stream.json()["events"]]
 
 
 @pytest.mark.asyncio
