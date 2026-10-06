@@ -191,6 +191,9 @@ def pause(directory):
     require(job['metadata']['uid'] == record['scaledjob_uid'], 'Worker ScaledJob was replaced outside this upgrade')
     check_source_isolation(record)
     check_queue(record)  # Never strand an existing queue by pausing its consumers.
+    subprocess.run(['python3', str(ROOT / 'modules/gateway/scripts/sync-gateway-engine.py'),
+                    '--quiesce', '--account', record['account'], '--region', record['region'],
+                    '--environment', record['environment']], check=True)
     record['pause_started'] = True
     save(directory, record)
     patch = [{'op': 'test', 'path': '/metadata/resourceVersion', 'value': job['metadata']['resourceVersion']},

@@ -101,12 +101,13 @@ def test_pause_preserves_annotations_jobs_and_orders_activation(cutover):
         return {'data': {'AGENT_AUTHORITY_ENABLED': 'false'}}
     with patch.object(migration, 'scaledjob', side_effect=[job(), job(True), job(True)]), \
             patch.object(migration, 'kube', side_effect=kube), \
+            patch.object(migration.subprocess, 'run', side_effect=lambda *a, **kw: events.append('quiesce')), \
             patch.object(migration.time, 'monotonic', side_effect=[0, 1, 62]), patch.object(migration.time, 'sleep'), \
             patch.object(migration, 'check_source_isolation', side_effect=lambda _: events.append('isolation')), \
             patch.object(migration, 'check_queue', side_effect=lambda _: events.append('queue')), \
             patch.object(migration, 'check_drained', side_effect=lambda: events.append('drain')):
         migration.pause(cutover)
-    assert events[:5] == ['isolation', 'queue', 'patch', 'drain', 'queue']
+    assert events[:6] == ['isolation', 'queue', 'quiesce', 'patch', 'drain', 'queue']
     assert migration.read_record(cutover)['original_paused'] is False
     config = json.loads((cutover / 'webhook-ingress.tfvars.json').read_text())
     assert config['retained'] == 'keep' and config['agent_worker_admission_paused'] is True
@@ -122,8 +123,10 @@ def test_pending_queue_refuses_without_pausing(cutover):
             patch.object(migration, 'check_source_isolation'), \
             patch.object(migration, 'check_queue', side_effect=ValueError('queued work')), \
             patch.object(migration, 'kube') as kube:
-        with pytest.raises(ValueError, match='queued work'):
-            migration.pause(cutover)
+        with patch.object(migration.subprocess, 'run') as run:
+            with pytest.raises(ValueError, match='queued work'):
+                migration.pause(cutover)
+            run.assert_not_called()
         migration.fail_closed(cutover)
         kube.assert_not_called()
     assert json.loads((cutover / 'webhook-ingress.tfvars.json').read_text()) == {'retained': 'keep'}
@@ -133,6 +136,7 @@ def test_active_jobs_never_set_readiness_and_keep_pause(cutover):
     with patch.object(migration, 'scaledjob', side_effect=[job(), job(True)]), \
             patch.object(migration, 'check_source_isolation'), patch.object(migration, 'check_queue'), \
             patch.object(migration, 'kube'), patch.object(migration.time, 'monotonic', side_effect=[0, 601]), \
+            patch.object(migration.subprocess, 'run'), \
             patch.object(migration, 'check_drained', side_effect=ValueError('active Jobs')):
         with pytest.raises(ValueError, match='admission remains paused'):
             migration.pause(cutover)
@@ -147,6 +151,7 @@ def test_resume_preserves_original_pause_and_refuses_replaced_job(cutover):
     with patch.object(migration, 'scaledjob', return_value=job(True)), \
             patch.object(migration, 'check_source_isolation'), patch.object(migration, 'check_queue'), \
             patch.object(migration.time, 'monotonic', side_effect=[0, 1, 62]), patch.object(migration.time, 'sleep'), \
+            patch.object(migration.subprocess, 'run'), \
             patch.object(migration, 'check_drained'), patch.object(migration, 'kube', return_value={'data': {}}):
         migration.pause(cutover)
     assert migration.read_record(cutover)['original_paused'] is False

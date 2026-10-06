@@ -308,8 +308,6 @@ if [ "$UPDATE_MODE" = true ]; then
 
   if [ "$WORKER_MIGRATION" = true ]; then
     [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Worker migration requires gateway and webhook"
-    python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
-      --quiesce --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT"
     worker_migration pause
     ADP_RELEASE_GATEWAY_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gateway_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified gateway image"
     ADP_RELEASE_AGENT_RUNTIME_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worker_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified worker image"
