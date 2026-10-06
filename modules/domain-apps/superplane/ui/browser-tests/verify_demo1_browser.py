@@ -15,10 +15,12 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(ROOT / "modules/domain-apps/superplane"))
 
-from superplane_acceptance.demo1_browser import PREFIX, PlaywrightBrowserTransport
-from superplane_acceptance.demo1_c1 import inspect_original_details, inspect_reentry
-from superplane_acceptance.demo1_evidence import EvidenceError
-from superplane_acceptance.demo1_session import (
+# Direct script execution needs the repository package path before these imports.
+
+from superplane_acceptance.demo1_browser import PREFIX, PlaywrightBrowserTransport  # noqa: E402
+from superplane_acceptance.demo1_c1 import inspect_original_details, inspect_reentry  # noqa: E402
+from superplane_acceptance.demo1_evidence import EvidenceError  # noqa: E402
+from superplane_acceptance.demo1_session import (  # noqa: E402
     browser_state_parts,
     restore_browser_session,
 )
