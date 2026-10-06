@@ -8,9 +8,15 @@ import pytest
 from harness_jobs import REQUIRED_PERMISSION, OperationFacadeService, OperationStore
 from harness_jobs.identity import ResolvedPrincipal, decode_payload
 
+from workspace_provisioning.artifacts import canonical, digest
+from workspace_provisioning.retirement_access_artifact import (
+    access_metadata,
+    access_target,
+)
 from workspace_provisioning.retirement_access_authority import access_request
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_plan,
+    require_managed_control_source,
     require_managed_paid_plan,
 )
 from workspace_provisioning.runtime_config import LifecycleRefused
@@ -161,6 +167,101 @@ def test_managed_control_approval_keeps_paid_source_and_refuses_unsealed(
                 plan.org_id,
                 plan.workspace_id,
             )
+            await connection.execute(
+                "UPDATE harness_operations SET state='succeeded' WHERE operation_id=$1",
+                control.operation_id,
+            )
+            control = await OperationStore().get(
+                connection, principal, control.operation_id
+            )
+            grant = plan.grants[0]
+            identity = {
+                "arn": plan.cluster_arn.replace(":cluster/", ":access-entry/")
+                + "/role/installer/id/created",
+                "generation": plan.generation,
+                "groups": sorted(grant["groups"]),
+                "username": grant["username"],
+            }
+            artifact = {
+                "artifact_id": "f" * 64,
+                "source_operation_id": control.operation_id,
+                "source_job_id": control.job_id,
+                "source_attempt_id": control.attempt_id,
+                "source_payload_digest": control.plan_digest,
+                "source_request_payload": control.request_payload,
+                "org_id": plan.org_id,
+                "workspace_id": plan.workspace_id,
+                "account_id": account_id,
+                "target_json": canonical(access_target(plan)),
+                "parameters_json": canonical(
+                    dict(control.admitted_request().parameters)
+                ),
+                "artifact_metadata_json": canonical(
+                    access_metadata(plan, {"cleaner-entry": identity})
+                ),
+            }
+            assert (
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact=artifact,
+                    paid_operation_id=paid.operation_id,
+                )
+                == control.operation_id
+            )
+            with pytest.raises(LifecycleRefused, match="original scope"):
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact=artifact,
+                    paid_operation_id="foreign-apply",
+                )
+            with pytest.raises(LifecycleRefused, match="admitted producer"):
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact={
+                        **artifact,
+                        "source_payload_digest": digest("changed"),
+                    },
+                    paid_operation_id=paid.operation_id,
+                )
+            await connection.execute(
+                "UPDATE harness_operations SET state='failed' WHERE operation_id=$1",
+                bootstrap.operation_id,
+            )
+            with pytest.raises(LifecycleRefused, match="admission changed"):
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact=artifact,
+                    paid_operation_id=paid.operation_id,
+                )
+            await connection.execute(
+                "UPDATE harness_operations SET state='succeeded' WHERE operation_id=$1",
+                bootstrap.operation_id,
+            )
+            assert (
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact=artifact,
+                    paid_operation_id=paid.operation_id,
+                )
+                == control.operation_id
+            )
+            await connection.execute(
+                "UPDATE harness_approval_consumption SET reservation_state='released' "
+                "WHERE operation_id=$1",
+                control.operation_id,
+            )
+            with pytest.raises(LifecycleRefused, match="no longer retained"):
+                await require_managed_control_source(
+                    connection,
+                    plan=plan,
+                    access_artifact=artifact,
+                    paid_operation_id=paid.operation_id,
+                )
             assert approval["reservation_state"] == "confirmed"
             assert approval["plan_digest"] == control.plan_digest
             seal = await connection.fetchval(

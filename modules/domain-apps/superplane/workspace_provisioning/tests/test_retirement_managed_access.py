@@ -668,6 +668,8 @@ def test_managed_control_grant_checks_dormant_group_and_journals_effect(
         "lost_reply",
         "changed_identity",
         "changed_artifact",
+        "revoked_control",
+        "revoked_during_delete",
         "stale_authority",
         "stale_cluster",
         "changed_recipe",
@@ -725,12 +727,18 @@ def test_managed_revocation_requires_artifact_and_protected_intent(runtime, fail
     journal = Journal(
         SimpleNamespace(recipe=lambda: managed_revocation_recipe(plan, row))
     )
+    verify_producer = AsyncMock()
     verify_cluster = AsyncMock()
     before = runtime.cloud.mutations
 
     async def run():
         return await revoke_managed_access_grant(
-            plan, row, journal, eks=eks, verify_cluster=verify_cluster
+            plan,
+            row,
+            journal,
+            eks=eks,
+            verify_cluster=verify_cluster,
+            verify_producer=verify_producer,
         )
 
     if failure == "changed_artifact":
@@ -763,7 +771,31 @@ def test_managed_revocation_requires_artifact_and_protected_intent(runtime, fail
         journal.authority.side_effect = LifecycleRefused("expired cleanup lease")
         with pytest.raises(LifecycleRefused, match="expired cleanup lease"):
             asyncio.run(run())
+        assert journal.events == {}
         assert runtime.cloud.mutations == before
+        return
+    if failure == "revoked_control":
+        verify_producer.side_effect = LifecycleRefused("control approval released")
+        with pytest.raises(LifecycleRefused, match="control approval released"):
+            asyncio.run(run())
+        assert journal.events == {}
+        assert runtime.cloud.mutations == before
+        return
+    if failure == "revoked_during_delete":
+        verify_producer.side_effect = [
+            None,
+            None,
+            None,
+            LifecycleRefused("control approval released after delete"),
+        ]
+        with pytest.raises(LifecycleRefused, match="released after delete"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before + 1
+        assert next(iter(journal.events.values())) is None
+        verify_producer.side_effect = None
+        with pytest.raises(LifecycleRefused, match="ambiguous"):
+            asyncio.run(run())
+        assert runtime.cloud.mutations == before + 1
         return
     if failure == "lost_reply":
         runtime.cloud.crash = ("delete-entry", plan.grants[0]["principal_arn"])

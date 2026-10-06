@@ -239,3 +239,98 @@ async def require_managed_paid_plan(connection, source, plan):
     )
     if not approved:
         raise LifecycleRefused("managed cleanup requires its original paid approval")
+
+
+async def require_managed_control_source(
+    connection, *, plan, access_artifact, paid_operation_id
+):
+    """Check stored paid/control admissions before consuming an immutable access row.
+
+    The caller must obtain the row through read_artifact and hold current retirement
+    execution authority. This proof is read-only and cannot authorize a delete.
+    """
+    from types import SimpleNamespace
+
+    from harness_jobs.identity import decode_payload, payload_digest
+
+    from .artifacts import canonical
+    from .retirement_access_artifact import validate_access_artifact
+
+    validate_access_artifact(access_artifact, plan)
+
+    async def admitted(operation_id):
+        record = await connection.fetchrow(
+            "SELECT operation_id,org_id,workspace_id,job_id,attempt_id,state,"
+            "action,idempotency_key,plan_digest,request_payload "
+            "FROM harness_operations WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3",
+            operation_id,
+            plan.org_id,
+            plan.workspace_id,
+        )
+        if record is None:
+            raise LifecycleRefused(
+                "managed control source is not in the original scope"
+            )
+        request = decode_payload(record["request_payload"])
+        if (
+            payload_digest(request) != record["plan_digest"]
+            or record["state"] != "succeeded"
+            or record["action"] != request.action
+            or record["idempotency_key"] != request.idempotency_key
+        ):
+            raise LifecycleRefused("managed control source admission changed")
+        return record, request
+
+    paid, paid_request = await admitted(paid_operation_id)
+    paid_source = SimpleNamespace(
+        state=paid["state"],
+        org_id=paid["org_id"],
+        workspace_id=paid["workspace_id"],
+        operation_id=paid["operation_id"],
+        plan_digest=paid["plan_digest"],
+        admitted_request=lambda: paid_request,
+    )
+    await require_managed_paid_plan(connection, paid_source, plan)
+    control, control_request = await admitted(access_artifact["source_operation_id"])
+    if (
+        control_request.action != "provision"
+        or control_request.idempotency_key != plan.request_id
+        or canonical(dict(control_request.parameters))
+        != access_artifact["parameters_json"]
+        or control["plan_digest"] != access_artifact["source_payload_digest"]
+        or control["request_payload"] != access_artifact["source_request_payload"]
+        or control["job_id"] != access_artifact["source_job_id"]
+        or control["attempt_id"] != access_artifact["source_attempt_id"]
+        or control_request.parameters.get("original_allocation_id")
+        != plan.original_allocation_id
+        or control_request.parameters.get("allocation_id") != plan.allocation_id
+        or control_request.parameters.get("retirement_access_plan_sha256")
+        != plan.revision
+    ):
+        raise LifecycleRefused("managed control artifact lost its admitted producer")
+    parameters = control_request.parameters
+    bootstrap, bootstrap_request = await admitted(
+        parameters.get("retirement_source_operation_id")
+    )
+    if (
+        bootstrap["plan_digest"] != parameters.get("retirement_source_payload_digest")
+        or bootstrap["job_id"] != parameters.get("retirement_source_job_id")
+        or bootstrap["attempt_id"] != parameters.get("retirement_source_attempt_id")
+        or bootstrap_request.parameters.get("lifecycle_source_operation_id")
+        != paid_operation_id
+        or bootstrap_request.parameters.get("lifecycle_artifact_id")
+        != plan.bootstrap_artifact_id
+    ):
+        raise LifecycleRefused("managed control bootstrap and paid lineage changed")
+    approved = await connection.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption "
+        "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 "
+        "AND plan_digest=$4 AND reservation_state IN ('confirmed','retained'))",
+        control["operation_id"],
+        plan.org_id,
+        plan.workspace_id,
+        control["plan_digest"],
+    )
+    if not approved:
+        raise LifecycleRefused("managed control approval is no longer retained")
+    return control["operation_id"]

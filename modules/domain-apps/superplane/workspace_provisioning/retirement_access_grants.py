@@ -45,7 +45,7 @@ def managed_revocation_recipe(plan, access_artifact):
 
 
 async def revoke_managed_access_grant(
-    plan, access_artifact, effects, *, eks, verify_cluster
+    plan, access_artifact, effects, *, eks, verify_cluster, verify_producer
 ):
     from .retirement_access_artifact import validate_access_artifact
 
@@ -59,6 +59,7 @@ async def revoke_managed_access_grant(
     async def check():
         await effects.authority()
         await verify_cluster()
+        await verify_producer()
 
     await check()
     previous = await effects.intend(key, descriptor)
