@@ -1,0 +1,11 @@
+{
+  "version": "2.14.0",
+  "filename": "pyjwt-2.14.0-py3-none-any.whl",
+  "url": "https://files.pythonhosted.org/packages/9c/97/672cb32ce0dfea44b740cb7b4f97038463b9cf7c0ead1aacf595572851d6/pyjwt-2.14.0-py3-none-any.whl",
+  "sha256": "ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc",
+  "size": 32896,
+  "base_index": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "base_platform": "sha256:4c881a130e5e1abd5f70b7e518616bd62648d85c2f2cd919d8395bb9f48cf233",
+  "base_config": "sha256:0f7ef7d2bae81dddef93f3007ecbbe7648009671ae7d285cdcea66900ea6d603",
+  "advisory": "GHSA-ffc3-869f-jxw9"
+}
