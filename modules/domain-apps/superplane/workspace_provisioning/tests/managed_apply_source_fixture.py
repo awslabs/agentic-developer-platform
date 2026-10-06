@@ -11,7 +11,7 @@ from workspace_bootstrap.tests import conftest as ids
 from workspace_provisioning.applied_inventory import seal_applied_inventory
 
 
-async def execute_source(harness, operation, runtime):
+async def execute_source(harness, operation, runtime, policy_file):
     class Session:
         _superplane_role_arn = f"arn:aws:iam::{ids.ACCOUNT_ID}:role/fixture-provider"
 
@@ -64,6 +64,7 @@ async def execute_source(harness, operation, runtime):
         domain_connect=harness.connect,
         authority=Authority(),
         brokered_provider=True,
+        policy_file=policy_file,
     )
 
     async def provider(_call):

@@ -93,7 +93,10 @@ def test_native_retirement_source_chain(
             durable_result(case)
         )
         assert all(call["provider_ref"] is None for call in calls)
-        assert accounting["allocation_id"] == "original-allocation"
+        assert (
+            accounting["allocation_id"]
+            == case.paid.admitted_request().parameters["allocation_id"]
+        )
         if remaining:
             assert operation != "succeeded"
             assert workspace != "Deleted"

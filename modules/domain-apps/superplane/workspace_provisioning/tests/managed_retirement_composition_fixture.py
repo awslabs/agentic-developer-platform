@@ -3,7 +3,7 @@
 import asyncio
 import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import asyncpg
@@ -57,13 +57,13 @@ from .test_lifecycle_policy import policy
 from .test_retirement_execution_postgres import _Approves, _Ledger, _Resolver
 
 
-def management_journal(runtime):
+def management_journal(runtime, original_allocation):
     """The provider's successful management bootstrap result is a fixture fact.
 
     Retirement still reconstructs every inventory and immutable identity through
     the production SQL loader; this does not substitute that loader or compiler.
     """
-    runtime.factory.original_allocation_id = "original-allocation"
+    runtime.factory.original_allocation_id = original_allocation
     assert runtime.run().ready
     store = runtime.store.store
     row = store.execute("SELECT * FROM workspace_bootstrap_authority", {})[0]
@@ -71,7 +71,7 @@ def management_journal(runtime):
     journal = SimpleNamespace(
         target=runtime.target,
         generation=row["generation"],
-        original_allocation_id="original-allocation",
+        original_allocation_id=original_allocation,
     )
     grants = compile_grants(
         journal,
@@ -132,7 +132,7 @@ def management_journal(runtime):
             "version": 1,
             "cluster_arn": ids.CLUSTER_ARN,
             "operation_id": row["operation_id"],
-            "original_allocation_id": "original-allocation",
+            "original_allocation_id": original_allocation,
             "generation": row["generation"],
             "objects": [],
         },
@@ -201,13 +201,71 @@ async def build(runtime, server, tmp_path):
         "availability_zones": ["us-east-1a", "us-east-1b"],
         "cluster_version": "1.31",
     }
+    from account_factory.modes import (
+        OwnershipMode,
+        ValidationAuthorization,
+        from_mapping,
+    )
+
+    from workspace_provisioning.artifacts import (
+        continuation_parameters,
+        initial_execution_steps,
+    )
+    from workspace_provisioning.lifecycle_policy import policy_digest, policy_document
+    from workspace_provisioning.preview import preview_workspace
+
+    policy_doc = policy_document(policy_doc)
+    config = policy_doc["runtime"]
+    original_request = from_mapping(request)
+    authorization = ValidationAuthorization(
+        organization_id=policy_doc["aws_organization_id"],
+        operation_org_id=ids.ORG_ID,
+        management_account_id=policy_doc["management_account_id"],
+        management_cluster=policy_doc["management_cluster"],
+        workspace_id=ids.WORKSPACE_ID,
+        permitted_modes=frozenset(
+            {
+                OwnershipMode.EXISTING_ACCOUNT_MANAGED,
+                OwnershipMode.BRING_EXISTING_CLUSTER,
+            }
+        ),
+        permitted_target_accounts=frozenset({ids.ACCOUNT_ID}),
+        permitted_organizational_units=frozenset(),
+    )
+    capacity = {
+        "max_resource_units": 1,
+        "max_runtime_seconds": 900,
+        "max_cost_micros": 3000000,
+        "request": {"isolation_mode": "dedicated"},
+        "allocation_id": "root-allocation",
+        "policy_revision": policy_digest(policy_doc),
+    }
+    revision = preview_workspace(
+        original_request,
+        authorization=authorization,
+        requested_capacity=capacity,
+        cost_estimate=None,
+        approval_required=True,
+    ).revision
     parameters = {
-        "lifecycle_request": canonical(request),
-        "lifecycle_inputs": canonical({"isolation_mode": "dedicated"}),
+        "lifecycle_request": canonical(asdict(original_request)),
+        "lifecycle_inputs": canonical(capacity["request"]),
         "aws_account_id": ids.ACCOUNT_ID,
         "workspace_name": "fixture",
-        "plan_revision": "a" * 64,
+        "plan_revision": revision,
+        "allocation_id": "root-allocation",
+        "runtime_config_sha256": digest(config),
+        "lifecycle_policy_sha256": policy_digest(policy_doc),
+        **{
+            key: str(capacity[key])
+            for key in ("max_resource_units", "max_runtime_seconds", "max_cost_micros")
+        },
+        **{
+            "lifecycle_allocation_" + key: str(capacity[key])
+            for key in ("max_resource_units", "max_runtime_seconds", "max_cost_micros")
+        },
     }
+    parameters["execution_steps"] = initial_execution_steps(parameters)
 
     async def admit(values, identity, action="provision", *, succeeded=False):
         progress = await facade.open_operation(
@@ -226,45 +284,6 @@ async def build(runtime, server, tmp_path):
             return await OperationStore().get(
                 connection, principal, progress.operation_id
             )
-
-    paid = await admit(
-        {
-            **parameters,
-            "allocation_id": "original-allocation",
-            "lifecycle_phase": "apply-infrastructure",
-            "execution_steps": encode_execution_steps(
-                [
-                    ExecutionStep(
-                        "apply-infrastructure",
-                        "superplane-lifecycle",
-                        "apply-infrastructure",
-                        "fixture-target",
-                    )
-                ]
-            ),
-        },
-        "paid-apply",
-    )
-    lease = await harness.lease(paid.operation_id, holder="original-worker")
-    grant = ExecutionGrant(replace(principal, subject=lease.holder), lease)
-
-    async def provider(_call):
-        return CallOutcome.SUCCEEDED, "fixture provider apply result", None
-
-    target = {
-        "account_id": ids.ACCOUNT_ID,
-        "aws_region": ids.REGION,
-        "org_id": ids.ORG_ID,
-        "workspace_id": ids.WORKSPACE_ID,
-        "environment": "dev",
-        "workspace_name": "fixture",
-    }
-    outputs = {key: value["value"] for key, value in _outputs().items()}
-    outputs.update(
-        cluster_endpoint=ids.ENDPOINT,
-        workspace_api_security_group_id=ids.CLUSTER_SG_ID,
-        sts_endpoint_rule_id=ids.MANAGEMENT_RULE_ID,
-    )
 
     async def artifact(
         source, target, metadata, *, producer_attempt="producer-attempt"
@@ -304,6 +323,39 @@ async def build(runtime, server, tmp_path):
                 )
             )
 
+    prepared_operation = await admit(parameters, "fixture-preparation", succeeded=True)
+    prepared_artifact = await artifact(
+        prepared_operation,
+        {"account_id": ids.ACCOUNT_ID},
+        {
+            "next_phase": "apply-infrastructure",
+            "plan_file_sha256": "c" * 64,
+            "plan_json_sha256": "d" * 64,
+        },
+    )
+    paid = await admit(continuation_parameters(prepared_artifact), "paid-apply")
+    original_allocation = paid.admitted_request().parameters["allocation_id"]
+    lease = await harness.lease(paid.operation_id, holder="original-worker")
+    grant = ExecutionGrant(replace(principal, subject=lease.holder), lease)
+
+    async def provider(_call):
+        return CallOutcome.SUCCEEDED, "fixture provider apply result", None
+
+    target = {
+        "account_id": ids.ACCOUNT_ID,
+        "aws_region": ids.REGION,
+        "org_id": ids.ORG_ID,
+        "workspace_id": ids.WORKSPACE_ID,
+        "environment": "dev",
+        "workspace_name": "fixture",
+    }
+    outputs = {key: value["value"] for key, value in _outputs().items()}
+    outputs.update(
+        cluster_endpoint=ids.ENDPOINT,
+        workspace_api_security_group_id=ids.CLUSTER_SG_ID,
+        sts_endpoint_rule_id=ids.MANAGEMENT_RULE_ID,
+    )
+
     apply_row = await artifact(
         paid,
         target,
@@ -338,7 +390,11 @@ async def build(runtime, server, tmp_path):
         job_id=paid.job_id,
         reservation_state="confirmed",
     )
-    await execute_source(harness, original_operation, runtime)
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text(
+        canonical({"version": 1, "tenants": {ids.ORG_ID: policy_doc}})
+    )
+    await execute_source(harness, original_operation, runtime, policy_file)
     async with harness.connect() as connection:
         paid = await OperationStore().get(connection, principal, paid.operation_id)
     bootstrap = await admit(
@@ -390,7 +446,9 @@ async def build(runtime, server, tmp_path):
         bootstrap = await OperationStore().get(
             connection, principal, bootstrap.operation_id
         )
-    inventory = await asyncio.to_thread(management_journal, runtime)
+    inventory = await asyncio.to_thread(
+        management_journal, runtime, original_allocation
+    )
     async with harness.connect() as connection:
         await connection.execute(
             "UPDATE workspaces SET provisioning_operation_id=$1 WHERE id::text=$2",
@@ -400,7 +458,7 @@ async def build(runtime, server, tmp_path):
     plan = compile_managed_access_review(
         inventory,
         config,
-        original_allocation_id="original-allocation",
+        original_allocation_id=original_allocation,
         bootstrap_artifact_id=apply_row["artifact_id"],
         retirement_request_id="721c2c9c-8ba1-42d5-94eb-393de2a628b7",
         prepare_destroy=True,
@@ -506,7 +564,7 @@ async def build(runtime, server, tmp_path):
         "plan_file_sha256": sha(review / "workspace.tfplan"),
         "plan_json_sha256": sha(review / "workspace-plan.json"),
         "backend_sha256": digest(backend),
-        "original_allocation_id": "original-allocation",
+        "original_allocation_id": original_allocation,
     }
     fence = {
         "version": 1,
