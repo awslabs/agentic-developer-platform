@@ -41,6 +41,8 @@ class ApiError(Exception):
 
 
 RESOURCES = {
+    "ValidatingAdmissionPolicy": ("admissionregistration.k8s.io", "validatingadmissionpolicies"),
+    "ValidatingAdmissionPolicyBinding": ("admissionregistration.k8s.io", "validatingadmissionpolicybindings"),
     "Deployment": ("apps", "deployments"),
     "Namespace": ("", "namespaces"),
     "Role": ("rbac.authorization.k8s.io", "roles"),

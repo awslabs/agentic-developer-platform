@@ -70,6 +70,8 @@ async def resolve_managed_control(operation, inventory, context):
             original_allocation_id=parameters["original_allocation_id"],
             bootstrap_artifact_id=control.parameters.get("lifecycle_artifact_id"),
             retirement_request_id=parameters["retirement_request_id"],
+            prepare_destroy=control.parameters.get("retirement_prepare_destroy")
+            == "v1",
             **managed_recipe_inputs(inventory, config),
         )
         if (

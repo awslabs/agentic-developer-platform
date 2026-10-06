@@ -57,6 +57,7 @@ class RetirementInventory:
     prerequisites: tuple[OwnedPrerequisite, ...]
     components: tuple[ComponentOwnership, ...] = ()
     components_complete: bool = False
+    system_workload_baseline: dict | None = None
 
     @property
     def preserve_cluster(self):
@@ -88,6 +89,8 @@ def _grant_key(spec):
         "RoleBinding",
         "ClusterRole",
         "ClusterRoleBinding",
+        "ValidatingAdmissionPolicy",
+        "ValidatingAdmissionPolicyBinding",
     }:
         raise BootstrapRefused(
             "retirement encountered an unsupported retained Kubernetes grant"
@@ -179,7 +182,7 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
         ):
             raise BootstrapRefused("canonical bootstrap identity is missing or changed")
         rows = db.execute(
-            "SELECT generation, cluster_arn, org_id, plan_json, progress_json, revoked "
+            "SELECT generation, operation_id, cluster_arn, org_id, plan_json, progress_json, revoked "
             "FROM workspace_bootstrap_authority WHERE workspace_id=:workspace_id",
             {"workspace_id": workspace_id},
         )
@@ -189,6 +192,7 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             )
         grants, prerequisites, component_records = {}, {}, {}
         components_complete = False
+        system_workload_baseline = None
         namespace_owned = False
         complete_inventory = False
         for row in rows:
@@ -200,6 +204,28 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             )
             if progress.get("phase") != "revoked" or not progress.get("complete"):
                 raise BootstrapRefused("bootstrap revocation is not complete")
+            baseline = progress.get("system_workload_baseline")
+            if baseline is not None:
+                if (
+                    not isinstance(baseline, dict)
+                    or baseline.get("version") != 1
+                    or baseline.get("cluster_arn") != target.cluster_arn
+                    or baseline.get("generation") != row["generation"]
+                    or baseline.get("operation_id") != row["operation_id"]
+                    or baseline.get("original_allocation_id")
+                    not in {
+                        grant.get("original_allocation_id")
+                        for grant in plan.get("grants", [])
+                        if grant.get("key") == "retirement-fence-policy"
+                    }
+                    or not isinstance(baseline.get("objects"), list)
+                    or (
+                        system_workload_baseline is not None
+                        and baseline != system_workload_baseline
+                    )
+                ):
+                    raise BootstrapRefused("original system workload baseline changed")
+                system_workload_baseline = deepcopy(baseline)
             components = progress.get("components", {})
             if not isinstance(components, dict):
                 raise BootstrapRefused("component ownership inventory is malformed")
@@ -293,7 +319,9 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
                     "retain_workspace"
                 ):
                     if (
-                        spec.get("key", "").startswith("cleanup-")
+                        spec.get("key", "").startswith(
+                            ("cleanup-", "retirement-fence-")
+                        )
                         and status.get("phase") != "granted"
                     ):
                         raise BootstrapRefused(
@@ -364,6 +392,7 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             tuple(prerequisites.values()),
             tuple(components),
             components_complete,
+            system_workload_baseline,
         )
 
 

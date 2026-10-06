@@ -120,6 +120,20 @@ class WorkspaceAuthority(TemporaryAuthority):
                 for record in components.values()
             ):
                 raise BootstrapRefused("durable component inventory is incomplete")
+            if self.journal.original_allocation_id is not None:
+                from .kube_grants import KubeGrants
+                from .workload_inventory import capture_system_baseline
+
+                self.backend.clients.verify()
+                progress["system_workload_baseline"] = capture_system_baseline(
+                    KubeGrants(
+                        self.backend.clients.registrar_kubernetes, self.journal.target
+                    ),
+                    self.journal,
+                    components,
+                    previous=progress.get("system_workload_baseline"),
+                )
+                self.backend.clients.verify()
             progress["component_inventory_complete"] = True
             progress["component_inventory_mode"] = (
                 "management" if management else "legacy"

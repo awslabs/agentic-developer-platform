@@ -235,7 +235,12 @@ def _grant_steps(
         else:
             body = spec.get("body", {})
             metadata = body.get("metadata", {})
-            if body.get("kind") in {"ClusterRole", "ClusterRoleBinding"}:
+            if body.get("kind") in {
+                "ClusterRole",
+                "ClusterRoleBinding",
+                "ValidatingAdmissionPolicy",
+                "ValidatingAdmissionPolicyBinding",
+            }:
                 # Cluster scope does not imply shared ownership. In particular,
                 # supervisor-cluster grants are unique to a bootstrap generation.
                 # Namespaced cleanup authority cannot remove them, and preserving
@@ -383,7 +388,8 @@ def compose_retirement_plan(
     preserved.extend(grant_preserved)
 
     prerequisite_steps, prerequisite_preserved = _prerequisite_steps(inventory)
-    steps.extend(prerequisite_steps)
+    if managed_destroy is None:
+        steps.extend(prerequisite_steps)
     preserved.extend(prerequisite_preserved)
 
     if managed_access is not None:
@@ -435,10 +441,11 @@ def compose_retirement_plan(
             )
         )
     if managed_destroy is not None:
+        from .retirement_destroy_producer import DestroyPlanReference
         from .retirement_terraform import ReviewedDestroy
 
         if (
-            not isinstance(managed_destroy, ReviewedDestroy)
+            not isinstance(managed_destroy, (ReviewedDestroy, DestroyPlanReference))
             or inventory.preserve_cluster
         ):
             raise BootstrapRefused(
@@ -451,7 +458,21 @@ def compose_retirement_plan(
             raise BootstrapRefused(
                 "reviewed destroy artifact describes another workspace"
             )
+        # Namespaced cleanup grants also remain until the cluster is destroyed.
+        # EKS destruction removes Kubernetes objects; independent AWS grants and
+        # network prerequisites are revoked after that authoritative operation.
+        retained = [s for s in steps if s.operation_kind == REVOKE_GRANT]
+        steps = [s for s in steps if s.operation_kind != REVOKE_GRANT]
         steps.append(managed_destroy.step())
+        steps.extend(s for s in retained if s.provider == AWS)
+        steps.extend(prerequisite_steps)
+        # Keep the exact cleaner mapping alive while the persistent fence and
+        # complete workload inventory are rechecked throughout Terraform. Once
+        # the cluster is absent, its access mapping is independently observed.
+        control_steps = [s for s in steps if s.step_id == "revoke-control-entry"]
+        steps = [
+            s for s in steps if s.step_id != "revoke-control-entry"
+        ] + control_steps
 
     # The cluster and its network. Never deleted by this plan in either mode: an
     # ADP-created cluster's lifecycle belongs to its Terraform state, and a supplied

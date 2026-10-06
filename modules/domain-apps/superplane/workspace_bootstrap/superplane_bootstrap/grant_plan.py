@@ -9,9 +9,9 @@ Requests never supply policy documents, groups or grant names.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from hashlib import sha256
-import re
 
 from .components import _namespace_labels
 from .errors import BootstrapRefused
@@ -222,6 +222,15 @@ def compile_grants(
         rule("apiextensions.k8s.io", ["customresourcedefinitions"], ["get", "list"]),
         rule("authorization.k8s.io", ["subjectaccessreviews"], ["create"]),
     ]
+    if getattr(journal, "original_allocation_id", None) is not None:
+        read_cluster.append(
+            rule(
+                "admissionregistration.k8s.io",
+                ["validatingadmissionpolicies", "validatingadmissionpolicybindings"],
+                ["get"],
+                [stem + "-retirement"],
+            )
+        )
     role_pair("supervisor-cluster", read_cluster, "supervisor", lifetime="workspace")
     role_pair(
         "supervisor-namespace",
@@ -345,9 +354,50 @@ def compile_grants(
             "subject_group": stem + ":cleanup",
             "original_allocation_id": original_allocation,
         }
+        from .retirement_fence import GROUP as fence_group
+        from .retirement_fence import WORKLOADS, documents
+
+        fence_name = stem + "-retirement"
+        for body, suffix in zip(
+            documents(fence_name, generation), ("policy", "binding"), strict=True
+        ):
+            grants.append(
+                {
+                    "key": "retirement-fence-" + suffix,
+                    "kind": "kubernetes",
+                    "actor": "registrar",
+                    "cluster_arn": target.cluster_arn,
+                    "generation": generation,
+                    "body": body,
+                    "lifetime": "workspace",
+                    "original_allocation_id": original_allocation,
+                }
+            )
         role_pair(
             "cleanup-cluster",
             [
+                rule(
+                    fence_group,
+                    [
+                        "validatingadmissionpolicies",
+                        "validatingadmissionpolicybindings",
+                    ],
+                    ["get", "patch"],
+                    [fence_name],
+                ),
+                *[
+                    rule(
+                        group,
+                        [
+                            resource
+                            for version, _kind, resource in WORKLOADS
+                            if (version.split("/")[0] if "/" in version else "")
+                            == group
+                        ],
+                        ["get", "list"],
+                    )
+                    for group in ("", "apps", "batch")
+                ],
                 rule("", ["namespaces"], ["get", "delete"], [release.namespace]),
                 rule(
                     RBAC,
@@ -365,6 +415,7 @@ def compile_grants(
         role_pair(
             "cleanup-namespace",
             [
+                rule("", ["secrets"], ["list"]),
                 rule(
                     "",
                     ["serviceaccounts"],
