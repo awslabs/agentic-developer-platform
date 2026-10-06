@@ -9,15 +9,16 @@ from sqlalchemy import delete, select
 
 from app.models.organization import Organization
 from app.models.organization_grant import ORGANIZATION_ADMINISTER, ORGANIZATION_READ, OrganizationGrantRecord
+from app.models.organization_grant_change import OrganizationGrantChange
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
-from tests.test_workspace_access_postgres import (
-    enforcing as enforcing,
-    installation_postgres_url as installation_postgres_url,
-    postgres_access as postgres_access,
-    pytestmark as pytestmark,
-    rsa_keys as rsa_keys,
-)
+from tests import test_workspace_access_postgres as workspace_fixtures
+
+enforcing = workspace_fixtures.enforcing
+installation_postgres_url = workspace_fixtures.installation_postgres_url
+postgres_access = workspace_fixtures.postgres_access
+pytestmark = workspace_fixtures.pytestmark
+rsa_keys = workspace_fixtures.rsa_keys
 
 PATH = "/orgs/current/access/v1"
 
@@ -28,6 +29,7 @@ async def organization_access(postgres_access):
     async with sessions() as session:
         connection = await session.connection()
         await connection.run_sync(lambda sync: OrganizationGrantRecord.__table__.create(sync))
+        await connection.run_sync(lambda sync: OrganizationGrantChange.__table__.create(sync))
         org_id = (await session.get(Workspace, workspace_id)).org_id
         await session.execute(delete(WorkspaceGrantRecord).where(WorkspaceGrantRecord.workspace_id == workspace_id))
         session.add(OrganizationGrantRecord(

@@ -20,6 +20,38 @@ def client(monkeypatch):
         yield value
 
 
+@pytest.mark.parametrize("revoke", [False, True])
+@pytest.mark.parametrize("upstream_status", [200, 403, 409])
+def test_organization_mutations_preserve_authentication_body_and_conflicts(client, monkeypatch, revoke, upstream_status):
+    path = "/orgs/current/access/v1/grants" + ("/example-grant/revoke" if revoke else "")
+    body = {
+        "target_subject": "other-human",
+        "principal_type": "human",
+        "expected_revision": 1 if revoke else 0,
+        "request_id": "11111111-1111-1111-1111-111111111111",
+        "reason": "access_revocation" if revoke else "access_assignment",
+    }
+    if not revoke:
+        body["permissions"] = ["organization:read"]
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(upstream_status, json={"result": "domain-result"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    assert client.post(f"/superplane/v1{path}", json=body).status_code == 401
+    assert calls == []
+    response = client.post(f"/superplane/v1{path}", json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == upstream_status and response.json() == {"result": "domain-result"}
+    assert len(calls) == 1 and calls[0].url.path == path
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert json.loads(calls[0].content) == body
+    assert client.delete(f"/superplane/v1{path}", headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
+
+
 def test_all_public_routes_come_from_maintained_inventory():
     root = Path(__file__).resolve().parents[4]
     inventory = root / "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"

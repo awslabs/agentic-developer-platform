@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-06T03:33:36.465Z",
+  "updated_at": "2026-10-06T04:15:58.344Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py"
       ],
-      "note": "Existing assignment and effective-access APIs retained; the separate revocation operation is tracked under AC-03-c2.",
+      "note": "Published workspace APIs retained; mounted behavior passes in the final local API suite.",
       "commits": [
         "77e56f7"
       ]
@@ -30,7 +30,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Existing mounted HTTP tests passed in the 150-pass focused API run."
+      "note": "Passed in the full local API run: 2,607 passed, 11 skipped and two expected failures."
     },
     {
       "id": "AC-01-c2",
@@ -43,7 +43,7 @@
         "modules/domain-apps/superplane/ui/ApproverAccessControl.tsx",
         "modules/domain-apps/superplane/ui/WorkspaceDetails.tsx"
       ],
-      "note": "Published F1 repair retained unchanged."
+      "note": "Truthful workspace read-sharing presentation retained without claiming approval or organization authority."
     },
     {
       "id": "AC-01-t2",
@@ -57,7 +57,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/__tests__/ApproverAccessControl.test.tsx"
       ],
-      "note": "Prior 59-test UI result and changed-file lint retained; untouched UI suites were not rerun."
+      "note": "All 362 Superplane UI tests passed; Superplane UI ESLint and frontend TypeScript checks passed."
     },
     {
       "id": "AC-01-c3",
@@ -67,12 +67,10 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py"
       ],
-      "note": "Assignment listing now also exposes sanitized explicit-revocation provenance while retaining stored permissions as historical evidence."
+      "note": "Administrator-only listing and sanitized revocation provenance retained."
     },
     {
       "id": "AC-01-t3",
@@ -87,7 +85,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py"
       ],
-      "note": "Existing listing cases passed again; new PostgreSQL coverage verifies revocation provenance and denied listing by the removed administrator."
+      "note": "Final API JUnit verifies 14 workspace access cases and 28 workspace revocation cases passed without skips, including listing and visibility denials."
     },
     {
       "id": "AC-01-c-wire",
@@ -99,7 +97,7 @@
       "files": [
         "modules/gateway/src/domain_proxy/superplane_routes.json"
       ],
-      "note": "Earlier three exact GET registrations preserved. Added the exact POST revocation route without changing shared authentication or path matching."
+      "note": "Exact workspace and organization routes are registered; shared authentication and matching behavior remain unchanged."
     },
     {
       "id": "AC-01-t5",
@@ -113,7 +111,7 @@
       "files": [
         "modules/gateway/tests/features/test_superplane_proxy.py"
       ],
-      "note": "All 52 proxy tests passed, including inventory parity and authenticated revocation-body forwarding with preserved domain denial. Ruff lint and format checks passed."
+      "note": "Proxy tests pass within 583 relevant Gateway tests covering feature gates, proxying, CLI and authorization. Domain policy coverage reached 100%; maintained Gateway lint and formatting checks passed."
     },
     {
       "id": "AC-01-c4",
@@ -125,12 +123,9 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/routers/organization_access.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/organization_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/organization_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/main.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
-        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/organization_access.py"
       ],
-      "note": "Published organization reads retained; mutations remain in AC-03-c3."
+      "note": "Reads expose revisions and tenant-filtered provenance, distinguishing original assignment evidence from the latest audited change."
     },
     {
       "id": "AC-01-t4",
@@ -144,7 +139,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_access_postgres.py"
       ],
-      "note": "Prior 10 PostgreSQL cases retained; unchanged organization suites were not rerun."
+      "note": "All 10 organization read PostgreSQL cases passed in the final API suite without skips."
     },
     {
       "id": "AC-02-c1",
@@ -156,7 +151,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Existing assignment enforcement retained. Revocation independently refreshes and locks the actor grant and rechecks actor/target memberships before mutation.",
+      "note": "Workspace enforcement retained; independent organization enforcement also passed final validation under AC-03-c3.",
       "commits": [
         "94b9309"
       ]
@@ -173,7 +168,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Existing assignment PostgreSQL cases passed in the focused run."
+      "note": "Denial cases passed in the full local API suite with real disposable PostgreSQL."
     },
     {
       "id": "AC-02-t2",
@@ -187,7 +182,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Existing mounted denial cases passed; new revocation substitution and policy-gate cases are covered by AC-03-t2."
+      "note": "Mounted substitution and self-escalation denial cases passed; unresolved service and recovery policies remain explicitly gated."
     },
     {
       "id": "AC-02-c2",
@@ -199,11 +194,9 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/cluster_authorization.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/cluster_sharing.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspaces.py",
-        "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
-        "modules/domain-apps/superplane/workspace_provisioning/cluster-authority-contract.md"
+        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Accepted local cluster-interface milestone preserved. Current typed identity is revalidated without merging cluster use/administer/observe authority; mutation and execution gates remain intact."
+      "note": "Current typed identity and independent cluster scopes remain required. Organization-parent revocation denies child scopes without modifying their records; administration and execution gates remain intact."
     },
     {
       "id": "AC-02-t3",
@@ -219,7 +212,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_cluster_sharing.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Prior 145-pass focused result, including all 22 new cluster PostgreSQL cases, retained. Unchanged cluster suites were not rerun."
+      "note": "All 22 cluster PostgreSQL cases passed without skips; sharing and permission-contract suites also ran in final API validation."
     },
     {
       "id": "AC-03-c1",
@@ -231,7 +224,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Existing assignment transaction behavior retained. Revocation reuses its workspace serialization lock and durable request ledger.",
+      "note": "Workspace locking, expected revisions, current membership checks and durable actor-bound replay retained.",
       "commits": [
         "0404ea0",
         "7604c97"
@@ -249,7 +242,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Existing assignment-transaction cases passed again alongside the new supported removal API tests.",
+      "note": "Workspace transaction tests passed again in the full local API suite.",
       "commits": [
         "4bca57f",
         "844bab9"
@@ -265,14 +258,9 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
-        "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
-        "modules/domain-apps/superplane/contracts/workspace-access-v1.md",
-        "modules/domain-apps/superplane/contracts/README.md",
-        "modules/gateway/src/domain_proxy/superplane_routes.json"
+        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py"
       ],
-      "note": "Added POST /workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke. It validates typed target identity and expected revision, refreshes current administrator authority, serializes with assignment, and atomically persists the tombstone, audit and actor-bound replay identity. Self-removal is explicitly gated pending policy. No migration or restoration bypass was introduced."
+      "note": "Supported revocation preserves tombstones and commits audit/replay evidence atomically. Self-removal remains gated; revocation removes future authority rather than cancelling admitted work."
     },
     {
       "id": "AC-03-t2",
@@ -284,55 +272,56 @@
         "AC-03-c2"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
-        "modules/gateway/tests/features/test_superplane_proxy.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py"
       ],
-      "note": "All 29 new PostgreSQL cases passed: administrator removal, denial of every later workspace permission, tombstone/provenance retention, reconnect and duplicate retries, actor-bound replay, schema/type/tenant denials, stale actors and memberships, concurrent grant/removal, mutual administrator removal, explicit last-admin gate, and audit/ledger rollback. The initial failure was a new fixture missing isolation_mode; corrected before the final passing run."
+      "note": "Final API JUnit records all 28 cases in this module passing without skips, including subsequent-authority denial, replay, concurrency, policy gates and rollback."
     },
     {
       "id": "AC-03-c3",
       "kind": "code",
       "criterion": "AC-03",
       "title": "Persist revisioned and atomically audited organization grant mutations",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/models/organization_grant.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/models/organization_grant_change.py",
         "modules/domain-apps/superplane/src/superplane-api/app/services/organization_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/organization_access.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/organization_access.py",
+        "modules/domain-apps/superplane/src/superplane-api/alembic/versions/044_organization_grant_changes.py"
       ],
-      "note": "Next open milestone: revision storage, durable replay/audit evidence, supported mutations and policy gates. Preserve the relationship between organization-parent revocation and cluster-child authority."
+      "note": "Human assignment/replacement and exact-grant revocation use independent administrator authority, organization serialization, refreshed grants, membership revalidation, revisions and atomic audit/replay persistence. Migration 044 preserves prior revocations and refuses evidence-destructive downgrade."
     },
     {
       "id": "AC-03-t4",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Verify organization mutations, revisions and revocation through PostgreSQL/API fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c3"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_access_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_mutations_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_grant_migration.py"
       ],
-      "note": "Verify allowed changes, expected revisions, durable revocation and subsequent authority denial."
+      "note": "All 44 organization mutation cases and the real PostgreSQL migration upgrade/restart/downgrade test passed in the final API suite without skips."
     },
     {
       "id": "AC-03-t3",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Reject stale and concurrent access mutations through PostgreSQL/API fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c2",
         "AC-03-c3"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_access_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_mutations_postgres.py"
       ],
-      "note": "Workspace coverage now passes for concurrent grant/removal, mutual administrator removal, stale authority/revisions and duplicate requests. Organization mutation coverage remains required."
+      "note": "Final PostgreSQL execution covers stale administrators, membership loss, duplicate and actor/operation-bound requests, concurrent replacement/revocation and mutual administrator removal."
     },
     {
       "id": "AC-04-c1",
@@ -342,9 +331,10 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/services/organization_access.py"
       ],
-      "note": "Existing assignment audit retained; revocation now uses the same transactional event store and replay ledger.",
+      "note": "Workspace and organization grant mutations commit audit evidence and replay identities with the mutation; sanitized reasons and provenance exclude credentials.",
       "commits": [
         "8f80c64",
         "6e40fc0"
@@ -362,7 +352,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Existing audit rollback/retry tests passed again.",
+      "note": "Workspace audit completeness, rollback and safe retry tests passed in final API validation.",
       "commits": [
         "fb12a2b"
       ]
@@ -372,16 +362,16 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify new mutation audit completeness, visibility and failure rollback on PostgreSQL",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c2",
         "AC-03-c3"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_access_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_mutations_postgres.py"
       ],
-      "note": "Workspace removal audit fields, scoped visibility, audit-store failure, ledger failure and identical safe retry are verified. Organization mutation audit coverage remains required."
+      "note": "Workspace and organization audit visibility, foreign-event denial, honest provenance, audit/ledger failure rollback and identical retries passed in the final PostgreSQL run."
     },
     {
       "id": "AC-05-c1",
@@ -393,9 +383,10 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
         "modules/domain-apps/superplane/releases/superplane.lock.yaml",
-        "modules/domain-apps/superplane/installation/config.py"
+        "modules/domain-apps/superplane/installation/config.py",
+        "modules/gateway/src/domain_proxy/superplane_routes.json"
       ],
-      "note": "Revocation is registered with workspace-admin authority in the domain inventory and permission matrix; exact Gateway inventory parity passes. Existing release/migration metadata is unchanged because this milestone needs no schema migration.",
+      "note": "Organization mutations are mounted and registered. Release metadata and the strict installer pin require migration 044 and 58 version files without changing unverified-release or rollout gates.",
       "commits": [
         "26adc79",
         "d25f89c",
@@ -414,9 +405,10 @@
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py",
-        "modules/domain-apps/superplane/tests/installer_checks/test_complete_command.py"
+        "modules/domain-apps/superplane/tests/installer_checks/test_complete_command.py",
+        "modules/domain-apps/superplane/tests/test_lock.py"
       ],
-      "note": "Prior-head completion retained; focused API evidence refreshed, but this does not establish final-head full-suite completion.",
+      "note": "Mounted integration, release-lock and installer checks passed in final local validation. Installer fixtures used the installed certifi CA bundle; no TLS weakening or product change was needed.",
       "commits": [
         "067bd89",
         "cad01d7"
@@ -432,7 +424,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Published base reconciliation retained; current repair diff checks pass."
+      "note": "Prepared base 7d7bdf32c66567c251c2e5365ef3a33788680315 remains preserved with no unresolved conflicts. Staged and unstaged diff checks pass."
     },
     {
       "id": "AC-05-t2",
@@ -447,7 +439,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Permission-contract and mounted HTTP tests pass with the new revocation route, its independent requirements and the retained policy-gated broader surfaces."
+      "note": "Final permission-contract and mounted API tests preserve service, preset, recovery and cluster-execution gates. The two general-ingress identity expected failures are also explicitly marked on the prepared base; they do not establish live ADP integration."
     },
     {
       "id": "AC-05-t3",
@@ -467,14 +459,14 @@
         "AC-03-c3"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_access_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_cluster_access_postgres.py",
         ".github/workflows/superplane-domain-ci.yml",
-        ".github/workflows/gateway-ci.yml"
+        ".github/workflows/gateway-ci.yml",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_mutations_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_grant_migration.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_revocation_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_cluster_access_postgres.py"
       ],
-      "note": "This milestone: 150 focused API tests passed with two existing expected failures; all 29 new revocation PostgreSQL cases ran; 52 Gateway proxy tests passed. Changed-file lint, checked formatting and diff checks passed. Public-doc scan and direct scans of both changed domain documents found zero findings. Full suites and exact published-head CI remain pending unfinished organization implementation."
+      "note": "Local portion complete against HEAD 811a4b0dfef939198af4621421f3ced2bda1b257 plus the prepared merge and unpublished repairs. API: 2,607 passed, 11 skipped, two expected failures; all 119 cases across the six named PostgreSQL/migration modules passed. Domain: 6,641 initially passed; all 23 failed/error identities passed after correcting local PATH, build tools and Gateway imports, yielding 6,664 aggregate passes, 11 skips, four live-test deselections and 12 passing subtests. Gateway: 583 passed with 100% domain-policy coverage. UI: 362 passed, lint/typecheck passed. Domain/Gateway Ruff, changed-API lint and diff checks passed. Local security inspection found no new blocker. Logs and JUnit are under /tmp/superplane-final-*. Exact published-head CI and final revision inspection remain required."
     }
   ]
 }

@@ -364,6 +364,8 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/orgs/current/access/v1/me"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
+    ("POST", "/orgs/current/access/v1/grants"): (Scope.ORGANIZATION, Permission.ADMINISTER),
+    ("POST", "/orgs/current/access/v1/grants/{grant_id}/revoke"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("GET", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),
     ("PATCH", "/orgs/current/sso"): (Scope.ORGANIZATION, Permission.ADMINISTER),

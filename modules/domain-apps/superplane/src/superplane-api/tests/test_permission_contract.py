@@ -137,7 +137,6 @@ def test_absent_generalized_effective_access_and_grant_administration_surfaces()
     for name, scope, permission in (
         ("workspace.access.effective", "workspace", Permission.READ.value),
         ("org.access.effective", "organization", Permission.READ.value),
-        ("org.access.manage", "organization", Permission.ADMINISTER.value),
         ("workspace.share", "workspace", Permission.ADMINISTER.value),
         ("cluster.use", "cluster", "cluster:use"),
         ("cluster.administer", "cluster", "cluster:administer"),
@@ -153,11 +152,12 @@ def test_absent_generalized_effective_access_and_grant_administration_surfaces()
         assert actions[name]["principal"] == "human_or_service"
         assert {"self_only", "current_typed_identity", "revocation_aware"} <= set(actions[name]["extra"])
     assert "no_grant_existence_leak" in actions["workspace.access.effective"]["extra"]
-    assert {"assignment_ceiling_owner_decision", "last_admin_recovery_owner_decision"} <= set(actions["org.access.manage"]["extra"])
+    assert actions["org.access.manage"]["routes"] == ["POST /orgs/current/access/v1/grants", "POST /orgs/current/access/v1/grants/{grant_id}/revoke"]
+    assert {"assignable_ceiling", "self_mutation_pending_policy", "service_and_presets_pending_policy", "atomic_audit", "durable_replay"} <= set(actions["org.access.manage"]["extra"])
     assert "cluster_use_authority_separate" in actions["workspace.share"]["extra"]
     assert actions["org.users.manage"]["routes"]
     assert actions["org.users.manage"]["surface"] == "absent"
-    assert "organization-grant mutation actions are intentionally absent" in MATRIX["format"]
+    assert "Generalized human/service self-effective-access actions are intentionally absent" in MATRIX["format"]
 
 
 def test_fixed_permission_vocabulary_and_separate_cluster_scope():

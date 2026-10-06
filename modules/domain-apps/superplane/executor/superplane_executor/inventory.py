@@ -616,6 +616,8 @@ class Finalizer:
             from .cleanup_snapshot import capture
 
             await capture(self, operation, target, plan, assessment)
+            if record.action == "teardown" and not assessment.may_mark_released:
+                raise OperationRefused("teardown retains resource exposure")
             return assessment
         except Exception:
             if not listing_returned:

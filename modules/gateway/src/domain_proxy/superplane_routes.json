@@ -144,6 +144,14 @@
     "/orgs/current/access/v1/grants"
   ],
   [
+    "POST",
+    "/orgs/current/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/orgs/current/access/v1/grants/{grant_id}/revoke"
+  ],
+  [
     "PATCH",
     "/orgs/current"
   ],
