@@ -1,20 +1,19 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-05T23:49:32.322Z",
+  "updated_at": "2026-10-06T00:35:32.218Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
-      "title": "Mount a versioned human workspace-grant API with explicit request and response schemas",
+      "title": "Mount versioned human workspace-grant API",
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/schemas/workspace_access.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspace_access.py"
       ],
-      "note": "Mounted and covered by AC-01-t1 at 77e56f7.",
+      "note": "Covered by AC-01-t1.",
       "commits": [
         "77e56f7"
       ]
@@ -23,7 +22,7 @@
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Prove grant request, effective response and mounted HTTP contract with API tests",
+      "title": "Prove mounted grant and effective-access HTTP contract",
       "status": "done",
       "covers": [
         "AC-01-c1"
@@ -31,19 +30,19 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Signed-token grant, access read and duplicate delivery passed."
+      "note": "Mounted contract tests pass."
     },
     {
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Enforce live explicit administrator authority, same-org current human target and assignable ceiling",
+      "title": "Enforce live administrator, membership and privilege ceiling",
       "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Covered by AC-02-t1 and AC-02-t2 at 94b9309.",
+      "note": "Covered by AC-02-t1 and AC-02-t2.",
       "commits": [
         "94b9309"
       ]
@@ -52,7 +51,7 @@
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Exercise denied viewer, cross-org, lost membership and privilege-ceiling cases via HTTP and database tests",
+      "title": "Reject viewer, cross-org, removed-member and over-ceiling assignments",
       "status": "done",
       "covers": [
         "AC-02-c1"
@@ -60,13 +59,13 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Mounted SQLite-backed negative tests pass; remote PostgreSQL coverage remains pending."
+      "note": "Mounted denial tests pass."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Exercise human/service substitution and self-escalation denial via HTTP and database tests",
+      "title": "Reject human/service substitution and self-escalation",
       "status": "done",
       "covers": [
         "AC-02-c1"
@@ -74,20 +73,20 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py"
       ],
-      "note": "Typed-target and service-substitution cases pass locally; remote PostgreSQL coverage remains pending."
+      "note": "Mounted substitution tests pass."
     },
     {
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
-      "title": "Persist grants transactionally with request identity, revision conflicts and commit-time revalidation",
-      "status": "open",
+      "title": "Persist revisioned grants with replay identity and commit-time checks",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/alembic/versions/043_workspace_grant_changes.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/models/workspace_grant_change.py"
       ],
-      "note": "Source committed at 7604c97 and 0404ea0; covering PostgreSQL test has not executed yet.",
+      "note": "Covered by AC-03-t1; PostgreSQL cases passed at preceding head.",
       "commits": [
         "0404ea0",
         "7604c97"
@@ -97,68 +96,82 @@
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
-      "title": "Prove duplicate delivery, concurrent writes, stale authority and revoked-row behavior against PostgreSQL",
-      "status": "open",
+      "title": "Prove replay, concurrency, stale authority and revocation on PostgreSQL",
+      "status": "done",
       "covers": [
         "AC-03-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py"
       ],
-      "note": "Four PostgreSQL cases authored; locally skipped because no disposable server is configured; exact-head remote CI is queued."
+      "note": "Seven real PostgreSQL grant tests passed at 26adc79; model inventory corrected at 4bca57f, where 246 focused tests pass locally. Exact-head remote rerun pending.",
+      "commits": [
+        "4bca57f",
+        "844bab9"
+      ]
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
-      "title": "Write tenant-scoped grant audit evidence atomically with the mutation",
+      "title": "Commit tenant-scoped grant audit evidence atomically",
       "status": "open",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Initial implementation exists; failure rollback evidence pending."
+      "note": "Implementation exists; assess with covering test next turn.",
+      "commits": [
+        "8f80c64"
+      ]
     },
     {
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
-      "title": "Verify persisted audit completeness and failure rollback with database tests",
+      "title": "Verify persisted audit completeness and failure rollback",
       "status": "open",
       "covers": [
         "AC-04-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": ""
+      "note": "Audit PostgreSQL case passed at preceding head; exact-head evidence pending.",
+      "commits": [
+        "fb12a2b"
+      ]
     },
     {
       "id": "AC-05-c1",
       "kind": "code",
       "criterion": "AC-05",
-      "title": "Wire the new grant endpoint into the maintained API and endpoint inventory",
+      "title": "Wire grant routes into maintained API and endpoint inventory",
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py",
-        "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
+        "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
       ],
-      "note": "Route registered and coordinated on #6970; final integration proof pending."
+      "note": "Routes registered; final integration proof pending.",
+      "commits": [
+        "26adc79",
+        "d25f89c"
+      ]
     },
     {
       "id": "AC-05-t1",
       "kind": "test",
       "criterion": "AC-05",
-      "title": "Run mounted-path PostgreSQL integration and relevant final-head suites",
+      "title": "Run mounted PostgreSQL integration and final relevant suites",
       "status": "open",
       "covers": [
         "AC-05-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Exact-head remote CI is queued; no local validation service provisioned."
+      "note": "Exact-head domain CI queued; no validation infrastructure provisioned."
     }
   ]
 }
