@@ -29,7 +29,11 @@ def registry_id(role_arn):
     # Role ARN survives IAM recreation and changes of organization/operator.
     # Every writer therefore conditions on the SAME primary key for this role;
     # the eventually consistent role index is only an extra collision check.
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, "adp:domain-operation-registration:v1:" + role_arn))
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL, "adp:domain-operation-registration:v1:" + role_arn
+        )
+    )
 
 
 def role(arn, account):
@@ -74,8 +78,13 @@ def records(document):
     )
     account, environment = document["account_id"], document["environment"]
     require(re.fullmatch(r"[0-9]{12}", account or ""), "invalid account")
-    require(re.fullmatch(r"[a-z][a-z0-9-]{0,19}", environment or ""), "invalid environment")
-    require(re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", document["region"] or ""), "invalid region")
+    require(
+        re.fullmatch(r"[a-z][a-z0-9-]{0,19}", environment or ""), "invalid environment"
+    )
+    require(
+        re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", document["region"] or ""),
+        "invalid region",
+    )
     require(
         re.fullmatch(r"[A-Za-z0-9_.-]{3,255}", document["registry_table"] or ""),
         "invalid registry table",
@@ -85,13 +94,18 @@ def records(document):
         "canonical domain organization UUID required",
     )
     require(
-        isinstance(document["adp_org_id"], str) and 1 <= len(document["adp_org_id"]) <= 255,
+        isinstance(document["adp_org_id"], str)
+        and 1 <= len(document["adp_org_id"]) <= 255,
         "invalid ADP organization",
     )
     role(document["operator_role_arn"], account)
     result = []
     for kind, scopes, expected_name in (
-        ("producer", ["domain:operation-producer"], f"adp-{environment}-superplane-api-producer"),
+        (
+            "producer",
+            ["domain:operation-producer"],
+            f"adp-{environment}-superplane-api-producer",
+        ),
         (
             "worker",
             ["domain:operation-executor", "domain:operation-recovery"],
@@ -100,7 +114,8 @@ def records(document):
     ):
         entry = document[kind]
         require(
-            isinstance(entry, dict) and set(entry) == {"agent_id", "role_arn", "role_id"},
+            isinstance(entry, dict)
+            and set(entry) == {"agent_id", "role_arn", "role_id"},
             "closed role binding required",
         )
         require(
@@ -147,7 +162,9 @@ def records(document):
         if kind == "worker":
             item["requires_run_identity"] = {"BOOL": True}
         result.append(item)
-    require(result[0]["agent_id"] != result[1]["agent_id"], "distinct registry IDs required")
+    require(
+        result[0]["agent_id"] != result[1]["agent_id"], "distinct registry IDs required"
+    )
     return result
 
 
@@ -166,15 +183,19 @@ def register(document, session, *, check_only=False):
     caller = sts.get_caller_identity()
     require(
         caller["Account"] == document["account_id"]
-        and principal(caller["Arn"], caller["Account"]) == document["operator_role_arn"],
+        and principal(caller["Arn"], caller["Account"])
+        == document["operator_role_arn"],
         "selected operator identity changed",
     )
     iam = session.client("iam", region_name=document["region"])
     for kind in ("producer", "worker"):
         expected = document[kind]
-        observed = iam.get_role(RoleName=role(expected["role_arn"], document["account_id"]))["Role"]
+        observed = iam.get_role(
+            RoleName=role(expected["role_arn"], document["account_id"])
+        )["Role"]
         require(
-            observed["Arn"] == expected["role_arn"] and observed["RoleId"] == expected["role_id"],
+            observed["Arn"] == expected["role_arn"]
+            and observed["RoleId"] == expected["role_id"],
             "registered role was replaced or changed",
         )
     ddb = session.client("dynamodb", region_name=document["region"])
@@ -211,7 +232,9 @@ def register(document, session, *, check_only=False):
         # One atomic conditional write. A lost reply is reconciled by the same
         # consistent reads on retry, not by unconditional PutItem or a new ID.
         ddb.transact_write_items(
-            ClientRequestToken=hashlib.sha256(canonical(desired).encode()).hexdigest()[:36],
+            ClientRequestToken=hashlib.sha256(canonical(desired).encode()).hexdigest()[
+                :36
+            ],
             TransactItems=[
                 {
                     "Put": {
@@ -228,12 +251,15 @@ def register(document, session, *, check_only=False):
                 TableName=table, Key={"agent_id": item["agent_id"]}, ConsistentRead=True
             ).get("Item")
             require(
-                same_item(observed, item), "registry write needs original-identity reconciliation"
+                same_item(observed, item),
+                "registry write needs original-identity reconciliation",
             )
     return {
         "version": 1,
         "state": "verified" if all(existing) or not check_only else "absent",
-        "registration_revisions": [item["registration_revision"]["S"] for item in desired],
+        "registration_revisions": [
+            item["registration_revision"]["S"] for item in desired
+        ],
     }
 
 
@@ -248,7 +274,9 @@ def main():
             return boto3.client(
                 name,
                 **kwargs,
-                config=Config(connect_timeout=5, read_timeout=20, retries={"max_attempts": 1}),
+                config=Config(
+                    connect_timeout=5, read_timeout=20, retries={"max_attempts": 1}
+                ),
             )
 
     try:

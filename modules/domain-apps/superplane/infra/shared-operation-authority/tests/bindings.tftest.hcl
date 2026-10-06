@@ -1,27 +1,24 @@
 mock_provider "aws" {}
 mock_provider "kubernetes" {}
 variables {
-  account_id = "123456789012"
-  caller_arn = "arn:aws:sts::123456789012:assumed-role/Installer/test"
-  environment = "dev"
-  aws_region = "us-east-1"
-  gateway_namespace = "adp-gateway"
+  account_id                  = "123456789012"
+  caller_arn                  = "arn:aws:sts::123456789012:assumed-role/Installer/test"
+  environment                 = "dev"
+  aws_region                  = "us-east-1"
+  gateway_namespace           = "adp-gateway"
   agent_authority_provisioned = false
 }
 override_data {
-  target          = data.aws_ssm_parameter.domain_operation_registry
-  override_during = plan
-  values          = { value = "test-domain-registry" }
+  target = data.aws_ssm_parameter.domain_operation_registry
+  values = { value = "test-domain-registry" }
 }
 override_data {
-  target          = data.aws_iam_role.domain_operation_producer
-  override_during = plan
-  values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-superplane-api-producer", unique_id = "AROA11111111111111111" }
+  target = data.aws_iam_role.domain_operation_producer
+  values = { arn = "arn:aws:iam::123456789012:role/adp-dev-superplane-api-producer", unique_id = "AROA11111111111111111" }
 }
 override_data {
-  target          = data.aws_iam_role.domain_operation_worker
-  override_during = plan
-  values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-superplane-domain-worker", unique_id = "AROA22222222222222222" }
+  target = data.aws_iam_role.domain_operation_worker
+  values = { arn = "arn:aws:iam::123456789012:role/adp-dev-superplane-domain-worker", unique_id = "AROA22222222222222222" }
 }
 run "default_is_absent" {
   command = plan
