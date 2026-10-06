@@ -165,4 +165,8 @@ duplicate/omitted occurrences, existing suppressions, package-byte verification,
 refusal to overwrite raw reports, forged derived reports and the actual existing
 gate. Unreviewed High findings still fail that gate.
 
+The existing Script Tests workflow executes these synthetic tests when the
+verifier source or tests change. This is CI test coverage only; it does not
+apply real review receipts or add the tool to any release/security gate path.
+
 No real findings have been dispositioned by these tests.
