@@ -114,9 +114,12 @@ export class CodexControlAdapter {
   submitInput(input: ControlInput): Promise<InputHandoffResult> {
     return this.registry.deliver(input);
   }
-  /** Async exec_command has no PostToolUse; its SDK completion owns settlement. */
+  /** Shell execution (including intercepted apply_patch) settles on SDK completion. */
   observeSdkEvent(event: { type: string; item?: { id: string; type: string } }) {
-    if (!this.options.sdkCommands || event.item?.type !== 'command_execution') return;
+    // Codex intercepts shell apply_patch before spawning a process. It still
+    // admits a Bash hook, but emits file_change events and no PostToolUse.
+    if (!this.options.sdkCommands || !event.item ||
+        !['command_execution', 'file_change'].includes(event.item.type)) return;
     if (event.type === 'item.started') {
       const hookId = this.pendingCommands.shift();
       const ticket = hookId ? this.tickets.get(hookId) : undefined;

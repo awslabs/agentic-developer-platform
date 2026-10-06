@@ -157,3 +157,38 @@ test('concurrent SDK commands settle once, out of order, without an early paused
   expect(adapter.activeWorkCount()).toBe(0);
   expect(adapter.gate.currentPhase()).toBe('paused');
 });
+
+test('intercepted shell patches release their admission and deliver pending steering at Stop', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  await hook(adapter, 'PreToolUse', 'shell-patch');
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(1);
+  expect(await adapter.submitInput({ kind: 'steering', text: 'too early' })).toBe('rejected');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(0);
+  adapter.drainSteering = async () => {
+    expect(await adapter.submitInput({ kind: 'steering', text: 'Patch follow-up' })).toBe('delivered');
+  };
+  expect(await hook(adapter, 'Stop')).toEqual({ decision: 'block', reason: 'Patch follow-up' });
+});
+
+test('a completed patch cannot confirm pause while another shell is still executing', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  for (const [id, type] of [['shell', 'command_execution'], ['patch', 'file_change']]) {
+    await hook(adapter, 'PreToolUse', id);
+    adapter.observeSdkEvent({ type: 'item.started', item: { id, type } });
+  }
+  await adapter.requestPause();
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(1);
+  expect(adapter.gate.currentPhase()).not.toBe('paused');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'shell', type: 'command_execution' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(adapter.activeWorkCount()).toBe(0);
+  expect(adapter.gate.currentPhase()).toBe('paused');
+  await adapter.resumeFromPause();
+});
