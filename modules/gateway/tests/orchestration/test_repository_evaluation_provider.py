@@ -174,6 +174,17 @@ async def test_real_provider_observation_binds_checks_workflow_attempt_and_diges
     assert {item["criterion_id"] for item in workflow["criteria"]} == {"coverage", "inventory"}
 
 
+@pytest.mark.parametrize("case", ["review", "check"])
+async def test_owner_accepted_merge_still_requires_provider_review_and_checks(evidence, case):
+    evidence.source["accepted_merge_decision_id"] = "owner-acceptance"
+    if case == "review":
+        evidence.review.review_approved = False
+    else:
+        evidence.responses["/repos/o/r/commits/" + "a" * 40 + "/check-runs"]["check_runs"][0]["conclusion"] = "failure"
+    with pytest.raises(CycleBlockedError, match="review_missing_or_stale|required_check_not_successful"):
+        await observe(evidence)
+
+
 async def test_workflow_definition_requires_matching_content_even_when_blob_ids_match(evidence):
     provider = RepositoryEvidenceProvider()
     provider.definition_blob = AsyncMock(
