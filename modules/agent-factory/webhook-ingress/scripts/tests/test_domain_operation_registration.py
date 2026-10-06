@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 spec = importlib.util.spec_from_file_location(
-    "domain_registration", Path(__file__).parents[1] / "register-domain-operation.py"
+    "domain_registration", Path(__file__).parents[4] / "domain-apps/superplane/infra/shared-operation-authority/scripts/register-domain-operation.py"
 )
 registration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(registration)
