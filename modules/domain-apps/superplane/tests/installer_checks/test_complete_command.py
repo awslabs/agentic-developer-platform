@@ -569,9 +569,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
     # from the same lock the receipt is built from would pass for any value at all.
     # Advanced to 036 by #6048 for explicit shared cluster membership.
-    assert (
-        installer.receipt["migration"]["schema"] == "043_workspace_grant_changes"
-    )
+    assert installer.receipt["migration"]["schema"] == "043_workspace_grant_changes"
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}
