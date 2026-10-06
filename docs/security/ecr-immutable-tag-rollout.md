@@ -78,15 +78,15 @@ from the repository root, not three parents above the control-plane directory:
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT/modules/domain-apps/superplane/infra/control-plane"
 terraform init -input=false \
-  -backend-config="$REPO_ROOT/environments/dev/modules/superplane-backend.tfvars" \
+  -backend-config="$REPO_ROOT/modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars" \
   -backend-config=bucket=adp-terraform-state-000000000101
 terraform state list
 # Only after serialized ownership verification and a state backup:
 terraform import \
-  -var-file="$REPO_ROOT/environments/dev/modules/superplane.tfvars" \
+  -var-file="$REPO_ROOT/modules/domain-apps/superplane/environments/dev/superplane.tfvars" \
   'aws_ecr_repository.superplane["adp-superplane-skypilot"]' adp-superplane-skypilot
 terraform plan -input=false \
-  -var-file="$REPO_ROOT/environments/dev/modules/superplane.tfvars" -out=skypilot-adoption.tfplan
+  -var-file="$REPO_ROOT/modules/domain-apps/superplane/environments/dev/superplane.tfvars" -out=skypilot-adoption.tfplan
 terraform show -json skypilot-adoption.tfplan > skypilot-adoption.plan.json
 ```
 

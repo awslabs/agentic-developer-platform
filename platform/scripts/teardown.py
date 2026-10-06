@@ -328,9 +328,12 @@ class Run:
             write_json(path, values)
             args = ['-var-file=' + str(path)]
         else:
-            path = (directory / 'terraform.tfvars' if phase in ('agent_factory', 'webhook_ingress') else
-                    self.root / 'environments' / self.environment /
-                    ('platform.tfvars' if phase == 'platform' else MODULES[phase][1] + '.tfvars'))
+            if phase == 'superplane':
+                path = self.root / 'modules/domain-apps/superplane/environments' / self.environment / 'superplane.tfvars'
+            else:
+                path = (directory / 'terraform.tfvars' if phase in ('agent_factory', 'webhook_ingress') else
+                        self.root / 'environments' / self.environment /
+                        ('platform.tfvars' if phase == 'platform' else MODULES[phase][1] + '.tfvars'))
             if not path.exists():
                 raise TeardownError(f'{phase}: original deployment inputs are required at {path}; no recorded inputs exist')
             args = ['-var-file=' + str(path)]
