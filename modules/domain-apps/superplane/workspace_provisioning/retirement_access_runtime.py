@@ -1,8 +1,8 @@
 """Execute one separately registered, approved temporary cleanup-access phase."""
 
 import asyncio
-from datetime import timedelta
 import threading
+from datetime import timedelta
 
 from .artifacts import digest, read_artifact
 from .process import AsyncBridgeStore
@@ -99,6 +99,29 @@ async def run_retirement_access(operation, context):
             build_access_clients, facts, session, directory, verify
         )
         try:
+            from .retirement_managed_access import (
+                ManagedRetirementAccessPlan,
+                compile_managed_access_plan,
+                managed_recipe_inputs,
+            )
+
+            if isinstance(facts.plan, ManagedRetirementAccessPlan):
+                await clients.verify_target()
+                actual = await asyncio.to_thread(
+                    compile_managed_access_plan,
+                    facts.inventory,
+                    facts.config,
+                    original_allocation_id=facts.plan.original_allocation_id,
+                    bootstrap_artifact_id=facts.artifact["artifact_id"],
+                    retirement_request_id=facts.plan.retirement_request_id,
+                    kubernetes=clients.supervisor,
+                    eks=clients.eks,
+                    **managed_recipe_inputs(facts.inventory, facts.config),
+                )
+                if actual != facts.plan:
+                    raise LifecycleRefused(
+                        "live cleanup grant identities differ from the approved plan"
+                    )
             identities = await establish_access_grants(
                 facts.plan,
                 effects,

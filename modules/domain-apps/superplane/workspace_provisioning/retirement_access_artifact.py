@@ -1,8 +1,8 @@
 """Immutable cleanup-access evidence, never a generic provisioning continuation."""
 
-from dataclasses import asdict
 import json
 import re
+from dataclasses import asdict
 
 from superplane_bootstrap.kube_grants import _digest as grant_digest
 
@@ -11,6 +11,16 @@ from .retirement_access_plan import PHASE
 from .runtime_config import LifecycleRefused
 
 READY = "retirement-access-ready"
+
+
+def access_target(plan):
+    return {
+        "account_id": plan.cluster_arn.split(":")[4],
+        "cluster_arn": plan.cluster_arn,
+        "org_id": plan.org_id,
+        "workspace_id": plan.workspace_id,
+        "aws_region": plan.cluster_arn.split(":")[3],
+    }
 
 
 def access_metadata(plan, identities):
@@ -86,14 +96,7 @@ def validate_access_artifact(row, plan):
     parameters = json.loads(row["parameters_json"])
     if (
         not isinstance(metadata, dict)
-        or json.loads(row["target_json"])
-        != {
-            "account_id": plan.cluster_arn.split(":")[4],
-            "cluster_arn": plan.cluster_arn,
-            "org_id": plan.org_id,
-            "workspace_id": plan.workspace_id,
-            "aws_region": plan.cluster_arn.split(":")[3],
-        }
+        or json.loads(row["target_json"]) != access_target(plan)
         or (row["org_id"], row["workspace_id"], row["account_id"])
         != (plan.org_id, plan.workspace_id, plan.cluster_arn.split(":")[4])
         or parameters.get("lifecycle_phase") != PHASE
@@ -156,7 +159,7 @@ async def record_access_artifact(facts, effects, identities):
         "producer_fence_token": lease.fence_token,
         "request_revision": operation.request.parameters["plan_revision"],
         "account_id": plan.cluster_arn.split(":")[4],
-        "target_json": facts.artifact["target_json"],
+        "target_json": canonical(access_target(plan)),
         "parameters_json": canonical(dict(operation.request.parameters)),
         "artifact_metadata_json": canonical(metadata),
     }

@@ -144,7 +144,16 @@ def compile_grants(
         grants.append(value)
         return value
 
-    def role_pair(key, rules, actor, *, namespace=None, lifetime="temporary"):
+    def role_pair(
+        key,
+        rules,
+        actor,
+        *,
+        namespace=None,
+        lifetime="temporary",
+        subject_group=None,
+        original_allocation_id=None,
+    ):
         name = stem + "-" + key
         kind = "Role" if namespace else "ClusterRole"
         kube(
@@ -163,13 +172,21 @@ def compile_grants(
             {
                 "roleRef": {"apiGroup": RBAC, "kind": kind, "name": name},
                 "subjects": [
-                    {"apiGroup": RBAC, "kind": "Group", "name": stem + ":" + actor}
+                    {
+                        "apiGroup": RBAC,
+                        "kind": "Group",
+                        "name": subject_group or stem + ":" + actor,
+                    }
                 ],
             },
             namespace=namespace,
             lifetime=lifetime,
             actor=actor,
         )
+        if original_allocation_id is not None:
+            for item in grants[-2:]:
+                item["original_allocation_id"] = original_allocation_id
+                item["cleanup_group"] = subject_group
 
     registrar = entry("registrar")
     grants.append(
@@ -312,4 +329,85 @@ def compile_grants(
         "installer",
         namespace="kube-system",
     )
+    original_allocation = getattr(journal, "original_allocation_id", None)
+    if original_allocation is not None:
+        if (
+            target.is_adopted
+            or not isinstance(original_allocation, str)
+            or not original_allocation
+        ):
+            raise BootstrapRefused(
+                "cleanup grants require the original managed allocation"
+            )
+        cleanup = {
+            "actor": "registrar",
+            "lifetime": "workspace",
+            "subject_group": stem + ":cleanup",
+            "original_allocation_id": original_allocation,
+        }
+        role_pair(
+            "cleanup-cluster",
+            [
+                rule("", ["namespaces"], ["get", "delete"], [release.namespace]),
+                rule(
+                    RBAC,
+                    ["clusterroles", "clusterrolebindings"],
+                    ["get", "delete"],
+                    [
+                        stem + "-cleanup-cluster",
+                        stem + "-supervisor-cluster",
+                        controller_cluster_role,
+                    ],
+                ),
+            ],
+            **cleanup,
+        )
+        role_pair(
+            "cleanup-namespace",
+            [
+                rule(
+                    "",
+                    ["serviceaccounts"],
+                    ["get", "delete"],
+                    [release.service_account],
+                ),
+                rule(
+                    RBAC,
+                    ["roles", "rolebindings"],
+                    ["get", "delete"],
+                    [
+                        controller_role,
+                        stem + "-supervisor-namespace",
+                        stem + "-cleanup-namespace",
+                    ],
+                ),
+                *(
+                    [
+                        rule(
+                            "apps",
+                            ["deployments"],
+                            ["get", "delete"],
+                            [release.controller],
+                        )
+                    ]
+                    if controller_mode == "legacy"
+                    else []
+                ),
+            ],
+            namespace=release.namespace,
+            **cleanup,
+        )
+        role_pair(
+            "cleanup-system",
+            [
+                rule(
+                    RBAC,
+                    ["roles", "rolebindings"],
+                    ["get", "delete"],
+                    [stem + "-supervisor-system", stem + "-cleanup-system"],
+                )
+            ],
+            namespace="kube-system",
+            **cleanup,
+        )
     return {"version": 1, "grants": grants}

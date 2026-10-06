@@ -61,6 +61,7 @@ class AuthorityJournal:
     target: object
     generation: str
     claim: str
+    original_allocation_id: str | None = None
 
     @property
     def key(self):

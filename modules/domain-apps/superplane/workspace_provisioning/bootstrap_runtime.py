@@ -12,6 +12,45 @@ from .process import AsyncBridgeStore, WorkerProcesses
 from .runtime_config import LifecycleRefused
 
 
+async def original_managed_allocation(operation, context, row):
+    from harness_jobs.allocation import allocation_id_for
+    from harness_jobs.store import OperationStore
+
+    metadata = json.loads(row["artifact_metadata_json"])
+    source_id = metadata.get("allocation_source_operation_id")
+    if not source_id or source_id != row["source_operation_id"]:
+        raise LifecycleRefused("managed bootstrap lacks its original apply operation")
+    lease = operation.grant.lease
+    async with context.connect() as connection:
+        source = await OperationStore().get(
+            connection, operation.grant.principal, source_id
+        )
+        paid = await connection.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption "
+            "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 "
+            "AND plan_digest=$4 AND reservation_state IN ('confirmed','retained','released'))",
+            source_id,
+            lease.org_id,
+            lease.workspace_id,
+            row["source_payload_digest"],
+        )
+    if (
+        source is None
+        or source.state != "succeeded"
+        or source.action != "provision"
+        or source.admitted_request().parameters.get("lifecycle_phase")
+        != "apply-infrastructure"
+        or (source.org_id, source.workspace_id) != (lease.org_id, lease.workspace_id)
+        or source.plan_digest != row["source_payload_digest"]
+        or source.request_payload != row["source_request_payload"]
+        or source.job_id != row["source_job_id"]
+        or source.attempt_id != row["source_attempt_id"]
+        or not paid
+    ):
+        raise LifecycleRefused("managed cleanup lineage differs from its paid apply")
+    return allocation_id_for(source)
+
+
 def bootstrap(
     operation,
     context,
@@ -245,8 +284,21 @@ def bootstrap(
             claim=authority.journal.claim,
         )
 
+    original_allocation_id = None
+    if (
+        request.mode.creates_cluster
+        and config["workspace_variables"].get("networking_mode", "owned") == "owned"
+    ):
+        verify()
+        original_allocation_id = bridge.wait(
+            original_managed_allocation(operation, context, row)
+        )
+        verify()
     factory = BootstrapAuthorityFactory(
-        resolve_clients, release, resolve_observation=observation
+        resolve_clients,
+        release,
+        resolve_observation=observation,
+        original_allocation_id=original_allocation_id,
     )
     try:
         verify()

@@ -44,7 +44,15 @@ def test_incomplete_cleanup_access_is_not_mounted_or_allowlisted():
 
     paths = {route.path for route in router.routes}
     assert paths
-    assert paths.isdisjoint({route.path for route in app.routes})
+
+    def mounted_paths(routes):
+        for route in routes:
+            if hasattr(route, "path"):
+                yield route.path
+            else:
+                yield from mounted_paths(route.original_router.routes)
+
+    assert paths.isdisjoint(set(mounted_paths(app.routes)))
     gateway = (
         Path(__file__).resolve().parents[5]
         / "gateway/src/domain_proxy/superplane_routes.json"
@@ -149,7 +157,8 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
         components_complete=True,
     )
 
-    async def facts(composition, db, org_id, workspace_id):
+    async def facts(composition, db, org_id, workspace_id, *, access_review=False):
+        assert access_review
         current = await db.get(Workspace, workspace_id)
         principal = await GrantBackedAuthority(fixture.sessions).resolve(
             org_id=str(org_id),
