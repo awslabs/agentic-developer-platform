@@ -558,14 +558,6 @@ async def delete_workspace(
     from app.config import settings
     from app.operation_activation import require_admission_enabled
 
-    try:
-        require_admission_enabled(lifecycle=True)
-    except ProvisioningError as error:
-        raise HTTPException(503, str(error)) from None
-    if settings.superplane_paid_worker_mode != "legacy":
-        raise HTTPException(
-            503, "native worker has no approved teardown phase; review retirement first"
-        )
     result = await db.execute(
         select(Workspace)
         .where(Workspace.id == workspace_id, Workspace.org_id == org_id)
@@ -592,6 +584,15 @@ async def delete_workspace(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cannot delete the platform's default workspace. "
             "The default workspace is managed by the platform and cannot be removed via CLI.",
+        )
+
+    try:
+        require_admission_enabled(lifecycle=True)
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
+    if settings.superplane_paid_worker_mode != "legacy":
+        raise HTTPException(
+            503, "native worker has no approved teardown phase; review retirement first"
         )
 
     if workspace.status == "Deleted":
