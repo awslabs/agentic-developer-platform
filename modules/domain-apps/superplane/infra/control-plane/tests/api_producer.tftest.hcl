@@ -74,8 +74,9 @@ run "producer_exact_api_identity_and_routes" {
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/dispatch",
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/binding-proof",
       "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity",
-      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity/readiness"
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity/readiness",
+      "arn:aws:execute-api:us-east-1:111122223333:abcdefghij/dev/POST/internal/v1/credential-evidence"
     ])
-    error_message = "Invoke authority must be exactly the six selected POST routes."
+    error_message = "Invoke authority must be exactly the seven selected POST routes."
   }
 }

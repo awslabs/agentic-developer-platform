@@ -1,6 +1,14 @@
 # Explicit API adapter configuration — app-only installer proposal
 
-26 September 2026. Approved design; implementation is developed separately from the native profile installer. No installation or cloud/configuration changes are authorized by this document. Parent confirmed the live API has none of `ADP_GATEWAY_INTERNAL_URL`, `ADP_GATEWAY_INTERNAL_API_KEY`, `SUPERPLANE_OPERATION_GATEWAY_URL`, `SUPERPLANE_OPERATION_GATEWAY_REGION`. Preserve the current management-only installation until a separately reviewed complete upgrade is executable. PR #6401 covers native profile compatibility only and must not silently absorb this wider change.
+6 October 2026 transport correction: evidence must use the selected regional API
+Gateway endpoint with `vault.auth: api-producer-iam` and renewable API workload
+IRSA SigV4 credentials. The Gateway requires verified IAM caller provenance; a
+shared key sent directly to its Service cannot authenticate. No Gateway guard is
+changed. The dedicated producer role grants the exact evidence POST in addition
+to its six producer routes; exact prior three/six route policies upgrade to seven
+without replacing role or trust. Do not project or copy any internal Gateway key.
+
+26 September 2026 initial design (transport assumptions corrected below); implementation is developed separately from the native profile installer. No installation or cloud/configuration changes are authorized by this document. Parent confirmed the live API has none of `ADP_GATEWAY_INTERNAL_URL`, `ADP_GATEWAY_INTERNAL_API_KEY`, `SUPERPLANE_OPERATION_GATEWAY_URL`, `SUPERPLANE_OPERATION_GATEWAY_REGION`. Preserve the current management-only installation until a separately reviewed complete upgrade is executable. PR #6401 covers native profile compatibility only and must not silently absorb this wider change.
 
 ## Proposed scope
 
@@ -12,9 +20,7 @@ Suggested shape (schema illustration only; null values are invalid and deliberat
 api_adapters:
   vault:
     url: null
-    secret_key_ref:
-      name: null
-      key: null
+    auth: api-producer-iam
     transport:
       namespace: null
       service: null
@@ -27,15 +33,21 @@ api_adapters:
     stage: null
 ```
 
-Use the `vault.transport` form only for the existing internal Gateway Service selected by the operator. Validate its URL host and explicit port against that exact Service and namespace. Do not guess a `bedrockgateway` URL from a label. If actual live transport is a private HTTPS API/ALB instead, replace this schema with one explicitly reviewed alternative using bounded resolved destination IPs; do not accept arbitrary combinations of Service names, URLs and CIDRs. Resolve the concrete live transport before coding the final schema. TLS should be required unless the existing reviewed internal service contract specifically uses HTTP confined to the cluster; record that exception as part of the selected transport rather than accepting arbitrary cleartext external URLs.
+`vault.url` must equal `dispatcher.endpoint`. The `vault.transport` Service tuple
+remains the selected native-worker network and health dependency, not the API's
+evidence endpoint. API evidence always uses the exact HTTPS invoke endpoint and
+does not add direct cluster HTTP egress.
 
 Dispatcher endpoint must be the actual API Gateway invoke origin/stage for the protected IAM route, with exact region, API ID and stage matching the URL. Custom domains add mapping verification and are outside the smallest initial slice. Reject credentials, query, fragment, extra path suffixes, IP literals, redirects and mismatched region/API/stage. No defaults derived from account names, management origin, executor authority endpoint or environment variables.
 
-The secret reference selects an **existing Kubernetes Secret/key in the API namespace**. Render it directly as required `valueFrom.secretKeyRef`; the installer must never fetch its value, copy it into another Secret, put it in argv/receipts/manifests, or grant the API permission to enumerate/read Secrets. If only a Secrets Manager value exists, its projection is an explicit prerequisite owned by the existing credential installer. Secret metadata UID/resourceVersion may be recorded for drift/recovery, but never values or credential-derived hashes. Startup fails on absent key. Rotations retain the existing Secret owner; the upgrade replaces the API pod as needed for env-projected values.
+The API uses only its renewable web-identity credential provider. No shared-key
+configuration, projected evidence Secret, static credential source or asserted
+caller/provenance header is accepted. Receipts bind IAM mode, endpoint, region,
+selected cluster/role and Service identity; they never store credential values.
 
 ## Exact current consumers
 
-- `src/superplane-api/app/adapters/adp_vault_client.py:22` posts only `/internal/v1/credential-evidence`, using `X-Internal-Api-Key`. `build_vault_client` requires both existing settings. This is evidence access, not executor credential delivery. Gateway `src/internal/vault_evidence_routes.py:345` uses its existing `verify_internal_or_irsa` boundary.
+- `src/superplane-api/app/adapters/adp_vault_client.py:22` posts only `/internal/v1/credential-evidence`, using SigV4 over the exact transmitted canonical JSON bytes. `build_vault_client` requires explicit IAM mode, the selected producer endpoint and signing region. This is evidence access, not executor credential delivery. Gateway `src/internal/vault_evidence_routes.py:345` uses its existing `verify_internal_or_irsa` boundary.
 - `src/superplane-api/app/adapters/operation_dispatch.py:75` signs POSTs with API workload credentials, SigV4 service `execute-api`, and explicit signing region. Paths are `/internal/v1/controller-execution/{producer-readiness,verify-run,dispatch}`. Requests do not carry an execution run token. `OperationDispatcher.ready` already verifies domain/org/ADP-org identity in the readiness response.
 - Gateway `src/internal/domain_operation_runtime.py:30` additionally checks current IAM-derived registry identity and `domain:operation-producer` scope. `src/internal/domain_operation_store.py:27` selects a protected `ADP_DOMAIN_OPERATION_BINDINGS` entry with domain org/ADP org, producer/worker registry IDs, DB schema/secret, queue, worker namespace/SA/container/image allowlist, repository and observation endpoint. IAM invoke permission alone cannot establish this readiness.
 - `installation/manifests.py:647` currently assigns a derived control-plane role in full mode; `infra/control-plane/irsa.tf:34` trusts both API and controller SAs and its policies include no `execute-api:Invoke`. A role-name match is insufficient. The explicit dispatcher role must override the API annotation only; do not change controller or SkyPilot roles.
@@ -50,9 +62,11 @@ The shared Gateway owner supplies current registry and domain-operation bindings
 
 ## Network policy must match real traffic
 
-Current `installation/manifests.py:598` allows API egress to domain-owned peers on 8000/8081/9090/46581 and broad TCP 443/5432 excluding link-local. Gateway is added to API **ingress**, but `peers[:2]` excludes it from API egress. Thus a non-443 internal Gateway service is currently blocked even after setting vault URL/key.
-
-Add one API-only egress rule for the selected Gateway namespace and actual Service-selected pod labels on its real target port. Keep namespaceSelector and podSelector together; a namespace-only rule widens to every pod there. Confirm Service selectors/ClusterIP pre-DNAT behavior with the existing AWS NetworkPolicy engine, including ownership labels. Do not add blanket API→all-port Gateway namespace access or change monitor/controller/SkyPilot policies.
+API evidence and dispatcher traffic use the selected HTTPS API Gateway endpoint.
+The existing API TCP443 and DNS policy covers that transport; no direct Gateway
+HTTP egress rule is added. The selected Gateway Service tuple remains exclusively
+a native-worker network/health dependency. Preserve existing API database policy
+and all controller/monitor/SkyPilot peers.
 
 Dispatcher and regional STS need TCP 443 and DNS. Existing broad 443 egress technically covers external destinations but does not prove routing, API Gateway/resource policy, TLS or IAM readiness. Record that existing exposure rather than claiming the new installer has destination-isolated these endpoints. If the desired deployment requires narrowed egress, use actual approved private endpoint/subnet CIDRs and their lifecycle owner; do not pin public DNS answers as permanent allowlists or invent Service selectors for an external API. Preserve management DNS and database policies. Do not broaden DNS/5432/network exclusions as part of this feature.
 
@@ -81,20 +95,20 @@ Preserve the four composition ports and existing approval/admission logic. Do no
 
 - Omitted config yields identical management-only API env/SA/network policy; no extra Secret/role/probe reads. Full missing/partial config refuses clearly.
 - Strict schema rejects extra keys, inline secrets, wrong namespace/key syntax, arbitrary URL/path, endpoint-region-API mismatch, wrong-account/wildcard role, and incompatible transport destination.
-- Rendered API alone gets exact four env settings, required Secret key ref, role annotation and selected Gateway egress; no secret bytes in plan/receipt/log/argv. Other workload roles unchanged.
+- Rendered API alone gets exact four env settings, explicit IAM mode/endpoint, role annotation and existing HTTPS egress; no secret bytes in plan/receipt/log/argv. Other workload roles unchanged.
 - Actual API composition with fixture transport proves vault client and dispatcher are configured; evidence path, signature service/region and exact producer response binding are checked. API service authority remains distinct from human spend approval.
 - Role trust/policy fixtures cover wrong OIDC/SA/audience, extra principals/routes, missing permission and denied registry. Runtime STS mismatch and producer-readiness refusal never produce ready.
 - Network fixtures plus authorized cluster traffic tests cover selected service/target port, unrelated pod/port denial, real service-selector behavior, TLS/redirect handling and DNS.
-- Rotation/drift/restart/rollback preserve source Secret ownership, route fencing and known management service availability. A failed full activation cannot claim management mode is still live unless observed.
+- Rotation/drift/restart/rollback preserve renewable workload identity, route fencing and known management service availability. A failed full activation cannot claim management mode is still live unless observed.
 - Remote domain/controller/installer tests validate code. Parent's live installation verification validates effective identity, network, existing registry and exact adapter targets. GPU spending remains behind separate explicit workload target/budget/cleanup approval.
 
 ## Inputs still required
 
-Actual vault service URL, namespace/service/target port and transport security; existing API-namespace Secret name/key and owner; exact producer API Gateway invoke URL/API ID/stage/region; existing bounded API role/trust/policy and registry identity; corresponding existing domain-operation binding readiness; chosen restricted preflight mechanism. None is filled from inference in this plan. Parent may collect these read-only; this design authorizes no creation or mutation.
+Actual vault service URL, namespace/service/target port and transport security; exact producer API Gateway invoke URL/API ID/stage/region; existing bounded API role/trust/policy and registry identity; corresponding existing domain-operation binding readiness; chosen restricted preflight mechanism. None is filled from inference in this plan. Parent may collect these read-only; this design authorizes no creation or mutation.
 
 ## Chosen staged verification sequence — implementation-ready refinement
 
-This section supersedes the earlier alternatives for preflight sequencing. Parent's read-only live findings establish Gateway Service `adp-gateway/bedrockgateway`, Service port `80`, target port `8080`, selector `app=bedrockgateway`, and producer endpoint `https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev`. No key has been read. Proposed vault base is the service DNS name `http://bedrockgateway.adp-gateway.svc.cluster.local:80`, derived from those observed Service facts; parent must confirm this matches the installation's approved internal HTTP trust boundary before use. Producer signing region is `us-east-1`, API ID `59o2rakc50`, stage `dev`. Secret name/key, API role and protected registry binding remain unresolved; this update supplies none.
+This section supersedes the earlier alternatives for preflight sequencing. Parent's read-only live findings establish Gateway Service `adp-gateway/bedrockgateway`, Service port `80`, target port `8080`, selector `app=bedrockgateway`, and producer endpoint `https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev`. No key has been read. The API evidence URL is that same producer endpoint. The Service remains a worker health/network dependency; direct HTTP plus a key cannot satisfy Gateway IAM authentication. No Secret projection is required for API evidence. Existing protected registry binding and current principal/tenant checks remain mandatory.
 
 ### 1. Image-only contract check; no live readiness claim
 
@@ -118,7 +132,7 @@ Stage only API configuration/identity/policy while preserving the existing manag
 
 ### 3. Verify the actual staged API
 
-Run a dedicated bounded installer verification command **inside the actual API container**, using its configured env, mounted existing Secret reference, DB transport, IRSA projection and effective NetworkPolicy. Use an explicit read-only command, not importing `app.main` in a way that starts its lifespan/dispatcher. The existing live process remains management-only with dispatch/admission disabled.
+Run a dedicated bounded installer verification command **inside the actual API container**, using its configured env, DB transport, IRSA projection and effective NetworkPolicy. Use an explicit read-only command, not importing `app.main` in a way that starts its lifespan/dispatcher. The existing live process remains management-only with dispatch/admission disabled.
 
 Require all of the following, with separate evidence fields:
 
@@ -134,7 +148,7 @@ Capture no Secret bytes, authorization headers, DSNs or bearer credentials. Veri
 
 ### 4. Enable only the verified exact stage
 
-Before full activation, recheck source/release, environment digest, profile digest, Secret metadata generation, selected role/SA identity, target org/workspace/cluster and all stage observations. Any drift or expired evidence requires re-verification. Record an exact activation intent in the installer receipt before mutation. Require prior reviewed plan authorization to cover this transition; no timeout or elapsed period implies approval.
+Before full activation, recheck source/release, environment digest, profile digest, IAM evidence transport, selected role/SA identity, target org/workspace/cluster and all stage observations. Any drift or expired evidence requires re-verification. Record an exact activation intent in the installer receipt before mutation. Require prior reviewed plan authorization to cover this transition; no timeout or elapsed period implies approval.
 
 Render full API with `SUPERPLANE_MANAGEMENT_ONLY=false` and `SUPERPLANE_OPERATION_DISPATCH_ENABLED=true` only after the stage's actual adapter/identity/network/metadata gates pass and the existing full workspace/executor/profile prerequisites are satisfied. Startup retains the existing live four-port gate. Full readiness requires exact image/DB/profile, verified execution bindings, and dispatcher readiness again; publication uses the existing conditional route protocol. Do not equate enabled dispatch with permission to create a new paid operation; actual workload still needs its own immutable preview/human approval/budget/cleanup limits.
 
@@ -146,9 +160,9 @@ If rollout/verification fails, keep or restore the known stage configuration wit
 - Exact three configurations: legacy management omitted (unchanged), configured verifying stage (management true/admission+dispatch false), activated full (existing gates true/dispatch enabled). Restart/resume at each point preserves state.
 - Management-mode serving/workspace/lifecycle admission attempts cannot exploit the existing route allowlist; no reservation/outbox row or recovery dispatch while disabled. Explicit read-only dispatcher readiness remains callable.
 - Real positive metadata fixture plus wrong org/workspace/user/revoked grant/control credential failures, unknown credential refusal, role mismatch, wrong producer binding, Service network denial and proxy/redirect handling.
-- Failure after stage apply, between verification and enable, during full rollout and during compensation never silently enables dispatch; setting/profile/Secret generation drift invalidates retained proof.
+- Failure after stage apply, between verification and enable, during full rollout and during compensation never silently enables dispatch; setting/profile/role identity drift invalidates retained proof.
 
-Implementation should remain a separate app-only PR after review of this staged design and concrete missing Secret/role inputs. No code has been written for this adapter feature.
+Implementation should remain a separate app-only PR after review of this staged design and concrete role/registry inputs. The maintained implementation now follows the corrected IAM evidence transport above.
 
 ## Rollout clarification
 
@@ -162,9 +176,9 @@ after independently observing it; a disabled public route is not availability.
 This clarification supersedes earlier language requiring preservation of a live
 management route or a separate transition engine.
 
-## Metadata transport precision after review
+## Metadata transport precision for other installer Secret reads
 
-The installer uses authenticated EKS API `PartialObjectMetadata` negotiation with
+Evidence staging no longer reads a Secret. Other installer consumers use authenticated EKS API `PartialObjectMetadata` negotiation with
 no full-object Accept fallback, rather than kubectl output filtering. This avoids
 requesting Secret `.data`/`.stringData`; it does not claim that metadata is incapable
 of containing legacy embedded secrets in annotations. Metadata responses stay

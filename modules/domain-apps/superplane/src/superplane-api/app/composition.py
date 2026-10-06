@@ -295,7 +295,7 @@ def _compose_credential_evidence(settings: Any, result: Composition) -> None:
             installed=False,
             detail=(
                 "ADP vault is not configured: set ADP_GATEWAY_INTERNAL_URL and "
-                "ADP_GATEWAY_INTERNAL_API_KEY"
+                "ADP_GATEWAY_EVIDENCE_AUTH=api-producer-iam and the selected producer endpoint"
             ),
         )
         return
@@ -568,7 +568,8 @@ def compose(settings: Any | None = None) -> Composition:
             )
         except Exception:
             logger.error(
-                "the signed current-identity reader could not be composed", exc_info=False
+                "the signed current-identity reader could not be composed",
+                exc_info=False,
             )
 
     absent = sorted(result.unconfigured)

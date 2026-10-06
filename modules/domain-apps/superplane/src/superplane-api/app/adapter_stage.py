@@ -22,6 +22,11 @@ async def verify_stage(expected, *, active=False):
         settings.superplane_operation_gateway_url != producer["endpoint"]
         or settings.superplane_operation_gateway_region != producer["region"]
         or settings.adp_gateway_internal_url != vault["url"]
+        or vault.get("auth") != "api-producer-iam"
+        or settings.adp_gateway_evidence_auth != "api-producer-iam"
+        or settings.adp_gateway_internal_url != producer["endpoint"]
+        or settings.adp_gateway_internal_api_key
+        or os.environ.get("ADP_GATEWAY_INTERNAL_API_KEY")
         or os.environ.get("AWS_ROLE_ARN") != producer["role_arn"]
         or os.environ.get("AWS_EC2_METADATA_DISABLED") != "true"
         or os.environ.get("AWS_STS_REGIONAL_ENDPOINTS") != "regional"

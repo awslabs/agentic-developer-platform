@@ -109,7 +109,10 @@ def contract_input(native):
     env, lock = native
     env["api_producer_role"] = {"api_id": "abcdefghij", "stage": "dev"}
     env["api_adapters"]["dispatcher"] = producer_role.dispatcher(env)
-    env["api_adapters"]["vault"] = {"secret_key_ref": {"name": "selected-vault"}}
+    env["api_adapters"]["vault"] = {
+        "auth": "api-producer-iam",
+        "url": env["api_adapters"]["dispatcher"]["endpoint"],
+    }
     env["api_adapters"]["verification"] = {}
     selected_request = {
         key: env[key]

@@ -326,14 +326,13 @@ def test_identity_preflight_has_exact_readiness_invoke_route(managed):
         managed, "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
     )
     resources = policy["Statement"][0]["Resource"]
-    assert {
-        resource.split("/controller-execution/", 1)[1] for resource in resources
-    } == {
-        "producer-readiness",
-        "verify-run",
-        "dispatch",
-        "binding-proof",
-        "current-identity",
-        "current-identity/readiness",
+    assert {resource.split("/internal/v1/", 1)[1] for resource in resources} == {
+        "controller-execution/producer-readiness",
+        "controller-execution/verify-run",
+        "controller-execution/dispatch",
+        "controller-execution/binding-proof",
+        "controller-execution/current-identity",
+        "controller-execution/current-identity/readiness",
+        "credential-evidence",
     }
     assert all("*" not in resource for resource in resources)

@@ -22,8 +22,8 @@ from installation.manifests import render
 def adapters(environment):
     environment["api_adapters"] = {
         "vault": {
-            "url": "http://gateway.gateway.svc.cluster.local:80",
-            "secret_key_ref": {"name": "existing-vault-evidence", "key": "key"},
+            "url": "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev",
+            "auth": "api-producer-iam",
             "transport": {
                 "namespace": "gateway",
                 "service": "gateway",
@@ -62,7 +62,8 @@ def test_omission_does_not_change_any_manifest(environment, release):
     "path,value",
     [
         (("vault", "url"), "http://external.example:80"),
-        (("vault", "secret_key_ref", "value"), "inline-not-permitted"),
+        (("vault", "secret_key_ref"), {"name": "forbidden", "key": "key"}),
+        (("vault", "auth"), "shared-key"),
         (("vault", "transport", "port"), True),
         (("vault", "transport", "selector"), {}),
         (("vault", "transport", "security"), "http"),
@@ -102,16 +103,12 @@ def test_only_api_gets_exact_secret_role_and_gateway_egress(adapters, release):
     values = {
         v["name"]: v for v in api["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert values["ADP_GATEWAY_INTERNAL_API_KEY"] == {
-        "name": "ADP_GATEWAY_INTERNAL_API_KEY",
-        "valueFrom": {
-            "secretKeyRef": {
-                "name": "existing-vault-evidence",
-                "key": "key",
-                "optional": False,
-            }
-        },
-    }
+    assert "ADP_GATEWAY_INTERNAL_API_KEY" not in values
+    assert values["ADP_GATEWAY_EVIDENCE_AUTH"]["value"] == "api-producer-iam"
+    assert (
+        values["ADP_GATEWAY_INTERNAL_URL"]["value"]
+        == adapters["api_adapters"]["dispatcher"]["endpoint"]
+    )
     assert values["SUPERPLANE_OPERATION_DISPATCH_ENABLED"]["value"] == "false"
     assert values["SUPERPLANE_MANAGEMENT_ONLY"]["value"] == "true"
     role = next(
@@ -128,16 +125,12 @@ def test_only_api_gets_exact_secret_role_and_gateway_egress(adapters, release):
         for d in docs
         if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "superplane-api"
     )
-    rule = policy["spec"]["egress"][-1]
-    assert rule["to"] == [
-        {
-            "namespaceSelector": {
-                "matchLabels": {"kubernetes.io/metadata.name": "gateway"}
-            },
-            "podSelector": {"matchLabels": {"app": "gateway"}},
-        }
-    ]
-    assert {p["port"] for p in rule["ports"]} == {80, 8080}
+    old_policy = next(
+        d
+        for d in before
+        if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "superplane-api"
+    )
+    assert policy == old_policy
 
 
 def test_image_contract_cannot_be_live_capabilities():
@@ -226,6 +219,9 @@ def test_dedicated_role_does_not_accept_worker_or_wildcard_authority(adapters):
             }
         ]
     }
+    policy["Statement"][0]["Resource"].append(
+        prefix.removesuffix("controller-execution/") + "credential-evidence"
+    )
     verify_role(adapters, role, [policy], "https://" + issuer)
     policy["Statement"][0]["Resource"].append("*")
     with pytest.raises(Refusal):
@@ -358,3 +354,60 @@ def test_secret_transport_negotiates_metadata_and_never_uses_kubectl(
         ) == {"uid": "secret-uid", "resourceVersion": "42"}
     assert len(received) == 1
     installer.kube.assert_not_called()
+
+
+def test_snapshot_refuses_different_cluster_before_role_lookup(adapters, monkeypatch):
+    transport = adapters["api_adapters"]["vault"]["transport"]
+    installer = SimpleNamespace(
+        env=adapters, release="reviewed", kube=Mock(), aws=Mock()
+    )
+    installer.json = Mock(
+        side_effect=[
+            {
+                "metadata": {"uid": "service", "resourceVersion": "1"},
+                "spec": {
+                    "selector": transport["selector"],
+                    "ports": [{"port": 80, "targetPort": 8080}],
+                },
+            },
+            {"cluster": {"arn": "arn:aws:eks:us-east-1:000000000000:cluster/other"}},
+        ]
+    )
+    role_lookup = Mock()
+    monkeypatch.setattr(adapter_staging, "role_identity", role_lookup)
+    with pytest.raises(Refusal, match="cluster identity"):
+        adapter_staging.snapshot(installer)
+    role_lookup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "count,legacy,accepted",
+    [
+        (3, True, True),
+        (6, True, True),
+        (7, False, True),
+        (3, False, False),
+        (6, False, False),
+        (7, True, False),
+        (4, True, False),
+        (5, True, False),
+    ],
+)
+def test_only_exact_original_route_sets_can_be_upgraded(
+    adapters, count, legacy, accepted
+):
+    from installation.producer_role import documents
+
+    issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    adapters["api_producer_role"] = {"api_id": "abcdefghij", "stage": "dev"}
+    trust, policy = documents(adapters, issuer)
+    role = {
+        "Arn": adapters["api_adapters"]["dispatcher"]["role_arn"],
+        "AssumeRolePolicyDocument": trust,
+    }
+    policy["Statement"][0]["Resource"] = policy["Statement"][0]["Resource"][:count]
+    if accepted:
+        verify_role(adapters, role, [policy], issuer, legacy_routes=legacy)
+    else:
+        with pytest.raises(Refusal):
+            verify_role(adapters, role, [policy], issuer, legacy_routes=legacy)

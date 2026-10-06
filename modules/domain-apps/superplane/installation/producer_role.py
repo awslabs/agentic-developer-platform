@@ -122,6 +122,9 @@ def documents(env, oidc):
                         "current-identity",
                         "current-identity/readiness",
                     )
+                ]
+                + [
+                    prefix.removesuffix("controller-execution/") + "credential-evidence"
                 ],
             }
         ],

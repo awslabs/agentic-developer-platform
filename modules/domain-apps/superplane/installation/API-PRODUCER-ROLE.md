@@ -14,8 +14,10 @@ behavior. Existing control-plane and SkyPilot resources are unchanged.
 
 The role trusts only `superplane-api` in the selected namespace, using exact
 OIDC provider, `StringEquals` subject and `sts.amazonaws.com` audience. Its one
-inline policy grants only `execute-api:Invoke` on the three exact producer POST
-routes required by the existing strict verifier.
+inline policy grants only `execute-api:Invoke` on the six exact controller-execution POST
+routes plus `/internal/v1/credential-evidence`. Evidence uses the same regional
+API Gateway endpoint and renewable workload identity. Only exact original three-
+or six-route policies can upgrade to seven; the role ID and trust stay pinned.
 
 Every installer Terraform invocation forwards the desired optional role value,
 including resume and later upgrades. The role shares the maintained domain module,
@@ -47,8 +49,8 @@ separate reviewed cleanup; omission is never implicit authorization to delete.
 After the approved saved plan is applied, inspect Terraform output ARN and RoleId,
 then run the strict live role verifier and bind its identity to those outputs.
 This check precedes foundations, API service-account changes and rollout. Adapter
-transport snapshots continue to require real existing transport and Secret
-metadata; missing-role handling does not waive any other prerequisite. Resume
+transport snapshots continue to require the selected cluster, Gateway Service
+identity and explicit IAM evidence mode/endpoint/region; missing-role handling does not waive any other prerequisite. Resume
 rechecks live identity rather than trusting a completed phase marker.
 
 Remote CI must cover default omission, exact Terraform trust/route plans,

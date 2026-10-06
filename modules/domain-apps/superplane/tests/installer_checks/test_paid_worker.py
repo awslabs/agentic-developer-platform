@@ -16,8 +16,8 @@ def native(environment, release):
     account, region = environment["account_id"], environment["region"]
     environment["api_adapters"] = {
         "vault": {
-            "url": "http://gateway.gateway.svc.cluster.local:80",
-            "secret_key_ref": {"name": "existing-vault-evidence", "key": "key"},
+            "url": "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev",
+            "auth": "api-producer-iam",
             "transport": {
                 "namespace": "gateway",
                 "service": "gateway",

@@ -101,19 +101,21 @@ def snapshot(installer, *, allow_missing=False):
         ),
         "Selected vault Service transport changed",
     )
-    ref = adapters["vault"]["secret_key_ref"]
     cluster = installer.json(
         installer.aws("eks", "describe-cluster", "--name", env["cluster"])
     )["cluster"]
-    metadata = secret_metadata(installer, cluster, ref["name"])
+    require(
+        cluster["arn"]
+        == f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['cluster']}",
+        "Selected cluster identity changed",
+    )
     return {
         "environment_sha256": digest(env),
         "release_id": installer.release,
-        "secret": {
-            "namespace": env["namespace"],
-            **ref,
-            "uid": metadata["uid"],
-            "resource_version": metadata["resourceVersion"],
+        "evidence_transport": {
+            "auth": adapters["vault"]["auth"],
+            "endpoint": adapters["vault"]["url"],
+            "region": adapters["dispatcher"]["region"],
         },
         "service": {
             "uid": service["metadata"]["uid"],

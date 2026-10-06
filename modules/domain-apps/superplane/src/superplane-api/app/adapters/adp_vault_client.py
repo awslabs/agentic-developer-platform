@@ -1,13 +1,13 @@
-"""Control-plane ADP vault evidence reader.
-
-This client owns the internal evidence key and is composed only in the Superplane
-API. It exposes no TrustedDeliveryChannel methods. ExecutorVaultChannel instead
-uses attempt-owned SigV4 and projected run/pod tokens for preflight and delivery.
-"""
+"""API workload IAM credential-evidence reader; never a material delivery channel."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
+
+import botocore.session
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 from superplane_contracts.connections import CredentialReference, VaultOwnership
 
+from app.adapters.iam_signing import signed_headers
 from app.services.credential_evidence import VerifiedCredentialEvidence
 
 logger = logging.getLogger(__name__)
@@ -38,61 +39,70 @@ class AdpVaultClient:
         self,
         *,
         base_url: str,
-        api_key: str,
+        region: str,
         timeout: float = _DEFAULT_TIMEOUT,
         client_factory: Any = None,
+        session: Any = None,
     ) -> None:
-        if not base_url or not base_url.strip():
-            raise ValueError("ADP vault base_url is required")
-        if not api_key or not api_key.strip():
-            # Fail at construction, not at first use: a client built without a
-            # credential would otherwise 403 on every call at runtime and read as
-            # "the vault denied us" rather than "we were never configured".
-            raise ValueError("ADP vault api_key is required")
-        self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
-        self._timeout = timeout
-        # Injectable purely so tests can supply a transport; defaults to httpx.
-        self._client_factory = client_factory
+        if not isinstance(region, str) or not re.fullmatch(
+            r"[a-z]{2}(?:-[a-z]+)+-[0-9]", region
+        ):
+            raise ValueError("Evidence signing region is required")
+        if not isinstance(base_url, str) or not re.fullmatch(
+            r"https://[a-z0-9]{10}\.execute-api\."
+            + re.escape(region)
+            + r"\.amazonaws\.com/[A-Za-z0-9_-]{1,128}",
+            base_url,
+        ):
+            raise ValueError(
+                "Evidence requires the exact regional API Gateway endpoint and stage"
+            )
+        self._base_url, self._region = base_url, region
+        self._timeout, self._client_factory = timeout, client_factory
+        self._session = session or botocore.session.get_session()
 
-    # ------------------------------------------------------------------
-    # Transport
-    # ------------------------------------------------------------------
-
-    def _headers(self) -> dict[str, str]:
-        return {"X-Internal-Api-Key": self._api_key, "Content-Type": "application/json"}
+    def _headers(self, url: str, encoded: bytes) -> dict[str, str]:
+        # Resolve and freeze on every send so web-identity renewal remains active.
+        credentials = self._session.get_credentials()
+        if credentials is None or credentials.method != "assume-role-with-web-identity":
+            raise RuntimeError("Evidence requires the API workload web identity")
+        return signed_headers(credentials, url, encoded, self._region)
 
     async def _post_async(
-        self, path: str, payload: Mapping[str, Any]
+        self,
+        path: str,
+        payload: Mapping[str, Any],
     ) -> tuple[int, dict[str, Any]]:
-        if self._client_factory is not None:
-            client_cm = self._client_factory()
-        else:
-            client_cm = httpx.AsyncClient(
-                base_url=self._base_url,
+        if path != EVIDENCE_PATH:
+            raise ValueError("Unsupported evidence route")
+        url = self._base_url + path
+        encoded = json.dumps(
+            dict(payload), separators=(",", ":"), allow_nan=False
+        ).encode()
+        headers = await asyncio.to_thread(self._headers, url, encoded)
+        client_cm = (
+            self._client_factory()
+            if self._client_factory
+            else httpx.AsyncClient(
                 timeout=self._timeout,
                 trust_env=False,
                 follow_redirects=False,
             )
+        )
         async with client_cm as client:
-            response = await client.post(
-                path, json=dict(payload), headers=self._headers()
-            )
-        return response.status_code, self._decode(response)
-
-    @staticmethod
-    def _decode(response: Any) -> dict[str, Any]:
-        """Parse a JSON body, or return ``{}``.
-
-        Never logs or re-raises with the body. On the delivery path the body holds
-        the credential value, so a decode error that included it would write the
-        secret to the log — the exact failure the redaction machinery exists to stop.
-        """
-        try:
-            body = response.json()
-        except Exception:
-            return {}
-        return body if isinstance(body, dict) else {}
+            async with client.stream(
+                "POST", url, content=encoded, headers=headers
+            ) as response:
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > 65536:
+                        raise RuntimeError("Evidence response exceeds its bound")
+                try:
+                    body = json.loads(content)
+                except (ValueError, UnicodeError):
+                    body = {}
+                return response.status_code, body if isinstance(body, dict) else {}
 
     # ------------------------------------------------------------------
     # CredentialEvidenceReader
@@ -132,10 +142,10 @@ class AdpVaultClient:
         }
         try:
             status, body = await self._post_async(EVIDENCE_PATH, payload)
-        except Exception as exc:
+        except Exception:
             # Transport failure is unavailability, not denial. Re-raised (the port
             # allows it for genuine unavailability) with no body in the message.
-            raise RuntimeError("ADP vault evidence is unavailable") from exc
+            raise RuntimeError("ADP vault evidence is unavailable") from None
 
         if status == 503:
             raise RuntimeError("ADP vault evidence is unavailable")
@@ -170,7 +180,11 @@ class AdpVaultClient:
         """
         if body.get("org_id") != org_id or body.get("workspace_id") != workspace_id:
             return None
-        if body.get("credential_id") != reference.credential_id:
+        if (
+            body.get("credential_id") != reference.credential_id
+            or body.get("service") != reference.service
+            or body.get("label") != reference.label
+        ):
             return None
 
         # The attestation must come back exactly as claimed when one was claimed. The
@@ -271,7 +285,7 @@ def build_vault_client(settings: Any) -> AdpVaultClient | None:
 
     ``None`` rather than a stub: the consumer answers 503 "vault evidence is
     unavailable" when no reader is installed, which is the honest answer for a
-    deployment that has not been given vault credentials. A permissive stub that
+    deployment without a selected IAM evidence transport. A permissive stub that
     returned evidence would be a bypass, and one that returned ``None`` from every
     read would report a configuration gap as a per-credential denial.
 
@@ -279,12 +293,22 @@ def build_vault_client(settings: Any) -> AdpVaultClient | None:
     from application-wide token settings. See ExecutorVaultTransport.
     """
     base_url = getattr(settings, "adp_gateway_internal_url", "") or ""
-    api_key = getattr(settings, "adp_gateway_internal_api_key", "") or ""
-    if not base_url.strip() or not api_key.strip():
-        logger.info(
-            "ADP vault client is not configured; credential evidence will be unavailable"
-        )
+    auth = getattr(settings, "adp_gateway_evidence_auth", "") or ""
+    if (
+        not base_url
+        and not auth
+        and not getattr(settings, "adp_gateway_internal_api_key", "")
+    ):
         return None
+    if (
+        auth != "api-producer-iam"
+        or base_url != getattr(settings, "superplane_operation_gateway_url", "")
+        or getattr(settings, "adp_gateway_internal_api_key", "")
+    ):
+        raise ValueError(
+            "Evidence requires the selected API producer IAM transport without a shared key"
+        )
+    region = getattr(settings, "superplane_operation_gateway_region", "")
     # The timeout comes from settings so the bound is a deployment decision rather
     # than an image constant (#5535). `getattr` with the module default, because this
     # function accepts any settings-shaped object — including the stubs the
@@ -293,4 +317,4 @@ def build_vault_client(settings: Any) -> AdpVaultClient | None:
     # configured 0.0 as absent, and 0.0 is refused by the setting's validator, so
     # silently replacing it with 10.0 would hide a misconfiguration.
     timeout = getattr(settings, "adp_vault_timeout_seconds", _DEFAULT_TIMEOUT)
-    return AdpVaultClient(base_url=base_url, api_key=api_key, timeout=timeout)
+    return AdpVaultClient(base_url=base_url, region=region, timeout=timeout)
