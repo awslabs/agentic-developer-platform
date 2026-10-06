@@ -23,6 +23,7 @@ dependencies = [
     "pydantic-settings==2.14.2",
     "boto3==1.36.0",
     "httpx==0.28.1",
+    "urllib3==2.8.0",
     "redis==5.2.1",
     "prometheus-client==0.22.0",
     "passlib[bcrypt]==1.7.4",
