@@ -118,6 +118,39 @@ test("developer continues the same thread through checkpoints until the board is
   assert.match(prompts[1]!, /Do not re-plan or re-read/);
 });
 
+test("development continues beyond 24 checkpoints when no turn limit is configured", async () => {
+  const checkpoint = outcome({ outcome: "checkpoint", remainingWork: ["AC1-t1"],
+    tasks: [t("AC1-c1", "code", "done"), t("AC1-t1", "test", "open", ["AC1-c1"])] });
+  // A malformed response after the former cutoff still gets its correction turn.
+  const runs = fakeRuns([...Array<string>(25).fill(checkpoint), "Return format needs correction", outcome({ outcome: "complete" })]);
+  const seen: number[] = [];
+  const result = await runDeveloperTurns("start", runs.runTurn, {
+    budget: new ModelExecutionBudget(3_600_000),
+    onOutcome: async (_outcome, turn) => { seen.push(turn); },
+  });
+  assert.equal(result.turns, 27);
+  assert.equal(result.exhausted, false);
+  assert.equal(result.outcome.outcome, "complete");
+  assert.ok(seen.includes(25));
+  assert.match(runs.prompts[26]!, /not the structured outcome/);
+});
+
+test("execution allowance still stops development without an explicit turn limit", async () => {
+  const checkpoint = outcome({ outcome: "checkpoint", remainingWork: ["AC1-t1"],
+    tasks: [t("AC1-c1", "code", "done"), t("AC1-t1", "test", "open", ["AC1-c1"])] });
+  const runs = fakeRuns([checkpoint, outcome({ outcome: "complete" })]);
+  let clock = 0;
+  const budget = new ModelExecutionBudget(10_000, () => clock);
+  const result = await runDeveloperTurns("start", async (prompt, signal) => {
+    clock += 6_000;
+    return runs.runTurn(prompt, signal);
+  }, { budget, minTurnMs: 5_000 });
+  assert.equal(result.turns, 1);
+  assert.equal(result.exhausted, true);
+  assert.equal(result.outcome.outcome, "checkpoint");
+  assert.deepEqual(result.outcome.remainingWork, ["AC1-t1"]);
+});
+
 test("a malformed outcome gets one correction turn, then the loop continues from the last board instead of failing", async () => {
   const good = outcome({ outcome: "complete" });
   const dishonest = outcome({ outcome: "complete", tasks: [t("AC1-c1", "code", "open")] });

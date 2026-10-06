@@ -183,9 +183,11 @@ and every later turn takes the next open task to done (code together with the
 test that covers it), commits with the task id, pushes and keeps one ready PR
 current. Turns end in a structured `complete | checkpoint | blocked` outcome; a
 checkpoint continues the same SDK thread, so the run stops only on completion,
-a concrete blocker, or the allowance. `CODEX_DEVELOPER_TURN_TIMEOUT_MS` (default
-360 minutes of cumulative model execution) and `CODEX_DEVELOPER_MAX_TURNS`
-(default 24) bound the run. A PR is reported only with the honest outcome: a
+a concrete blocker, or the allowance. `CODEX_DEVELOPER_TURN_TIMEOUT_MS` defaults
+to 360 minutes of cumulative model execution. There is no default turn-count
+cutoff; operators can explicitly set `CODEX_DEVELOPER_MAX_TURNS` to a positive
+integer for an additional limit. Hosted wall-time, spend and cancellation
+controls still apply. A PR is reported only with the honest outcome: a
 `checkpoint` or exhausted run returns `pr_created` with `completion` and
 `remainingWork` so the reviewer finishes from the published board; a `complete`
 claim with open or uncovered tasks is rejected and sent back for correction.

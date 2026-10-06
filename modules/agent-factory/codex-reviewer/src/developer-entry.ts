@@ -20,7 +20,8 @@ async function main() {
     // Same env family as CODEX_REVIEWER_TURN_TIMEOUT_MS on the ScaledJob.
     timeoutMs: Number(process.env.CODEX_DEVELOPER_TURN_TIMEOUT_MS ??
       (process.env.AGENT_TYPE === "agent-codex-architect" ? 180 * 60 * 1000 : DEVELOPMENT_TIMEOUT_MS)),
-    maxTurns: Number(process.env.CODEX_DEVELOPER_MAX_TURNS ?? 24),
+    maxTurns: process.env.CODEX_DEVELOPER_MAX_TURNS === undefined
+      ? undefined : Number(process.env.CODEX_DEVELOPER_MAX_TURNS),
   };
   if (!embedded && !value("--workspace")) throw new Error("Standalone execution requires --workspace pointing to a new clone directory");
   // Use the same broker/token-file renewal already used by the Codex reviewer.
