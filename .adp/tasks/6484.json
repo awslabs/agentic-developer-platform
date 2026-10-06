@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-05T23:44:37.261Z",
+  "updated_at": "2026-10-06T00:07:47.581Z",
   "tasks": [
     {
       "id": "AC01-c1",
@@ -31,7 +31,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Focused suite passed."
+      "note": "Included in passing final local and remote suites."
     },
     {
       "id": "AC02-c1",
@@ -61,7 +61,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Focused suite passed."
+      "note": "Included in passing final local and remote suites."
     },
     {
       "id": "AC03-c1",
@@ -92,7 +92,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Contract suite: 74 passed, 2 expected failures; adjacent authorization subset: 8 passed."
+      "note": "Included in passing final local and remote suites."
     },
     {
       "id": "AC04-c1",
@@ -106,7 +106,7 @@
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
         "modules/domain-apps/superplane/contracts/access-cases-v1.json"
       ],
-      "note": "Covered by AC04-t1; pushed at d16445f. Owner disposition still pending separately.",
+      "note": "Covered by AC04-t1; pushed at d16445f. Owner disposition remains separate.",
       "commits": [
         "d16445f"
       ]
@@ -123,7 +123,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Contract suite: 88 passed, 2 expected failures; Harness approval suite: 41 passed."
+      "note": "Harness approval suite: 41 passed; included in passing final API and remote suites."
     },
     {
       "id": "AC04-c2",
@@ -135,7 +135,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "External domain/auth-owner decision pending; independent work continues."
+      "note": "External decision required: domain/auth owners must approve or amend the proposed approver handoff, presets, assignment ceiling, revocation bound and last-administrator recovery."
     },
     {
       "id": "AC04-t2",
@@ -149,34 +149,37 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Depends on AC04-c2."
+      "note": "Depends on a recorded AC04-c2 owner disposition; none was provided."
     },
     {
       "id": "AC05-c1",
       "kind": "code",
       "criterion": "AC05",
       "title": "Reconcile design and endpoint gaps with named downstream owners",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Next task; respect read-only ownership of shared identity and endpoint inventory."
+      "note": "Covered by AC05-t1; pushed at 45306e8.",
+      "commits": [
+        "45306e8"
+      ]
     },
     {
       "id": "AC05-t1",
       "kind": "test",
       "criterion": "AC05",
       "title": "Run focused contract and mounted-route suites on final source head",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC05-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Include local and exact-head remote CI evidence in PR."
+      "note": "Pinned local API suite: 445 passed, 2 expected failures; Gateway CLI: 280 passed; UI: 21 passed. Exact-head remote Domain CI run 37390408382 succeeded."
     },
     {
       "id": "AC05-t2",
@@ -188,7 +191,7 @@
         "AC05-c1"
       ],
       "files": [],
-      "note": "External owner review still required."
+      "note": "External domain/auth-owner review is required; a ready PR and passing CI are not sign-off."
     }
   ]
 }
