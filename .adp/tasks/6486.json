@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6486,
-  "updated_at": "2026-10-06T00:35:32.218Z",
+  "updated_at": "2026-10-06T00:38:08.396Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -83,10 +83,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/models/workspace_grant_change.py"
+        "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Covered by AC-03-t1; PostgreSQL cases passed at preceding head.",
+      "note": "Covered by AC-03-t1.",
       "commits": [
         "0404ea0",
         "7604c97"
@@ -105,7 +104,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_models.py"
       ],
-      "note": "Seven real PostgreSQL grant tests passed at 26adc79; model inventory corrected at 4bca57f, where 246 focused tests pass locally. Exact-head remote rerun pending.",
+      "note": "Seven grant PostgreSQL tests passed on preceding head; exact-head rerun remains AC-05-t1.",
       "commits": [
         "4bca57f",
         "844bab9"
@@ -116,14 +115,15 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Commit tenant-scoped grant audit evidence atomically",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/services/workspace_access.py"
       ],
-      "note": "Implementation exists; assess with covering test next turn.",
+      "note": "Atomic audit now has a workspace path for the existing scoped event stream; covered by AC-04-t1 at 6e40fc0.",
       "commits": [
-        "8f80c64"
+        "8f80c64",
+        "6e40fc0"
       ]
     },
     {
@@ -131,14 +131,15 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Verify persisted audit completeness and failure rollback",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c1"
       ],
       "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Audit PostgreSQL case passed at preceding head; exact-head evidence pending.",
+      "note": "Mounted SQLite audit visibility and denial pass at 6e40fc0; PostgreSQL audit rollback passed on preceding head. Exact-head PostgreSQL rerun pending under AC-05-t1.",
       "commits": [
         "fb12a2b"
       ]
@@ -171,7 +172,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_workspace_access_postgres.py"
       ],
-      "note": "Exact-head domain CI queued; no validation infrastructure provisioned."
+      "note": "Exact-head domain CI pending; no validation infrastructure provisioned."
     }
   ]
 }
