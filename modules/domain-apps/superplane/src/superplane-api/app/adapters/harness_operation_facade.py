@@ -85,14 +85,7 @@ class HarnessOperationFacade:
         )
         require_admission_enabled(enabled=self._enabled, lifecycle=lifecycle)
         if lifecycle:
-            from app.operation_activation import expected_lifecycle_binding
-
-            if self._lifecycle_verify is None or not await self._lifecycle_verify(
-                org_id, expected_lifecycle_binding()
-            ):
-                raise ProvisioningUnavailable(
-                    "paid worker binding verification is unavailable"
-                )
+            await self._require_lifecycle_binding(org_id)
             require_admission_enabled(enabled=self._enabled, lifecycle=True)
         progress = await self._call(
             self._service.open_operation(
@@ -104,6 +97,17 @@ class HarnessOperationFacade:
             )
         )
         return _progress(progress)
+
+    async def _require_lifecycle_binding(self, org_id: str) -> None:
+        from app.operation_activation import expected_lifecycle_binding
+
+        require_admission_enabled(enabled=self._enabled, lifecycle=True)
+        if self._lifecycle_verify is None or not await self._lifecycle_verify(
+            org_id, expected_lifecycle_binding()
+        ):
+            raise ProvisioningUnavailable(
+                "paid worker binding verification is unavailable"
+            )
 
     async def report_progress(self, operation_id: str) -> OperationProgress:
         """The facade's current report. The only way an outcome is learned."""

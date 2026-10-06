@@ -319,6 +319,100 @@ async def test_native_lifecycle_rechecks_exact_installed_binding_before_shared_a
 
 
 @pytest.mark.asyncio
+async def test_public_lifecycle_admission_refuses_lost_binding_before_domain_reads(
+    monkeypatch,
+):
+    from app.routers.workspaces import create_workspace, delete_workspace
+    from app.services import lifecycle_proposals, provisioning, retirement_access
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding", lambda: {"key": "value"}
+    )
+    verifier = AsyncMock(return_value=False)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()), lifecycle_verify=verifier
+    )
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+    for call in (
+        lifecycle_proposals.continue_lifecycle(
+            None, None, "org", None, None, None, None
+        ),
+        retirement_access.admit_access(None, None, "org", None, None, None, None),
+    ):
+        with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+            await call
+    with pytest.raises(HTTPException) as error:
+        await create_workspace(None, "org", None)
+    assert error.value.status_code == 503
+    with pytest.raises(HTTPException) as error:
+        await delete_workspace(None, "org", None)
+    assert error.value.status_code == 503
+    assert "teardown phase" in error.value.detail
+    assert verifier.await_count == 3
+    facade._service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_public_lifecycle_admission_verifies_before_domain_read(monkeypatch):
+    from app.services import lifecycle_proposals, provisioning
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", "/private/binding"
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding", lambda: {"key": "value"}
+    )
+    verifier = AsyncMock(return_value=True)
+    facade = HarnessOperationFacade(
+        SimpleNamespace(open_operation=AsyncMock()), lifecycle_verify=verifier
+    )
+    monkeypatch.setattr(provisioning, "get_operation_facade", lambda: facade)
+
+    async def workspace_scope(*_):
+        verifier.assert_awaited_once_with("org", {"key": "value"})
+        raise RuntimeError("domain read reached after live proof")
+
+    monkeypatch.setattr(lifecycle_proposals, "workspace_scope", workspace_scope)
+    with pytest.raises(RuntimeError, match="domain read reached after live proof"):
+        await lifecycle_proposals.continue_lifecycle(
+            None, None, "org", None, None, None, None
+        )
+
+
+@pytest.mark.asyncio
+async def test_native_teardown_never_opens_an_unsupported_worker_task(monkeypatch):
+    from app.services import provisioning
+
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    service = SimpleNamespace(open_operation=AsyncMock())
+    monkeypatch.setattr(
+        provisioning, "get_operation_facade", lambda: HarnessOperationFacade(service)
+    )
+    with pytest.raises(ProvisioningUnavailable, match="approved teardown phase"):
+        await provisioning.start_teardown(
+            operation_id="request",
+            workspace_id="workspace",
+            org_id="org",
+            workspace_name="name",
+        )
+    service.open_operation.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_native_lifecycle_refuses_missing_composed_proof_without_admission(
     monkeypatch, tmp_path
 ):

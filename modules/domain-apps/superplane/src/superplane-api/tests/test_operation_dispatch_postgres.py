@@ -18,6 +18,7 @@ from app.models.deployment import Deployment
 from app.models.controller_deployment import ControllerDeploymentOperation
 from app.models.organization import Organization
 from app.models.workspace import Workspace
+from app.models.lifecycle import WorkspaceLifecycleControlOperation
 from tests.test_operation_settlement_postgres import (
     installation_postgres_url as installation_postgres_url,
     ledger as ledger,
@@ -71,6 +72,7 @@ async def dispatch(settlement, installation_postgres_url):  # noqa: F811
                 Workspace.__table__,
                 Deployment.__table__,
                 ControllerDeploymentOperation.__table__,
+                WorkspaceLifecycleControlOperation.__table__,
             ],
         )
     sessions = async_sessionmaker(engine, expire_on_commit=False)

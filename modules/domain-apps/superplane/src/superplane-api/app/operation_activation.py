@@ -76,3 +76,17 @@ def expected_lifecycle_binding():
         raise ProvisioningUnavailable(
             "paid worker binding verification is unavailable"
         ) from None
+
+
+async def require_installed_lifecycle_binding(org_id: str) -> None:
+    from app.adapters.harness_operation_facade import HarnessOperationFacade
+    from app.services.provisioning import (
+        ProvisioningUnavailable,
+        get_operation_facade,
+    )
+
+    require_admission_enabled(lifecycle=True)
+    facade = get_operation_facade()
+    if not isinstance(facade, HarnessOperationFacade):
+        raise ProvisioningUnavailable("paid worker binding verification is unavailable")
+    await facade._require_lifecycle_binding(org_id)
