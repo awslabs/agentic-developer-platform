@@ -56,6 +56,8 @@ async def test_invalid_internal_token_never_reaches_handler(
     response = await getattr(client, method)(path, json=body, headers=headers)
 
     assert response.status_code == 401
+    if headers is None:
+        assert response.headers["www-authenticate"] == "Bearer"
     protected_handler.assert_not_awaited()
 
 
