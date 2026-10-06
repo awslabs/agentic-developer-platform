@@ -17,6 +17,7 @@ from .authority import load_policy
 from .execution_contract import ExecutionStep, encode_execution_steps
 from .lifecycle_policy import policy_digest, policy_document
 from .retirement_access_plan import PHASE, access_identity
+from .retirement_managed_access import ManagedRetirementAccessPlan
 from .runtime_config import LifecycleRefused, validate_runtime_config
 
 FIELDS = frozenset(
@@ -87,16 +88,27 @@ def access_request(plan, source, deployment_policy):
         )
     request = json.loads(original.parameters["lifecycle_request"])
     account, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
+    managed = isinstance(plan, ManagedRetirementAccessPlan)
+    expected_mode = "existing-account-managed" if managed else "bring-existing-cluster"
     if (
-        request.get("mode") != "bring-existing-cluster"
+        request.get("mode") != expected_mode
         or request.get("region") != region
         or request.get("target_account_id") != account
         or request.get("workspace_id") != plan.workspace_id
         or original.parameters.get("aws_account_id") != account
-    ):
-        raise LifecycleRefused(
-            "cleanup access cannot change original adoption ownership"
+        or (
+            managed
+            and (
+                original.parameters.get("lifecycle_artifact_id")
+                != plan.bootstrap_artifact_id
+                or json.loads(original.parameters["lifecycle_inputs"]).get(
+                    "isolation_mode"
+                )
+                != "dedicated"
+            )
         )
+    ):
+        raise LifecycleRefused("cleanup access cannot change original ownership")
     reference = policy["credential_references"].get(account)
     if reference is None:
         raise LifecycleRefused("cleanup access credential reference is unavailable")
@@ -161,12 +173,19 @@ def validate_request(request, *, org_id, workspace_id, policy):
     ] != digest(config):
         raise LifecycleRefused("approved cleanup access policy or runtime changed")
     account = parameters["aws_account_id"]
+    original = json.loads(parameters["lifecycle_request"])
+    mode = original.get("mode")
+    permission = {
+        "existing-account-managed": "managed",
+        "bring-existing-cluster": "adopt",
+    }.get(mode)
     if (
         parameters["provider"] != "aws"
         or parameters["provider_account_id"] != account
         or account not in policy["permitted_target_accounts"]
         or parameters["region"] not in policy["permitted_regions"]
-        or "adopt" not in policy["permitted_modes"]
+        or permission is None
+        or permission not in policy["permitted_modes"]
     ):
         raise LifecycleRefused("cleanup access target is outside current policy")
     reference = policy["credential_references"].get(account)
@@ -215,18 +234,18 @@ def validate_request(request, *, org_id, workspace_id, policy):
         raise LifecycleRefused(
             "cleanup access recipe differs from its reviewed request"
         )
-    original = json.loads(parameters["lifecycle_request"])
     public = json.loads(parameters["lifecycle_inputs"])
     if (
-        original.get("mode") != "bring-existing-cluster"
-        or original.get("region") != parameters["region"]
+        original.get("region") != parameters["region"]
         or original.get("target_account_id") != account
         or original.get("workspace_id") != workspace_id
         or public.get("isolation_mode") not in policy["isolation_modes"]
-    ):
-        raise LifecycleRefused(
-            "cleanup access does not retain supported adopted ownership"
+        or (
+            mode == "existing-account-managed"
+            and public.get("isolation_mode") != "dedicated"
         )
+    ):
+        raise LifecycleRefused("cleanup access does not retain supported ownership")
     return config
 
 

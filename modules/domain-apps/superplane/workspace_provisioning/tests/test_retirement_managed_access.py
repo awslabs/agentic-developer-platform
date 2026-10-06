@@ -206,3 +206,104 @@ def test_managed_cleanup_plan_requires_real_original_seal(
 
     with Harness.started(tmp_path_factory, request.node.name) as harness:
         harness.run(check(harness))
+
+
+@pytest.mark.parametrize(
+    "changed", ["unchanged", "artifact", "allocation", "mode", "approval_policy"]
+)
+def test_managed_request_binds_original_artifact_and_separate_allocation(
+    runtime, changed
+):
+    import json
+    from types import SimpleNamespace
+
+    from harness_jobs.identity import (
+        OperationRequest,
+        encode_payload,
+        payload_digest,
+    )
+
+    from workspace_provisioning.retirement_access_authority import (
+        access_request,
+        validate_request,
+    )
+
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    account_id, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
+    deployment = policy()
+    deployment["runtime"] = arguments["runtime"]
+    deployment["permitted_target_accounts"] = [account_id]
+    deployment["permitted_regions"] = [region]
+    deployment["credential_references"][account_id] = deployment[
+        "credential_references"
+    ].pop("000000000002")
+    original = OperationRequest(
+        action="provision",
+        idempotency_key="bootstrap-request",
+        parameters={
+            "allocation_id": "original-allocation"
+            if changed != "allocation"
+            else "wrong",
+            "lifecycle_phase": "bootstrap-workspace",
+            "lifecycle_request": json.dumps(
+                {
+                    "mode": "existing-account-managed"
+                    if changed != "mode"
+                    else "bring-existing-cluster",
+                    "region": region,
+                    "target_account_id": account_id,
+                    "workspace_id": plan.workspace_id,
+                }
+            ),
+            "lifecycle_inputs": json.dumps({"isolation_mode": "dedicated"}),
+            "lifecycle_artifact_id": "a" * 64 if changed != "artifact" else "b" * 64,
+            "aws_account_id": account_id,
+        },
+    )
+    source = SimpleNamespace(
+        state="succeeded",
+        operation_id="completed-bootstrap",
+        org_id=plan.org_id,
+        workspace_id=plan.workspace_id,
+        job_id="source-job",
+        attempt_id="source-attempt",
+        plan_digest=payload_digest(original),
+        request_payload=encode_payload(original),
+        admitted_request=lambda: original,
+    )
+    if changed in {"artifact", "allocation", "mode"}:
+        with pytest.raises(LifecycleRefused):
+            access_request(plan, source, deployment)
+        return
+    request = access_request(plan, source, deployment)
+    if changed == "approval_policy":
+        deployment["permitted_modes"] = ["adopt"]
+        with pytest.raises(LifecycleRefused, match="policy"):
+            validate_request(
+                request,
+                org_id=plan.org_id,
+                workspace_id=plan.workspace_id,
+                policy=deployment,
+            )
+    else:
+        assert (
+            validate_request(
+                request,
+                org_id=plan.org_id,
+                workspace_id=plan.workspace_id,
+                policy=deployment,
+            )
+            == arguments["runtime"]
+        )
+        assert request.parameters["retirement_access_plan_sha256"] == plan.revision
+        assert request.parameters["allocation_id"] == plan.allocation_id
+        assert request.parameters["allocation_id"] != plan.original_allocation_id
+        assert list(plan.recipe()) == ["cleaner-entry"]
