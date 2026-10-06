@@ -349,6 +349,7 @@ async def test_signed_domain_reader_reaches_registered_gateway_identity(identity
     import httpx
     from botocore.credentials import Credentials
 
+    from src.auth.agent_registry import AgentRegistryService
     from src.internal import domain_operation_store
     from src.internal.domain_operation_runtime import current_registry
 
@@ -399,25 +400,26 @@ async def test_signed_domain_reader_reaches_registered_gateway_identity(identity
         ),
     )
     role = "arn:aws:iam::123456789012:role/registered-producer"
-    entry = {
-        "agent_id": "registered",
-        "role_arn": role,
-        "agent_name": "producer",
-        "org_id": "O1",
-        "team_id": "team",
-        "scope": "internal",
-        "status": "active",
-        "credential_scopes": ["domain:operation-producer"],
+    role_id = "AROA11111111111111111"
+    item = {
+        "agent_id": {"S": "registered"},
+        "role_arn": {"S": role},
+        "iam_role_id": {"S": role_id},
+        "owner": {"S": "webhook-terraform-domain-operations-v1"},
+        "agent_name": {"S": "producer"},
+        "org_id": {"S": "O1"},
+        "team_id": {"S": "team"},
+        "scope": {"S": "internal"},
+        "status": {"S": "active"},
+        "credential_scopes": {"SS": ["domain:operation-producer"]},
     }
-
-    class Registry:
-        def get_agent_by_role_arn(self, requested_role):
-            return entry if entry["status"] == "active" and requested_role == role else None
-
-        def get_current_agent(self, agent_id, requested_role):
-            return self.get_agent_by_role_arn(requested_role) if agent_id == "registered" else None
-
-    monkeypatch.setattr("src.auth.agent_registry.get_agent_registry_service", lambda: Registry())
+    registry = AgentRegistryService(table_name="identity-registry")
+    registry._dynamodb = MagicMock()
+    registry._dynamodb.query.return_value = {"Items": [item]}
+    registry._dynamodb.get_item.return_value = {"Item": item}
+    registry._iam = MagicMock()
+    registry._iam.get_role.return_value = {"Role": {"Arn": role, "RoleId": role_id}}
+    monkeypatch.setattr("src.auth.agent_registry.get_agent_registry_service", lambda: registry)
     settings = SimpleNamespace(trust_apigw_headers=True, apigw_provenance_secret="edge-proof", internal_api_key="")
     monkeypatch.setattr("src.internal.auth_deps.get_settings", lambda: settings)
     monkeypatch.setattr("src.auth.middleware.get_settings", lambda: settings)
@@ -479,16 +481,25 @@ async def test_signed_domain_reader_reaches_registered_gateway_identity(identity
             await require_current_identity(reader_two, subject="immutable-sub", principal_type="human", adp_org_id="O2")
         assert cognito.admin_get_user.call_count == before
         state["selected"] = "O1"
-        entry["status"] = "revoked"
+        item["status"] = {"S": "revoked"}
         with pytest.raises(IdentityDenied):
             await require_current_identity(reader_one, subject="immutable-sub", principal_type="human", adp_org_id="O1")
-        assert len(forwarded) == 5
+        item["status"] = {"S": "active"}
+        assert registry.get_agent_by_role_arn(role) is not None
+        registry._iam.get_role.return_value["Role"]["RoleId"] = "AROA22222222222222222"
+        before = cognito.admin_get_user.call_count
+        with pytest.raises(IdentityDenied):
+            await require_current_identity(reader_one, subject="immutable-sub", principal_type="human", adp_org_id="O1")
+        assert cognito.admin_get_user.call_count == before
+        registry._iam.get_role.assert_called_with(RoleName="registered-producer")
+        assert all(call.kwargs["ConsistentRead"] for call in registry._dynamodb.get_item.call_args_list)
+        assert len(forwarded) == 6
         forged = await producer.client.post(
             "https://gateway.example/internal/v1/controller-execution/current-identity",
             json={"domain": "superplane", "org_id": "domain-one"},
         )
         assert forged.status_code == 403
-        assert len(forwarded) == 5
+        assert len(forwarded) == 6
     finally:
         await producer.aclose()
         await backend.aclose()

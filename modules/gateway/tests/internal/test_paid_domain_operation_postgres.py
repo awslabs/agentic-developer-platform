@@ -161,15 +161,19 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
             {"IndexName": "by-role-arn", "KeySchema": [{"AttributeName": "role_arn", "KeyType": "HASH"}], "Projection": {"ProjectionType": "ALL"}}
         ],
     )
+    iam = boto3.client("iam", region_name="us-east-1")
     for name, scopes in (
         ("producer", [runtime_module.PRODUCER_SCOPE]),
         ("worker", [runtime_module.EXECUTOR_SCOPE, runtime_module.RECOVERY_SCOPE, DELIVERY_SCOPE]),
     ):
+        role = iam.create_role(RoleName=name, AssumeRolePolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": []}))["Role"]
         store.client.put_item(
             TableName="paid-registry",
             Item={
                 "agent_id": {"S": name},
-                "role_arn": {"S": f"arn:aws:iam::123456789012:role/{name}"},
+                "role_arn": {"S": role["Arn"]},
+                "iam_role_id": {"S": role["RoleId"]},
+                "owner": {"S": "webhook-terraform-domain-operations-v1"},
                 "agent_name": {"S": name},
                 "org_id": {"S": "tenant"},
                 "team_id": {"S": "team"},
@@ -180,6 +184,7 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
         )
     registry = AgentRegistryService(table_name="paid-registry")
     registry._dynamodb = store.client
+    registry._iam = iam
     monkeypatch.setattr("src.auth.agent_registry.get_agent_registry_service", lambda: registry)
     settings = SimpleNamespace(trust_apigw_headers=True, apigw_provenance_secret="edge-proof", internal_api_key="test-internal")
     monkeypatch.setattr("src.internal.auth_deps.get_settings", lambda: settings)
@@ -218,6 +223,8 @@ async def paid(pg_url, store, kubernetes, monkeypatch):  # noqa: F811
             kubernetes=kubernetes,
             sqs=sqs,
             queue=queue,
+            iam=iam,
+            registry=registry,
         )
     finally:
         await client.aclose()
@@ -265,6 +272,27 @@ async def test_original_ids_survive_retry_bootstrap_and_lost_lease_response(paid
     assert "credential" not in verified.json()
     paid.kubernetes[1]["deleted"] = True
     assert (await paid.post("/task/heartbeat", credential=credential)).status_code == 403
+
+
+@pytest.mark.parametrize("role", ["producer", "worker"])
+async def test_recreated_protected_role_cannot_dispatch_or_acquire_execution_lease(paid, role):
+    credential = None
+    if role == "worker":
+        _, credential = await start(paid)
+    original = paid.iam.get_role(RoleName=role)["Role"]
+    assert paid.registry.get_agent_by_role_arn(original["Arn"]) is not None
+    paid.iam.delete_role(RoleName=role)
+    recreated = paid.iam.create_role(RoleName=role, AssumeRolePolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": []}))["Role"]
+    assert recreated["Arn"] == original["Arn"]
+    assert recreated["RoleId"] != original["RoleId"]
+    if role == "producer":
+        response = await paid.post("/dispatch", paid.body, role=role)
+        assert "Messages" not in paid.sqs.receive_message(QueueUrl=paid.queue)
+    else:
+        response = await paid.post("/lease", {"operation_id": "original-operation"}, credential=credential)
+    assert response.status_code == 403, response.text
+    async with paid.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_operation_leases") == 0
 
 
 @pytest.mark.parametrize("mutation", ["foreign-org", "foreign-workspace", "foreign-job", "foreign-attempt", "cancelled", "unpaid", "wrong-producer"])
