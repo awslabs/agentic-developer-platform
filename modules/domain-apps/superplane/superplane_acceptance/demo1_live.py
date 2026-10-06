@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from .demo1_browser import CreationCheckpoint, checked_origin
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant, text
+from .demo1_runtime import RuntimeTarget
 
 CHECKPOINT_VERSION = "demo1-checkpoint-v2"
 
@@ -27,6 +28,7 @@ class LiveEnvelope:
     authority_ref: str
     max_runtime_seconds: int
     cleanup_deadline: datetime
+    runtime_target: RuntimeTarget | None = None
 
     @classmethod
     def parse(
@@ -57,10 +59,12 @@ class LiveEnvelope:
             "max_runtime_seconds",
             "recovery_checkpoint",
         }
+        if isinstance(value, dict) and value.get("version") == "demo1-live-v2":
+            expected.add("runtime_target")
         if (
             not isinstance(value, dict)
             or set(value) != expected
-            or value["version"] != "demo1-live-v1"
+            or value["version"] not in ("demo1-live-v1", "demo1-live-v2")
         ):
             raise EvidenceError("live: versioned private authority envelope required")
         bindings = {
@@ -112,6 +116,9 @@ class LiveEnvelope:
             identifier(value["authority_ref"], "authority_ref"),
             runtime,
             cleanup,
+            RuntimeTarget.parse(value["runtime_target"])
+            if value["version"] == "demo1-live-v2"
+            else None,
         )
 
 
