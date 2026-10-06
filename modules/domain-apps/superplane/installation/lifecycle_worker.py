@@ -67,7 +67,11 @@ def project_api(env, lock, docs):
         container["env"] = [
             v
             for v in container["env"]
-            if v["name"] != "SUPERPLANE_PAID_WORKER_BINDING_FILE"
+            if v["name"]
+            not in {
+                "SUPERPLANE_PAID_WORKER_BINDING_FILE",
+                "SUPERPLANE_LIFECYCLE_CONFIG_FILE",
+            }
         ]
         container["env"].append(
             {
@@ -85,6 +89,33 @@ def project_api(env, lock, docs):
                 "readOnly": True,
             }
         )
+        container["env"].append(
+            {
+                "name": "SUPERPLANE_LIFECYCLE_CONFIG_FILE",
+                "value": "/run/lifecycle-policy/lifecycle.json",
+            }
+        )
+        pod["volumes"].append(
+            {
+                "name": "lifecycle-policy",
+                "configMap": {
+                    "name": env["paid_worker"]["lifecycle_policy_configmap"],
+                    "defaultMode": 0o440,
+                },
+            }
+        )
+        container["volumeMounts"].append(
+            {
+                "name": "lifecycle-policy",
+                "mountPath": "/run/lifecycle-policy",
+                "readOnly": True,
+            }
+        )
+        doc["spec"]["template"].setdefault("metadata", {}).setdefault(
+            "annotations", {}
+        )["adp.aws-e.io/lifecycle-policy-sha256"] = env["paid_worker"][
+            "lifecycle_policy_sha256"
+        ]
 
 
 def worker_documents(installer, *, active=False):
@@ -160,9 +191,13 @@ def contains(actual, expected):
 
 def installed_snapshot(installer, *, active=False):
     from .adapter_staging import secret_metadata
+    from .lifecycle_foundations import snapshot
 
     env = installer.env
     observed = {}
+    foundations = snapshot(installer)
+    if foundations is not None:
+        observed["lifecycle_foundations"] = foundations
     for desired in worker_documents(installer, active=active):
         actual = installer.existing(desired)
         require(

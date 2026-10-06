@@ -356,6 +356,9 @@ def project(env, lock, docs):
     from .lifecycle_worker import project_api
 
     project_api(env, lock, docs)
+    from .lifecycle_foundations import documents
+
+    docs.extend(documents(env))
 
 
 def preparation_report(env, lock):

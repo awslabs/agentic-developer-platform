@@ -1608,11 +1608,14 @@ class Installer:
             self.save()
 
     def foundations(self):
+        from .lifecycle_foundations import managed
+
         self.apply(
             [
                 d
                 for d in self.docs
-                if d["kind"]
+                if not managed(self.env, d)
+                and d["kind"]
                 in {
                     "Namespace",
                     "ServiceAccount",
@@ -2570,6 +2573,15 @@ class Installer:
                         lambda: lifecycle_worker.quiescence_job(self),
                     )
                 self.phase("foundations", self.foundations)
+                from .lifecycle_foundations import (
+                    prepare as prepare_lifecycle_foundations,
+                )
+
+                if self.env.get("lifecycle_foundations"):
+                    self.phase(
+                        "lifecycle-foundations",
+                        lambda: prepare_lifecycle_foundations(self),
+                    )
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))
                 self.phase("rollout", self.rollout)

@@ -61,3 +61,47 @@ reviewed Gateway and STS endpoints plus cluster DNS. The response must be fresh,
 and the producer identity is checked again afterward. Failure prevents worker
 foundations or rollout. This Job and its minimal Namespace/service-account/network
 prerequisites use the same owner apply, wait and receipt paths as installation Jobs.
+
+## Owned policy and durable state preparation
+
+The API and native worker mount the same exact lifecycle ConfigMap. API creation
+uses `SUPERPLANE_LIFECYCLE_CONFIG_FILE`; the deployment template pins the reviewed
+raw policy digest so a changed reviewed configuration causes a rollout.
+
+To create dependencies through the installer, add `lifecycle_foundations` to the
+reviewed environment, with exactly:
+
+- `policy_json`: the complete UTF-8 JSON string, at most 65536 bytes, with
+  `version: 1` and one `tenants` entry keyed by the unchanged domain `org_id`.
+  The entry must satisfy `LifecyclePolicy`, preserve `adp_org_id`, management
+  account and cluster, and match `paid_worker.lifecycle_policy_sha256` byte for
+  byte. The operation runtime must exceed 900 seconds and fit within the worker
+  deadline; 3600 seconds leaves room for EKS provisioning and renewable sessions.
+- `state: {storage_class: <reviewed-existing-retained-EBS-class>, capacity: <1..999Gi>}`.
+  The class must already use `Retain` and either the standard EBS CSI driver or
+  EKS Auto Mode EBS driver. `Immediate` and `WaitForFirstConsumer` are supported.
+  This path uses `ReadWriteOnce` and requires `paid_worker.max_replica_count: 1`.
+
+Offline output includes the immutable policy ConfigMap and PVC for review. During
+execution, after protected shared-store quiescence and namespace foundations, the
+installer checks every existing dependency before its first write. It uses
+create-only operations and refuses foreign ownership, different policy bytes,
+changed storage requests, clone sources, missing recorded resources or replaced
+UIDs. It never updates or adopts an existing policy/PVC.
+
+A bounded non-root Job from the reviewed paid-worker image mounts only the state
+claim, has no service-account token or credential mounts, and uses the worker's
+node selector. It writes, fsyncs and removes one random probe file. This triggers
+`WaitForFirstConsumer` binding and tests the actual worker UID/GID. The owner then
+checks a Bound PVC, the exact PV claim UID/namespace/name, retention and live
+object identities. Prepared/executable verification repeats those checks. The
+policy and state are retained outside workload-cleanup inventory; normal cleanup
+cannot delete them. A changed policy needs a separately reviewed replacement
+procedure rather than silently rewriting the fixed immutable ConfigMap.
+
+The installer does not invent a lifecycle policy, organization ID, workspace
+Terraform backend, actor roles, bootstrap credential reference, management network
+inputs or image digests. It does not create a StorageClass or authorize a provider
+connection. Those reviewed owner inputs must exist before execution. Omitting
+`lifecycle_foundations` preserves the existing externally provisioned dependency
+path and does not assert that such dependencies exist.

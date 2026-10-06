@@ -223,6 +223,7 @@ def validate(
         "credential_controller",
         "api_adapters",
         "paid_worker",
+        "lifecycle_foundations",
         "api_producer_role",
     }
     require(
@@ -237,6 +238,9 @@ def validate(
     from .paid_worker import validate as validate_paid_worker
 
     validate_paid_worker(env, lock)
+    from .lifecycle_foundations import validate as validate_lifecycle_foundations
+
+    validate_lifecycle_foundations(env)
     from .producer_role import validate as validate_producer_role
 
     validate_producer_role(env)
