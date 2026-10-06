@@ -60,6 +60,7 @@ the destructive-approval label. It only answers "is this resource this domain's 
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -492,6 +493,51 @@ def _check_value(
     return f"no ownership rule for naming family {family!r}"
 
 
+def _gateway_route_read_identity(address, before, after, account_id, environment):
+    """Own only the app's one-object read grant, never the shared Gateway role.
+
+    Derived from control-plane/gateway-route-access.tf. Both plan sides must
+    identify the exact policy, target and complete permission document; a name
+    alone cannot authorize an arbitrary policy on this platform-owned role.
+    """
+    reason = (
+        "Gateway route-read policy identity or exact single-object permission differs"
+    )
+    invalid = [Violation(address, "aws_iam_role_policy", reason)]
+    if not isinstance(account_id, str) or not re.fullmatch(r"[0-9]{12}", account_id):
+        return invalid
+    env = _require_environment(environment)
+    expected = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject"],
+                "Resource": f"arn:aws:s3:::adp-terraform-state-{account_id}/domain-routes/{env}/superplane/public-route.json",
+            }
+        ],
+    }
+    sides = [value for value in (before, after) if value is not None]
+    if not sides:
+        return invalid
+    for value in sides:
+        if not isinstance(value, dict) or (
+            value.get("name") != f"adp-{env}-superplane-gateway-route-read"
+            or value.get("role") != f"adp-{env}-role-gateway-service"
+        ):
+            return invalid
+        try:
+            policy = json.loads(value["policy"])
+        except (KeyError, TypeError, ValueError):
+            return invalid
+        if policy != expected:
+            return invalid
+        # The provider's composite ID is absent on create, known on later plans.
+        if value.get("id") not in (None, f"{value['role']}:{value['name']}"):
+            return invalid
+    return []
+
+
 def validate_identity(
     address: str,
     values_before: dict | None = None,
@@ -507,7 +553,7 @@ def validate_identity(
     domain — and a destroy is the case where being wrong is unrecoverable.
     """
     violations: list[Violation] = []
-    resource_type, _ = leaf_type_and_name(address)
+    resource_type, resource_name = leaf_type_and_name(address)
 
     bare_type = resource_type.removeprefix("data.")
 
@@ -543,6 +589,11 @@ def validate_identity(
 
     if bare_type == "terraform_data":
         return violations
+
+    if (resource_type, resource_name) == ("aws_iam_role_policy", "gateway_route_read"):
+        return _gateway_route_read_identity(
+            address, values_before, values_after, account_id, environment
+        )
 
     rules = IDENTITY_RULES.get(bare_type)
     if rules is None:
@@ -682,6 +733,20 @@ def validate_plan(
             )
 
         report.checked += 1
+
+        if leaf_type_and_name(address) == ("aws_iam_role_policy", "gateway_route_read"):
+            unknown_values = detail.get("after_unknown", {})
+            if detail.get("after") is not None and (
+                not isinstance(unknown_values, dict)
+                or any(unknown_values.get(key) for key in ("name", "role", "policy"))
+            ):
+                report.violations.append(
+                    Violation(
+                        address,
+                        "aws_iam_role_policy",
+                        "Gateway route-read policy authority must be known in the saved plan",
+                    )
+                )
 
         if DESTRUCTIVE_ACTIONS.intersection(actions):
             # Covers ["delete"], ["delete","create"] and ["create","delete"] — a plain
