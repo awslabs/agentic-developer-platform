@@ -189,12 +189,31 @@ async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
         "request_payload": "original",
         "budget_state": "confirmed",
         "reservation_state": "confirmed",
+        "reservation_id": "reservation",
+        "workspace_id": "workspace",
+        "job_id": "job",
+        "attempt_id": "attempt",
+        "max_resource_units": 0,
+        "max_runtime_seconds": 3600,
+        "max_cost_micros": 0,
     }
 
     class PaidConnection:
         async def fetchrow(self, statement, *args):
             return operation
 
+    @asynccontextmanager
+    async def domain_connection(_):
+        class DomainConnection:
+            async def fetchval(self, *_):
+                return "O1"
+
+            async def fetchrow(self, *_):
+                return {"state": "confirmed"}
+
+        yield DomainConnection()
+
+    monkeypatch.setattr(domain_operation_dispatch, "domain_connect", domain_connection)
     binding = SimpleNamespace(org_id="domain-org", adp_org_id="O1", current_identity_enforced=True)
 
     async def permitted():
@@ -367,6 +386,8 @@ async def test_signed_domain_reader_reaches_registered_gateway_identity(identity
         "org/repo",
         "https://domain.example",
         "observer-secret",
+        domain_database_secret_id="domain-secret",
+        domain_database_schema="domain_data",
     )
     monkeypatch.setenv(
         "ADP_DOMAIN_OPERATION_BINDINGS",
