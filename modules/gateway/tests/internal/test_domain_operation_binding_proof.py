@@ -6,8 +6,10 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
+from src.auth.agent_registry import AgentRegistryService
 from src.internal import domain_operation_binding_proof_routes as proof
 from src.internal.domain_operation_routes import DomainScope
 from src.internal.domain_operation_store import DomainBinding
@@ -112,12 +114,23 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
 
         yield SimpleNamespace(fetchval=mapped)
 
-    registry = Mock()
-    registry.get_current_agent.return_value = {
-        "org_id": binding.adp_org_id,
-        "scope": "internal",
-        "credential_scopes": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE],
+    role = responses["serviceaccounts"]["metadata"]["annotations"]["eks.amazonaws.com/role-arn"]
+    role_id = "AROA11111111111111111"
+    registration = {
+        "agent_id": {"S": binding.worker_registry_id},
+        "role_arn": {"S": role},
+        "iam_role_id": {"S": role_id},
+        "owner": {"S": "webhook-terraform-domain-operations-v1"},
+        "status": {"S": "active"},
+        "org_id": {"S": binding.adp_org_id},
+        "scope": {"S": "internal"},
+        "credential_scopes": {"SS": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE]},
     }
+    registry = AgentRegistryService(table_name="registry")
+    registry._dynamodb = Mock(spec=["get_item"])
+    registry._dynamodb.get_item.return_value = {"Item": registration}
+    registry._iam = Mock(spec=["get_role"])
+    registry._iam.get_role.return_value = {"Role": {"Arn": role, "RoleId": role_id}}
     store = SimpleNamespace(table="authority-table", client=SimpleNamespace(describe_table=lambda **_: {"Table": {"TableStatus": "ACTIVE"}}))
     queue = SimpleNamespace(get_queue_attributes=lambda **_: {"Attributes": {"QueueArn": "arn:aws:sqs:us-east-1:123456789012:paid-operations"}})
     monkeypatch.setattr(proof, "domain_connect", connect)
@@ -135,18 +148,40 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
     assert len(calls) == 3
     assert all("task" not in path and "pod" not in path for path in calls)
     assert produced.call_count == 2
-    registry.get_current_agent.assert_called_once_with(binding.worker_registry_id, result["worker_role_arn"])
+    registry._dynamodb.get_item.assert_called_once_with(
+        TableName="registry", Key={"agent_id": {"S": binding.worker_registry_id}}, ConsistentRead=True
+    )
+    registry._iam.get_role.assert_called_once_with(RoleName="paid-worker")
 
-    registry.get_current_agent.return_value = {"org_id": binding.adp_org_id, "scope": "internal", "credential_scopes": []}
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", "value": "wrong_schema"})
+    with pytest.raises(HTTPException) as mismatched_schema:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert mismatched_schema.value.status_code == 503
+    assert mismatched_schema.value.detail == "paid worker installation differs from binding"
+    registry._iam.get_role.assert_called_once_with(RoleName="paid-worker")
+    environment.pop()
+
+    registry._iam.get_role.return_value["Role"]["RoleId"] = "AROA22222222222222222"
+    with pytest.raises(HTTPException) as replaced_role:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert replaced_role.value.status_code == 503
+    assert replaced_role.value.detail == "paid worker registration unavailable"
+    registry._iam.get_role.return_value["Role"]["RoleId"] = role_id
+
+    registry._iam.get_role.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetRole")
+    with pytest.raises(HTTPException) as unavailable_role:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert unavailable_role.value.status_code == 503
+    assert unavailable_role.value.detail == "paid worker registration unavailable"
+    registry._iam.get_role.side_effect = None
+
+    registration["credential_scopes"] = {"SS": []}
     with pytest.raises(HTTPException) as revoked:
         await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
     assert revoked.value.status_code == 503
 
-    registry.get_current_agent.return_value = {
-        "org_id": binding.adp_org_id,
-        "scope": "internal",
-        "credential_scopes": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE],
-    }
+    registration["credential_scopes"] = {"SS": [proof.EXECUTOR_SCOPE, proof.RECOVERY_SCOPE]}
     monkeypatch.setattr(
         proof,
         "aws_client",
@@ -197,6 +232,38 @@ def test_binding_proof_refuses_missing_gateway_kubernetes_token(installed):
         proof.installed_worker(binding, runtime)
     assert refusal.value.status_code == 503
     assert not calls
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"value": "wrong_schema"},
+        {"value": ""},
+        {"value": "$(SCHEMA)"},
+        {"valueFrom": {"configMapKeyRef": {"name": "other-config", "key": "schema"}}},
+        {"valueFrom": {"secretKeyRef": {"name": "other-secret", "key": "schema"}}},
+        {"valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
+    ],
+    ids=["different", "empty", "substitution", "config-map", "secret", "field"],
+)
+def test_binding_proof_refuses_incompatible_container_schema_override(installed, override):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", **override})
+
+    with pytest.raises(HTTPException) as refusal:
+        proof.installed_worker(binding, runtime)
+    assert refusal.value.status_code == 503
+    assert refusal.value.detail == "paid worker installation differs from binding"
+
+
+def test_binding_proof_accepts_matching_container_schema_override(installed):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", "value": binding.database_schema})
+
+    digest, _, _ = proof.installed_worker(binding, runtime)
+    assert digest == binding.worker_image_digests[0]
 
 
 @pytest.mark.asyncio
