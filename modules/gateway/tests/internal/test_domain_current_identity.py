@@ -1,14 +1,21 @@
 """Registered producer reads current, selected human membership, not token roles."""
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from src.internal import domain_current_identity, domain_operation_routes
+from src.internal import (
+    domain_current_identity,
+    domain_operation_approval,
+    domain_operation_dispatch,
+    domain_operation_routes,
+    domain_operation_runtime,
+)
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantMembership
@@ -123,3 +130,131 @@ async def test_no_unproven_authority(identity_client, monkeypatch, change):
     assert response.status_code == (503 if change in {"absent-pool", "unavailable"} else 403)
     if change in {"service", "registry"}:
         cognito.admin_get_user.assert_not_called()
+
+
+async def test_paid_execution_rechecks_recorded_requester_and_deciding_approver(
+    identity_client, db_session, monkeypatch
+):
+    _, state, requester_membership, _, cognito = identity_client
+    approver = User(
+        id="approver-member", org_id="O1", team_id="", email="approver@example.test",
+        cognito_sub="approver-sub",
+    )
+    db_session.add(approver)
+    await db_session.flush()
+    approver_membership = TenantMembership(user_id=approver.id, tenant_id="O1", is_active=True)
+    db_session.add(approver_membership)
+    await db_session.commit()
+
+    enabled = {"immutable-sub": True, "approver-sub": True}
+    cognito.list_users.side_effect = lambda **kwargs: {
+        "Users": [{"Username": kwargs["Filter"].split('"')[1]}]
+    }
+    cognito.admin_get_user.side_effect = lambda **kwargs: {
+        "Enabled": enabled[kwargs["Username"]],
+        "UserAttributes": [
+            {"Name": "sub", "Value": kwargs["Username"]},
+            {"Name": "custom:org_id", "Value": state["selected"]},
+        ],
+    }
+
+    @asynccontextmanager
+    async def membership_session():
+        yield db_session
+
+    monkeypatch.setattr(domain_current_identity, "get_session_factory", lambda: membership_session)
+    monkeypatch.setattr(domain_operation_dispatch, "harness", lambda name: SimpleNamespace(
+        decode_payload=lambda raw: raw, payload_digest=lambda request: "digest",
+    ))
+
+    async def current_approval(connection, operation, request):
+        return datetime.now(UTC)
+
+    monkeypatch.setattr(domain_operation_approval, "current_approval", current_approval)
+    operation = {
+        "operation_id": "original", "org_id": "domain-org", "requester": "immutable-sub",
+        "approved_by": "approver-sub", "plan_digest": "digest", "request_payload": "original",
+        "budget_state": "confirmed", "reservation_state": "confirmed",
+    }
+
+    class PaidConnection:
+        async def fetchrow(self, statement, *args):
+            return operation
+
+    binding = SimpleNamespace(org_id="domain-org", adp_org_id="O1", current_identity_enforced=True)
+
+    async def permitted():
+        return await domain_operation_dispatch.paid_operation(
+            binding, "original", connection=PaidConnection(), require_current=True,
+        )
+
+    assert (await permitted())["approved_by"] == "approver-sub"
+    assert cognito.admin_get_user.call_count == 2
+    approver_membership.revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    with pytest.raises(HTTPException) as revoked:
+        await permitted()
+    assert revoked.value.status_code == 403
+    approver_membership.revoked_at = None
+    enabled["immutable-sub"] = False
+    await db_session.commit()
+    with pytest.raises(HTTPException) as disabled:
+        await permitted()
+    assert disabled.value.status_code == 403
+    enabled["immutable-sub"] = True
+    requester_membership.revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    with pytest.raises(HTTPException) as removed:
+        await permitted()
+    assert removed.value.status_code == 403
+
+    requester_membership.revoked_at = None
+    await db_session.commit()
+    cognito.admin_get_user.side_effect = RuntimeError("provider unavailable")
+    with pytest.raises(HTTPException) as unavailable:
+        await permitted()
+    assert unavailable.value.status_code == 503
+
+    binding.current_identity_enforced = False
+    assert (await permitted())["approved_by"] == "approver-sub"
+
+
+async def test_recovery_worker_rechecks_persisted_humans_before_a_protected_call(monkeypatch):
+    from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
+
+    original = {
+        "domain": "superplane", "org_id": "domain-org", "operation_id": "original",
+        "job_id": "job", "attempt_id": "attempt", "workspace_id": "workspace", "mode": "recovery",
+    }
+    operation = {
+        **original, "requester": "original-requester", "approved_by": "deciding-approver",
+    }
+    binding = SimpleNamespace(
+        adp_org_id="O1", org_id="domain-org", repo="org/repo", current_identity_enforced=True,
+    )
+    record = SimpleNamespace(principal="worker", tenant_id="O1")
+    grant = SimpleNamespace(
+        principal="worker", authority=SimpleNamespace(kind=AUTHORITY_PAID_DOMAIN_OPERATION),
+        repo_scope=frozenset({"org/repo"}),
+    )
+    monkeypatch.setattr(domain_operation_runtime, "metadata", lambda store, record: original)
+    monkeypatch.setattr(domain_operation_runtime, "binding_for", lambda domain, org_id: binding)
+
+    async def read_operation(bound, operation_id, **kwargs):
+        return operation
+
+    monkeypatch.setattr(domain_operation_runtime, "paid_operation", read_operation)
+    checked = []
+
+    async def check_humans(persisted, *, adp_org_id):
+        checked.append((persisted, adp_org_id))
+        raise HTTPException(403, "approver was removed")
+
+    monkeypatch.setattr(domain_current_identity, "revalidate_original_humans", check_humans)
+    with pytest.raises(HTTPException) as refused:
+        await domain_operation_runtime.validate_paid_execution(record, grant, store=object())
+    assert refused.value.status_code == 403
+    assert checked == [(operation, "O1")]
+    assert (await domain_operation_runtime.validate_paid_execution(
+        record, grant, store=object(), allow_terminal=True,
+    )) == (binding, original, operation)

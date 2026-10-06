@@ -41,6 +41,7 @@ class DomainBinding:
     repo: str
     observation_url: str
     observation_credential_secret_id: str
+    current_identity_enforced: bool = False
 
     @property
     def domain_org_id(self):
@@ -56,7 +57,8 @@ def bindings() -> tuple[DomainBinding, ...]:
         for item in data:
             value = DomainBinding(**item)
             if (
-                any(not isinstance(v, str) or not v for k, v in item.items() if k != "worker_image_digests")
+                any(not isinstance(v, str) or not v for k, v in item.items() if k not in {"worker_image_digests", "current_identity_enforced"})
+                or type(value.current_identity_enforced) is not bool
                 or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value.database_schema)
                 or value.database_schema == "public"
                 or not value.queue_url.startswith("https://sqs.")

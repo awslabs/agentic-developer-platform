@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from src.admin.cognito_claims import cognito_user_pool_id
 from src.internal.domain_operation_store import aws_client
+from src.shared.database import get_session_factory
 from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import User
@@ -71,3 +72,25 @@ async def current_human_identity(db: AsyncSession, *, subject: str, adp_org_id: 
         "active": True,
         "enabled": True,
     }
+
+
+async def revalidate_original_humans(operation: dict, *, adp_org_id: str) -> None:
+    """Recheck the two human subjects recorded in the paid admission, not the worker."""
+    requester = operation.get("requester")
+    approver = operation.get("approved_by")
+    if (
+        not isinstance(requester, str)
+        or not requester
+        or not isinstance(approver, str)
+        or not approver
+        or requester == approver
+    ):
+        raise HTTPException(403, "original domain identities refused")
+    try:
+        async with get_session_factory()() as db:
+            await current_human_identity(db, subject=requester, adp_org_id=adp_org_id)
+            await current_human_identity(db, subject=approver, adp_org_id=adp_org_id)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "current identity provider unavailable") from None
