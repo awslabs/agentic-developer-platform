@@ -1098,14 +1098,17 @@ describe('Agent Models page — issue #5422', () => {
     });
 
     it('announces a row-level refusal to assistive technology', async () => {
+      const user = userEvent.setup();
       vi.mocked(selfApi.setPreference).mockRejectedValue({
         detail: { reason: 'not_permitted', message: 'That model is disallowed.' },
       });
       render(<AgentModels />);
       const row = await screen.findByTestId('persona-row-brand-new-persona');
 
-      chooseModel(row);
-      fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
+      await user.selectOptions(modelPicker(row), 'model-certified');
+      const save = within(row).getByRole('button', { name: 'Save model' });
+      await waitFor(() => expect(save).toBeEnabled());
+      await user.click(save);
 
       // role="alert" is what makes the failure reach a screen reader rather than being
       // visible-only; the reason must be stated, not a generic failure.
