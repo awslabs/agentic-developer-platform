@@ -512,4 +512,6 @@ class RetirementRecoveryObserver:
         async with self.connect() as connection, connection.transaction():
             if not await lock_recovery_grant(connection, grant):
                 raise OperationRefused("retirement recovery claim expired")
-        return result
+        # Recovery observes the same maintained wrappers as normal execution;
+        # a removed object's UID is a receipt, not a newly allocated handle.
+        return result[0], result[1], None
