@@ -6,13 +6,16 @@ ledger use real PostgreSQL. These tests run in remote CI, never against a cloud.
 """
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from harness_jobs.facade import OperationFacadeService
 from harness_jobs.identity import OperationRequest, decode_payload
 from harness_jobs.schema import apply
@@ -22,6 +25,7 @@ from workspace_provisioning.runtime_config import LifecycleRefused
 
 from app import database
 from app.adapters.harness_operation_facade import HarnessOperationFacade
+from app.adapters.operation_dispatch import OperationDispatcher
 from app.adapters.operation_authority_source import (
     ActingPrincipal,
     GrantBackedAuthority,
@@ -31,7 +35,10 @@ from app.adapters.operation_authority_source import (
 from app.config import settings
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
-from app.models.lifecycle import WorkspaceLifecycleArtifact
+from app.models.lifecycle import (
+    WorkspaceLifecycleArtifact,
+    WorkspaceLifecycleControlOperation,
+)
 from app.models.operation_approval import OperationApproval
 from app.models.organization import Organization
 from app.models.organization_grant import OrganizationGrantRecord
@@ -128,6 +135,7 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
                     WorkspaceGrantRecord,
                     OperationApproval,
                     WorkspaceLifecycleArtifact,
+                    WorkspaceLifecycleControlOperation,
                 )
             ],
         )
@@ -135,16 +143,62 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
     for module in (database, onboarding, lifecycle_proposals):
         monkeypatch.setattr(module, "async_session_factory", sessions)
     authority = GrantBackedAuthority(sessions)
+    org_id = uuid.uuid4()
+    binding = {
+        "producer_registry_id": "producer",
+        "worker_registry_id": "worker",
+        "worker_namespace": "domain-system",
+        "worker_service_account": "paid-worker",
+        "worker_role_arn": "arn:aws:iam::123456789012:role/paid-worker",
+        "worker_image_digest": "sha256:" + "a" * 64,
+        "operation_schema": "superplane",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:paid-operations",
+    }
+    binding_file = tmp_path / "worker-binding.json"
+    binding_file.write_text(json.dumps(binding))
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-lifecycle")
+    monkeypatch.setattr(
+        settings, "superplane_paid_worker_binding_file", str(binding_file)
+    )
+    monkeypatch.setattr(
+        settings, "superplane_operation_gateway_url", "https://gateway.example"
+    )
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+
+    proof_override = {}
+
+    async def binding_proof(route, payload):
+        assert (route, payload) == (
+            "/binding-proof",
+            {"domain": "superplane", "org_id": str(org_id)},
+        )
+        return {
+            "version": 1,
+            "installed": True,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "domain": "superplane",
+            "org_id": str(org_id),
+            "adp_org_id": "adp-test",
+            **binding,
+            **proof_override,
+        }
+
+    dispatcher = OperationDispatcher(
+        connections.connect,
+        SimpleNamespace(post=binding_proof),
+        policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
+    )
     facade = HarnessOperationFacade(
         OperationFacadeService(
             connect=connections.connect,
             resolver=authority,
             approvals=authority,
             ledger=budget,
-        )
+        ),
+        lifecycle_verify=dispatcher.binding_ready,
+        activation_verify=AsyncMock(return_value=True),
     )
     monkeypatch.setattr(provisioning, "_facade", facade)
-    org_id = uuid.uuid4()
     document = {"version": 1, "tenants": {str(org_id): policy()}}
     config = tmp_path / "lifecycle-policy.json"
     config.write_text(canonical(document))
@@ -324,6 +378,7 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
         org_id,
     )
     context.config, context.document = config, document
+    context.proof_override = proof_override
     try:
         yield context
     finally:
@@ -386,6 +441,101 @@ async def test_continuation_replay_recovers_registration_after_approval_and_arti
                 "SELECT provisioning_operation_id FROM workspaces"
             )
             == first["provisioning_operation_id"]
+        )
+
+
+@pytest.mark.parametrize(
+    "proof_change",
+    [
+        {"checked_at": "2000-01-01T00:00:00+00:00"},
+        {"org_id": "other-organization"},
+        {"adp_org_id": "other-adp-organization"},
+        {"worker_role_arn": "arn:aws:iam::123456789012:role/other-worker"},
+    ],
+    ids=["stale", "foreign-org", "foreign-adp-org", "misbound-worker"],
+)
+async def test_invalid_installed_identity_refuses_before_workspace_write(
+    lifecycle, proof_change
+):
+    lifecycle.proof_override.update(proof_change)
+    with pytest.raises(HTTPException) as refusal:
+        await lifecycle.prepare()
+    assert refusal.value.status_code == 503
+    async with lifecycle.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM workspaces") == 0
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+        assert (
+            await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["expired-approval", "misbound-credential", "lost-authority"]
+)
+async def test_changed_approval_credential_or_authority_refuses_continuation(
+    lifecycle, change
+):
+    _, _, workspace = await lifecycle.prepare()
+    artifact_id = await lifecycle.artifact(workspace)
+    request_id = uuid.uuid4()
+    review = await lifecycle.review(workspace.id, artifact_id, request_id)
+    approval_id = await lifecycle.approve(review)
+    if change == "expired-approval":
+        async with lifecycle.connections.connect() as connection:
+            assert (
+                await connection.execute(
+                    "UPDATE operation_approvals SET expires_at=now()-interval '1 hour' "
+                    "WHERE approval_id=$1",
+                    str(approval_id),
+                )
+                == "UPDATE 1"
+            )
+    elif change == "misbound-credential":
+        lifecycle.document["tenants"][str(lifecycle.org_id)]["credential_references"][
+            "000000000002"
+        ]["credential_id"] = "other-credential"
+        lifecycle.config.write_text(canonical(lifecycle.document))
+    else:
+        async with lifecycle.connections.connect() as connection:
+            assert (
+                await connection.execute(
+                    "UPDATE workspace_grants SET revoked_at=now() WHERE workspace_id=$1",
+                    workspace.id,
+                )
+                != "UPDATE 0"
+            )
+    with pytest.raises(
+        (
+            LifecycleRefused,
+            provisioning.ProvisioningRefused,
+            provisioning.ProvisioningUnavailable,
+        )
+    ) as refusal:
+        await lifecycle.continue_(workspace.id, artifact_id, request_id, approval_id)
+    expected_reason = {
+        "expired-approval": "expired",
+        "misbound-credential": "runtime policy changed",
+        "lost-authority": "authority",
+    }[change]
+    assert expected_reason in str(refusal.value).lower()
+    async with lifecycle.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 1
+        assert (
+            await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 1
         )
 
 

@@ -78,7 +78,7 @@ def _no_preinstalled_adapters(monkeypatch):
     import app.services.credential_evidence as evidence
     import app.services.provider_authority as authority
     import app.services.provider_inventory as inventory
-    import app.services.provisioning as provisioning
+    from app.services import provisioning
 
     monkeypatch.setattr(evidence, "_reader", None)
     monkeypatch.setattr(authority, "_validator", None)
@@ -405,7 +405,7 @@ class TestShutdown:
         because `compose()` correctly declines to displace a pre-existing adapter,
         the port would then be empty with nobody able to refill it.
         """
-        import app.services.provisioning as provisioning
+        from app.services import provisioning
 
         sentinel = object()
         monkeypatch.setattr(provisioning, "_facade", sentinel)
@@ -542,3 +542,27 @@ class TestTheVaultTimeoutIsConfigurable:
         from app.config import Settings
 
         assert Settings().adp_vault_timeout_seconds == _DEFAULT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
+    from app.services.provisioning import get_operation_facade
+
+    class ConfiguredProducer(_WithOperationStore):
+        superplane_operation_gateway_url = (
+            "https://producer.execute-api.us-east-1.amazonaws.com/internal"
+        )
+        superplane_operation_gateway_region = "us-east-1"
+        superplane_operation_dispatch_enabled = True
+
+    composition = compose(ConfiguredProducer())
+    try:
+        facade = get_operation_facade()
+        assert composition.dispatcher is not None
+        assert facade._lifecycle_verify.__self__ is composition.dispatcher
+        assert (
+            facade._lifecycle_verify.__func__
+            is type(composition.dispatcher).binding_ready
+        )
+    finally:
+        await composition.aclose()

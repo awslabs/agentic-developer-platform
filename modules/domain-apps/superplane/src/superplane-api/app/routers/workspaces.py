@@ -290,10 +290,10 @@ async def create_workspace(
     db: AsyncSession = Depends(get_session),
 ) -> WorkspaceResponse:
     """Admit an approved plan before creating its workspace and ownership grant."""
-    from app.operation_activation import require_admission_enabled
+    from app.operation_activation import require_installed_lifecycle_binding
 
     try:
-        require_admission_enabled(lifecycle=True)
+        await require_installed_lifecycle_binding(str(org_id))
     except ProvisioningError as error:
         raise HTTPException(503, str(error)) from None
     from app.adapters.operation_authority_source import (
@@ -543,6 +543,7 @@ async def get_workspace_lifecycle(
 ):
     """Bounded read-only review; does not reconcile or open a teardown operation."""
     from app.services.cli_lifecycle import workspace_snapshot
+
     return (await workspace_snapshot(db, org_id, workspace_id))[1]
 
 
@@ -554,12 +555,20 @@ async def delete_workspace(
     expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> WorkspaceDeleteResponse:
     """Teardown a workspace — updates status and triggers teardown workflow."""
+    from app.config import settings
     from app.operation_activation import require_admission_enabled
 
     try:
-        require_admission_enabled(lifecycle=True)
+        require_admission_enabled(
+            lifecycle=settings.superplane_paid_worker_mode != "legacy"
+        )
     except ProvisioningError as error:
         raise HTTPException(503, str(error)) from None
+    if settings.superplane_paid_worker_mode != "legacy":
+        raise HTTPException(
+            503, "native worker has no approved teardown phase; review retirement first"
+        )
+
     result = await db.execute(
         select(Workspace)
         .where(Workspace.id == workspace_id, Workspace.org_id == org_id)
@@ -575,6 +584,7 @@ async def delete_workspace(
 
     if expected_revision is not None:
         from app.services.cli_lifecycle import workspace_snapshot
+
         _, snapshot = await workspace_snapshot(db, org_id, workspace_id, lock=True)
         if snapshot["revision"] != expected_revision:
             raise HTTPException(409, "Workspace lifecycle changed; review again")
@@ -587,6 +597,10 @@ async def delete_workspace(
             "The default workspace is managed by the platform and cannot be removed via CLI.",
         )
 
+    try:
+        require_admission_enabled(lifecycle=True)
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
     if workspace.status == "Deleted":
         return WorkspaceDeleteResponse(id=workspace.id, status="Deleted")
     if workspace.status == "Teardown":

@@ -22,6 +22,7 @@ from app.models.workspace import Workspace
 from app.models.node_pool import NodePool
 from app.models.node import Node
 from app.models.workspace_grant import WorkspaceGrantRecord
+from app.operation_activation import expected_lifecycle_binding
 from app.services import controller_deployments
 from app.services.provisioning import ProvisioningRefused
 from app.adapters.operation_dispatch import OperationDispatcher
@@ -345,8 +346,7 @@ async def test_registration_recheck_refuses_retargeted_or_unpaid_workload(
 async def test_registered_workload_dispatches_without_replacing_bootstrap_or_lifecycle_policy(
     workload,
 ):
-    transport = GatewayTransport()
-    transport.alter = {"adp_org_id": "adp-test"}
+    transport = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
     dispatcher = OperationDispatcher(workload.connections.connect, transport)
     lost = await workload.admit_workload(commit=False)
     assert (await dispatcher.drain_once()).handled == 0
@@ -371,8 +371,7 @@ async def test_changed_canonical_target_cannot_dispatch_registered_workload(work
         await connection.execute(
             "UPDATE deployments SET namespace='replacement-namespace'"
         )
-    transport = GatewayTransport()
-    transport.alter = {"adp_org_id": "adp-test"}
+    transport = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
     dispatcher = OperationDispatcher(workload.connections.connect, transport)
     assert (await dispatcher.drain_once()).delivered == 0
     assert transport.calls == []
@@ -888,8 +887,7 @@ async def worker_runtime(workload, tmp_path):
     sky_token = tmp_path / "sky-token"
     sky_token.write_text("test-only-provider-token-" + "a" * 32)
     sky = SkyPilot("https://sky.example.invalid", sky_token, http)
-    gateway = GatewayTransport()
-    gateway.alter = {"adp_org_id": "adp-test"}
+    gateway = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
     dispatcher = OperationDispatcher(workload.connections.connect, gateway)
 
     async def publish(result, *, continuation=False):
@@ -1139,17 +1137,21 @@ async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_proje
         == 0
     )
     worker_runtime.cloud.leaked_volume = leaked_volume
-    assert all(
-        result[1] == "settle" for result in await worker_runtime.execute(retirement)
-    )
-    async with workload.connections.connect() as connection:
-        assert (
-            await connection.fetchval(
-                "SELECT state FROM harness_operations WHERE operation_id=$1",
-                stopped.operation_id,
-            )
-            == "succeeded"
+    if leaked_volume:
+        with pytest.raises(
+            OperationRefused, match="allocation reconciliation requires recovery"
+        ):
+            await worker_runtime.execute(retirement)
+    else:
+        assert all(
+            result[1] == "settle" for result in await worker_runtime.execute(retirement)
         )
+    async with workload.connections.connect() as connection:
+        state = await connection.fetchval(
+            "SELECT state FROM harness_operations WHERE operation_id=$1",
+            stopped.operation_id,
+        )
+        assert (state == "succeeded") is (not leaked_volume)
         accounting = json.loads(
             await connection.fetchval(
                 "SELECT observation::text FROM controller_execution_accounting WHERE operation_id=$1",
