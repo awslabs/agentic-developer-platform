@@ -1,0 +1,228 @@
+{
+  "version": 1,
+  "issue": 7004,
+  "updated_at": "2026-10-05T19:18:16.869Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Build occurrence inventory and provenance reconciliation",
+      "status": "done",
+      "covers": [],
+      "files": [
+        ".github/scripts/inventory_security_occurrences.py"
+      ],
+      "note": "Prior commit 716512b; covered by synthetic tests.",
+      "commits": [
+        "716512b"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test inventory with synthetic SARIF fixtures",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        ".github/scripts/tests/test_inventory_security_occurrences.py"
+      ],
+      "note": "Passed locally."
+    },
+    {
+      "id": "AC-01-c2",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Trace assigned reports to exact scanned artifacts and inputs",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        ".github/scripts/inventory_security_occurrences.py"
+      ],
+      "note": "Binding code is in 369f37b; selected-role S3 GetObject for frozen coverage returns AccessDenied.",
+      "commits": [
+        "369f37b"
+      ]
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify private SARIF hashes, counts, coverage, and provenance",
+      "status": "blocked",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [
+        ".github/scripts/tests/test_inventory_security_occurrences.py"
+      ],
+      "note": "Assigned private coverage and reports cannot be read."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair or substantiate shared curl package and backport behavior",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "platform/security/curl-8.22.0/Dockerfile"
+      ],
+      "note": "Reused #6540 signed-source fix built and passed source checks; matching its packages and patches to this scan’s assigned paths and advisories requires the denied reports."
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test curl source provenance, TLS variants, and HTTPS/Git fixtures",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [
+        "platform/security/curl-8.22.0/verify-upstream.sh",
+        "platform/security/curl-8.22.0/verify_https_git.py"
+      ],
+      "note": "CodeBuild 867315b4: signed source; 1,834/1,834 OpenSSL and 1,830/1,830 GnuTLS selected tests; both static QUIC suites; three packages installed; non-root HTTPS/Git and certificate/hostname refusals passed. This is build-stage evidence, not candidate-image clearance."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair applicable DeepWiki OS, Python, npm, and ABI findings",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/Dockerfile"
+      ],
+      "note": "Assigned package paths are inaccessible; the ordinary build also requires a pinned cross-account ECR input denied by BatchGetImage."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test DeepWiki startup, indexing, retrieval, imports, and native ABI",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c2"
+      ],
+      "files": [],
+      "note": "No reviewed composed candidate can be built from the denied input."
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Repair high-security overlay without losing parent fixes",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/high-security/Dockerfile"
+      ],
+      "note": "Frozen coverage and pinned parent access are required to establish a safe composition."
+    },
+    {
+      "id": "AC-02-t3",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test high-security overlay and non-root runtime regressions",
+      "status": "blocked",
+      "covers": [
+        "AC-02-c3"
+      ],
+      "files": [],
+      "note": "No composed candidate image is available."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Record exact-candidate dispositions for every assigned occurrence",
+      "status": "done",
+      "covers": [],
+      "files": [
+        ".github/scripts/review_security_occurrences.py"
+      ],
+      "note": "Fail-closed ledger in e637f24; actual dispositions remain pending.",
+      "commits": [
+        "e637f24"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Rescan three exact candidate images and compare assigned records",
+      "status": "blocked",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Frozen reports and exact candidates are unavailable; no occurrence is claimed cleared."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject unsupported safe dispositions and new critical/high regressions",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [
+        ".github/scripts/tests/test_review_security_occurrences.py"
+      ],
+      "note": "Related local synthetic finding-tool suite passed: 56 tests."
+    },
+    {
+      "id": "AC-04-c-wire",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Integrate the reviewed curl artifact into both DeepWiki variants",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/agent-context/images/deepwiki/Dockerfile",
+        "modules/agent-context/images/deepwiki/high-security/Dockerfile"
+      ],
+      "note": "Cross-account ECR denies the pinned DeepWiki input; the curl build was not published or rescanned."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Run composed image smoke, TLS, import, and overlay checks",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c-wire"
+      ],
+      "files": [],
+      "note": "Requires both composed images."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Prepare reviewed candidate, rollback, and rollout handoff",
+      "status": "blocked",
+      "covers": [],
+      "files": [],
+      "note": "Exact tested image digests and complete occurrence dispositions remain unavailable; rollout is separate."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Review AC-to-evidence mapping and downstream curl disposition",
+      "status": "blocked",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Requires frozen scan evidence and reviewed candidate images."
+    }
+  ]
+}

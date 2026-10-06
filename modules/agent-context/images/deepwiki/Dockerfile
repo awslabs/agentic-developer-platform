@@ -79,7 +79,7 @@ RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall -y setuptools \
     && python -c "import shutil,sysconfig; from pathlib import Path; shutil.rmtree(Path(sysconfig.get_path('purelib'))/'setuptools', ignore_errors=True)" \
-    && python -m pip install --no-cache-dir GitPython==3.1.59 setuptools==81.0.0 \
+    && python -m pip install --no-cache-dir PyJWT==2.14.0 GitPython==3.1.60 urllib3==2.8.0 setuptools==81.0.0 \
     && python -m pip check
 # The active application venv and system build tooling are separate installs.
 # Patch the system setuptools vendored jaraco.context/wheel without changing /opt/venv.
