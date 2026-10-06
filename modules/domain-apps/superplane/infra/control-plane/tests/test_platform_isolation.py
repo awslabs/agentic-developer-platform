@@ -59,6 +59,10 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         "aws_iam_role",
         "aws_iam_role_policy",
         "aws_iam_role_policy_attachment",
+        # App-owned single-object Gateway route grant, attached to the shared
+        # role without owning it or consuming its fixed inline-policy quota.
+        # domain_ownership.py checks the exact document and attachment together.
+        "aws_iam_policy",
         # The domain app's own image repositories. Owned here rather than in platform's
         # shared ECR module so teardown removes them — see ecr.tf.
         "aws_ecr_repository",

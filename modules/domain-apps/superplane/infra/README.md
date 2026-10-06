@@ -30,12 +30,15 @@ references into app modules or read their declared outputs. An app may own a
 separate scoped policy on a shared role without owning that role's lifecycle;
 it must not replace or delete another application's grants.
 
-The control-plane ownership guard recognizes the app's Gateway route-read
-inline policy only with its exact environment-scoped name, Gateway role and
-complete `s3:GetObject` permission on the selected account's single public-route
-object. Both prior and planned values must match; unknown permissions or wider
-access remain refused. Removing that policy still triggers the destructive-plan
-gate and does not transfer ownership of the Gateway role to Superplane.
+The control-plane ownership guard recognizes only the exact app-owned Gateway
+route-read policy and its attachment to `adp-<env>-role-gateway-service`. The
+managed policy grants only `s3:GetObject` on this app's exact public route object.
+A managed policy avoids the shared role's fixed 10,240-byte inline-policy limit.
+Both plan sides and the paired policy document must be known and exact; the
+shared role remains platform-owned. The legacy inline policy remains recognized
+for reviewed removal during upgrades. An existing inline grant is removed and
+replaced by the managed grant, so such an upgrade requires the destructive-plan
+gate; no Terraform state move can change these distinct resource types.
 
 GitHub workflow entrypoints remain in `.github/workflows/` as required by GitHub.
 Shared Terraform roots may compose app-owned modules, and platform teardown may
