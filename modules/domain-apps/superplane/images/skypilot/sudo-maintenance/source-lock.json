@@ -1,0 +1,48 @@
+{
+  "source": "sudo",
+  "version": "1.9.16p2-3+deb13u2",
+  "scope": "Authenticated via signed Debian archive Sources index; no direct descriptor signature claim",
+  "artifacts": [
+    {
+      "file": "sudo_1.9.16p2-3+deb13u2.dsc",
+      "sha256": "43ba6f6bad19d018e277d6a5a6cdc5245f16d58082f997fc29897081a632bfce",
+      "size": 2740,
+      "url": "https://deb.debian.org/debian/pool/main/s/sudo/sudo_1.9.16p2-3+deb13u2.dsc"
+    },
+    {
+      "file": "sudo_1.9.16p2.orig.tar.gz",
+      "sha256": "976aa56d3e3b2a75593307864288addb748c9c136e25d95a9cc699aafa77239c",
+      "size": 5398419,
+      "url": "https://deb.debian.org/debian/pool/main/s/sudo/sudo_1.9.16p2.orig.tar.gz"
+    },
+    {
+      "file": "sudo_1.9.16p2.orig.tar.gz.asc",
+      "sha256": "52f2a33420ffe6cc2e150f056e51fccf9f3abb6e82c094c7b7b89401ffb62c01",
+      "size": 833,
+      "url": "https://deb.debian.org/debian/pool/main/s/sudo/sudo_1.9.16p2.orig.tar.gz.asc"
+    },
+    {
+      "file": "sudo_1.9.16p2-3+deb13u2.debian.tar.xz",
+      "sha256": "4479f56745559b879a5ef1a29d3bd41d6b44644888212169eea8c3a363a9b99c",
+      "size": 69124,
+      "url": "https://deb.debian.org/debian/pool/main/s/sudo/sudo_1.9.16p2-3+deb13u2.debian.tar.xz"
+    }
+  ],
+  "package_version": "1.9.16p2-3+deb13u2+adp1",
+  "builder_base": "debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
+  "upstream_commit": "1820a349687522f51023d1ae5925125f59679a8c",
+  "patch": {
+    "upstream_commit": "1820a349687522f51023d1ae5925125f59679a8c",
+    "production_file": "src/sudo.c",
+    "before_sha256": "34a6bbc0cd41829afca26bed3e6fe37865a7a7e09d90d2242cfa3dc9d89cb748",
+    "after_sha256": "f616f11f59f6b077289442da75d9a42d110e3f8d3152648078ac9a30686ea7ce",
+    "patch_sha256": "495298b9b35fa6fb546e1d2239699ccc905b52e2e3a7b03cec156496c8a9ddd3",
+    "scope": "Same upstream environment-array isolation; adapted to1.9.16p2 direct main tzset call because set_time_zone helper was introduced later. No policy/configuration changes and no test payloads.",
+    "tests": "Build skips upstream test suites; selected ordinary installed compatibility checks are separate."
+  },
+  "authenticated_index_hashes": {
+    "Sources": "ae99131b13c7e61c53a52c33a2f9088a1bc5db15a664f5d90cc3753ad9b65606",
+    "deb.debian.org_debian_dists_trixie_InRelease": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+    "debian-archive-keyring.gpg": "506b815cbb32d9b6066b4a2aa524071e071761e7e7f68c3ac74f3061ba852017"
+  }
+}
