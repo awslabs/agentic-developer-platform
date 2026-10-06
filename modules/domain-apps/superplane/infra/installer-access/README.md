@@ -45,6 +45,10 @@ KEDA custom resources. `AmazonEKSAdminPolicy` alone does not cover those writes.
 Neither namespace policy grants cluster-scoped Namespace mutations.
 
 The app-owned `namespace-rbac` subroot supplies those missing Namespace rights.
+It also grants `get` on the exact Auto Mode `NodeClass/default` object so the
+installer can verify its NetworkPolicy configuration. EKS ViewPolicy does not
+cover this custom resource. Other NodeClasses and all NodeClass mutations remain
+outside the grant; configured enforcement still requires the live packet probe.
 Use **actual run IDs from fresh offline installer receipts** for
 `preflight_namespaces`. It grants deletion only for those exact temporary names;
 it does not grant deletion of the two persistent installation namespaces. It
