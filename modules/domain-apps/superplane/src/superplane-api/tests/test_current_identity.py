@@ -205,6 +205,86 @@ async def test_approver_grant_cannot_outlive_adp_membership(monkeypatch):
         reset_acting_principal(token)
 
 
+@pytest.mark.parametrize(
+    "approver_state,expected_status",
+    [("active", 200), ("revoked", 403), ("disabled", 403), ("denied", 403), ("unavailable", 503)],
+)
+async def test_approval_issue_distinguishes_approver_outage_from_denial(monkeypatch, approver_state, expected_status):
+    import uuid
+
+    from fastapi import HTTPException
+    from harness_jobs.identity import OperationRequest
+    from sqlalchemy import func, select
+
+    from app.config import settings
+    from app.models.operation_approval import OperationApproval
+    from app.models.organization import Organization
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from app.routers.operation_approvals import _call
+    from app.services.operation_approvals import ApprovalService
+    from tests.conftest import async_session_test
+
+    org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as session:
+        session.add(Organization(id=org_id, name="approval-identity", adp_org_id="O1"))
+        await session.flush()
+        session.add(Workspace(id=workspace_id, org_id=org_id, name="approval-workspace", status="Ready", isolation_mode="dedicated"))
+        await session.flush()
+        for subject, permission in (("requester", "workspace:provision"), ("approver", "workspace:administer")):
+            session.add(WorkspaceGrantRecord(
+                org_id=org_id, workspace_id=workspace_id, principal=subject,
+                principal_type="human", permissions=permission,
+            ))
+        await session.commit()
+
+    class ApprovalIdentityReader:
+        def __init__(self):
+            self.subjects = []
+
+        async def read(self, *, subject, principal_type, adp_org_id):
+            self.subjects.append(subject)
+            if subject == "approver":
+                if approver_state == "unavailable":
+                    raise IdentityUnavailable("identity provider offline")
+                if approver_state == "denied":
+                    raise IdentityDenied("membership refused")
+            return CurrentIdentity(
+                subject, principal_type, adp_org_id, f"membership-{subject}",
+                subject != "approver" or approver_state != "revoked",
+                subject != "approver" or approver_state != "disabled",
+            )
+
+    reader = ApprovalIdentityReader()
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    token = set_acting_principal(ActingPrincipal(
+        "requester", str(org_id), str(workspace_id), adp_org_id="O1",
+        membership_id="membership-requester", identity_reader=reader,
+    ))
+    try:
+        action = ApprovalService(async_session_test).issue(
+            workspace_id=str(workspace_id),
+            request=OperationRequest(action="provision", idempotency_key="approval-identity"),
+        )
+        if expected_status == 200:
+            ticket = await _call(action)
+            assert ticket["approvers"] == ["approver"]
+            assert ticket["result"] == "pending"
+        else:
+            with pytest.raises(HTTPException) as failure:
+                await _call(action)
+            assert failure.value.status_code == expected_status
+            assert failure.value.detail == (
+                "operation approval unavailable" if expected_status == 503
+                else "no distinct current human approver is available"
+            )
+        assert "approver" in reader.subjects
+        async with async_session_test() as session:
+            assert await session.scalar(select(func.count()).select_from(OperationApproval)) == (1 if expected_status == 200 else 0)
+    finally:
+        reset_acting_principal(token)
+
+
 async def test_enabled_worker_uses_stored_binding_and_current_evidence(monkeypatch):
     import uuid
 

@@ -730,8 +730,10 @@ class GrantBackedAuthority:
                     principal_type="human",
                     adp_org_id=organization.adp_org_id,
                 )
-            except IdentityUnavailable:
+            except IdentityDenied:
                 statuses[subject] = replace(status, is_member=False, revoked=True)
+            except IdentityUnavailable:
+                raise _AuthorityUnreadable("approver identity") from None
         return statuses
 
 
