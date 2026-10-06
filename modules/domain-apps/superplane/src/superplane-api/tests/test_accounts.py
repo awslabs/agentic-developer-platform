@@ -440,6 +440,10 @@ class TestValidationErrorsDoNotEchoTheRejectedValue:
         for encoded in (
             self.FAKE_ARN.replace(":", "%EF%BC%9A"),
             self.FAKE_ARN.replace(":", "&#xff1a;"),
+            self.FAKE_ARN.replace(":", r"\uFF1A"),
+            self.FAKE_ARN.replace(":", r"\uFF1A").replace("\\", "%5C"),
+            self.FAKE_ARN.replace(":", "&#xff1a;").replace("&", "%2526", 1),
+            "AKIAIOSFODNN7EXAMPLE".replace("A", "%EF%BC%A1", 1),
         ):
             account = await client.post(
                 "/accounts",
@@ -465,9 +469,43 @@ class TestValidationErrorsDoNotEchoTheRejectedValue:
                 assert response.status_code == 422, response.text
                 assert encoded not in response.text
                 assert "fake-not-real" not in response.text
+                assert "AKIAIOSFODNN7EXAMPLE" not in response.text
         async with async_session_test() as session:
             assert (await session.scalars(select(CloudAccount))).all() == []
             assert (await session.scalars(select(CredentialRegistry))).all() == []
+
+    @pytest.mark.asyncio
+    async def test_exhausted_detection_budget_refuses_both_write_routes(
+        self, client, monkeypatch
+    ):
+        from app.models import credential
+
+        monkeypatch.setattr(credential, "_MAX_RECOVERABLE_FORMS", 1)
+        headers = _auth_header()
+        for route, payload in (
+            (
+                "/accounts",
+                {
+                    "name": "test",
+                    "account_id": "test",
+                    "role_arn": "role",
+                    "external_id": "id",
+                    "adp_credential_ids": ["ref%252Fmore"],
+                },
+            ),
+            (
+                "/vault/credentials",
+                {
+                    "name": "test",
+                    "provider": "nebius",
+                    "adp_credential_id": "ref%252Fmore",
+                },
+            ),
+        ):
+            response = await client.post(route, json=payload, headers=headers)
+            assert response.status_code == 422, response.text
+            assert "excessive escaping" in response.text
+            assert "ref%252Fmore" not in response.text
 
     @pytest.mark.asyncio
     async def test_oversized_list_and_elements_return_scrubbed_422s(self, client):

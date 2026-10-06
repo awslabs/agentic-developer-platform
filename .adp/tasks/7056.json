@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7056,
-  "updated_at": "2026-10-06T00:35:24.653Z",
+  "updated_at": "2026-10-06T01:18:57.427Z",
   "tasks": [
     {
       "id": "AUTH01-c1",
@@ -126,7 +126,7 @@
         "READ04-c1"
       ],
       "files": [],
-      "note": "Revalidated the prepared merge of base 757eb5425631a34725050b560af4dfe75cecb56f: no unmerged entries, unstaged changes or whitespace errors; Superplane files exactly match the supplied base. Previously tested and published Gateway trees both equal a5918d3450921c2ce27895dd1d24af55910c6e0f, and the prepared merge does not change them. Prior 99 focused tests and pinned Ruff checks remain applicable."
+      "note": "Revalidated prepared base edd31df6d40d5c6c1c33a1dba629db5629a4fb3c: no conflicts, unstaged changes or whitespace errors; incoming files exactly match the base. Gateway tree remains a5918d3450921c2ce27895dd1d24af55910c6e0f, identical to the tested revision. Prior 99 focused tests and pinned Ruff checks remain applicable."
     },
     {
       "id": "ROUTE03-t3",
@@ -143,7 +143,7 @@
       "files": [
         "modules/gateway/tests/admin"
       ],
-      "note": "Retained verified result: AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true uv run --locked --extra dev pytest -q -n 4 tests/admin returned 2745 passed, 48 skipped and 1935 warnings in 160.12s. Gateway content and shared validation configuration remain unchanged; no redundant rerun. Skips are not passes."
+      "note": "Retained verified result: AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true uv run --locked --extra dev pytest -q -n 4 tests/admin returned 2745 passed, 48 skipped and 1935 warnings in 160.12s. Gateway content and validation configuration remain unchanged. Skips are not passes."
     },
     {
       "id": "ROUTE03-t4",
@@ -158,7 +158,7 @@
         "READ04-c1"
       ],
       "files": [],
-      "note": "Controller confirms prior publication at 2fec6499e668dfd83b1b8baa61d10a07b2d7e003. The newer prepared base merge still awaits publication. Supplied CI evidence shows Select Superplane checks queued, with no reported failures; passing final-head evidence remains unavailable."
+      "note": "Controller confirms published head 48cebedde6ca19809283739af42d2deda45a103a; its Gateway content matches prior validation. Supplied results show Lint, test shards 1/4/7/8 and Select Superplane checks succeeded; shards 2/3 are in progress and 5/6 queued. The newer prepared merge still needs publication and complete final-head evidence."
     },
     {
       "id": "READ04-c1",
