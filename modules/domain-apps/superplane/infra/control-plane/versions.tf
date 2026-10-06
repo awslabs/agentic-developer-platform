@@ -12,10 +12,10 @@ terraform {
   backend "s3" {
     # Configured via -backend-config during terraform init. Deliberately empty here:
     # a bucket or key written inline would be the same environment-pinning defect that
-    # environments/dev/modules/superplane-backend.tfvars exists to avoid, and would make
+    # modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars exists to avoid, and would make
     # the "state is per-environment" property depend on editing this file.
     #
-    # See environments/dev/modules/superplane-backend.tfvars
+    # See modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars
     #   key = "<environment>/modules/superplane/terraform.tfstate"
   }
 

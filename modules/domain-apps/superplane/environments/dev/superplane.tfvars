@@ -1,19 +1,14 @@
 # Superplane control-plane variables — dev. Issue #5042 (U3), EPIC #4910.
 #
-# WHY THIS FILE EXISTS NOW
-#
-# `deploy-all.sh` Step 12/12 and `undeploy-phases.sh` phase_superplane both pass
-# `-var-file=environments/<env>/modules/superplane.tfvars`. U1 pre-wired both to activate the
-# moment `infra/control-plane/*.tf` lands, so without this file the very first deploy that
-# reached the superplane phase would fail on a missing var-file — after applying everything
-# before it.
+# The Superplane plan/apply/destroy workflows pass this app-owned environment file.
+# Core platform deployment does not prepare or deploy these inputs. The standalone app
+# installer materializes its own private installation inputs instead of editing this sample.
 #
 # ACCOUNT_ID IS A PLACEHOLDER, NOT A VALUE
 #
-# `platform/scripts/bootstrap.sh` rewrites `ACCOUNT_ID` across every
-# `environments/**/*.tfvars` with the account the operator is authenticated to
-# (`aws sts get-caller-identity`), and `deploy.sh` does the same. Same convention as
-# `modules/domain-apps/cyber/infra/terraform.tfvars`.
+# The Superplane workflows substitute the account read from their authenticated caller's
+# `aws sts get-caller-identity`. An operator using Terraform directly must prepare a private
+# copy for the explicitly confirmed target; never commit resolved account configuration.
 #
 # The literal `ACCOUNT_ID` deliberately does NOT satisfy `var.account_id`'s 12-digit
 # validation. An unsubstituted placeholder therefore stops `terraform plan` with a clear

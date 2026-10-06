@@ -178,7 +178,7 @@ def test_sensitive_inputs_declare_no_default(name: str) -> None:
         f"variable `{name}` declares a default. It must be required: a default is what "
         "makes a deploy use a value nobody chose, which is the inherited-default defect "
         "acceptance criterion 3 forbids. Supply it in "
-        "environments/<env>/modules/superplane.tfvars instead."
+        "modules/domain-apps/superplane/environments/<env>/superplane.tfvars instead."
     )
 
 

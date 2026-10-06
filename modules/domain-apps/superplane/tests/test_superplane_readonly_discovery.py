@@ -4,7 +4,8 @@ from pathlib import Path
 
 
 spec = importlib.util.spec_from_file_location(
-    "discovery", Path(__file__).parents[1] / "superplane-readonly-discovery.py"
+    "discovery",
+    Path(__file__).parents[1] / "scripts" / "superplane-readonly-discovery.py",
 )
 discovery = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(discovery)

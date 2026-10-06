@@ -45,6 +45,21 @@ class TeardownTests(unittest.TestCase):
                 self.run.check_selection([phase])
         self.run.check_selection(list(t.ORDER))
 
+    def test_superplane_inputs_use_only_the_app_environment(self):
+        app = self.run.root / 'modules/domain-apps/superplane/environments/dev/superplane.tfvars'
+        app.parent.mkdir(parents=True)
+        app.write_text('environment = "dev"\n')
+        args = self.run.inputs('superplane', {})
+        self.assertEqual(args[0], '-var-file=' + str(app))
+        self.assertIn('-var=environment=dev', args)
+
+    def test_superplane_does_not_fall_back_to_a_stale_shared_input(self):
+        legacy = self.run.root / 'environments/dev/modules/superplane.tfvars'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('environment = "dev"\n')
+        with self.assertRaisesRegex(t.TeardownError, 'original deployment inputs are required'):
+            self.run.inputs('superplane', {})
+
     def test_factory_must_precede_webhook_and_platform(self):
         self.run.states['agent_factory'] = state(('aws_sqs_queue', 'work', {'id': 'q'}))
         with self.assertRaisesRegex(t.TeardownError, 'agent_factory'):

@@ -76,8 +76,8 @@ jobs:
 
     env:
       TF_VAR_environment: ${{ inputs.environment }}
-      BACKEND_CONFIG: environments/${{ inputs.environment }}/modules/superplane-backend.tfvars
-      VAR_FILE: environments/${{ inputs.environment }}/modules/superplane.tfvars
+      BACKEND_CONFIG: modules/domain-apps/superplane/environments/${{ inputs.environment }}/superplane-backend.tfvars
+      VAR_FILE: modules/domain-apps/superplane/environments/${{ inputs.environment }}/superplane.tfvars
 
     steps:
       - name: Confirm module name

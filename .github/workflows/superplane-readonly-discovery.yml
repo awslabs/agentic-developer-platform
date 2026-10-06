@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Read selected deployment metadata with runner identity
-        run: python3 platform/scripts/superplane-readonly-discovery.py --output "$RUNNER_TEMP/superplane-readonly/metadata.json"
+        run: python3 modules/domain-apps/superplane/scripts/superplane-readonly-discovery.py --output "$RUNNER_TEMP/superplane-readonly/metadata.json"
       - name: Preserve sanitized metadata and authorization refusals
         if: always()
         uses: actions/upload-artifact@v6

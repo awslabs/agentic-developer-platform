@@ -5,13 +5,11 @@
 # in one can never plan a destroy against the other's resources. That is acceptance
 # criterion 1 of R3, and `tests/backend.tftest.hcl` asserts the shape below.
 #
-# ACCOUNT_ID is a placeholder, not a value. `platform/scripts/bootstrap.sh` and
-# `deploy-all.sh` substitute the account the operator is actually authenticated to
-# (deploy-all.sh writes this file from ${STATE_BUCKET} if it is absent). Committing a
-# resolved account id here is the "inherited default" defect this unit exists to prevent:
-# it would silently point a deploy at whichever account was current when the file was
-# written. Same placeholder convention as gateway-backend.tfvars and
-# cyber-sandbox-backend.tfvars.
+# ACCOUNT_ID is a placeholder, not a value. The Superplane workflows substitute the
+# authenticated caller's account into this app-owned backend configuration. Core platform
+# bootstrap does not rewrite it. Direct operators must prepare a private target-bound copy.
+# Moving this file does not move the state object: the key below deliberately remains the
+# deployed dev/modules/superplane/terraform.tfstate key. No state migration is implied.
 bucket         = "adp-terraform-state-ACCOUNT_ID"
 key            = "dev/modules/superplane/terraform.tfstate"
 region         = "us-east-1"
