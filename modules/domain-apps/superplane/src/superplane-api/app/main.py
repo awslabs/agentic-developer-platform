@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
     # docstring above).
     composition = compose_vault_client()
     app.state.trust_composition = composition
+    composition.install_identity_reader(app)
 
     # Connect what composition built but deliberately did not open (issue #5535).
     # `compose()` is synchronous and must run where there is no event loop and no

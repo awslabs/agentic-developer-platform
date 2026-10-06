@@ -429,3 +429,136 @@ async def test_identity_readiness_exposes_unconfigured_opt_in(client, monkeypatc
     health = (await client.get("/health")).json()
     assert health["current_identity_required"] is True
     assert health["current_identity_reader_configured"] is False
+
+
+async def test_composed_reader_resolves_each_selected_organization_without_union():
+    import uuid
+
+    from app.current_identity import MappedProducerIdentityReader
+    from app.models.organization import Organization
+    from tests.conftest import async_session_test
+
+    domain_one, domain_two = uuid.uuid4(), uuid.uuid4()
+    async with async_session_test() as db:
+        db.add_all([
+            Organization(id=domain_one, name="mapped-one", adp_org_id="O1"),
+            Organization(id=domain_two, name="mapped-two", adp_org_id="O2"),
+        ])
+        await db.commit()
+
+    class Producer:
+        def __init__(self):
+            self.calls = []
+
+        async def post(self, route, payload, *, distinguish_denial=False):
+            self.calls.append((route, payload, distinguish_denial))
+            return dict(
+                version=1, subject=payload["subject"], principal_type="human",
+                adp_org_id="O1" if payload["org_id"] == str(domain_one) else "O2",
+                membership_id="membership-" + payload["org_id"], active=True, enabled=True,
+            )
+
+    producer = Producer()
+    reader = MappedProducerIdentityReader(producer, async_session_test)
+    for adp_org, domain_org in (("O1", domain_one), ("O2", domain_two)):
+        identity = await require_current_identity(
+            reader, subject="same-human", principal_type="human", adp_org_id=adp_org
+        )
+        assert identity.membership_id == "membership-" + str(domain_org)
+        assert producer.calls[-1] == (
+            "/current-identity",
+            {"domain": "superplane", "org_id": str(domain_org), "subject": "same-human", "principal_type": "human"},
+            True,
+        )
+    with pytest.raises(IdentityDenied):
+        await reader.read(subject="same-human", principal_type="human", adp_org_id="unmapped")
+    with pytest.raises(IdentityDenied):
+        await reader.read(subject="same-human", principal_type="service", adp_org_id="O1")
+    assert len(producer.calls) == 2
+
+    legacy_id = uuid.uuid4()
+    async with async_session_test() as db:
+        db.add_all([
+            Organization(id=legacy_id, name="legacy-collision"),
+            Organization(id=uuid.uuid4(), name="mapped-collision", adp_org_id=str(legacy_id)),
+        ])
+        await db.commit()
+    with pytest.raises(IdentityDenied):
+        await reader.read(subject="same-human", principal_type="human", adp_org_id=str(legacy_id))
+    assert len(producer.calls) == 2
+
+
+async def test_composed_reader_readiness_checks_signed_transport_and_shutdown(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.composition import compose
+    from app.config import settings
+    from app.current_identity import MappedProducerIdentityReader
+    from app.main import app
+
+    configuration = SimpleNamespace(
+        adp_gateway_internal_url="", adp_gateway_internal_api_key="", database_url="",
+        superplane_db_schema="", superplane_operation_gateway_url="https://gateway.example",
+        superplane_operation_gateway_region="us-east-1",
+    )
+    composition = compose(configuration)
+    assert isinstance(composition.identity_reader, MappedProducerIdentityReader)
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
+    monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: False)
+    try:
+        composition.install_identity_reader(app)
+        assert app.state.current_identity_reader is composition.identity_reader
+        assert (await client.get("/readyz")).status_code == 503
+        assert (await client.get("/health")).json()["current_identity_reader_configured"] is False
+        monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: True)
+        assert (await client.get("/readyz")).status_code == 200
+        assert (await client.get("/health")).json()["current_identity_reader_configured"] is True
+        monkeypatch.setattr(composition.identity_reader.transport, "can_sign", lambda: False)
+        assert (await client.get("/readyz")).status_code == 503
+    finally:
+        await composition.aclose()
+    assert not hasattr(app.state, "current_identity_reader")
+
+
+async def test_invalid_identity_transport_never_reports_ready(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.composition import compose
+    from app.config import settings
+    from app.main import app
+
+    configuration = SimpleNamespace(
+        adp_gateway_internal_url="", adp_gateway_internal_api_key="", database_url="",
+        superplane_db_schema="", superplane_operation_gateway_url="http://gateway.example",
+        superplane_operation_gateway_region="us-east-1",
+    )
+    composition = compose(configuration)
+    assert composition.identity_reader is None
+    monkeypatch.delattr(app.state, "current_identity_reader", raising=False)
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    assert (await client.get("/health")).json()["current_identity_reader_configured"] is False
+    assert (await client.get("/readyz")).status_code == 503
+    await composition.aclose()
+
+
+async def test_producer_transport_readiness_requires_actual_sigv4_credentials():
+    from types import SimpleNamespace
+
+    from botocore.credentials import Credentials
+
+    from app.adapters.operation_dispatch import ProducerTransport
+
+    transport = ProducerTransport(
+        "https://gateway.example", "us-east-1",
+        session=SimpleNamespace(
+            get_credentials=lambda: Credentials("fixture-access", "fixture-signing")
+        ),
+    )
+    try:
+        assert transport.can_sign() is True
+        transport.session = SimpleNamespace(get_credentials=lambda: None)
+        with pytest.raises(RuntimeError):
+            transport.can_sign()
+    finally:
+        await transport.aclose()

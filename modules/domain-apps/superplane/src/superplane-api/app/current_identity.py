@@ -1,7 +1,11 @@
 """Domain-side contract for uncached authoritative ADP principal and membership reads."""
 
+import asyncio
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
+
+from sqlalchemy import select
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,54 @@ class ProducerIdentityReader:
             )})
         except (KeyError, TypeError):
             raise IdentityUnavailable("incomplete ADP identity contract") from None
+
+
+class MappedProducerIdentityReader:
+    def __init__(self, transport, session_factory):
+        self.transport = transport
+        self.session_factory = session_factory
+
+    async def read(
+        self, *, subject: str, principal_type: str, adp_org_id: str
+    ) -> CurrentIdentity:
+        if principal_type != "human" or not adp_org_id:
+            raise IdentityDenied("current ADP identity organization or type refused")
+        from app.models.organization import Organization
+
+        try:
+            async with self.session_factory() as db:
+                organization = await db.scalar(
+                    select(Organization).where(Organization.adp_org_id == adp_org_id)
+                )
+                if organization is None:
+                    raise IdentityDenied("ADP organization has no domain binding")
+                try:
+                    legacy_id = uuid.UUID(adp_org_id)
+                except ValueError:
+                    legacy_id = None
+                if legacy_id is not None:
+                    legacy = await db.get(Organization, legacy_id)
+                    if legacy is not None and legacy.id != organization.id:
+                        raise IdentityDenied(
+                            "ADP organization has ambiguous domain bindings"
+                        )
+                domain_org_id = str(organization.id)
+        except IdentityDenied:
+            raise
+        except Exception:
+            raise IdentityUnavailable("domain organization mapping unavailable") from None
+        return await ProducerIdentityReader(
+            self.transport, domain_org_id=domain_org_id, adp_org_id=adp_org_id
+        ).read(subject=subject, principal_type=principal_type, adp_org_id=adp_org_id)
+
+
+async def composed_identity_reader_ready(reader: CurrentIdentityReader | None) -> bool:
+    if not isinstance(reader, MappedProducerIdentityReader):
+        return False
+    try:
+        return await asyncio.to_thread(reader.transport.can_sign) is True
+    except Exception:
+        return False
 
 
 async def require_current_identity(

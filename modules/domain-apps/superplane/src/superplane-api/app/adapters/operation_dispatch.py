@@ -117,6 +117,13 @@ class ProducerTransport:
         ).add_auth(request)
         return dict(request.headers)
 
+    def can_sign(self):
+        return bool(
+            self._headers(self.endpoint + PREFIX + "/current-identity", b"{}").get(
+                "Authorization"
+            )
+        )
+
     async def post(self, route, payload, *, distinguish_denial=False):
         url = self.endpoint + PREFIX + route
         encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()

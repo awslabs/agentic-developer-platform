@@ -95,7 +95,17 @@ class Composition:
     _connections: Any = None
     ledger: Any = None
     dispatcher: Any = None
+    identity_reader: Any = None
+    _identity_app: Any = None
     dispatch_enabled: bool = True
+
+    def install_identity_reader(self, app: Any) -> None:
+        if (
+            self.identity_reader is not None
+            and getattr(app.state, "current_identity_reader", None) is None
+        ):
+            app.state.current_identity_reader = self.identity_reader
+            self._identity_app = app
 
     @property
     def operation_connect(self) -> Any:
@@ -190,6 +200,13 @@ class Composition:
         Each step is independent and nothing propagates: a shutdown path that
         raised would abandon the rest of its cleanup.
         """
+        if self._identity_app is not None:
+            if (
+                getattr(self._identity_app.state, "current_identity_reader", None)
+                is self.identity_reader
+            ):
+                del self._identity_app.state.current_identity_reader
+            self._identity_app = None
         for port, adapter in list(self._installed.items()):
             uninstall = _UNINSTALL.get(port)
             if uninstall is None:
@@ -497,6 +514,29 @@ def compose(settings: Any | None = None) -> Composition:
             result.ports.setdefault(
                 port,
                 PortComposition(port=port, installed=False, detail=detail),
+            )
+
+    endpoint = getattr(settings, "superplane_operation_gateway_url", "")
+    if endpoint:
+        try:
+            from app.adapters.operation_dispatch import ProducerTransport
+            from app.current_identity import MappedProducerIdentityReader
+            from app.database import async_session_factory
+
+            if result.dispatcher is not None:
+                transport = result.dispatcher.transport
+            else:
+                transport = ProducerTransport(
+                    endpoint,
+                    getattr(settings, "superplane_operation_gateway_region", ""),
+                )
+                result._closeables.append(transport)
+            result.identity_reader = MappedProducerIdentityReader(
+                transport, async_session_factory
+            )
+        except Exception:
+            logger.error(
+                "the signed current-identity reader could not be composed", exc_info=False
             )
 
     absent = sorted(result.unconfigured)
