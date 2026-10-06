@@ -34,6 +34,13 @@ RUN git init /opt/gbrain \
     && ln -s /opt/gbrain/src/cli.ts /opt/bun/bin/gbrain \
     && bun pm cache rm
 
+# Patch the bundled trust-address parser without resolving other dependencies.
+ADD --checksum=sha256:ffcc8055b78b0852b2889a426ad3a3003b60bc79df704faca194157efa2b2587 https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.8.tgz /tmp/proxy-addr-2.0.8.tgz
+COPY docker/security/ /tmp/proxy-maintenance/
+RUN --network=none node /tmp/proxy-maintenance/maintain-proxy-addr.cjs \
+    && node /tmp/proxy-maintenance/verify-proxy-addr.cjs \
+    && rm -rf /tmp/proxy-maintenance /tmp/proxy-addr-2.0.8.tgz
+
 # Preserve curl/Git behavior with the shared reviewed curl binaries.
 COPY --from=curl-security /out/ /tmp/adp-curl/
 RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
