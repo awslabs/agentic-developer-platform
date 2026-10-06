@@ -300,6 +300,7 @@ async def execute(transport, original, deadline, stop):
         phase = parameters.get("lifecycle_phase")
         lifecycle = "runtime_config_sha256" in parameters or phase is not None
         require_selected_task_mode(lifecycle=lifecycle, phase=phase)
+        transport.brokered_provider = lifecycle
         if lifecycle and phase is None:
             raise OperationRefused("paid worker lifecycle phase is missing")
         if phase in LIFECYCLE_PHASES and "runtime_config_sha256" not in parameters:
@@ -319,6 +320,7 @@ async def execute(transport, original, deadline, stop):
                     policy_file=Path(required("SUPERPLANE_LIFECYCLE_POLICY_FILE")),
                     state_root=Path(required("SUPERPLANE_LIFECYCLE_STATE_DIR")),
                     base_session=boto3.Session(),
+                    brokered_provider=True,
                 ),
             )
         elif phase in LIFECYCLE_PHASES:
@@ -334,6 +336,7 @@ async def execute(transport, original, deadline, stop):
                     policy_file=policy_file,
                     state_root=Path(required("SUPERPLANE_LIFECYCLE_STATE_DIR")),
                     base_session=boto3.Session(),
+                    brokered_provider=True,
                 ),
             )
         else:

@@ -14,6 +14,21 @@ from .runtime_config import LifecycleRefused
 async def access_delivery_session(operation, context, account_id, region):
     """The dedicated control validator must guard delivery and every STS refresh."""
     current = await current_access_operation(operation, context)
+    if getattr(context, "brokered_provider", False):
+
+        async def verify_broker():
+            await current_access_operation(operation, context)
+
+        session = await context.authority.provider_session(
+            current, region, verify=verify_broker
+        )
+        if not session._superplane_role_arn.startswith(
+            f"arn:aws:iam::{account_id}:role/"
+        ):
+            raise LifecycleRefused(
+                "brokered cleanup provider names another AWS account"
+            )
+        return session
     delivered = await context.authority.delivery_role(current)
     if not delivered["role_arn"].startswith(f"arn:aws:iam::{account_id}:role/"):
         raise LifecycleRefused("cleanup provider role names another AWS account")
