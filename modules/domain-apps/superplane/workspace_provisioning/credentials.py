@@ -76,6 +76,12 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
         config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 0}),
     ).get_caller_identity()
     verify()
+    deadline_reader = getattr(source, "_superplane_authority_deadline", None)
+    if (
+        deadline_reader is not None
+        and selected._credentials._expiry_time > deadline_reader()
+    ):
+        raise LifecycleRefused("actor credentials exceed current provider authority")
     if identity["Account"] != parts[4]:
         raise LifecycleRefused("assumed role provider account differs")
     session._superplane_source_session = source

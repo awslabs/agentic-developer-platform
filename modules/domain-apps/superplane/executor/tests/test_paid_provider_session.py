@@ -189,3 +189,40 @@ async def test_actor_refresh_rechecks_shortened_current_authority(
             region="us-east-1",
             verify=lambda: None,
         )
+
+
+def test_actor_deadline_shortened_during_identity_probe_is_not_released(monkeypatch):
+    from workspace_provisioning.credentials import assume_session
+    from workspace_provisioning.runtime_config import LifecycleRefused
+
+    calls = []
+
+    def deadline():
+        calls.append(True)
+        return datetime.now(UTC) + timedelta(seconds=300 if len(calls) >= 3 else 3600)
+
+    sts = SimpleNamespace(
+        assume_role=lambda **kwargs: {
+            "Credentials": {
+                "AccessKeyId": "key",
+                "SecretAccessKey": "secret",
+                "SessionToken": "token",
+                "Expiration": datetime.now(UTC) + timedelta(seconds=899),
+            }
+        }
+    )
+    source = SimpleNamespace(
+        client=lambda *args, **kwargs: sts, _superplane_authority_deadline=deadline
+    )
+    monkeypatch.setattr(
+        boto3,
+        "Session",
+        lambda **kwargs: SimpleNamespace(
+            client=lambda *args, **kwargs: SimpleNamespace(
+                get_caller_identity=lambda: {"Account": ACCOUNT}
+            )
+        ),
+    )
+    with pytest.raises(LifecycleRefused, match="exceed current provider authority"):
+        assume_session(source, role_arn=ROLE, region="us-east-1", verify=lambda: None)
+    assert len(calls) == 3
