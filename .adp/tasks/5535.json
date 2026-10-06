@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:27:59.688Z",
+  "updated_at": "2026-10-06T00:32:02.399Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-01-t4.",
+      "note": "Previously completed.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-01-t5.",
+      "note": "Previously completed.",
       "commits": [
         "931919f"
       ]
@@ -1882,7 +1882,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-01-t6.",
+      "note": "Previously completed.",
       "commits": [
         "f6cf576"
       ]
@@ -1895,7 +1895,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously completed; covered by AC-01-t7 and AC-01-t1.",
+      "note": "Previously completed.",
       "commits": [
         "cce8e6c"
       ]
@@ -3824,7 +3824,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Previously passed at 9b03cb472.",
+      "note": "Previously passed.",
       "commits": [
         "9b03cb4"
       ]
@@ -3840,7 +3840,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Previously passed at 2fa4703c6.",
+      "note": "Previously passed.",
       "commits": [
         "2fa4703"
       ]
@@ -3852,11 +3852,8 @@
       "title": "Probe compatible real lifecycle and authority dependencies at readiness time",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/installation.py"
-      ],
-      "note": "Previously completed at 930482521; covered by AC-02-t3.",
+      "files": [],
+      "note": "Previously completed; covered by AC-02-t3.",
       "commits": [
         "9304825"
       ]
@@ -3868,13 +3865,8 @@
       "title": "Fence paid-worker activation on verified installed binding and current dependencies",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/harness_operation_facade.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/installation.py"
-      ],
-      "note": "Covered by AC-02-t2; committed and pushed as b154e68f6. The installer’s native-controller projection remains intentionally paused.",
+      "files": [],
+      "note": "Previously completed; covered by AC-02-t2. Installer native-controller projection remains paused.",
       "commits": [
         "b154e68"
       ]
@@ -3884,13 +3876,19 @@
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run packaged capability and installer tests for valid native configuration",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [],
-      "note": "Next task. Focused installer refusal tests passed, but packaged valid-configuration evidence remains pending."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py",
+        "modules/domain-apps/superplane/tests/installer_checks/test_paid_worker.py"
+      ],
+      "note": "Committed and pushed as 851851dde. API installation/composition: 61 passed; installer checks: 391 passed; PostgreSQL installer checks with SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt: 9 passed. Offline checks do not establish live binding.",
+      "commits": [
+        "851851d"
+      ]
     },
     {
       "id": "AC-02-t2",
@@ -3902,12 +3900,8 @@
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py"
-      ],
-      "note": "Missing verifier, lost dependencies, incompatible binding, unauthorized organization, and proof failure remain fail-closed. At b154e68f6, 148 focused API tests, 5 PostgreSQL cases, and 19 installer tests passed."
+      "files": [],
+      "note": "Previously passed."
     },
     {
       "id": "AC-02-t3",
@@ -3918,10 +3912,8 @@
       "covers": [
         "AC-02-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py"
-      ],
-      "note": "Previously passed at 930482521."
+      "files": [],
+      "note": "Previously passed."
     },
     {
       "id": "AC-03-c1",
@@ -3931,7 +3923,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Pending final integration."
+      "note": "Next task; final integration remains pending."
     },
     {
       "id": "AC-03-t1",
@@ -3953,7 +3945,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "PR #7047 is ready and current; evaluator handoff remains."
+      "note": "PR #7047 is ready at 851851dde; evaluator handoff remains."
     },
     {
       "id": "AC-04-t1",
@@ -3965,7 +3957,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at b154e68f6; required checks and handoff remain."
+      "note": "PR head verified at 851851dde; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
