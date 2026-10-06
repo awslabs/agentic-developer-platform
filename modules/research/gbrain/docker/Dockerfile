@@ -1,10 +1,10 @@
-# Single-stage build — both stages were identical (same base + bun); multi-stage
-# added no size benefit and broke the gbrain binary (COPY dereferenced the bin
-# symlink, severing cli.ts from its relative imports).
+# Install gbrain in its runtime stage so the CLI symlink and relative imports
+# stay intact. The donor stage supplies only reviewed curl Debian packages.
 #
 # Base image pinned to specific Node 22 LTS patch for reproducibility and
 # vulnerability tracking. Bump when a newer 22.x patch ships OS-level fixes.
-FROM public.ecr.aws/docker/library/node:22.23.3-trixie-slim
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+FROM public.ecr.aws/docker/library/node:22.23.3-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa
 ENV HOME=/home/appuser
 ENV BUN_INSTALL=/opt/bun
 ENV PATH=/opt/bun/bin:$PATH
@@ -33,6 +33,11 @@ RUN git init /opt/gbrain \
     && bun install --frozen-lockfile --production \
     && ln -s /opt/gbrain/src/cli.ts /opt/bun/bin/gbrain \
     && bun pm cache rm
+
+# Preserve curl/Git behavior with the shared reviewed curl binaries.
+COPY --from=curl-security /out/ /tmp/adp-curl/
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 # Copy configuration and entrypoint
 COPY config/ /app/config/
