@@ -449,12 +449,15 @@
       ],
       "files": [
         "modules/gateway/cli/adp-superplane-onboarding.py",
-        "modules/gateway/tests/cli/test_superplane_onboarding.py"
+        "modules/gateway/tests/cli/test_superplane_onboarding.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
       ],
-      "note": "Repair 7a05251 and local suites pass except full npm lint, which fails on five unchanged base directives (#7066). Browser run 37394749830 passes. Final-head Gateway run 37394778280 and domain run 37394778590 are unverified after Actions API HTTP 403 installation rate-limit; do not claim final CI pass.",
+      "note": "Open: 7a05251 CLI parity repair and 3e1e18d UI/API contract-format repairs. Local 178 frontend suites/2971 tests, TypeScript, domain-UI lint, 136 CLI onboarding, 46 browser fixture and 21 UI contract tests pass. Gateway CI 37394778280 succeeded on 7a05251; browser in domain run 37397760708 passed on 3e1e18d, but its UI/API matrix jobs are still queued. Full npm lint fails on five unchanged base directives tracked in #7066; do not claim final affected CI or AC-06 acceptance yet.",
       "commits": [
         "cc2b40a",
-        "7a05251"
+        "7a05251",
+        "3e1e18d"
       ]
     },
     {
