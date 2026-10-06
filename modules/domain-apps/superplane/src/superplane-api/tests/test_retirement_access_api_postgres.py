@@ -145,7 +145,8 @@ async def cleanup(lifecycle, monkeypatch):  # noqa: F811
         components_complete=True,
     )
 
-    async def facts(composition, db, org_id, workspace_id):
+    async def facts(composition, db, org_id, workspace_id, *, access_review=False):
+        assert access_review
         current = await db.get(Workspace, workspace_id)
         principal = await GrantBackedAuthority(fixture.sessions).resolve(
             org_id=str(org_id),

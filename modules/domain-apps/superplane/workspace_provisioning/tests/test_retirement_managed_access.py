@@ -1,6 +1,8 @@
 """The proposed managed entry is separate from its sealed bootstrap allocation."""
 
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -10,6 +12,9 @@ from superplane_bootstrap.kube_grants import KubeGrants
 
 from workspace_provisioning.retirement_managed_access import (
     compile_managed_access_plan,
+    compile_managed_access_review,
+    managed_recipe_inputs,
+    verify_managed_access_artifact,
 )
 from workspace_provisioning.runtime_config import LifecycleRefused
 
@@ -80,6 +85,172 @@ def test_managed_cleanup_plan_binds_live_uids_without_broad_grants(runtime):
     )
     assert replacement.revision != plan.revision
     assert replacement.recipe() != plan.recipe()
+
+
+def test_managed_review_does_not_upgrade_legacy_bootstrap_grants(runtime):
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    review_arguments = {
+        key: value
+        for key, value in arguments.items()
+        if key
+        not in {
+            "inventory",
+            "runtime",
+            "kubernetes",
+            "eks",
+            "release",
+            "principals",
+            "controller_mode",
+        }
+    }
+    with pytest.raises(BootstrapRefused, match="cleanup grant UID, rules"):
+        compile_managed_access_review(
+            arguments["inventory"],
+            arguments["runtime"],
+            **review_arguments,
+            **managed_recipe_inputs(arguments["inventory"], arguments["runtime"]),
+        )
+
+
+def test_review_digest_matches_live_and_uid_drift_refuses_execution(runtime):
+    arguments = inputs(runtime)
+
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    review_arguments = {
+        key: value
+        for key, value in arguments.items()
+        if key not in {"inventory", "runtime", "kubernetes", "eks"}
+    }
+    review = compile_managed_access_review(
+        arguments["inventory"], arguments["runtime"], **review_arguments
+    )
+    live = compile_managed_access_plan(**arguments)
+    assert review == live
+    assert review.revision == live.revision
+    assert review.recipe() == live.recipe()
+    with pytest.raises(LifecycleRefused, match="complete owned dedicated"):
+        compile_managed_access_plan(**{**arguments, "eks": None})
+
+    grant = next(
+        item
+        for item in arguments["inventory"].grants
+        if item.spec.get("key") == "cleanup-cluster-role"
+    )
+    key = (grant.spec["body"]["kind"], None, grant.spec["body"]["metadata"]["name"])
+    runtime.cloud.objects[key]["metadata"]["uid"] = "replaced"
+    assert (
+        review.revision
+        == compile_managed_access_review(
+            arguments["inventory"], arguments["runtime"], **review_arguments
+        ).revision
+    )
+    with pytest.raises(BootstrapRefused, match="live UID"):
+        compile_managed_access_plan(**arguments)
+
+
+def test_review_digest_cannot_authorize_foreign_mapping(runtime):
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    review = compile_managed_access_review(
+        arguments["inventory"],
+        arguments["runtime"],
+        **{
+            key: value
+            for key, value in arguments.items()
+            if key not in {"inventory", "runtime", "kubernetes", "eks"}
+        },
+    )
+    runtime.cloud.entries[review.grants[0]["principal_arn"]] = {
+        "principalArn": review.grants[0]["principal_arn"],
+        "kubernetesGroups": [review.cleanup_group],
+    }
+    with pytest.raises(BootstrapRefused):
+        compile_managed_access_plan(**arguments)
+
+
+@pytest.mark.parametrize(
+    "change", [None, "mode", "ownership", "account", "target", "lineage", "output"]
+)
+def test_managed_access_uses_original_apply_target_not_request_supplied_cluster(
+    runtime, change
+):
+    arguments = inputs(runtime)
+    arguments["inventory"] = replace(
+        arguments["inventory"],
+        components_complete=True,
+        components=(
+            component("fixture-controller", namespace=arguments["inventory"].namespace),
+        ),
+    )
+    plan = compile_managed_access_plan(**arguments)
+    account = plan.cluster_arn.split(":")[4]
+    region = plan.cluster_arn.split(":")[3]
+    request = SimpleNamespace(
+        mode=SimpleNamespace(value="existing-account-managed"),
+        cluster_ownership=SimpleNamespace(value="adp-created"),
+        target_account_id=account,
+        region=region,
+    )
+    target = {
+        "account_id": account,
+        "aws_region": region,
+        "org_id": plan.org_id,
+        "workspace_id": plan.workspace_id,
+    }
+    outputs = {**target, "cluster_arn": plan.cluster_arn}
+    metadata = {
+        "next_phase": "bootstrap-workspace",
+        "allocation_source_operation_id": "paid-apply",
+        "outputs": {
+            key: {"value": value, "type": "string", "sensitive": False}
+            for key, value in outputs.items()
+        },
+    }
+    row = {
+        "account_id": account,
+        "source_operation_id": "paid-apply",
+        "target_json": json.dumps(target),
+        "artifact_metadata_json": json.dumps(metadata),
+    }
+    if change == "mode":
+        request.mode.value = "bring-existing-cluster"
+    elif change == "ownership":
+        request.cluster_ownership.value = "adopted"
+    elif change == "account":
+        request.target_account_id = "000000000009"
+    elif change == "target":
+        target["workspace_id"] = "other-workspace"
+        row["target_json"] = json.dumps(target)
+    elif change == "lineage":
+        metadata["allocation_source_operation_id"] = "other-operation"
+        row["artifact_metadata_json"] = json.dumps(metadata)
+    elif change == "output":
+        metadata["outputs"]["cluster_arn"]["value"] = "different-cluster"
+        row["artifact_metadata_json"] = json.dumps(metadata)
+    if change is None:
+        assert verify_managed_access_artifact(row, request, plan) == outputs
+    else:
+        with pytest.raises(LifecycleRefused):
+            verify_managed_access_artifact(row, request, plan)
 
 
 @pytest.mark.parametrize(

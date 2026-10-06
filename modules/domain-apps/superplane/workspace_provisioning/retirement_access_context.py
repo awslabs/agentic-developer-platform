@@ -1,6 +1,7 @@
 """Revalidate original bootstrap ownership before each new cleanup access effect."""
 
 import asyncio
+import json
 from dataclasses import dataclass
 
 from harness_jobs.allocation import allocation_id_for, sealed_revision
@@ -8,12 +9,12 @@ from harness_jobs.identity import decode_payload, encode_payload, payload_digest
 from harness_jobs.store import OperationStore
 
 from .artifacts import canonical, read_artifact
+from .authority import load_policy
 from .effects import LifecycleEffects
 from .retirement_access_authority import access_request, validate_access_request
 from .retirement_access_plan import PHASE, compile_access_plan
 from .retirement_inventory import load_bootstrap_retirement_review
 from .runtime_config import LifecycleRefused
-from .authority import load_policy
 
 
 async def current_access_operation(operation, context):
@@ -99,8 +100,6 @@ async def load_access_context(operation, context, registration_store, *, current
         or source.plan_digest != parameters["retirement_source_payload_digest"]
     ):
         raise LifecycleRefused("cleanup access original bootstrap admission changed")
-    async with context.connect() as connection:
-        await require_original_seal(connection, source, parameters)
     original = decode_payload(source.request_payload)
     artifact = await read_artifact(
         context.domain_connect,
@@ -147,13 +146,58 @@ async def load_access_context(operation, context, registration_store, *, current
         org_id=lease.org_id,
         workspace_id=lease.workspace_id,
     )
-    plan = compile_access_plan(
-        inventory,
-        config,
-        original_allocation_id=parameters["original_allocation_id"],
-        retirement_request_id=parameters["retirement_request_id"],
+    managed = inventory.cluster_ownership == "adp-created"
+    if managed:
+        from .retirement_managed_access import (
+            compile_managed_access_review,
+            managed_recipe_inputs,
+            require_managed_sealed_plan,
+        )
+
+        metadata = json.loads(artifact["artifact_metadata_json"])
+        if (
+            metadata.get("allocation_source_operation_id") != producer.operation_id
+            or metadata.get("next_phase") != "bootstrap-workspace"
+        ):
+            raise LifecycleRefused("managed cleanup lost its paid apply lineage")
+        plan = compile_managed_access_review(
+            inventory,
+            config,
+            original_allocation_id=parameters["original_allocation_id"],
+            bootstrap_artifact_id=artifact["artifact_id"],
+            retirement_request_id=parameters["retirement_request_id"],
+            **managed_recipe_inputs(inventory, config),
+        )
+        async with context.connect() as connection:
+            paid = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM harness_approval_consumption "
+                "WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3 "
+                "AND plan_digest=$4 AND reservation_state IN ('confirmed','retained','released'))",
+                producer.operation_id,
+                lease.org_id,
+                lease.workspace_id,
+                artifact["source_payload_digest"],
+            )
+            if not paid:
+                raise LifecycleRefused(
+                    "managed cleanup requires its paid apply approval"
+                )
+            await require_managed_sealed_plan(connection, producer, plan)
+    else:
+        plan = compile_access_plan(
+            inventory,
+            config,
+            original_allocation_id=parameters["original_allocation_id"],
+            retirement_request_id=parameters["retirement_request_id"],
+        )
+        async with context.connect() as connection:
+            await require_original_seal(connection, source, parameters)
+    expected = access_request(
+        plan,
+        source,
+        load_policy(context, lease.org_id),
+        allocation_source=producer if managed else None,
     )
-    expected = access_request(plan, source, load_policy(context, lease.org_id))
     if (
         expected != operation.request
         or artifact["account_id"] != parameters["aws_account_id"]

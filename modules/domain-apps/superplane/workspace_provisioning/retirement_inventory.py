@@ -8,27 +8,27 @@ at the mutation boundary. Managed infrastructure remains with its Terraform stat
 
 from __future__ import annotations
 
+import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
-import re
 
-from superplane_contracts.provisioning import (
-    OperationBinding,
-    REQUIRED_PERMISSION,
-    TEARDOWN,
-)
-from superplane_contracts.version import CONTRACT_VERSION
-from superplane_bootstrap.errors import BootstrapRefused
-from superplane_bootstrap.inventory import OwnedPrerequisite, inventory_from_mapping
-from superplane_bootstrap.registry import registration_lock
-from superplane_bootstrap.prerequisites import REQUIRED_PREREQUISITE_KINDS
 from superplane_bootstrap.component_journal import (
     component_key,
     expected_component_keys,
     merge_component_records,
 )
+from superplane_bootstrap.errors import BootstrapRefused
+from superplane_bootstrap.inventory import OwnedPrerequisite, inventory_from_mapping
+from superplane_bootstrap.prerequisites import REQUIRED_PREREQUISITE_KINDS
+from superplane_bootstrap.registry import registration_lock
+from superplane_contracts.provisioning import (
+    REQUIRED_PERMISSION,
+    TEARDOWN,
+    OperationBinding,
+)
+from superplane_contracts.version import CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -386,8 +386,9 @@ def retained_cleanup_capability(
     principals,
     controller_mode,
     kubernetes,
+    review_only=False,
 ):
-    """Match the retained grant UIDs to one exact bootstrap recipe."""
+    """Match retained grant UIDs to the bootstrap recipe; reread them at execution."""
     from types import SimpleNamespace
 
     from superplane_bootstrap.grant_plan import BootstrapRelease, compile_grants
@@ -401,10 +402,16 @@ def retained_cleanup_capability(
         or release.namespace != inventory.namespace
         or not isinstance(original_allocation_id, str)
         or not original_allocation_id
-        or not isinstance(kubernetes, KubeGrants)
-        or kubernetes.target.cluster_arn != inventory.cluster_arn
-        or kubernetes.target.workspace_id != inventory.workspace_id
-        or kubernetes.target.org_id != inventory.org_id
+        or (review_only and kubernetes is not None)
+        or (
+            not review_only
+            and (
+                not isinstance(kubernetes, KubeGrants)
+                or kubernetes.target.cluster_arn != inventory.cluster_arn
+                or kubernetes.target.workspace_id != inventory.workspace_id
+                or kubernetes.target.org_id != inventory.org_id
+            )
+        )
     ):
         raise BootstrapRefused("managed cleanup requires complete original ownership")
     retained = tuple(
@@ -462,12 +469,13 @@ def retained_cleanup_capability(
             raise BootstrapRefused(
                 "cleanup grant UID, rules or original allocation changed"
             )
-        observed = kubernetes.observe(expected[key])
-        if observed != identity:
-            raise BootstrapRefused(
-                "cleanup grant live UID or body differs from journal"
-            )
-        kubernetes.verify(expected[key], observed)
+        if not review_only:
+            observed = kubernetes.observe(expected[key])
+            if observed != identity:
+                raise BootstrapRefused(
+                    "cleanup grant live UID or body differs from journal"
+                )
+            kubernetes.verify(expected[key], observed)
     ordered = tuple(actual[key] for key in sorted(keys))
     return RetainedCleanupCapability(
         org_id=inventory.org_id,

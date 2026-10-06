@@ -1,8 +1,8 @@
 """Real operation-delivered clients for separately approved cleanup access."""
 
 import asyncio
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 
 from .cluster_clients import kubernetes_client, scoped_entry_client
 from .credentials import assume_session, canonical_role_identity
@@ -158,13 +158,22 @@ def build_access_clients(facts, session, directory, verify):
     from superplane_contracts.provisioning import OperationBinding, ResolvedPrincipal
 
     from .adoption import verify_adoption_artifact
+    from .retirement_managed_access import (
+        ManagedRetirementAccessPlan,
+        verify_managed_access_artifact,
+    )
 
     operation, plan, config = facts.operation, facts.plan, facts.config
     lease = operation.grant.lease
     request = from_mapping(
         json.loads(operation.request.parameters["lifecycle_request"])
     )
-    outputs = verify_adoption_artifact(facts.artifact, request)
+    managed = isinstance(plan, ManagedRetirementAccessPlan)
+    outputs = (
+        verify_managed_access_artifact(facts.artifact, request, plan)
+        if managed
+        else verify_adoption_artifact(facts.artifact, request)
+    )
     if outputs["cluster_arn"] != plan.cluster_arn:
         raise LifecycleRefused("cleanup plan changed its original discovered cluster")
     provider = canonical_role_identity(
@@ -203,15 +212,20 @@ def build_access_clients(facts, session, directory, verify):
         expected_certificate_authority_data=outputs[
             "cluster_certificate_authority_data"
         ],
-        cluster_ownership="adopted",
+        cluster_ownership="adp-created" if managed else "adopted",
     )
     dynamics = {}
     try:
-        for actor, configured in (
-            ("registrar", "registrar"),
-            ("supervisor", "supervisor"),
-            ("cleaner", "installer"),
-        ):
+        actors = (
+            (
+                ("registrar", "registrar"),
+                ("supervisor", "supervisor"),
+                ("cleaner", "installer"),
+            )
+            if not managed
+            else (("supervisor", "supervisor"), ("cleaner", "installer"))
+        )
+        for actor, configured in actors:
             role_arn = f"arn:aws:iam::{target.account_id}:role/{config['actor_role_names'][configured]}"
             actor_session = assume_session(
                 session, role_arn=role_arn, region=request.region, verify=verify
@@ -245,7 +259,9 @@ def build_access_clients(facts, session, directory, verify):
                     external_id=session._superplane_external_id,
                 ),
             ),
-            kubernetes=KubeGrants(dynamics["registrar"], target),
+            kubernetes=KubeGrants(
+                dynamics["supervisor" if managed else "registrar"], target
+            ),
             supervisor=KubeGrants(dynamics["supervisor"], target),
             target=target,
             outputs=outputs,

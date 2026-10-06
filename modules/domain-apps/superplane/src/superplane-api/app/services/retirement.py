@@ -45,8 +45,11 @@ async def _workspace(db, org_id, workspace_id):
     return workspace, principal
 
 
-async def retirement_facts(composition, db, org_id, workspace_id):
+async def retirement_facts(
+    composition, db, org_id, workspace_id, *, access_review=False
+):
     from superplane_bootstrap.registry import SqlRegistrationStore
+
     from workspace_provisioning.artifacts import read_artifact
     from workspace_provisioning.retirement_inventory import (
         load_bootstrap_retirement_review,
@@ -110,11 +113,19 @@ async def retirement_facts(composition, db, org_id, workspace_id):
         raise ProvisioningRefused(
             "canonical ownership differs from the original approved workspace mode"
         )
-    if plan.cluster_rbac_remaining:
+    managed_access = access_review and inventory.cluster_ownership == "adp-created"
+    if managed_access and (
+        json.loads(original.parameters["lifecycle_request"]).get("mode")
+        != "existing-account-managed"
+    ):
+        raise ProvisioningRefused(
+            "managed cleanup differs from original workspace mode"
+        )
+    if plan.cluster_rbac_remaining and not managed_access:
         raise ProvisioningUnavailable(
             "retirement requires independently provisioned exact-name cleanup authority for owned cluster RBAC"
         )
-    if not plan.completes_teardown:
+    if not plan.completes_teardown and not managed_access:
         raise ProvisioningUnavailable(
             "retirement needs complete ownership and a reviewed destroy plan for every managed resource; no deletion was submitted"
         )
@@ -132,7 +143,7 @@ async def retirement_facts(composition, db, org_id, workspace_id):
     if (
         account not in policy.permitted_target_accounts
         or region not in policy.permitted_regions
-        or "adopt" not in policy.permitted_modes
+        or ("managed" if managed_access else "adopt") not in policy.permitted_modes
     ):
         raise ProvisioningRefused("retirement target is outside current policy")
     reference = policy.credential_references.get(account)

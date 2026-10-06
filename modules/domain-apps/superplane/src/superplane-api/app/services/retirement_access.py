@@ -4,13 +4,18 @@ from dataclasses import asdict
 
 from harness_jobs.allocation import allocation_id_for
 from harness_jobs.identity import decode_payload, payload_digest
-from workspace_provisioning.retirement_access_authority import access_request
-from workspace_provisioning.retirement_access_plan import PHASE, compile_access_plan
 
 from app.adapters.operation_authority_source import GrantBackedAuthority
 from app.database import async_session_factory
 from app.services.provisioning import ProvisioningRefused, start_planned_provision
 from app.services.retirement import _workspace, retirement_facts
+from workspace_provisioning.retirement_access_authority import access_request
+from workspace_provisioning.retirement_access_plan import PHASE, compile_access_plan
+from workspace_provisioning.retirement_managed_access import (
+    compile_managed_access_review,
+    managed_recipe_inputs,
+    require_managed_sealed_plan,
+)
 
 
 async def preview_access(composition, db, org_id, workspace_id, retirement_request_id):
@@ -18,21 +23,49 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
         workspace,
         principal,
         source,
-        _,
+        artifact,
         inventory,
         deletion,
         policy,
         runtime,
-    ) = await retirement_facts(composition, db, org_id, workspace_id)
+    ) = await retirement_facts(
+        composition, db, org_id, workspace_id, access_review=True
+    )
     if workspace.status not in {"Active", "active"}:
         raise ProvisioningRefused("cleanup access requires an active workspace")
-    plan = compile_access_plan(
-        inventory,
-        runtime,
-        original_allocation_id=allocation_id_for(source),
-        retirement_request_id=str(retirement_request_id),
-    )
-    request = access_request(plan, source, policy)
+    managed = inventory.cluster_ownership == "adp-created"
+    if managed:
+        from harness_jobs.store import OperationStore
+
+        async with composition.operation_connect() as connection:
+            paid_source = await OperationStore().get(
+                connection,
+                principal,
+                source.admitted_request().parameters["lifecycle_source_operation_id"],
+            )
+            if (
+                paid_source is None
+                or paid_source.operation_id != artifact["source_operation_id"]
+            ):
+                raise ProvisioningRefused("cleanup access lost its original paid apply")
+            plan = compile_managed_access_review(
+                inventory,
+                runtime,
+                original_allocation_id=allocation_id_for(paid_source),
+                bootstrap_artifact_id=artifact["artifact_id"],
+                retirement_request_id=str(retirement_request_id),
+                **managed_recipe_inputs(inventory, runtime),
+            )
+            await require_managed_sealed_plan(connection, paid_source, plan)
+    else:
+        paid_source = None
+        plan = compile_access_plan(
+            inventory,
+            runtime,
+            original_allocation_id=allocation_id_for(source),
+            retirement_request_id=str(retirement_request_id),
+        )
+    request = access_request(plan, source, policy, allocation_source=paid_source)
     review = {
         "retirement_request_id": str(retirement_request_id),
         "request_id": request.idempotency_key,
