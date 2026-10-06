@@ -503,7 +503,8 @@ def _gateway_route_read_identity(address, before, after, account_id, environment
     reason = (
         "Gateway route-read policy identity or exact single-object permission differs"
     )
-    invalid = [Violation(address, "aws_iam_role_policy", reason)]
+    resource_type, _ = leaf_type_and_name(address)
+    invalid = [Violation(address, resource_type, reason)]
     if not isinstance(account_id, str) or not re.fullmatch(r"[0-9]{12}", account_id):
         return invalid
     env = _require_environment(environment)
@@ -517,13 +518,31 @@ def _gateway_route_read_identity(address, before, after, account_id, environment
             }
         ],
     }
+    name = f"adp-{env}-superplane-gateway-route-read"
+    role = f"adp-{env}-role-gateway-service"
+    arn = f"arn:aws:iam::{account_id}:policy/{name}"
     sides = [value for value in (before, after) if value is not None]
     if not sides:
         return invalid
     for value in sides:
-        if not isinstance(value, dict) or (
-            value.get("name") != f"adp-{env}-superplane-gateway-route-read"
-            or value.get("role") != f"adp-{env}-role-gateway-service"
+        if not isinstance(value, dict):
+            return invalid
+        if resource_type == "aws_iam_role_policy_attachment":
+            if value.get("role") != role or value.get("policy_arn") != arn:
+                return invalid
+            continue
+        if value.get("name") != name:
+            return invalid
+        if resource_type == "aws_iam_role_policy":
+            if value.get("role") != role or value.get("id") not in (
+                None,
+                f"{role}:{name}",
+            ):
+                return invalid
+        elif (
+            value.get("path") != "/"
+            or value.get("arn") not in (None, arn)
+            or value.get("id") not in (None, arn)
         ):
             return invalid
         try:
@@ -531,9 +550,6 @@ def _gateway_route_read_identity(address, before, after, account_id, environment
         except (KeyError, TypeError, ValueError):
             return invalid
         if policy != expected:
-            return invalid
-        # The provider's composite ID is absent on create, known on later plans.
-        if value.get("id") not in (None, f"{value['role']}:{value['name']}"):
             return invalid
     return []
 
@@ -590,7 +606,11 @@ def validate_identity(
     if bare_type == "terraform_data":
         return violations
 
-    if (resource_type, resource_name) == ("aws_iam_role_policy", "gateway_route_read"):
+    if resource_name == "gateway_route_read" and resource_type in {
+        "aws_iam_role_policy",
+        "aws_iam_policy",
+        "aws_iam_role_policy_attachment",
+    }:
         return _gateway_route_read_identity(
             address, values_before, values_after, account_id, environment
         )
@@ -734,19 +754,54 @@ def validate_plan(
 
         report.checked += 1
 
-        if leaf_type_and_name(address) == ("aws_iam_role_policy", "gateway_route_read"):
+        resource_type, resource_name = leaf_type_and_name(address)
+        route_fields = {
+            "aws_iam_role_policy": ("name", "role", "policy"),
+            "aws_iam_policy": ("name", "path", "policy"),
+            "aws_iam_role_policy_attachment": ("role", "policy_arn"),
+        }
+        if resource_name == "gateway_route_read" and resource_type in route_fields:
             unknown_values = detail.get("after_unknown", {})
             if detail.get("after") is not None and (
                 not isinstance(unknown_values, dict)
-                or any(unknown_values.get(key) for key in ("name", "role", "policy"))
+                or any(unknown_values.get(key) for key in route_fields[resource_type])
             ):
                 report.violations.append(
                     Violation(
                         address,
-                        "aws_iam_role_policy",
+                        resource_type,
                         "Gateway route-read policy authority must be known in the saved plan",
                     )
                 )
+            if resource_type == "aws_iam_role_policy_attachment":
+                # The ARN alone is insufficient: require the exact policy document
+                # in this same module's saved plan, including unchanged policies.
+                policy_address = address.replace(
+                    "aws_iam_role_policy_attachment.gateway_route_read",
+                    "aws_iam_policy.gateway_route_read",
+                )
+                policies = [
+                    c
+                    for c in changes
+                    if isinstance(c, dict) and c.get("address") == policy_address
+                ]
+                for side in ("before", "after"):
+                    if detail.get(side) is None:
+                        continue
+                    policy_detail = (
+                        policies[0].get("change", {}) if len(policies) == 1 else {}
+                    )
+                    values = policy_detail.get(side)
+                    if values is None or _gateway_route_read_identity(
+                        policy_address, values, None, account_id, environment
+                    ):
+                        report.violations.append(
+                            Violation(
+                                address,
+                                resource_type,
+                                "Gateway attachment requires its exact owned policy on both plan sides",
+                            )
+                        )
 
         if DESTRUCTIVE_ACTIONS.intersection(actions):
             # Covers ["delete"], ["delete","create"] and ["create","delete"] — a plain
