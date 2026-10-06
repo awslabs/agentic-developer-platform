@@ -9,6 +9,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -86,52 +87,26 @@ async def runtime(isolated_database):  # noqa: F811
         reset_acting_principal(token)
 
 
-async def test_lost_teardown_admission_keeps_workspace_unavailable_and_same_request(
+async def test_unavailable_teardown_phase_refuses_without_changing_workspace(
     runtime, monkeypatch
 ):
     from app.routers import workspaces
     from app.services import provisioning
 
-    class FacadeTransport:
-        def __init__(self):
-            self.requests = []
-            self.pending = True
-
-        async def open_operation(self, **request):
-            self.requests.append(request)
-            if len(self.requests) == 1:
-                raise provisioning.ProvisioningUnavailable("reply lost after admission")
-            return provisioning.OperationProgress(
-                operation_id="actual-admitted-teardown", state="running"
-            )
-
-        async def report_progress(self, operation_id):
-            assert operation_id == "actual-admitted-teardown"
-            return provisioning.OperationProgress(
-                operation_id=operation_id, state="succeeded"
-            )
-
-    facade = FacadeTransport()
+    facade = SimpleNamespace(open_operation=AsyncMock())
     monkeypatch.setattr(provisioning, "_facade", facade)
-    async with runtime.factory() as db:
-        with pytest.raises(HTTPException) as lost:
-            await workspaces.delete_workspace(runtime.workspace_id, runtime.org_id, db)
-        assert lost.value.status_code == 503
+    for _ in range(2):
+        async with runtime.factory() as db:
+            with pytest.raises(HTTPException) as refusal:
+                await workspaces.delete_workspace(
+                    runtime.workspace_id, runtime.org_id, db
+                )
+            assert refusal.value.status_code == 503
+    facade.open_operation.assert_not_called()
     async with runtime.factory() as db:
         workspace = await db.get(Workspace, runtime.workspace_id)
-        assert workspace.status == "Teardown"
+        assert workspace.status == "Active"
         assert workspace.teardown_operation_id is None
-    async with runtime.factory() as db:
-        retry = await workspaces.delete_workspace(
-            runtime.workspace_id, runtime.org_id, db
-        )
-        assert retry.status == "Teardown"
-    assert facade.requests[0] == facade.requests[1]
-    async with runtime.factory() as db:
-        result = await workspaces.get_workspace(
-            runtime.workspace_id, runtime.org_id, db
-        )
-        assert result.status == "Deleted"
 
 
 @pytest.mark.parametrize("teardown_state", ["running", "succeeded"])
@@ -140,7 +115,6 @@ async def test_create_retry_refreshes_cached_workspace_after_concurrent_teardown
 ):
     from app.routers import workspaces
     from app.schemas.workspace import CreateWorkspaceRequest
-    from app.services import provisioning
 
     body = CreateWorkspaceRequest(name="workspace")
     async with runtime.factory() as db:
@@ -151,25 +125,9 @@ async def test_create_retry_refreshes_cached_workspace_after_concurrent_teardown
         workspace.status = "Provisioning"
         await db.commit()
 
-    class FacadeTransport:
-        def __init__(self):
-            self.calls = []
-
-        async def open_operation(self, **request):
-            self.calls.append(request["action"])
-            assert request["action"] == "teardown"
-            return provisioning.OperationProgress(
-                operation_id="admitted-teardown", state=teardown_state
-            )
-
-        async def report_progress(self, operation_id):
-            self.calls.append(operation_id)
-            return provisioning.OperationProgress(
-                operation_id=operation_id, state="succeeded"
-            )
-
-    facade = FacadeTransport()
-    monkeypatch.setattr(provisioning, "_facade", facade)
+    monkeypatch.setattr(
+        "app.operation_activation.require_installed_lifecycle_binding", AsyncMock()
+    )
     cached, resume = asyncio.Event(), asyncio.Event()
     lookup = workspaces._workspace_for_operation
 
@@ -193,9 +151,11 @@ async def test_create_retry_refreshes_cached_workspace_after_concurrent_teardown
     try:
         await asyncio.wait_for(cached.wait(), 5)
         async with runtime.factory() as db:
-            deleted = await workspaces.delete_workspace(
-                runtime.workspace_id, runtime.org_id, db
+            workspace = await db.get(Workspace, runtime.workspace_id)
+            workspace.status = (
+                "Deleted" if teardown_state == "succeeded" else "Teardown"
             )
+            await db.commit()
         resume.set()
         response = await asyncio.wait_for(retry, 5)
     finally:
@@ -204,8 +164,7 @@ async def test_create_retry_refreshes_cached_workspace_after_concurrent_teardown
             retry.cancel()
         await asyncio.gather(retry, return_exceptions=True)
     expected_status = "Deleted" if teardown_state == "succeeded" else "Teardown"
-    assert deleted.status == response.status == expected_status
-    assert facade.calls == ["teardown"]
+    assert response.status == expected_status
     async with runtime.factory() as db:
         assert (await db.get(Workspace, runtime.workspace_id)).status == expected_status
 
@@ -218,6 +177,9 @@ async def test_completed_phase_waits_for_bootstrap_registration_before_proxy_and
     from app.services import eks_auth, kubeconfig, provisioning
     from app.services import proxy as proxy_service
 
+    monkeypatch.setattr(
+        "app.operation_activation.require_installed_lifecycle_binding", AsyncMock()
+    )
     body = CreateWorkspaceRequest(name="workspace")
     async with runtime.factory() as db:
         workspace = await db.get(Workspace, runtime.workspace_id)
