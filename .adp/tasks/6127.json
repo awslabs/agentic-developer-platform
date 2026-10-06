@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T01:16:07.382Z",
+  "updated_at": "2026-10-06T01:19:49.010Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -312,7 +312,7 @@
       "files": [
         "modules/gateway/tests/internal/test_paid_domain_operation_postgres.py"
       ],
-      "note": "Test committed in 8c9230b and formatted in 5d0de9c. Skipped locally without pgserver; exact-head Gateway CI run 37398244096 is queued. Do not count as passed yet.",
+      "note": "Committed in 8c9230b and formatted in 5d0de9c. Skipped locally without pgserver; exact-head Gateway CI run 37398302464 remains queued. Do not count as passed.",
       "commits": [
         "5d0de9c",
         "8c9230b"
@@ -355,7 +355,7 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: supervisor/live-acceptance owner; this source-only assignment prohibits deployment and paid execution."
+      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
     },
     {
       "id": "AC-05-t5",
