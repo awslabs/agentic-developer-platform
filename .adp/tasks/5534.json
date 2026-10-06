@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "issue": 5534,
+  "updated_at": "2026-10-06T01:36:15.258Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Preserve original sealed allocation and establish separate exact-name cleanup authority",
+      "status": "blocked",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_control.py"
+      ],
+      "note": "Trusted production composition remains; reviewer owns disposition after operator-directed handoff.",
+      "commits": [
+        "c83f065",
+        "5a65001",
+        "80b0d00",
+        "44742a1",
+        "1e0168e",
+        "46ba891",
+        "bc6d025",
+        "73430b4",
+        "fab15ef",
+        "70801fd",
+        "757ae6e",
+        "aac4f18",
+        "a3ea318",
+        "b277612",
+        "ed2882e",
+        "340e296"
+      ]
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run PostgreSQL allocation-bound cleanup-authority tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
+      ],
+      "note": "Production management-mode execution remains unproved.",
+      "commits": [
+        "b92e027"
+      ]
+    },
+    {
+      "id": "AC-01-c2",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Reconcile retirement effects under successor authority",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Production successor recovery remains.",
+      "commits": [
+        "6a58d0d",
+        "c2efb4e",
+        "ff18b2e"
+      ]
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run PostgreSQL phase-boundary and lost-reply successor tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [],
+      "note": "Production-effect successor coverage remains."
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run PostgreSQL cancellation and incomplete-cleanup tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c2"
+      ],
+      "files": [],
+      "note": "Production-producer coverage remains."
+    },
+    {
+      "id": "AC-01-t4",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run PostgreSQL stale-grant and unapproved-deletion denial tests",
+      "status": "open",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c2"
+      ],
+      "files": [],
+      "note": "Remaining production denial paths need coverage."
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Admit artifact-bound retirement through the API facade",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Admission remains review-only."
+    },
+    {
+      "id": "AC-02-c2",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Bind reviewed destroy and complete workload inventory",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Fresh inventory and admission interlock remain."
+    },
+    {
+      "id": "AC-02-c3",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Remove owned resources and verify survivors and costs",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Production removal and separate settlements remain."
+    },
+    {
+      "id": "AC-02-c-wire",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Expose the admitted retirement producer contract",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "No run_retirement producer or native worker registration exists.",
+      "commits": [
+        "3a02dea",
+        "886fab6",
+        "007a599"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run PostgreSQL API-to-producer integration tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c1",
+        "AC-02-c2",
+        "AC-02-c3",
+        "AC-02-c-wire"
+      ],
+      "files": [],
+      "note": "No admitted managed API-to-producer test."
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run survivor, residual-cost and provider-refusal tests",
+      "status": "open",
+      "covers": [
+        "AC-02-c2",
+        "AC-02-c3"
+      ],
+      "files": [],
+      "note": "Production negative integration remains."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Require database-backed retirement validation",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "Workflow enforcement remains."
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Run final-head affected suites and CI",
+      "status": "open",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Full suites and final-head CI result remain."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Document evaluator inputs and live gates",
+      "status": "open",
+      "covers": [],
+      "files": [],
+      "note": "PR contains source handoff; evaluator documentation remains."
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Check documentation disclosure and PR evidence",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Final documentation and evidence checks remain."
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Obtain independent review and required CI",
+      "status": "open",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Reviewer/foreground owns review and merge."
+    }
+  ]
+}

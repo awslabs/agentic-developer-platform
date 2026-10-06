@@ -42,7 +42,9 @@ def finalizer():
         execution_pool=pool,
         domain_pool=pool,
         resolve=resolve,
-        observations=None,
+        observations=SimpleNamespace(
+            catalog=lambda inventory, artifact, parameters, known: known
+        ),
         authenticate=AsyncMock(),
         token_for=lambda op: "verified-opaque-authority",
     )

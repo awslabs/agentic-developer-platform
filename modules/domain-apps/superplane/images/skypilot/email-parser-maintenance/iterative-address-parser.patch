@@ -1,0 +1,155 @@
+--- a/Lib/email/_parseaddr.py
++++ b/Lib/email/_parseaddr.py
+@@ -269,9 +269 @@
+-        """Parse the next address."""
+-        self.commentlist = []
+-        self.gotonext()
+-
+-        oldpos = self.pos
+-        oldcl = self.commentlist
+-        plist = self.getphraselist()
+-
+-        self.gotonext()
++        """Parse the next address without recursive group descent."""
+@@ -279,21 +271,22 @@
+-
+-        if self.pos >= len(self.field):
+-            # Bad email address technically, no domain.
+-            if plist:
+-                returnlist = [(SPACE.join(self.commentlist), plist[0])]
+-
+-        elif self.field[self.pos] in '.@':
+-            # email address is just an addrspec
+-            # this isn't very efficient since we start over
+-            self.pos = oldpos
+-            self.commentlist = oldcl
+-            addrspec = self.getaddrspec()
+-            returnlist = [(SPACE.join(self.commentlist), addrspec)]
+-
+-        elif self.field[self.pos] == ':':
+-            # address is a group
+-            returnlist = []
+-
+-            fieldlen = len(self.field)
+-            self.pos += 1
+-            while self.pos < len(self.field):
++        group_depth = 0
++        phase = 'address'
++        fieldlen = len(self.field)
++
++        while True:
++            if phase == 'group':
++                # Preserve the recursive loop's ordering: a comment skip that
++                # reaches EOF still performs the child's empty address parse.
++                if self.pos >= fieldlen:
++                    group_depth -= 1
++                    phase = 'finish'
++                else:
++                    self.gotonext()
++                    if self.pos < fieldlen and self.field[self.pos] == ';':
++                        self.pos += 1
++                        group_depth -= 1
++                        phase = 'finish'
++                    else:
++                        phase = 'address'
++                continue
++
++            if phase == 'finish':
+@@ -301 +294 @@
+-                if self.pos < fieldlen and self.field[self.pos] == ';':
++                if self.pos < fieldlen and self.field[self.pos] == ',':
+@@ -303,23 +296,52 @@
+-                    break
+-                returnlist = returnlist + self.getaddress()
+-
+-        elif self.field[self.pos] == '<':
+-            # Address is a phrase then a route addr
+-            routeaddr = self.getrouteaddr()
+-
+-            if self.commentlist:
+-                returnlist = [(SPACE.join(plist) + ' (' +
+-                               ' '.join(self.commentlist) + ')', routeaddr)]
+-            else:
+-                returnlist = [(SPACE.join(plist), routeaddr)]
+-
+-        else:
+-            if plist:
+-                returnlist = [(SPACE.join(self.commentlist), plist[0])]
+-            elif self.field[self.pos] in self.specials:
+-                self.pos += 1
+-
+-        self.gotonext()
+-        if self.pos < len(self.field) and self.field[self.pos] == ',':
+-            self.pos += 1
+-        return returnlist
++                if not group_depth:
++                    return returnlist
++                phase = 'group'
++                continue
++
++            self.commentlist = []
++            self.gotonext()
++
++            oldpos = self.pos
++            oldcl = self.commentlist
++            plist = self.getphraselist()
++
++            self.gotonext()
++
++            if self.pos >= fieldlen:
++                # Bad email address technically, no domain.
++                if plist:
++                    returnlist.append((SPACE.join(self.commentlist), plist[0]))
++
++            elif self.field[self.pos] in '.@':
++                # email address is just an addrspec
++                # this isn't very efficient since we start over
++                self.pos = oldpos
++                self.commentlist = oldcl
++                addrspec = self.getaddrspec()
++                returnlist.append((SPACE.join(self.commentlist), addrspec))
++
++            elif self.field[self.pos] == ':':
++                # Group names contribute no tuple. Flatten completed child
++                # addresses once, while retaining shared cursor/comment state.
++                self.pos += 1
++                group_depth += 1
++                phase = 'group'
++                continue
++
++            elif self.field[self.pos] == '<':
++                # Address is a phrase then a route addr
++                routeaddr = self.getrouteaddr()
++
++                if self.commentlist:
++                    returnlist.append((SPACE.join(plist) + ' (' +
++                                       ' '.join(self.commentlist) + ')', routeaddr))
++                else:
++                    returnlist.append((SPACE.join(plist), routeaddr))
++
++            else:
++                if plist:
++                    returnlist.append((SPACE.join(self.commentlist), plist[0]))
++                elif self.field[self.pos] in self.specials:
++                    self.pos += 1
++
++            phase = 'finish'
+@@ -437,0 +460 @@
++        comment_depth = 0
+@@ -443,2 +466,5 @@
+-            elif self.field[self.pos] in endchars:
+-                self.pos += 1
++            elif self.field[self.pos] in (')\r' if comment_depth else endchars):
++                self.pos += 1
++                if comment_depth:
++                    comment_depth -= 1
++                    continue
+@@ -447,2 +473,6 @@
+-                slist.append(self.getcomment())
+-                continue        # have already advanced pos from getcomment
++                # Nested comment text is flattened without adding delimiters.
++                # An inner CR closes only that comment, just as a recursive
++                # getcomment call did; the containing fragment then resumes.
++                comment_depth += 1
++                self.pos += 1
++                continue

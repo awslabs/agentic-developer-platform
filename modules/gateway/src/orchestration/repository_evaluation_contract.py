@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictInt, model_serializer, model_validator
 
 from .repository_producer_contract import RepositoryProducer
 
@@ -37,6 +37,15 @@ class Check(Contract):
 class Predecessor(Contract):
     address: Name
     required_checks: list[Check] = Field(min_length=1, max_length=64)
+    # Bind historical owner acceptance explicitly; GitHub still verifies evidence.
+    accepted_merge_decision_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+    @model_serializer(mode="wrap")
+    def preserve_existing_contract(self, handler):
+        document = handler(self)
+        if self.accepted_merge_decision_id is None:
+            document.pop("accepted_merge_decision_id", None)
+        return document
 
 
 class ExternalPullRequest(Contract):
@@ -168,6 +177,7 @@ class PullReceipt(Contract):
     binding_revision: Count | None = None
     review_ref: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     merge_operation_key: Name | None = None
+    accepted_merge_decision_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class JobReceipt(Contract):
@@ -214,6 +224,7 @@ def harness_digest():
         "repository_evaluation_provider.py",
         "deployment_workflow_provider.py",
         "repository_evaluation.py",
+        "accepted_merge_evidence.py",
         "evaluation_acceptance.py",
         "evaluation_authority.py",
         "merge_evidence.py",

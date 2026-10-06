@@ -76,12 +76,12 @@ interface IssueCommentResponse {
 }
 
 interface CheckRunsResponse {
-  check_runs: Array<{ name: string; status: string; conclusion: string | null }>;
+  check_runs: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 interface CombinedStatusResponse {
   state: string;
-  statuses: Array<{ context: string; state: string }>;
+  statuses: Array<{ context: string; state: string; target_url?: string }>;
 }
 
 export interface ChecksState {
@@ -89,6 +89,8 @@ export interface ChecksState {
   failing: string[];
   pending: string[];
   total: number;
+  /** Named evidence for final-revision review, not just an aggregate boolean. */
+  observations?: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 // This live-fleet diagnostic is intentionally not a required merge context:
@@ -278,7 +280,14 @@ export class GitHubClient {
       else if (status.state !== "success") failing.push(status.context);
     }
     const total = blockingChecks.length + blockingStatuses.length;
-    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
+    const observations = [
+      ...blockingChecks.map(({ name, status, conclusion, details_url }) =>
+        ({ name, status, conclusion, ...(details_url ? { details_url } : {}) })),
+      ...blockingStatuses.map(({ context, state, target_url }) => ({ name: context,
+        status: state === "pending" ? "pending" : "completed", conclusion: state === "pending" ? null : state,
+        ...(target_url ? { details_url: target_url } : {}) })),
+    ];
+    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total, observations };
   }
 
   async markReady(nodeId: string): Promise<void> {

@@ -1,7 +1,7 @@
 """Live cluster scopes for an exact strictly authenticated, bound caller.
 
-This is domain grant resolution, not ADP membership introspection. Shared
-execution remains disabled until current upstream identity is composed.
+Current ADP identity and live domain grants are independent requirements.
+Discovery does not establish approval or executor admission.
 """
 
 import uuid
@@ -10,6 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import VerifiedCaller
+from app.current_identity import (
+    CurrentIdentityReader,
+    IdentityUnavailable,
+    require_current_identity,
+)
 from app.models.cluster_grant_scope import (
     CLUSTER_PERMISSIONS,
     OrganizationGrantClusterScope,
@@ -28,6 +33,8 @@ async def authorized_cluster_ids(
     org_id: uuid.UUID,
     caller: VerifiedCaller | None,
     permission: str,
+    *,
+    identity_reader: CurrentIdentityReader | None = None,
 ) -> frozenset[uuid.UUID]:
     """Resolve live scopes; no admin, workspace, role, or legacy fallback."""
     if (
@@ -47,6 +54,16 @@ async def authorized_cluster_ids(
     )
     if binding is None:
         raise ProvisioningRefused(REFUSAL)
+    try:
+        await require_current_identity(
+            identity_reader,
+            subject=caller.principal.subject,
+            principal_type=caller.principal.account_type,
+            adp_org_id=caller.source_org_id,
+            membership_id=caller.identity_evidence,
+        )
+    except IdentityUnavailable:
+        raise ProvisioningRefused(REFUSAL) from None
     scopes = await db.scalars(
         select(OrganizationGrantClusterScope)
         .execution_options(populate_existing=True)

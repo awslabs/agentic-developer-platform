@@ -1834,7 +1834,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     review_delivery = prepare_review_delivery(envelope)
-    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input
+    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input, prepare_review_history
     cycle_input = prepare_cycle_input(envelope)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
@@ -2520,6 +2520,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                     f"review head changed before checkout: expected {expected_review_sha}, "
                     f"found {actual_review_sha}"
                 )
+            prepare_review_history(
+                {"baseRefOid": envelope["payload"]["pull_request"]["base"]["sha"]},
+                run=run_cmd, cwd=WORK_DIR,
+            )
             bootstrap_step = "review_branch"
         else:
             branch_name = (

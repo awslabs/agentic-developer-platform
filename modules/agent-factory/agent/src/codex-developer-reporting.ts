@@ -8,6 +8,7 @@ import { startControlRuntime } from './control-runtime-factory';
 import { containsSecret } from './experience-save-hook';
 import { writeFailureReport } from './failure-report';
 import { createWorkerActivityLog } from './worker-activity-log';
+import type { ClosureReport } from './run-record';
 
 export interface DeveloperReportingContext { repository: string; issue: number; model: string; persona?: string }
 export interface DeveloperReporter {
@@ -19,6 +20,7 @@ export interface DeveloperReporter {
   session(id: string): void;
   finish(result: { summary: string; prUrl?: string; usage?: unknown }): Promise<void>;
   fail(error: unknown): Promise<void>;
+  closure?(report: ClosureReport): void;
 }
 
 export function publicDeveloperText(text: string): string {
@@ -128,9 +130,11 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       log('INFO', text);
     },
     session(id) { metadata({ session_id: id }); check.runRecord.session(id); },
+    closure(report) { check.runRecord.closure(report); },
     async finish(result) {
       if (ended) return;
       try {
+        check.runRecord.closeReport(result.summary);
         explanation(result.summary);
         metadata({ session_completed: true, usage: result.usage, num_turns: sequence, pr_url: result.prUrl });
         live.transition(1, 'complete', reviewer ? 'Review completed' : 'Pull request published');
@@ -147,6 +151,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       try {
         writeFailureReport(error);
         const text = publicDeveloperText(error instanceof Error ? error.message : String(error));
+        check.runRecord.closeReport(`Run stopped: ${text}`);
         explanation(`Run failed: ${text}`);
         metadata({ session_completed: false });
         await live.finalizeFailure({ error: text, durationMs: live.getDurationMs() });

@@ -117,6 +117,28 @@ async def test_management_reads_remain_available_without_execution_facade(
             "/internal/vault-sync/trigger", headers=internal_token_header, json={}
         )
     ).status_code == 503
+    # A request-only membership fixture is not a composed readiness reader.
+    assert (await client.get("/readyz")).status_code == 503
+    from app.current_identity import MappedProducerIdentityReader
+
+    class Producer:
+        def can_sign(self):
+            return True
+
+        async def post(self, route, payload, *, distinguish_denial=False):
+            assert route == "/current-identity/readiness" and distinguish_denial
+            assert payload == {"domain": "superplane", "org_id": str(org)}
+            return {
+                "version": 1,
+                "domain": "superplane",
+                "org_id": str(org),
+                "adp_org_id": "selected-adp-org",
+            }
+
+    monkeypatch.setattr(
+        app.state, "current_identity_reader",
+        MappedProducerIdentityReader(Producer(), async_session_test),
+    )
     assert (await client.get("/readyz")).status_code == 200
 
 

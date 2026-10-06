@@ -121,6 +121,34 @@ async function reachReview(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole('group', { name: /review this plan/i });
 }
 
+describe('AC-05: keyboard focus follows workspace review and errors', () => {
+  it('focuses the new form and then the server-reviewed plan', async () => {
+    restore = withServed(['previewWorkspace']);
+    server.use(http.post(API('/workspaces/preview'), () => HttpResponse.json(PLAN_WIRE)));
+    const user = userEvent.setup();
+    renderFlow();
+    expect(screen.getByRole('heading', { name: 'Create a workspace' })).toHaveFocus();
+    await user.type(screen.getByLabelText('Workspace name'), 'research');
+    await user.tab();
+    await user.click(screen.getByRole('button', { name: /review plan/i }));
+    expect(await screen.findByRole('group', { name: /review this plan/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review this plan' })).toHaveFocus());
+    expect(screen.getByRole('button', { name: /create this workspace/i })).toBeEnabled();
+  });
+
+  it('focuses the error summary after a preview refusal', async () => {
+    restore = withServed(['previewWorkspace']);
+    server.use(http.post(API('/workspaces/preview'), () => new HttpResponse(null, { status: 503 })));
+    const user = userEvent.setup();
+    renderFlow();
+    await user.type(screen.getByLabelText('Workspace name'), 'research');
+    await user.click(screen.getByRole('button', { name: /review plan/i }));
+    const problem = await screen.findByRole('group', { name: 'Workspace submission problem' });
+    await waitFor(() => expect(problem).toHaveFocus());
+    expect(problem).toHaveTextContent(/cannot be submitted/i);
+  });
+});
+
 describe('AC-04: refusing to submit what cannot be submitted safely', () => {
   it('blocks the plan request when the preview route is not served', async () => {
     // An explicitly unavailable deployment. No request is issued — MSW runs with

@@ -53,7 +53,7 @@ async def lifecycle_proposals(
     composition = _composition(request)
     try:
         workspace, _ = await workspace_scope(db, org_id, workspace_id)
-        async with composition.operation_connect() as connection:
+        async with composition.domain_connect() as connection:
             rows = await connection.fetch(
                 "SELECT artifact_id FROM workspace_lifecycle_artifacts WHERE org_id=$1 AND workspace_id=$2 "
                 "AND source_operation_id=$3 ORDER BY created_at DESC LIMIT 20",
@@ -242,7 +242,7 @@ async def operation_response(request, db, org_id, identity, *, by_request):
                     Workspace.org_id == org_id,
                 )
             )
-            return {
+            result = {
                 "request_id": row["idempotency_key"],
                 "provisioning_operation_id": row["operation_id"],
                 "workspace_id": str(workspace.id) if workspace is not None else None,
@@ -254,6 +254,38 @@ async def operation_response(request, db, org_id, identity, *, by_request):
                 "observed_at": datetime.now(UTC),
                 "retryable": False,
             }
+        if "lifecycle_request" in admitted.parameters:
+            # Optional history must never overwrite the queried admission's state.
+            # Failure leaves recovery available but supplies no continuation proof.
+            result["lifecycle_lineage"] = None
+            result["applied_ownership"] = None
+            if workspace is not None:
+                from app.services.lifecycle_evidence import (
+                    native_evidence,
+                    workspace_pointer_matches,
+                )
+
+                try:
+                    current_operation_id = workspace.provisioning_operation_id
+                    lineage, ownership = await native_evidence(
+                        composition,
+                        org_id=str(org_id),
+                        workspace_id=str(workspace.id),
+                        root_operation_id=row["operation_id"],
+                        current_operation_id=current_operation_id,
+                    )
+                    if await workspace_pointer_matches(
+                        db,
+                        org_id,
+                        workspace.id,
+                        row["idempotency_key"],
+                        current_operation_id,
+                    ):
+                        result["lifecycle_lineage"] = lineage
+                        result["applied_ownership"] = ownership
+                except Exception:
+                    pass
+        return result
     except HTTPException:
         raise
     except Exception:

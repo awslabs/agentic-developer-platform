@@ -1,0 +1,163 @@
+{
+  "base_platform": "sha256:f9526b56a70865618d00f50a5a013b025cdc91840f948790c919e496caece987",
+  "base_config": "sha256:5214d2fcebdc5a2a483143fa48c04420705e4b181eab128b81e3216fc5dc52de",
+  "python_versions": {
+    "skypilot": "0.12.3",
+    "PyJWT": "2.14.0"
+  },
+  "packages": [
+    {
+      "file": "libtinfo6_6.6+20260608-2+adp131_amd64.deb",
+      "sha256": "202f6a27c0923808f2b226045ef2cd6fd2af5381a64748885c44ff8fb7b07e03",
+      "package": "libtinfo6",
+      "version": "6.6+20260608-2+adp131",
+      "architecture": "amd64",
+      "source": "ncurses",
+      "installed_version": "6.5+20250216-2"
+    },
+    {
+      "file": "libncursesw6_6.6+20260608-2+adp131_amd64.deb",
+      "sha256": "42bb2a5f2e2d604d1b11d5c381c93c5fe432d4d7d7cabaa1e246a39e67c40312",
+      "package": "libncursesw6",
+      "version": "6.6+20260608-2+adp131",
+      "architecture": "amd64",
+      "source": "ncurses",
+      "installed_version": "6.5+20250216-2"
+    },
+    {
+      "file": "ncurses-bin_6.6+20260608-2+adp131_amd64.deb",
+      "sha256": "8630c2fb166ef611c018fa17cbbf744251a5efdc352e4d48c01d1bcfce2fa708",
+      "package": "ncurses-bin",
+      "version": "6.6+20260608-2+adp131",
+      "architecture": "amd64",
+      "source": "ncurses",
+      "installed_version": "6.5+20250216-2"
+    },
+    {
+      "file": "util-linux_2.42.4-1+adp131_amd64.deb",
+      "sha256": "da9348437deb046cf00737f292037457803e093fa82d6ca38bf1ee677959437e",
+      "package": "util-linux",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "libmount1_2.42.4-1+adp131_amd64.deb",
+      "sha256": "60f99e2042fc49299cc8d7e2e285d29b1ad3da3de47bf4b63e9e663f6c2fb185",
+      "package": "libmount1",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "libblkid1_2.42.4-1+adp131_amd64.deb",
+      "sha256": "391fbccf847dcf6c6c26acd7f4b0721b7d718be0d62e58967cea75f942c5376c",
+      "package": "libblkid1",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "bsdutils_2.42.4-1+adp131_amd64.deb",
+      "sha256": "f68c9f0ded63d3f52183c8cd9689805a8ff71a9a2575be7963917b453e05eacf",
+      "package": "bsdutils",
+      "version": "1:2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux (2.42.4-1+adp131)",
+      "installed_version": "1:2.41.5-0+deb13u1"
+    },
+    {
+      "file": "libuuid1_2.42.4-1+adp131_amd64.deb",
+      "sha256": "bc1e3eddfdef596c1fd92e03f3af2d9fa900095a010ee508a33fedd56fdab7da",
+      "package": "libuuid1",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "liblastlog2-2_2.42.4-1+adp131_amd64.deb",
+      "sha256": "d956e96b47ef45c3ddd8e9754c205e88ec609c797a8875821a8f96cd311744b4",
+      "package": "liblastlog2-2",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "libsmartcols1_2.42.4-1+adp131_amd64.deb",
+      "sha256": "7fe0c2aecc83403ee5d15c8353930d2eaa8f9cb8961aaba8a419d1338916f124",
+      "package": "libsmartcols1",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "login_4.16.0-2+really2.42.4-1+adp131_amd64.deb",
+      "sha256": "c1e5fae8ee839d904adc5e6e9623bb0dc020958d7db26b235e346bd6895e1b5f",
+      "package": "login",
+      "version": "1:4.16.0-2+really2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux (2.42.4-1+adp131)",
+      "installed_version": "1:4.16.0-2+really2.41.5-0+deb13u1"
+    },
+    {
+      "file": "mount_2.42.4-1+adp131_amd64.deb",
+      "sha256": "7c6af7e622024562bf46b8ead8375eb156dad0fa299ab64c380afc8b60c10192",
+      "package": "mount",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": "2.41.5-0+deb13u1"
+    },
+    {
+      "file": "libc6_2.41-12+deb13u4+adp1_amd64.deb",
+      "sha256": "4cbb7b59deb8edb36af2e0bd27521460488541e10f0135137f11d9b0bd3946b3",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4+adp1",
+      "architecture": "amd64",
+      "source": "glibc",
+      "installed_version": "2.41-12+deb13u4"
+    },
+    {
+      "file": "libc-bin_2.41-12+deb13u4+adp1_amd64.deb",
+      "sha256": "31a3fa8e708687ce14b5bd52a012c5eaa9e1a7e4995641778ee10fb6ff19a876",
+      "package": "libc-bin",
+      "version": "2.41-12+deb13u4+adp1",
+      "architecture": "amd64",
+      "source": "glibc",
+      "installed_version": "2.41-12+deb13u4"
+    },
+    {
+      "file": "util-linux-extra_2.42.4-1+adp131_amd64.deb",
+      "sha256": "2aaaa68584ebde90a432a08b9f80143bc2509fb083b17e8a67025291addddb4c",
+      "package": "util-linux-extra",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": null
+    },
+    {
+      "file": "bsdextrautils_2.42.4-1+adp131_amd64.deb",
+      "sha256": "e03188fdcf97df207b50ea82099c5017d2d4f1469ce40926797630281f5d6b2c",
+      "package": "bsdextrautils",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": null
+    }
+  ],
+  "compatibility_aliases": {
+    "/usr/sbin/blkzone": "../bin/blkzone",
+    "/usr/sbin/chcpu": "../bin/chcpu",
+    "/usr/sbin/chmem": "../bin/chmem",
+    "/usr/sbin/isosize": "../bin/isosize",
+    "/usr/sbin/ldattach": "../bin/ldattach",
+    "/usr/sbin/pivot_root": "../bin/pivot_root",
+    "/usr/sbin/switch_root": "../bin/switch_root"
+  }
+}

@@ -17,6 +17,7 @@ from .authority import load_policy
 from .execution_contract import ExecutionStep, encode_execution_steps
 from .lifecycle_policy import policy_digest, policy_document
 from .retirement_access_plan import PHASE, access_identity
+from .retirement_managed_access import ManagedRetirementAccessPlan
 from .runtime_config import LifecycleRefused, validate_runtime_config
 
 FIELDS = frozenset(
@@ -53,6 +54,14 @@ FIELDS = frozenset(
 )
 
 
+def request_fields(parameters):
+    return FIELDS | (
+        {"retirement_prepare_destroy"}
+        if "retirement_prepare_destroy" in parameters
+        else set()
+    )
+
+
 def request_revision(parameters):
     return digest(
         {
@@ -69,16 +78,33 @@ def execution_steps(recipe_sha256):
     )
 
 
-def access_request(plan, source, deployment_policy):
+def access_request(
+    plan, source, deployment_policy, *, allocation_source=None, prepare_destroy=False
+):
     """Build from server-read bootstrap metadata and the service-compiled recipe."""
     policy = policy_document(deployment_policy)
     original = decode_payload(source.request_payload)
+    managed = isinstance(plan, ManagedRetirementAccessPlan)
+    paid_source = allocation_source if managed else source
     if (
         source.state != "succeeded"
         or original.action != "provision"
         or original.parameters.get("lifecycle_phase") != "bootstrap-workspace"
         or payload_digest(original) != source.plan_digest
-        or allocation_id_for(source) != plan.original_allocation_id
+        or paid_source is None
+        or allocation_id_for(paid_source) != plan.original_allocation_id
+        or (
+            managed
+            and (
+                paid_source.state != "succeeded"
+                or paid_source.operation_id
+                != original.parameters.get("lifecycle_source_operation_id")
+                or paid_source.org_id != source.org_id
+                or paid_source.workspace_id != source.workspace_id
+                or paid_source.admitted_request().parameters.get("lifecycle_phase")
+                != "apply-infrastructure"
+            )
+        )
         or source.org_id != plan.org_id
         or source.workspace_id != plan.workspace_id
     ):
@@ -87,16 +113,26 @@ def access_request(plan, source, deployment_policy):
         )
     request = json.loads(original.parameters["lifecycle_request"])
     account, region = plan.cluster_arn.split(":")[4], plan.cluster_arn.split(":")[3]
+    expected_mode = "existing-account-managed" if managed else "bring-existing-cluster"
     if (
-        request.get("mode") != "bring-existing-cluster"
+        request.get("mode") != expected_mode
         or request.get("region") != region
         or request.get("target_account_id") != account
         or request.get("workspace_id") != plan.workspace_id
         or original.parameters.get("aws_account_id") != account
-    ):
-        raise LifecycleRefused(
-            "cleanup access cannot change original adoption ownership"
+        or (
+            managed
+            and (
+                original.parameters.get("lifecycle_artifact_id")
+                != plan.bootstrap_artifact_id
+                or json.loads(original.parameters["lifecycle_inputs"]).get(
+                    "isolation_mode"
+                )
+                != "dedicated"
+            )
         )
+    ):
+        raise LifecycleRefused("cleanup access cannot change original ownership")
     reference = policy["credential_references"].get(account)
     if reference is None:
         raise LifecycleRefused("cleanup access credential reference is unavailable")
@@ -126,6 +162,12 @@ def access_request(plan, source, deployment_policy):
         "max_runtime_seconds": str(policy["operation_max_runtime_seconds"]),
         **reference,
     }
+    if prepare_destroy:
+        if not managed or plan.fence_recipe is None:
+            raise LifecycleRefused(
+                "destroy preparation requires approved managed fence"
+            )
+        parameters["retirement_prepare_destroy"] = "v1"
     parameters["plan_revision"] = request_revision(parameters)
     parameters["execution_steps"] = execution_steps(
         parameters["retirement_access_recipe_sha256"]
@@ -144,7 +186,7 @@ def validate_request(request, *, org_id, workspace_id, policy):
     parameters = request.parameters
     if (
         request.action != "provision"
-        or set(parameters) != FIELDS
+        or set(parameters) != request_fields(parameters)
         or parameters.get("lifecycle_phase") != PHASE
         or any(
             not isinstance(value, str) or len(value) > 2048
@@ -161,12 +203,24 @@ def validate_request(request, *, org_id, workspace_id, policy):
     ] != digest(config):
         raise LifecycleRefused("approved cleanup access policy or runtime changed")
     account = parameters["aws_account_id"]
+    original = json.loads(parameters["lifecycle_request"])
+    mode = original.get("mode")
+    if "retirement_prepare_destroy" in parameters and (
+        mode != "existing-account-managed"
+        or parameters["retirement_prepare_destroy"] != "v1"
+    ):
+        raise LifecycleRefused("destroy preparation requires explicit managed approval")
+    permission = {
+        "existing-account-managed": "managed",
+        "bring-existing-cluster": "adopt",
+    }.get(mode)
     if (
         parameters["provider"] != "aws"
         or parameters["provider_account_id"] != account
         or account not in policy["permitted_target_accounts"]
         or parameters["region"] not in policy["permitted_regions"]
-        or "adopt" not in policy["permitted_modes"]
+        or permission is None
+        or permission not in policy["permitted_modes"]
     ):
         raise LifecycleRefused("cleanup access target is outside current policy")
     reference = policy["credential_references"].get(account)
@@ -215,18 +269,18 @@ def validate_request(request, *, org_id, workspace_id, policy):
         raise LifecycleRefused(
             "cleanup access recipe differs from its reviewed request"
         )
-    original = json.loads(parameters["lifecycle_request"])
     public = json.loads(parameters["lifecycle_inputs"])
     if (
-        original.get("mode") != "bring-existing-cluster"
-        or original.get("region") != parameters["region"]
+        original.get("region") != parameters["region"]
         or original.get("target_account_id") != account
         or original.get("workspace_id") != workspace_id
         or public.get("isolation_mode") not in policy["isolation_modes"]
-    ):
-        raise LifecycleRefused(
-            "cleanup access does not retain supported adopted ownership"
+        or (
+            mode == "existing-account-managed"
+            and public.get("isolation_mode") != "dedicated"
         )
+    ):
+        raise LifecycleRefused("cleanup access does not retain supported ownership")
     return config
 
 

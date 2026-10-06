@@ -78,6 +78,8 @@ def upgrade(args):
         raise ValueError('This release does not contain deploy-all.sh')
     if args.update and '--update)' not in script.read_text():
         raise ValueError('This release does not contain an update-capable deploy-all.sh')
+    if os.environ.get('ADP_WORKER_MIGRATION_EVIDENCE') and not (source / 'platform/scripts/upgrade-workers.py').is_file():
+        raise ValueError('This release does not support scripted worker migration')
     for flag in ('--confirm-destructive', '--allow-known-claude-gap'):
         if flag in flags and flag + ')' not in script.read_text():
             raise ValueError(f'This release does not support {flag}; select a release containing this fix')

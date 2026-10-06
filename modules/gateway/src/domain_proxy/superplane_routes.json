@@ -20,6 +20,22 @@
     "/workspaces/{workspace_id}"
   ],
   [
+    "GET",
+    "/workspaces/{workspace_id}/access/v1/me"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"
+  ],
+  [
     "DELETE",
     "/workspaces/{workspace_id}"
   ],
@@ -118,6 +134,22 @@
   [
     "GET",
     "/orgs/current"
+  ],
+  [
+    "GET",
+    "/orgs/current/access/v1/me"
+  ],
+  [
+    "GET",
+    "/orgs/current/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/orgs/current/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/orgs/current/access/v1/grants/{grant_id}/revoke"
   ],
   [
     "PATCH",
@@ -330,5 +362,13 @@
   [
     "GET",
     "/events/workspaces/{workspace_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement/access/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/retirement/access"
   ]
 ]

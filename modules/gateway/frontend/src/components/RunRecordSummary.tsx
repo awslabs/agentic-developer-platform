@@ -1,5 +1,25 @@
 import { checklistContribution, type RunRecord } from '@/utils/runRecord';
 import './run-workspace.css';
+export function RunClosureReport({ record }: { record?: RunRecord }) {
+  const report = record?.closure_report;
+  return <section aria-label="Closure report" className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
+    <h3 className="font-semibold text-lg">Closure report</h3>
+    {report ? <>
+      <p className="mt-2 whitespace-pre-wrap">{report.summary}</p>
+      <p className="mt-2 font-medium">{report.delivery}</p>
+      <div className="grid gap-4 md:grid-cols-2 mt-4">
+        <div><h4 className="font-semibold">Completed</h4>{report.completed.length
+          ? <ul className="list-disc pl-5 mt-2">{report.completed.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          : <p>No completed work was recorded.</p>}</div>
+        <div><h4 className="font-semibold">Remaining</h4>{report.remaining.length
+          ? <ul className="list-disc pl-5 mt-2">{report.remaining.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          : <p>No remaining work was reported for this assignment.</p>}</div>
+      </div>
+      {report.reporting_notes.map((note, i) => <p key={i} className="text-sm text-gray-500 mt-2">{note}</p>)}
+    </> : <p className="mt-2 text-sm text-gray-500">No closure report was saved for this run. The recorded checklist and transcript are below.</p>}
+  </section>;
+}
+
 export function RunRecordSummary({ record }: { record?: RunRecord }) {
   if (!record) return <aside className="run-record" aria-label="Retained run record"><h3 className="font-semibold">Run record</h3><p className="text-sm mt-3">Structured checklist history was not captured or could not be read for this run. The original transcript remains available.</p></aside>;
   const tasks = record.latest_checklist?.tasks;
