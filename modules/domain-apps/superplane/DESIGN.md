@@ -820,6 +820,35 @@ recovery requirements are specified in
 Runtime must refuse missing or incompatible pins; it must not substitute a callback
 that asserts readiness or hash current provider state to manufacture an expectation.
 
+### 7.2 Infrastructure source and lifecycle ownership
+
+All Superplane-specific infrastructure definitions, environment inputs and
+provisioning logic live under `modules/domain-apps/superplane/`. Persistent AWS
+resources, IAM roles/policies and EKS access mappings use app-owned Terraform.
+Kubernetes installation and temporary workspace/bootstrap grants use maintained
+app entrypoints with recorded ownership, verification and cleanup.
+
+Existing ADP management infrastructure remains platform-owned. App modules
+consume explicit references to shared clusters, database instances, state
+storage, identity providers and automation roles. They do not acquire ownership
+of those dependencies or another application's grants. GitHub workflow wrappers
+and shared Terraform composition roots may call app-owned modules; the app owns
+the Superplane-specific definitions they execute.
+
+The installation operator may use an explicitly authorized local AWS role to
+prepare and apply infrastructure. A broker connection is not a prerequisite for
+that operator path. The selected account/immutable role and saved plans must
+still be verified. Runtime provider credentials and workspace delegation are
+separate from installation authority.
+
+Moving source or introducing a child module must preserve existing resource
+identities and backend keys, with reviewed Terraform address migrations where
+needed. Do not recreate resources, expand permissions, or silently transfer
+shared state ownership as part of a directory move. Source completion does not
+establish that live infrastructure or state ownership has changed. The
+[infrastructure ownership contract](infra/README.md#infrastructure-ownership)
+maps the maintained app owners and shared integration boundaries.
+
 ## 8. Delivery and acceptance
 
 | Story | Required outcome |

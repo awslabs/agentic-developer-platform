@@ -2,6 +2,60 @@
 
 Issue #5042 (U3), EPIC #4910.
 
+## Infrastructure ownership
+
+All Superplane-specific infrastructure source belongs under
+`modules/domain-apps/superplane/`. Persistent AWS infrastructure is declared in
+this app's Terraform modules; app installation and lifecycle entrypoints own
+their planning, execution, verification and recovery. App environment inputs,
+build declarations and infrastructure utilities belong here as well.
+
+| Concern | App source owner |
+|---|---|
+| Control-plane IAM, repositories, configuration and build declarations | `control-plane/` and `../codebuild/` |
+| Dedicated paid-worker builder and image-production infrastructure | `paid-worker-build/` and `native-image/` |
+| Operation queue and runtime worker/observer roles | `domain-runtime/` |
+| Bootstrap actors and independently retained encryption | `lifecycle-foundations/` |
+| Workspace network, EKS and node roles | `workspaces/` |
+| Installer role and installation access | `installer-access/` |
+| Superplane permissions used by shared automation | App-owned Terraform modules composed by the shared automation root |
+| Kubernetes resources, database preparation and installation checks | `../k8s/` and `../installation/` |
+
+The existing ADP management cluster, database instance, state bucket, GitHub OIDC
+provider and shared build publisher retain their platform owners. Pass their
+references into app modules or read their declared outputs. An app may own a
+separate scoped policy on a shared role without owning that role's lifecycle;
+it must not replace or delete another application's grants.
+
+GitHub workflow entrypoints remain in `.github/workflows/` as required by GitHub.
+Shared Terraform roots may compose app-owned modules, and platform teardown may
+order app cleanup before its dependencies. These are integration hooks, not a
+second implementation of Superplane provisioning. Source ownership and state
+ownership are distinct: a shared composition root can retain existing state
+while an app-owned child module defines its resources.
+
+Use the explicitly authorized AWS installation operator to prepare and apply
+infrastructure. A local operator does not require a new ADP connection merely to
+run Terraform. Runtime workspace credential delegation remains a separate
+requirement. Keep selected account/role checks and actual saved-plan approvals.
+
+When moving existing resources into child modules, preserve backend keys,
+resource names, trust and permission scope and include Terraform `moved` blocks
+or a coordinated state-transfer procedure as appropriate. Never let two states
+own the same resource. Review the resulting plan for unintended replacement,
+deletion or permission expansion. A source change alone does not establish that
+live state has migrated; see [build ownership migration](BUILD-OWNERSHIP-MIGRATION.md).
+
+Temporary bootstrap and workspace grants remain operation-owned and are removed
+through the app's recorded cleanup path. They must not become permanent admin
+permissions merely to simplify installation.
+
+## Control-plane lane history
+
+The following describes the original control-plane lane. Historical issue and
+build blockers below are not a current live-installation status report; use the
+selected release lock and actual installation receipts for that status.
+
 `control-plane/` is the ADP-owned Terraform wrapper that deploys the pinned Superplane
 control plane and the SkyPilot API service. It owns the AWS-side surface those images need —
 IAM roles, ECR repositories, SSM configuration — and nothing else. Application code is now
