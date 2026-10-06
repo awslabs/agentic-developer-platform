@@ -50,9 +50,9 @@ def sealed_target(operation, region):
     return credential, account
 
 
-def session_deadline(grant, operation, lease):
+def session_deadline(grant, operation, lease, *, require_session=True):
     deadline = min(grant.expires_at, operation["approval_expires_at"], lease["runtime_deadline"])
-    if datetime.now(UTC) + timedelta(seconds=900) >= deadline:
+    if datetime.now(UTC) + timedelta(seconds=900 if require_session else 0) >= deadline:
         raise HTTPException(403, REFUSED)
     return deadline
 
@@ -109,7 +109,7 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
     initial = await current(request, body.operation_id)
     binding, principal, _, grant, operation, lease = initial
     (credential_id, service, label), account = sealed_target(operation, body.region)
-    deadline = session_deadline(grant, operation, lease)
+    deadline = session_deadline(grant, operation, lease, require_session=not preflight_only)
     authority = snapshot(initial)
     from src.internal.domain_provider_cleanup import cleanup_policy
 
@@ -123,7 +123,7 @@ async def provider_session(request, body, db, sm, *, preflight_only=False):
         if await cleanup_policy(binding, operation, entry_arn) != (policy, entry_identity):
             raise HTTPException(403, REFUSED)
         # A shortened approval or runtime deadline must also constrain the answer.
-        if session_deadline(latest[3], latest[4], latest[5]) < deadline:
+        if session_deadline(latest[3], latest[4], latest[5], require_session=not preflight_only) < deadline:
             raise HTTPException(403, REFUSED)
         return frozenset({DELIVERY_PERMISSION})
 

@@ -132,6 +132,7 @@ async def session_for(
         )
         session = boto3.Session(botocore_session=selected)
         session._superplane_role_arn = pinned[0]
+        session._superplane_role_id = pinned[1]
         session._superplane_source_session = session
         session._superplane_external_id = None
         session._superplane_authority_deadline = lambda: authority_deadline
@@ -148,7 +149,10 @@ async def session_for(
             except BaseException:
                 pending.cancel()
                 raise OperationRefused("scoped provider session unavailable") from None
-            if scoped._superplane_role_arn != session._superplane_role_arn:
+            if (scoped._superplane_role_arn, scoped._superplane_role_id) != (
+                session._superplane_role_arn,
+                session._superplane_role_id,
+            ):
                 raise OperationRefused("scoped provider role changed")
             return scoped
 
