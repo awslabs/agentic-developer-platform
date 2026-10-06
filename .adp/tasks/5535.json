@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:13:09.728Z",
+  "updated_at": "2026-10-06T00:16:28.911Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -3807,7 +3807,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "PostgreSQL and native-worker suites passed at the prior checkpoint.",
+      "note": "Previously passed; separate Go restart test still requires a test binary.",
       "commits": [
         "14f7ccf"
       ]
@@ -3823,12 +3823,8 @@
         "AC-01-c2",
         "AC-01-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py:447",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py:177",
-        "modules/domain-apps/superplane/executor/tests/test_lifecycle_postgres.py:629"
-      ],
-      "note": "44 API/PostgreSQL and 25 native-worker tests passed; committed and pushed as 9b03cb472.",
+      "files": [],
+      "note": "Previously passed at 9b03cb472.",
       "commits": [
         "9b03cb4"
       ]
@@ -3838,13 +3834,20 @@
       "kind": "test",
       "criterion": "AC-01",
       "title": "Test uncertain and partial lifecycle outcomes without false completion",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1",
         "AC-01-c-wire"
       ],
-      "files": [],
-      "note": "Next task."
+      "files": [
+        "modules/domain-apps/superplane/executor/superplane_executor/inventory.py:618",
+        "modules/domain-apps/superplane/executor/tests/test_lifecycle_postgres.py:515",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py:214"
+      ],
+      "note": "46 API/PostgreSQL and 62 worker/recovery tests passed; committed and pushed as 2fa4703c6.",
+      "commits": [
+        "2fa4703"
+      ]
     },
     {
       "id": "AC-02-c1",
@@ -3854,7 +3857,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Must support first-workspace readiness without inventing a grant."
+      "note": "Next task; must support first-workspace readiness without inventing a grant."
     },
     {
       "id": "AC-02-c2",
@@ -3934,7 +3937,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at 9b03cb472; checks and handoff remain."
+      "note": "PR head verified at 2fa4703c6; checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
