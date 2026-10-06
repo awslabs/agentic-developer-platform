@@ -29,7 +29,7 @@ def write_json(root, name, obj):
     return name
 
 
-def oci(root, name, files, revision):
+def oci(root, name, files, revision, env=None):
     layer = tar_bytes([(p.lstrip("/"), b) for p, b in files.items()])
     cfg = {
         "architecture": "amd64",
@@ -38,6 +38,7 @@ def oci(root, name, files, revision):
             "User": "1000:1000",
             "WorkingDir": "/",
             "Labels": {"org.opencontainers.image.revision": revision},
+            "Env": env or [],
         },
         "rootfs": {"type": "layers", "diff_ids": ["sha256:" + D.sha(layer)]},
     }
@@ -133,6 +134,7 @@ def make_component(
     extra_files=None,
     producer_changes=None,
     extra_advisory=True,
+    env=None,
 ):
     version = "3.10.21" if provider == "cpython-runtime/v1" else "46.0.7+adp1"
     files = {
@@ -213,7 +215,7 @@ def make_component(
     ).encode()
     files.update(extra_files or {})
     revision, producer_revision = "a" * 40, "b" * 40
-    platform, config, layer, cfgbytes = oci(root, "candidate.tar", files, revision)
+    platform, config, layer, cfgbytes = oci(root, "candidate.tar", files, revision, env)
     producer_files = dict(files)
     producer_files.update(producer_changes or {})
     producer_platform, producer_config, _, _ = oci(
@@ -1030,3 +1032,10 @@ def test_compressed_blob_is_verified_but_locations_bind_diffid(tmp_path):
     D.collect_oci(archive, "sha256:" + D.sha(manifest), file_layers=layers)
     assert layers["/native-file"] == "sha256:" + D.sha(layer)
     assert layers["/native-file"] != "sha256:" + D.sha(compressed)
+
+
+@pytest.mark.parametrize("variable", ["LD_AUDIT", "LD_PRELOAD", "LD_LIBRARY_PATH"])
+def test_image_loader_overrides_fail_closed(tmp_path, variable):
+    bundle = make_component(tmp_path, env=[variable + "=/synthetic/audit.so"])
+    with pytest.raises(D.Invalid, match="unsupported image import/loader override"):
+        collect(bundle)

@@ -821,9 +821,8 @@ def collect_components(d, root, paths, observation, sbom, native, sarif, filenam
                 "PYTHONPATH",
                 "PYTHONHOME",
                 "PYTHONPYCACHEPREFIX",
-                "LD_PRELOAD",
-                "LD_LIBRARY_PATH",
             }
+            or e.split("=", 1)[0].startswith("LD_")
             for e in env
         ),
         "unsupported image import/loader override",
