@@ -199,6 +199,56 @@ class ReleaseContracts(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
             upgrade.release_lock(dynamo, {}, 'run-owner')
 
+    def test_release_upgrade_runs_public_launcher_and_propagates_failure(self):
+        root = self.directory / 'checkout'
+        scripts = root / 'platform/scripts'
+        scripts.mkdir(parents=True)
+        (root / 'deploy.sh').write_bytes((ROOT / 'deploy.sh').read_bytes())
+        (scripts / 'deploy-prerequisites.sh').write_bytes(
+            (ROOT / 'platform/scripts/deploy-prerequisites.sh').read_bytes())
+        # Execute the real public launcher; replace only its deployment engine.
+        (scripts / 'deploy-all.sh').write_text(
+            '#!/bin/bash\nset -eu\n'
+            'printf "%s\\n" "$@" > "$TEST_UPGRADE_ARGS"\n'
+            'test -n "$ADP_RELEASE_DIR"\n'
+            'test -n "$ADP_RELEASE_PREPARED"\n'
+            'test "$AWS_WEB_IDENTITY_TOKEN_FILE" = /test/oidc-token\n'
+            'exit "$TEST_UPGRADE_EXIT"\n')
+        for code in (0, 19):
+            with self.subTest(exit_code=code):
+                private = self.directory / f'private-{code}'
+                private.mkdir()
+                evidence = self.directory / f'evidence-{code}'
+                s3 = Mock()
+                s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{}'))}
+                with patch.object(upgrade, 'ROOT', root), \
+                        patch.object(upgrade, 'check_source'), patch.object(upgrade, 'identity'), \
+                        patch.object(upgrade, 'check_module_scope'), \
+                        patch.object(storage, 'client', return_value=s3), \
+                        patch.object(storage, 'put_once'), patch('boto3.client'), \
+                        patch.object(artifacts, 'prepare'), \
+                        patch.object(artifacts, 'environment_values', return_value={
+                            'TEST_UPGRADE_ARGS': str(private / 'args'), 'TEST_UPGRADE_EXIT': str(code)}), \
+                        patch.object(upgrade.tempfile, 'mkdtemp', return_value=str(private)), \
+                        patch.object(upgrade.subprocess, 'Popen', wraps=subprocess.Popen) as launch, \
+                        patch.object(upgrade.acceptance, 'check', return_value={'status': 'passed'}) as accept, \
+                        patch.dict(os.environ, AWS_WEB_IDENTITY_TOKEN_FILE='/test/oidc-token'):
+                    if code:
+                        with self.assertRaisesRegex(RuntimeError, 'Full upgrade failed'):
+                            upgrade.upgrade(self.directory, 'integration-test', evidence)
+                        accept.assert_not_called()
+                        s3.put_object.assert_not_called()
+                    else:
+                        upgrade.upgrade(self.directory, 'integration-test', evidence)
+                        accept.assert_called_once()
+                        s3.put_object.assert_called_once()
+                    self.assertEqual(launch.call_args.args[0], [
+                        'bash', str(root / 'deploy.sh'), '--update', '--env', 'dev', '--region', common.REGION])
+                self.assertEqual((private / 'args').read_text().splitlines(),
+                                 ['--env', 'dev', '--region', common.REGION, '--update'])
+                self.assertEqual(json.loads((evidence / 'acceptance.json').read_text())['status'],
+                                 'failed' if code else 'passed')
+
     def test_terraform_inputs_use_verified_bytes_and_keep_identity_config(self):
         overrides = artifacts.overrides(self.manifest, self.directory, '615296308642')
         for name, (module, resource, _) in common.LAMBDAS.items():
