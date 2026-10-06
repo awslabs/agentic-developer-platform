@@ -12,7 +12,10 @@ from app.routers import onboarding
 from harness_jobs.identity import OperationRequest, encode_payload, payload_digest
 
 
-@pytest.mark.parametrize("history", ["verified", "unavailable", "denied"])
+@pytest.mark.parametrize(
+    "history",
+    ["verified", "unavailable", "denied", "changed_request", "changed_pointer"],
+)
 async def test_optional_history_cannot_upgrade_original_operation_or_bypass_authority(
     monkeypatch, history
 ):
@@ -43,10 +46,25 @@ async def test_optional_history_cannot_upgrade_original_operation_or_bypass_auth
         app=SimpleNamespace(state=SimpleNamespace(trust_composition=composition))
     )
     workspace = SimpleNamespace(id=workspace_id, provisioning_operation_id=current_id)
-    db = SimpleNamespace(scalar=AsyncMock(return_value=workspace))
+    db = SimpleNamespace(
+        scalar=AsyncMock(return_value=workspace),
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                one_or_none=lambda: (
+                    "changed"
+                    if history == "changed_request"
+                    else request.idempotency_key,
+                    "changed" if history == "changed_pointer" else current_id,
+                )
+            )
+        ),
+    )
     authority = AsyncMock(return_value=None if history == "denied" else object())
     monkeypatch.setattr(onboarding.GrantBackedAuthority, "resolve", authority)
-    proof = {"test": "optional history cannot overwrite original pending state"}
+    proof = {
+        "phases": [],
+        "test": "optional history cannot overwrite original pending state",
+    }
     lineage = AsyncMock(
         return_value=proof,
         side_effect=RuntimeError("private database details")
@@ -74,7 +92,12 @@ async def test_optional_history_cannot_upgrade_original_operation_or_bypass_auth
     assert result["provisioning_operation_id"] == operation_id
     assert result["workspace_id"] == str(workspace_id)
     assert result["retryable"] is False
-    assert result["lifecycle_lineage"] == (None if history == "unavailable" else proof)
+    assert result["lifecycle_lineage"] == (
+        None
+        if history in {"unavailable", "changed_request", "changed_pointer"}
+        else proof
+    )
+    assert result["applied_ownership"] is None
     assert "private database details" not in str(result)
     lineage.assert_awaited_once_with(
         connect,
