@@ -251,73 +251,6 @@ async def build(runtime, server, tmp_path):
     async def provider(_call):
         return CallOutcome.SUCCEEDED, "fixture provider apply result", None
 
-    from harness_jobs.inventory import AllocationResource, InventoryAuthority
-
-    from workspace_provisioning.retirement_observation import reference
-
-    async def seal_original(_grant, _result):
-        authority = InventoryAuthority(
-            connect=harness.connect, authenticate=lambda _: None
-        )
-        async with harness.connect() as connection:
-            key = await connection.fetchval(
-                "SELECT idempotency_key FROM harness_provider_call_intent WHERE operation_id=$1",
-                paid.operation_id,
-            )
-            members = tuple(
-                AllocationResource(
-                    ref, "aws", ref, "terraform-resource", frozenset({key})
-                )
-                for ref in (
-                    reference(
-                        "terraform-resource",
-                        resource_type="aws_vpc",
-                        identity={"id": ids.VPC_ID},
-                    ),
-                    reference(
-                        "terraform-resource",
-                        resource_type="aws_eks_cluster",
-                        identity={"name": ids.CLUSTER_NAME, "arn": ids.CLUSTER_ARN},
-                    ),
-                )
-            )
-            await authority.enumerate_resources(connection, lease, resources=members)
-            enumeration = await authority.begin_provider_enumeration(
-                connection, lease, provider="aws"
-            )
-            await authority.record_provider_enumeration(
-                connection,
-                lease,
-                provider="aws",
-                provider_references=frozenset(
-                    member.provider_reference for member in members
-                ),
-                attempt=enumeration,
-            )
-            # This fixture's sole maintained wrapper reports no resource handle;
-            # its complete successful provider result is the explicit source fact.
-            wrapper_enumeration = await authority.begin_provider_enumeration(
-                connection, lease, provider="superplane-lifecycle"
-            )
-            await authority.record_provider_enumeration(
-                connection,
-                lease,
-                provider="superplane-lifecycle",
-                provider_references=frozenset(),
-                attempt=wrapper_enumeration,
-            )
-            await authority.seal_allocation(connection, lease)
-
-    executor = OperationExecutor(lease, connect=harness.connect, provider_call=provider)
-    execution = ExecutionRPCServer(
-        connect=harness.connect,
-        provider_call=provider,
-        authenticate=lambda _: None,
-        after_step=seal_original,
-    )
-    await execution.execute_step(grant, executor, "apply-infrastructure")
-    async with harness.connect() as connection:
-        paid = await OperationStore().get(connection, principal, paid.operation_id)
     target = {
         "account_id": ids.ACCOUNT_ID,
         "aws_region": ids.REGION,
@@ -377,12 +310,37 @@ async def build(runtime, server, tmp_path):
         {
             "next_phase": "bootstrap-workspace",
             "allocation_source_operation_id": paid.operation_id,
+            "applied_resources": [
+                {
+                    "address": "aws_vpc.workspace[0]",
+                    "type": "aws_vpc",
+                    "identity": {"id": ids.VPC_ID},
+                },
+                {
+                    "address": "aws_eks_cluster.workspace[0]",
+                    "type": "aws_eks_cluster",
+                    "identity": {"name": ids.CLUSTER_NAME, "arn": ids.CLUSTER_ARN},
+                },
+            ],
             "outputs": {
                 key: {"value": value, "type": "string", "sensitive": False}
                 for key, value in outputs.items()
             },
         },
     )
+    from .managed_apply_source_fixture import execute_source
+
+    original_operation = SimpleNamespace(
+        grant=grant,
+        request=paid.admitted_request(),
+        request_payload=paid.request_payload,
+        plan_digest=paid.plan_digest,
+        job_id=paid.job_id,
+        reservation_state="confirmed",
+    )
+    await execute_source(harness, original_operation, runtime)
+    async with harness.connect() as connection:
+        paid = await OperationStore().get(connection, principal, paid.operation_id)
     bootstrap = await admit(
         {
             **parameters,

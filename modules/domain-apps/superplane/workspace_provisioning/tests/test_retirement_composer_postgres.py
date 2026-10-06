@@ -1,8 +1,8 @@
 """Actual native retirement and durable finalization over PostgreSQL.
 
 Successful original apply/bootstrap/preparation provider results are fixture facts;
-the current retirement source reconstruction, ordered execution and finalizer run
-unmodified. Only cloud and subprocess transports are doubled.
+the original apply inventory producer and retirement source reconstruction, ordered
+execution and finalizer run unmodified. Only cloud and subprocess transports are doubled.
 """
 
 import json
