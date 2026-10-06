@@ -164,6 +164,19 @@ class ExternalTools:
                     }
                 }
             ]
+        elif "image-contract" in args:
+            result = {
+                "image_contract_version": 1,
+                "configuration_verified": False,
+                "authority_verified": False,
+                "production_ready": False,
+                "required_ports": [
+                    "credential_evidence",
+                    "provider_authority",
+                    "allocation_inventory",
+                    "operation_facade",
+                ],
+            }
         elif "management-capabilities" in args:
             result = {"controller_management": True, "governed_provisioning": False}
         elif any("SUPERPLANE_INSTALLATION_PROFILES" in value for value in args):
@@ -1428,3 +1441,46 @@ def test_invalid_image_build_ownership_intent_is_refused(environment, release, i
     environment["image_build_ownership"] = intent
     with pytest.raises(Refusal, match="image_build_ownership"):
         validate(environment, release)
+
+
+def test_management_image_preflight_has_no_runtime_credentials(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    calls = [(args, kw) for args, kw in tools.calls if "image-contract" in args]
+    assert len(calls) == 1
+    assert "--network=none" in calls[0][0]
+    assert "--env" not in calls[0][0] and "env" not in calls[0][1]
+    assert not any("management-capabilities" in args for args, _ in tools.calls)
+    assert installer.receipt["image_contract"]["production_ready"] is False
+    assert "management_capabilities" not in installer.receipt
+
+
+@pytest.mark.parametrize("exit_code,supported", [(2, True), (0, False)])
+def test_management_runtime_probe_refusal_keeps_public_route_disabled(
+    tmp_path, environment, release, monkeypatch, exit_code, supported
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    original = tools.call
+
+    def refuse_management(args, **kwargs):
+        if "management-capabilities" in args:
+            assert args[0] == "kubectl" and "exec" in args
+            assert "deployment/superplane-api" in args
+            assert ("Deployment", "superplane-api", "superplane") in tools.objects
+            return SimpleNamespace(
+                returncode=exit_code,
+                stdout=json.dumps({"controller_management": supported}),
+                stderr="",
+            )
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(tools, "call", refuse_management)
+    with pytest.raises(Refusal, match="authenticated management mode"):
+        installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert installer.receipt["status"] != "installed-and-verified"
+    assert "public-route" not in installer.receipt["completed"]
+    assert "management_capabilities" not in installer.receipt
+    assert installer.receipt["public_route_enabled"] is False
