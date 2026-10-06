@@ -40,6 +40,7 @@ class GatewayTransport:
         self.adp_org_id = adp_org_id
         self.proofs = []
         self.proof_override = {}
+        self.lose_dispatch_reply = False
 
     async def post(self, route, payload):
         if route == "/binding-proof":
@@ -55,6 +56,8 @@ class GatewayTransport:
                 **self.proof_override,
             }
         self.calls.append((route, payload))
+        if self.lose_dispatch_reply:
+            raise TimeoutError("Gateway response lost after dispatch")
         return {
             "version": 1,
             **payload,
@@ -205,6 +208,79 @@ async def test_changed_installed_worker_proof_preserves_pending_outbox(
                 identity["operation_id"],
             )
             == "pending"
+        )
+
+
+@pytest.mark.parametrize("failure", ["lost-reply", "partial-receipt"])
+async def test_uncertain_dispatch_remains_pending_until_verified_retry(
+    dispatch, failure
+):
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    if failure == "lost-reply":
+        transport.lose_dispatch_reply = True
+    else:
+        transport.alter = {"status": "unknown"}
+    first = await dispatcher.drain_once()
+    assert (first.delivered, first.failed, first.exhausted) == (0, 1, 0)
+    assert transport.calls == [
+        ("/dispatch", {"domain": "superplane", "mode": "execution", **identity})
+    ]
+    async with connections.connect() as connection:
+        outbox = await connection.fetchrow(
+            "SELECT delivered_at, attempts, last_error FROM harness_dispatch_outbox "
+            "WHERE operation_id=$1",
+            identity["operation_id"],
+        )
+        state = await connection.fetchval(
+            "SELECT state FROM harness_operations WHERE operation_id=$1",
+            identity["operation_id"],
+        )
+        reservations = await connection.fetchval(
+            "SELECT count(*) FROM operation_budget_reservations"
+        )
+        approvals = await connection.fetchval(
+            "SELECT count(*) FROM harness_approval_consumption"
+        )
+    assert outbox["delivered_at"] is None
+    assert outbox["attempts"] == 1 and outbox["last_error"]
+    assert state == "pending"
+    assert (reservations, approvals) == (1, 1)
+
+    transport.lose_dispatch_reply = False
+    transport.alter = {}
+    restarted = OperationDispatcher(
+        connections.connect, transport, policy_for=dispatcher.policy_for
+    )
+    retry = await restarted.drain_once()
+    assert (retry.delivered, retry.failed, retry.exhausted) == (1, 0, 0)
+    assert transport.calls == [transport.calls[0]] * 2
+    async with connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT delivered_at FROM harness_dispatch_outbox WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            is not None
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                identity["operation_id"],
+            )
+            == "running"
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM harness_approval_consumption"
+            )
+            == 1
         )
 
 

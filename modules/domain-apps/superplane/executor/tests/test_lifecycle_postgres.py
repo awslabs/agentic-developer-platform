@@ -557,10 +557,14 @@ async def test_real_governance_inventory_and_full_cleanup_decision(
         assert await c.fetchval("SELECT count(*) FROM harness_allocation_resource") == 4
     cloud.leaked_volume = leaked_volume
     retirement, token = await admit("teardown")
-    result = await server.dispatch(
-        {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
-    )
-    assert result[1] == "settle"
+    request = {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
+    if leaked_volume:
+        with pytest.raises(
+            OperationRefused, match="allocation reconciliation requires recovery"
+        ):
+            await server.dispatch(request)
+    else:
+        assert (await server.dispatch(request))[1] == "settle"
     async with pool.acquire() as c:
         accounting = json.loads(
             await c.fetchval(
@@ -568,11 +572,38 @@ async def test_real_governance_inventory_and_full_cleanup_decision(
                 retirement.grant.lease.operation_id,
             )
         )
+        retirement_state = await c.fetchval(
+            "SELECT state FROM harness_operations WHERE operation_id=$1",
+            retirement.grant.lease.operation_id,
+        )
+        assert (retirement_state == "succeeded") is not leaked_volume
+        assert await c.fetchval(
+            "SELECT closed_at IS NOT NULL FROM harness_operation_leases WHERE operation_id=$1",
+            retirement.grant.lease.operation_id,
+        ) is (not leaked_volume)
         assert accounting["release_permitted"] is (not leaked_volume)
         assert accounting["exposure"] == ("active" if leaked_volume else "none")
         assert accounting["resource_dispositions"]["vol-0123456789abcdef0"] == (
             "settle" if leaked_volume else "release"
         )
+    if leaked_volume:
+        with pytest.raises((OperationRefused, ProviderCallRefused)):
+            await server.dispatch(request)
+        async with pool.acquire() as connection:
+            assert (
+                await connection.fetchval(
+                    "SELECT state FROM harness_operations WHERE operation_id=$1",
+                    retirement.grant.lease.operation_id,
+                )
+                != "succeeded"
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_provider_call_intent WHERE operation_id=$1",
+                    retirement.grant.lease.operation_id,
+                )
+                == 1
+            )
     assert cloud.launches == 1 and not kube.stored
 
 
@@ -646,7 +677,7 @@ async def test_foreign_backend_identity_refuses_before_launch(system, identity_c
 
 async def test_lost_launch_reply_retains_resources_without_repeating_creation(system):
     pool, admit, server, cloud, _, _, _ = system
-    _, token = await admit("provision")
+    operation, token = await admit("provision")
     cloud.lose_launch_response = True
     result = await server.dispatch(
         {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
@@ -658,6 +689,13 @@ async def test_lost_launch_reply_retains_resources_without_repeating_creation(sy
         )
     assert cloud.launches == 1
     async with pool.acquire() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                operation.grant.lease.operation_id,
+            )
+            != "succeeded"
+        )
         assert (
             await connection.fetchval(
                 "SELECT count(*) FROM harness_allocation_resource"
