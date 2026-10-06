@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T01:07:50.424Z",
+  "updated_at": "2026-10-06T01:16:07.382Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -281,7 +281,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "2938dd9; covered by AC-05-t5.",
+      "note": "2938dd9",
       "commits": [
         "2938dd9"
       ]
@@ -293,12 +293,8 @@
       "title": "Wire registered-producer transport to domain consumers",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/gateway/src/internal/domain_operation_routes.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/routers/health.py"
-      ],
-      "note": "50b4bcf; covered by AC-05-t6. Registered-organization enforcement closes a cross-org query path.",
+      "files": [],
+      "note": "50b4bcf",
       "commits": [
         "50b4bcf"
       ]
@@ -313,8 +309,14 @@
         "AC-05-c1",
         "AC-05-c-wire"
       ],
-      "files": [],
-      "note": "Next task; broader real composition remains unverified."
+      "files": [
+        "modules/gateway/tests/internal/test_paid_domain_operation_postgres.py"
+      ],
+      "note": "Test committed in 8c9230b and formatted in 5d0de9c. Skipped locally without pgserver; exact-head Gateway CI run 37398244096 is queued. Do not count as passed yet.",
+      "commits": [
+        "5d0de9c",
+        "8c9230b"
+      ]
     },
     {
       "id": "AC-05-t2",
@@ -353,7 +355,7 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
+      "note": "deployed-target: supervisor/live-acceptance owner; this source-only assignment prohibits deployment and paid execution."
     },
     {
       "id": "AC-05-t5",
@@ -376,12 +378,8 @@
       "covers": [
         "AC-05-c-wire"
       ],
-      "files": [
-        "modules/gateway/tests/internal/test_domain_current_identity.py",
-        "modules/gateway/tests/orchestration/test_internal_plane_guard.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
-      ],
-      "note": "Added to cover the wiring slice before AC-05-t1’s broader composition. Gateway 114 passed, 39 PostgreSQL skipped; domain 76 passed, 32 PostgreSQL skipped. Changed-file lint, format and diff checks passed."
+      "files": [],
+      "note": "Prior focused suites passed."
     }
   ]
 }
