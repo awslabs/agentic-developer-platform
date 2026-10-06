@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7058,
-  "updated_at": "2026-10-06T00:07:18.238Z",
+  "updated_at": "2026-10-06T00:10:15.328Z",
   "tasks": [
     {
       "id": "PREP01-c1",
@@ -13,7 +13,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Commit a31f930; role and environment validation tightened in c82cd9a.",
+      "note": "Commit a31f930; role and environment checks tightened in c82cd9a.",
       "commits": [
         "a31f930"
       ]
@@ -30,7 +30,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": "10 focused fixtures pass."
+      "note": "Focused fixtures pass."
     },
     {
       "id": "PREP02-c1",
@@ -43,7 +43,7 @@
         "modules/domain-apps/superplane/infra/domain-runtime/main.tf",
         ".github/workflows/superplane-infra-plan.yml"
       ],
-      "note": "Commit c82cd9a, pushed SHA verified; separate S3 backend has no embedded target.",
+      "note": "Commit c82cd9a; isolated backend and pinned provider.",
       "commits": [
         "c82cd9a"
       ]
@@ -60,38 +60,41 @@
       "files": [
         "modules/domain-apps/superplane/infra/domain-runtime/tests/runtime.tftest.hcl"
       ],
-      "note": "Terraform validate passes; 3 mock-provider runs pass; 22 Python tests including CI matrix coverage pass."
+      "note": "Terraform validate and three mock-provider cases pass; CI matrix coverage passes locally."
     },
     {
       "id": "PREP03-c1",
       "kind": "code",
       "criterion": "PREP03",
       "title": "Connect preparation outputs to maintained shared-authority contracts without mutating authorities",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Next: inspect maintained registry, schema/bootstrap, producer and Gateway owner interfaces."
+      "note": "Commit e58437c; proposal-only shared-owner handoff published on #7058. Owner routes remain unavailable.",
+      "commits": [
+        "e58437c"
+      ]
     },
     {
       "id": "PREP03-c-wire",
       "kind": "code",
       "criterion": "PREP03",
       "title": "Wire exact runtime prerequisites into existing paid-worker consumer contract",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Staged readiness remains disabled; activation requires independent real proof."
+      "note": "Composer calls the existing paid-worker validator and generates a paused projection in tests; no installer-owned file changed."
     },
     {
       "id": "PREP03-t1",
       "kind": "test",
       "criterion": "PREP03",
       "title": "Run unit producer/consumer contract fixtures",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP03-c1",
         "PREP03-c-wire"
@@ -99,21 +102,21 @@
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": ""
+      "note": "Exact Gateway field and Terraform variable shape checks; paid-worker projection stays paused."
     },
     {
       "id": "PREP03-t2",
       "kind": "test",
       "criterion": "PREP03",
       "title": "Run unit refusal fixtures for missing vault, approver and shared services",
-      "status": "open",
+      "status": "done",
       "covers": [
         "PREP03-c1"
       ],
       "files": [
         "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
       ],
-      "note": ""
+      "note": "Offline fixtures refuse missing configured dependencies; actual shared-service availability has not been verified."
     },
     {
       "id": "PREP04-c1",
@@ -125,7 +128,7 @@
       "files": [
         "modules/domain-apps/superplane/installation/runtime_preparation.py"
       ],
-      "note": "Refuse changed identity, destructive changes, ambiguous replay and fabricated attestation."
+      "note": "Next: owned-only saved Terraform plan, immutable identity, lost-response reconciliation and destructive-change refusal."
     },
     {
       "id": "PREP04-t1",
