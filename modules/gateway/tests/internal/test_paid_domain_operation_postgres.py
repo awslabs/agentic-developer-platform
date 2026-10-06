@@ -723,6 +723,8 @@ async def test_registered_identity_to_domain_grant_and_protected_worker(paid, db
         async with admin.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()
+
+
 async def test_paid_dispatch_uses_disjoint_domain_and_harness_schemas(paid, monkeypatch):
     domain_tables = ("organizations", "operation_budget_reservations", "operation_approvals", "workspaces", "workspace_grants", "organization_grants")
     async with paid.connect() as connection:
