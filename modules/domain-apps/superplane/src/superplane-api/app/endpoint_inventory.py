@@ -217,6 +217,9 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("POST", "/workspaces/{workspace_id}/access/v1/grants"): (
         Scope.WORKSPACE, Permission.ADMINISTER,
     ),
+    ("POST", "/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"): (
+        Scope.WORKSPACE, Permission.ADMINISTER,
+    ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
         Permission.PROVISION,

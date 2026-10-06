@@ -35,6 +35,7 @@ def test_all_public_routes_come_from_maintained_inventory():
     [
         ("GET", "me"),
         ("POST", "grants"),
+        ("POST", "grants/example-grant/revoke"),
     ],
 )
 def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, method, tail):
@@ -51,6 +52,9 @@ def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, m
         if method == "POST"
         else None
     )
+    if tail.endswith("/revoke"):
+        body.pop("permissions")
+        body.update(reason="access_revocation", expected_revision=1)
 
     def upstream(request):
         calls.append(request)
@@ -68,6 +72,50 @@ def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, m
     assert str(calls[0].url).endswith(f"/workspaces/example/access/v1/{tail}")
     if body is not None:
         assert json.loads(calls[0].content) == body
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspaces/example/access/v1/grants",
+        "/orgs/current/access/v1/me",
+        "/orgs/current/access/v1/grants",
+    ],
+)
+@pytest.mark.parametrize("status", [200, 403])
+def test_access_reads_preserve_authentication_pagination_and_domain_denials(client, monkeypatch, path, status):
+    calls = []
+    params = {"limit": "2", "after": "11111111-1111-1111-1111-111111111111"} if path.endswith("/grants") else {}
+    payload = (
+        {"detail": "explicit scoped authority required"}
+        if status == 403
+        else {"assignments": [], "next_after": None}
+        if path.endswith("/grants")
+        else {"subject": "human-reader", "effective_permissions": ["organization:read"]}
+    )
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(status, json=payload, headers={"cache-control": "no-store"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    route = "/superplane/v1" + path
+    assert client.get(route, params=params).status_code == 401
+    assert calls == []
+    response = client.get(route, params=params, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == status
+    assert response.json() == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0].method == "GET" and calls[0].url.path == path
+    assert dict(calls[0].url.params) == params
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert client.delete(route, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert client.get(route + "/unexpected", headers={"Authorization": "Bearer user-token"}).status_code == 404
+    monkeypatch.setenv("FEATURE_SUPERPLANE_ENABLED", "false")
+    assert client.get(route, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(

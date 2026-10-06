@@ -26,10 +26,15 @@ absent, foreign, ineligible, or unauthorized target. The current GET workspaces
 route retains its organization-read prerequisite, plus cluster-use filtering;
 this does not make a cluster-only scope sufficient for that route.
 
-This verifies current local binding and grant state against verified claims; it
-does not prove current ADP membership after token issuance. #6127 must supply
-current ADP subject/type/selected-org resolution. Shared preview and runtime
-remain disabled until that and the following interfaces are composed:
+Discovery and target selection consume the current ADP identity-reader contract
+in addition to verified claims and local binding/grant state. Each resolution
+rechecks the exact subject, type, selected organization and membership identity;
+service callers need their own current delegation. Missing or unavailable readers
+fail closed, including when the general ingress identity flag is disabled. The
+maintained API passes its configured reader to the cluster resolver. PostgreSQL/API
+fixtures verify this composition, not availability of a deployed #6127 reader.
+Shared preview and runtime remain disabled until the following interfaces are
+composed:
 
 - Approval stores authenticated requester type and selected cluster identity,
   binds them to the approved operation, and rechecks requester cluster-use at

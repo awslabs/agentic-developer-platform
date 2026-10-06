@@ -182,6 +182,19 @@ def test_fixed_permission_vocabulary_and_separate_cluster_scope():
     assert "revocation denies fallback" in MATRIX["scope_gate"]["organization"]
 
 
+def test_cluster_discovery_requires_independent_current_cluster_use():
+    action = next(action for action in MATRIX["actions"] if action["id"] == "workspace.list")
+    assert action["organization_grant"] == ORGANIZATION_READ
+    assert action["conditional_authorities"] == [{
+        "query": {"view": "eligible-clusters"},
+        "scope": "cluster",
+        "permission": "cluster:use",
+        "evaluation": "filter_before_metadata",
+        "requires": ["current_typed_identity", "same_bound_organization", "live_parent_and_child"],
+        "not_authority_for": ["cluster:administer", "cluster:observe", "approval", "executor_admission"],
+    }]
+
+
 @pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case["name"])
 @pytest.mark.asyncio
 async def test_bound_org_and_legacy_scope_grant_cases(case):
@@ -247,6 +260,12 @@ def test_sensitive_actions_have_independent_requirements():
     assert actions["workspace.access.manage"]["routes"] == [
         "POST /workspaces/{workspace_id}/access/v1/grants"
     ]
+    assert actions["workspace.access.revoke"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"
+    ]
+    assert actions["workspace.access.revoke"]["permission"] == Permission.ADMINISTER.value
+    assert actions["workspace.access.revoke"]["principal"] == "human"
+    assert {"expected_revision", "atomic_audit", "durable_replay", "self_removal_pending_policy", "future_authority_only"} <= set(actions["workspace.access.revoke"]["extra"])
     assert actions["cluster.use"]["scope"] != actions["workspace.read"]["scope"]
     # Do not turn first-install bootstrap or machine transport restrictions into
     # blanket action permissions for subsequent workspaces or cluster observers.
