@@ -330,6 +330,64 @@ def package_identity(package):
     return {key: package[key] for key in ("id", "name", "version", "type", "purl")}
 
 
+def debian_origin(artifact):
+    """An ELF source-package note is not an installed root dpkg package."""
+    if artifact.get("type") != "deb":
+        return None
+    cataloger = artifact.get("foundBy")
+    metadata = artifact.get("metadataType")
+    if (
+        cataloger == "elf-binary-package-cataloger"
+        and metadata == "elf-binary-package-note-json-payload"
+    ):
+        return "embedded-elf"
+    primary = [
+        location
+        for location in artifact.get("locations", [])
+        if location.get("annotations", {}).get("evidence") == "primary"
+    ]
+    require(
+        cataloger == "dpkg-db-cataloger"
+        and metadata == "dpkg-db-entry"
+        and len(primary) == 1
+        and primary[0].get("path") == "/var/lib/dpkg/status"
+        and primary[0].get("accessPath", primary[0]["path"]) == "/var/lib/dpkg/status",
+        "unsupported Debian artifact provenance",
+    )
+    return "root-dpkg"
+
+
+def embedded_inventory(artifact, files):
+    locations = artifact.get("locations", [])
+    require(locations, "embedded ELF artifact requires file locations")
+    bound = {}
+    for location in locations:
+        require(
+            isinstance(location.get("path"), str)
+            and location["path"].startswith("/")
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", location.get("layerID", "")),
+            "invalid embedded ELF location",
+        )
+        resolved_paths = set()
+        for name in (location["path"], location.get("accessPath", location["path"])):
+            require(
+                isinstance(name, str) and name.startswith("/"),
+                "invalid embedded ELF access path",
+            )
+            normalized = normal_path(name)
+            resolved, entry = resolve_file(files, normalized)
+            require(entry["kind"] == "file", "embedded ELF location is not a file")
+            resolved_paths.add(resolved)
+            bound[normalized] = {"resolved": resolved, **entry}
+        require(len(resolved_paths) == 1, "embedded ELF access path differs from file")
+    return {
+        "package": package_identity(artifact),
+        "origin": "embedded-elf",
+        "locations": copy.deepcopy(locations),
+        "files": bound,
+    }
+
+
 def dpkg_status(content):
     packages = {}
     for paragraph in content.decode().strip().split("\n\n"):
@@ -410,9 +468,12 @@ def collect(root, inputs, image, source_revision):
     # must also be reviewed: a report's self-asserted metadata is not attestation.
     mappings = map_findings(sbom, native, sarif)
     installed = dpkg_status(retained.get("/var/lib/dpkg/status", b""))
-    inventories = {}
+    inventories, embedded = {}, {}
     for artifact in sbom["artifacts"]:
         if artifact.get("type") != "deb":
+            continue
+        if debian_origin(artifact) == "embedded-elf":
+            embedded[artifact["id"]] = embedded_inventory(artifact, files)
             continue
         identity = package_identity(artifact)
         require(identity["purl"] not in inventories, "duplicate Debian package PURL")
@@ -465,6 +526,7 @@ def collect(root, inputs, image, source_revision):
         "inputs": hashes,
         "files_sha256": object_sha(files),
         "packages": inventories,
+        "embedded_packages": embedded,
         "occurrences": mappings,
     }
 
@@ -540,6 +602,11 @@ def map_findings(sbom, native, sarif):
             == package_identity(artifacts[artifact["id"]]),
             "native/SBOM package identity mismatch",
         )
+        if debian_origin(artifacts[artifact["id"]]) == "embedded-elf":
+            require(
+                artifact.get("locations") == artifacts[artifact["id"]].get("locations"),
+                "embedded native/SBOM locations mismatch",
+            )
         digest = object_sha(match)
         require(digest not in native_hashes, "duplicate native occurrence bytes")
         native_hashes.add(digest)
@@ -611,7 +678,10 @@ def map_findings(sbom, native, sarif):
             representatives, "SARIF/native occurrence mismatch or severity mismatch"
         )
         shared = len(members) != 1
-        if shared:
+        if shared or any(
+            debian_origin(artifacts[member["artifact"]["id"]]) == "embedded-elf"
+            for member in members
+        ):
             for member in members:
                 require(
                     member["artifact"].get("locations")
@@ -627,7 +697,7 @@ def map_findings(sbom, native, sarif):
         native_severity = sole["vulnerability"]["severity"].lower() if sole else None
         eligible = bool(
             sole
-            and sole["artifact"]["type"] == "deb"
+            and debian_origin(artifacts[sole["artifact"]["id"]]) == "root-dpkg"
             and native_severity in {"critical", "high", "medium", "low"}
         )
         bound_members = [

@@ -118,14 +118,22 @@ def test_resolve_file_rejects_regular_file_ancestor():
 
 @pytest.fixture
 def bundle(tmp_path):
+    return make_bundle(tmp_path)
+
+
+def make_bundle(tmp_path, package_name="demo", version="1.0"):
     revision = "a" * 40
     content = b"harmless synthetic library bytes\n"
-    status = b"Package: demo\nStatus: install ok installed\nVersion: 1.0\nArchitecture: amd64\n\n"
+    status = f"Package: {package_name}\nStatus: install ok installed\nVersion: {version}\nArchitecture: amd64\n\n".encode()
     layer = tar_bytes(
         [
             ("usr/lib/demo.so", content),
             ("var/lib/dpkg/status", status),
-            ("var/lib/dpkg/info/demo.list", b"/usr/lib/demo.so\n"),
+            (f"var/lib/dpkg/info/{package_name}.list", b"/usr/lib/demo.so\n"),
+            (
+                "opt/awscli-adp/lib/aws-cli/libuuid.so.1",
+                b"harmless embedded ELF fixture",
+            ),
         ]
     )
     config = {
@@ -175,10 +183,20 @@ def bundle(tmp_path):
     image = "example.invalid/demo@sha256:" + D.sha(manifest_bytes)
     package = {
         "id": "package-id",
-        "name": "demo",
-        "version": "1.0",
+        "name": package_name,
+        "version": version,
         "type": "deb",
-        "purl": "pkg:deb/debian/demo@1.0?arch=amd64",
+        "purl": f"pkg:deb/debian/{package_name}@{version}?arch=amd64",
+        "foundBy": "dpkg-db-cataloger",
+        "metadataType": "dpkg-db-entry",
+        "locations": [
+            {
+                "path": "/var/lib/dpkg/status",
+                "accessPath": "/var/lib/dpkg/status",
+                "layerID": "sha256:" + D.sha(layer),
+                "annotations": {"evidence": "primary"},
+            }
+        ],
         "metadata": {"architecture": "amd64"},
     }
     source = {
@@ -201,12 +219,12 @@ def bundle(tmp_path):
                 },
             }
         )
-        rule_id = advisory + "-demo"
+        rule_id = advisory + "-" + package_name
         rules.append(
             {
                 "id": rule_id,
                 "help": {
-                    "text": f"Vulnerability {advisory}\nData Namespace: debian:test\nPackage: demo\nVersion: 1.0\nType: deb\nSeverity: high"
+                    "text": f"Vulnerability {advisory}\nData Namespace: debian:test\nPackage: {package_name}\nVersion: {version}\nType: deb\nSeverity: high"
                 },
                 "properties": {"purls": [package["purl"]], "security-severity": "7.5"},
             }
@@ -924,3 +942,229 @@ def test_hardlink_cannot_traverse_symlink_parent():
     }
     with pytest.raises(D.Invalid, match="non-directory parent"):
         D.direct_hardlink(files, "/link/file")
+
+
+def add_embedded_debian_note(bundle, *, same_purl=False, shared=False):
+    """Real Syft artifact shape with harmless image bytes and synthetic findings."""
+    root, inputs, _, _ = bundle
+    reports = {
+        key: D.parse((root / inputs[key]).read_bytes())
+        for key in ("sbom", "raw_json", "raw_sarif")
+    }
+    sbom, native, sarif = (reports[key] for key in reports)
+    artifact = D.parse(
+        (Path(__file__).parent / "fixtures/embedded-debian-elf-note.json").read_bytes()
+    )
+    if same_purl:
+        artifact["version"] = sbom["artifacts"][0]["version"]
+        artifact["purl"] = sbom["artifacts"][0]["purl"]
+    artifact["locations"][0]["layerID"] = sbom["artifacts"][0]["locations"][0][
+        "layerID"
+    ]
+    image_input = "synthetic-image.oci.tar"
+    for report in (sbom, native):
+        report["source"]["metadata"]["userInput"] = image_input
+    sbom["artifacts"].append(artifact)
+    advisory = "CVE-2000-0001" if shared else "CVE-2000-0200"
+    native["matches"].append(
+        {
+            "artifact": copy.deepcopy(artifact),
+            "vulnerability": {
+                "id": advisory,
+                "namespace": "debian:test",
+                "severity": "High",
+            },
+        }
+    )
+    rule_id = advisory + "-util-linux"
+    run = sarif["runs"][0]
+    if not shared:
+        run["tool"]["driver"]["rules"].append(
+            {
+                "id": rule_id,
+                "help": {
+                    "text": f"Vulnerability {advisory}\nData Namespace: debian:test\nPackage: util-linux\nVersion: {artifact['version']}\nType: deb\nSeverity: high"
+                },
+                "properties": {"purls": [artifact["purl"]], "security-severity": "7.5"},
+            }
+        )
+
+    def result_location(location):
+        path = location["path"]
+        return {
+            "physicalLocation": {"artifactLocation": {"uri": path}},
+            "logicalLocations": [
+                {
+                    "name": path,
+                    "fullyQualifiedName": image_input
+                    + "@"
+                    + location["layerID"]
+                    + ":"
+                    + path,
+                }
+            ],
+        }
+
+    run["results"].append(
+        {
+            "ruleId": rule_id,
+            "message": {"text": "Synthetic embedded finding"},
+            "locations": [result_location(artifact["locations"][0])],
+        }
+    )
+    if shared:
+        run["results"][0]["locations"] = [
+            result_location(sbom["artifacts"][0]["locations"][0])
+        ]
+    for key, report in reports.items():
+        (root / inputs[key]).write_bytes(D.canonical(report))
+    return artifact
+
+
+@pytest.mark.parametrize("same_purl", [False, True])
+def test_embedded_debian_note_binds_own_bytes_without_root_dpkg_mapping(
+    tmp_path, same_purl
+):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    artifact = add_embedded_debian_note(bundle, same_purl=same_purl)
+    before = {key: (bundle[0] / name).read_bytes() for key, name in bundle[1].items()}
+    observation = observed(bundle)
+    assert len(observation["packages"]) == 1
+    embedded = observation["embedded_packages"][artifact["id"]]
+    assert embedded["package"] == D.package_identity(artifact)
+    assert embedded["locations"] == artifact["locations"]
+    path = "/opt/awscli-adp/lib/aws-cli/libuuid.so.1"
+    assert embedded["files"][path]["sha256"] == D.sha(b"harmless embedded ELF fixture")
+    assert all(path not in p["files"] for p in observation["packages"].values())
+    occurrence = observation["occurrences"][-1]
+    assert not occurrence["disposition_eligible"]
+    record = receipt(bundle, observation)
+    output, summary = derive(bundle, record, observation)
+    assert summary["native_raw"] == 3 and summary["native_active"] == 2
+    assert "suppressions" not in output["runs"][0]["results"][-1]
+    record["decisions"][0]["native_sha256"] = occurrence["native_sha256"]
+    with pytest.raises(D.Invalid, match="ineligible decision"):
+        derive(bundle, record, observation)
+    for key, name in bundle[1].items():
+        assert (bundle[0] / name).read_bytes() == before[key]
+
+
+def test_embedded_note_shared_with_root_package_keeps_entire_group_active(tmp_path):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    add_embedded_debian_note(bundle, same_purl=True, shared=True)
+    observation = observed(bundle)
+    shared = [
+        x
+        for x in observation["occurrences"]
+        if x["rule_id"] == "CVE-2000-0001-util-linux"
+    ]
+    assert len(shared) == 2 and all(not x["disposition_eligible"] for x in shared)
+    assert all(len(x["native_members"]) == 2 for x in shared)
+    record = {
+        "schema": "adp-exact-image-review/v1",
+        "observation_sha256": D.object_sha(observation),
+        "reviewer": "SYNTHETIC TEST REVIEWER",
+        "decisions": [],
+        "evidence": {},
+    }
+    output, summary = derive(bundle, record, observation)
+    assert summary["native_active"] == 3 and summary["shared_rule_groups"] == 1
+    assert all("suppressions" not in x for x in output["runs"][0]["results"])
+
+
+@pytest.mark.parametrize("target", ["native", "sarif"])
+def test_embedded_note_location_mismatch_refused(tmp_path, target):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    add_embedded_debian_note(bundle)
+    if target == "native":
+        change_json(
+            bundle,
+            "raw_json",
+            lambda x: x["matches"][-1]["artifact"]["locations"][0].update(
+                path="/usr/lib/demo.so"
+            ),
+        )
+        reason = "embedded native/SBOM locations mismatch"
+    else:
+        change_json(
+            bundle,
+            "raw_sarif",
+            lambda x: x["runs"][0]["results"][-1]["locations"][0]["logicalLocations"][
+                0
+            ].update(name="/usr/lib/demo.so"),
+        )
+        reason = "location multiset mismatch"
+    with pytest.raises(D.Invalid, match=reason):
+        observed(bundle)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("foundBy", "unknown-cataloger"),
+        ("metadataType", "dpkg-db-entry"),
+    ],
+)
+def test_embedded_note_inconsistent_provenance_refused(tmp_path, field, value):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    add_embedded_debian_note(bundle)
+    change_json(bundle, "sbom", lambda x: x["artifacts"][-1].update({field: value}))
+    with pytest.raises(D.Invalid, match="unsupported Debian artifact provenance"):
+        observed(bundle)
+
+
+def test_embedded_note_missing_installed_file_refused(tmp_path):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    artifact = add_embedded_debian_note(bundle)
+    artifact["locations"][0]["path"] = "/absent.so"
+    with pytest.raises(D.MissingFile):
+        D.embedded_inventory(artifact, {})
+
+
+def test_root_dpkg_version_mismatch_still_refused(bundle):
+    change_json(bundle, "sbom", lambda x: x["artifacts"][0].update(version="2.0"))
+    change_json(
+        bundle,
+        "raw_json",
+        lambda x: [m["artifact"].update(version="2.0") for m in x["matches"]],
+    )
+    change_json(
+        bundle,
+        "raw_sarif",
+        lambda x: [
+            r["help"].update(
+                text=r["help"]["text"].replace("Version: 1.0", "Version: 2.0")
+            )
+            for r in x["runs"][0]["tool"]["driver"]["rules"]
+        ],
+    )
+    with pytest.raises(D.Invalid, match="SBOM/dpkg package mismatch"):
+        observed(bundle)
+
+
+def test_embedded_high_still_blocks_gate_after_root_findings_reviewed(tmp_path):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    add_embedded_debian_note(bundle, same_purl=True)
+    observation = observed(bundle)
+    record = receipt(bundle, observation)
+    second = copy.deepcopy(record["decisions"][0])
+    second["native_sha256"] = observation["occurrences"][1]["native_sha256"]
+    record["decisions"].append(second)
+    output, counts = derive(bundle, record, observation)
+    assert counts["native_active"] == 1
+    code, summary = D.run_gate(output, Path(__file__).parents[2])
+    assert code == 1 and summary["grype"]["new_count"] == 1
+
+
+def test_elf_path_cannot_claim_root_dpkg_provenance(tmp_path):
+    bundle = make_bundle(tmp_path, "util-linux", "2.42.4-1+adp131")
+    add_embedded_debian_note(bundle)
+    change_json(
+        bundle,
+        "sbom",
+        lambda x: x["artifacts"][-1].update(
+            foundBy="dpkg-db-cataloger", metadataType="dpkg-db-entry"
+        ),
+    )
+    with pytest.raises(D.Invalid, match="unsupported Debian artifact provenance"):
+        observed(bundle)
