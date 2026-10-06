@@ -2764,6 +2764,20 @@ class TestEnvironmentStateIsObservable:
         assert response.json()["cognito_enabled"] is cognito_enabled
         assert response.json()["domain_auth_enforced"] is True
 
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        permitted = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        refused = await client.get(
+            f"/workspaces/{workspace_id}",
+            headers={"Authorization": "Bearer not-a-signed-token"},
+        )
+
+        assert permitted.status_code == 200
+        assert refused.status_code == 401
+
     @pytest.mark.asyncio
     async def test_health_reflects_the_loaded_policy_not_the_setting(
         self, client, enforcing
