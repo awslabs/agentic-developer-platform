@@ -9,7 +9,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from .api_adapters import project, verify_role
-from .config import digest, require
+from .config import Refusal, digest, require
 
 
 PARTIAL_METADATA = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1"
@@ -125,7 +125,7 @@ def snapshot(installer, *, allow_missing=False):
     }
 
 
-def role_identity(installer, cluster, *, allow_missing=False):
+def role_identity(installer, cluster, *, allow_missing=False, allow_legacy=False):
     env = installer.env
     producer = env["api_adapters"]["dispatcher"]
     role_name = producer["role_arn"].rsplit("/", 1)[1]
@@ -196,8 +196,22 @@ def role_identity(installer, cluster, *, allow_missing=False):
                 version,
             )
         )["PolicyVersion"]["Document"]
-    verify_role(env, role, policies, cluster["identity"]["oidc"]["issuer"])
+    legacy = False
+    try:
+        verify_role(env, role, policies, cluster["identity"]["oidc"]["issuer"])
+    except Refusal:
+        if not allow_legacy:
+            raise
+        verify_role(
+            env,
+            role,
+            policies,
+            cluster["identity"]["oidc"]["issuer"],
+            legacy_routes=True,
+        )
+        legacy = True
     return {
+        **({"legacy_routes": True} if legacy else {}),
         "role_arn": role["Arn"],
         "role_id": role["RoleId"],
         "role_policy_sha256": digest(
@@ -318,7 +332,11 @@ def verify(installer, token):
         "Actual disabled API adapter verification failed",
     )
     control = adapters["verification"]
-    path = f"/internal/installation/workspaces/{control['workspace_id']}/credential-evidence/{control['connection_id']}"
+    path = (
+        "/internal/installation/organization-bootstrap"
+        if control == {"mode": "organization-bootstrap"}
+        else f"/internal/installation/workspaces/{control['workspace_id']}/credential-evidence/{control['connection_id']}"
+    )
     # Authenticated caller token only through stdin, never argv/env or receipts.
 
     metadata = installer.json(
@@ -343,10 +361,21 @@ def verify(installer, token):
         and datetime.fromisoformat(metadata["evidence_expires_at"]) > datetime.now(UTC),
         "Known credential metadata control differs from the reviewed target",
     )
+    if control == {"mode": "organization-bootstrap"}:
+        require(
+            metadata.get("organization_authority_verified") is True
+            and metadata.get("credential_metadata_verified") is False,
+            "organization control must establish current authority without claiming credential delegation",
+        )
     require(
         snapshot(installer) == before, "API adapter inputs changed during verification"
     )
     require_quiescent(installer)
+    from . import lifecycle_worker
+
+    native = (
+        lifecycle_worker.prepare(installer) if lifecycle_worker.enabled(env) else None
+    )
     installer.receipt["adapter_stage"] = {
         "state": "verified-disabled",
         "deployment_uid": deployed["metadata"]["uid"],
@@ -354,6 +383,7 @@ def verify(installer, token):
         "binding": before,
         "report": report,
         "credential_metadata": metadata,
+        **({"native_worker": native} if native else {}),
     }
     installer.save()
 
@@ -378,9 +408,19 @@ def activate(installer):
     )
     stage["state"] = "activation-pending"
     installer.save()
-    project(installer.env, installer.docs, active=True)
-    installer.apply([api_document(installer)])
-    wait_api(installer)
+    from . import lifecycle_worker
+
+    try:
+        if lifecycle_worker.enabled(installer.env):
+            stage["native_executable_proof"] = lifecycle_worker.activate(installer)
+        project(installer.env, installer.docs, active=True)
+        installer.apply([api_document(installer)])
+        wait_api(installer)
+    except Exception:
+        # Fence API admission first. Never claim rollback succeeded if either
+        # owner restore fails; the existing installer records the failed phase.
+        restore_disabled(installer)
+        raise
     stage["state"] = "activated-awaiting-full-verification"
     installer.save()
 
@@ -389,28 +429,34 @@ def restore_disabled(installer):
     stage = installer.receipt.setdefault("adapter_stage", {})
     stage["state"] = "disabled-restore-pending"
     installer.save()
-    project(installer.env, installer.docs, active=False)
-    installer.apply([copy.deepcopy(api_document(installer))])
-    wait_api(installer)
-    runtime = installer.json(
-        installer.kube(
-            "exec",
-            "deployment/superplane-api",
-            "-n",
-            installer.env["namespace"],
-            "--",
-            "python",
-            "-m",
-            "app.installation",
-            "readiness",
+    from . import lifecycle_worker
+
+    try:
+        project(installer.env, installer.docs, active=False)
+        installer.apply([copy.deepcopy(api_document(installer))])
+        wait_api(installer)
+        runtime = installer.json(
+            installer.kube(
+                "exec",
+                "deployment/superplane-api",
+                "-n",
+                installer.env["namespace"],
+                "--",
+                "python",
+                "-m",
+                "app.installation",
+                "readiness",
+            )
         )
-    )
-    require(
-        runtime.get("mode") == "management"
-        and runtime.get("operation_dispatch_enabled") is False
-        and runtime.get("paid_admission_enabled") is False,
-        "Disabled API stage availability was not observed",
-    )
+        require(
+            runtime.get("mode") == "management"
+            and runtime.get("operation_dispatch_enabled") is False
+            and runtime.get("paid_admission_enabled") is False,
+            "Disabled API stage availability was not observed",
+        )
+    finally:
+        if lifecycle_worker.enabled(installer.env):
+            lifecycle_worker.pause(installer)
     stage["state"] = "disabled-restored"
     stage["management_process_observed"] = True
     stage["public_management_available"] = False
@@ -454,6 +500,10 @@ def require_quiescent(installer):
         "Cannot stage a foreign API Deployment",
     )
 
+    from . import lifecycle_worker
+
+    if lifecycle_worker.enabled(installer.env):
+        lifecycle_worker.proof(installer, "quiescent")
     counts = installer.json(
         installer.kube(
             "exec",
@@ -526,6 +576,13 @@ def verify_active(installer):
         and all(report["capabilities"].values()),
         "Activated API identity, producer or capability verification failed",
     )
+    from . import lifecycle_worker
+
+    if lifecycle_worker.enabled(installer.env):
+        lifecycle_worker.installed_snapshot(installer, active=True)
+        stage["native_executable_proof"] = lifecycle_worker.proof(
+            installer, "executable"
+        )
     stage["state"] = "activated-and-verified"
     stage["active_report"] = report
     installer.save()

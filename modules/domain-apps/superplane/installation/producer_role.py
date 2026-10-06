@@ -76,7 +76,9 @@ def preflight(installer):
         "Managed role cluster identity changed",
     )
     return {
-        **role_identity(role_installer(installer), cluster, allow_missing=True),
+        **role_identity(
+            role_installer(installer), cluster, allow_missing=True, allow_legacy=True
+        ),
         "oidc": cluster["identity"]["oidc"]["issuer"],
     }
 
@@ -111,7 +113,14 @@ def documents(env, oidc):
                 "Effect": "Allow",
                 "Action": "execute-api:Invoke",
                 "Resource": [
-                    prefix + r for r in ("producer-readiness", "verify-run", "dispatch")
+                    prefix + r
+                    for r in (
+                        "producer-readiness",
+                        "verify-run",
+                        "dispatch",
+                        "binding-proof",
+                        "current-identity",
+                    )
                 ],
             }
         ],
@@ -169,7 +178,14 @@ def inspect_plan(installer, plan):
         change = changes.get(address, {})
         actions = change.get("actions")
         require(
-            actions == (["create"] if evidence.get("role_missing") else ["no-op"]),
+            actions
+            == (
+                ["create"]
+                if evidence.get("role_missing")
+                else ["update"]
+                if evidence.get("legacy_routes")
+                else ["no-op"]
+            ),
             "Managed role plan must create the absent identity or preserve the verified identity",
         )
         after = change.get("after", {})

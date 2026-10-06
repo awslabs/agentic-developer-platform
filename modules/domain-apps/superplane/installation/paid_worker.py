@@ -1,7 +1,7 @@
-"""Native paid-worker source preparation; shared binding activation is unavailable.
+"""Native lifecycle worker preparation and deployment-owned configuration.
 
-The default installer plan renders an inert projection. No caller-authored
-receipt can turn it into authority, and preflight refuses before external tools.
+Controller-only projections remain inert. Native lifecycle activation requires
+separate authenticated prepared and executable checks in the maintained installer.
 """
 
 import copy
@@ -335,6 +335,7 @@ def project(env, lock, docs):
             ],
             "SUPERPLANE_OPERATION_SCHEMA": config["operation_schema"],
             "SUPERPLANE_DOMAIN_SCHEMA": env["database"]["schema"],
+            "SUPERPLANE_DOMAIN_SCHEMA_HEAD": lock["schema"]["observed"]["head"],
             "SKYPILOT_URL": config["skypilot_url"],
             "SUPERPLANE_MANAGEMENT_API_SERVER": config["management_api_server"],
         },
@@ -352,6 +353,9 @@ def project(env, lock, docs):
     )
     policy["apiVersion"] = "networking.k8s.io/v1"
     docs.extend([service_account, configmap, authentication, policy, scaled])
+    from .lifecycle_worker import project_api
+
+    project_api(env, lock, docs)
 
 
 def preparation_report(env, lock):
@@ -362,7 +366,9 @@ def preparation_report(env, lock):
         "configuration_sha256": digest(env["paid_worker"]),
         "paid_worker_image": image(lock, COMPONENT),
         "activation_available": False,
-        "gate": UNAVAILABLE,
+        "gate": "native-worker-live-proof-required"
+        if env["paid_worker"]["mode"] == "native-lifecycle"
+        else UNAVAILABLE,
         "live_identity_verified": False,
         "live_schema_verified": False,
         "live_network_verified": False,
@@ -371,6 +377,9 @@ def preparation_report(env, lock):
 
 
 def require_activation_available(env):
+    if env.get("paid_worker", {}).get("mode") == "native-lifecycle":
+        validate(env, None)
+        return
     if env.get("paid_worker"):
         require(
             False,

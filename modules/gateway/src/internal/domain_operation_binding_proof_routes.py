@@ -1,6 +1,9 @@
 """Non-consuming proof of a configured producer's installed native paid worker."""
 
+import hashlib
+import json
 import re
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -25,7 +28,7 @@ _QUEUE = re.compile(r"https://sqs\.([a-z0-9-]+)\.amazonaws\.com/(\d{12})/([A-Za-
 
 
 class BindingProofRequest(DomainScope):
-    state: Literal["prepared", "executable"] = "executable"
+    state: Literal["prepared", "executable", "quiescent"] = "executable"
 
 
 def installed_worker(binding, runtime, state="executable"):
@@ -117,7 +120,7 @@ async def binding_proof(body: BindingProofRequest, request: Request):
         raise HTTPException(503, "domain tenant mapping unavailable")
     state = getattr(body, "state", "executable")
     quiescent = None
-    if state == "prepared":
+    if state in {"prepared", "quiescent"}:
         async with operation_connect(binding) as connection:
             quiescent = not await connection.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM harness_operations WHERE org_id=$1 "
@@ -128,6 +131,12 @@ async def binding_proof(body: BindingProofRequest, request: Request):
             )
         if not quiescent:
             raise HTTPException(409, "paid worker preparation has outstanding operations")
+    if state == 'quiescent':
+        if producer(request, body) != binding:
+            raise HTTPException(403, 'paid domain producer changed')
+        return {'version': 1, 'checked_at': datetime.now(UTC).isoformat(), 'installed': False,
+                'state': state, 'quiescent': True, 'domain': binding.domain,
+                'org_id': binding.org_id, 'adp_org_id': binding.adp_org_id}
     store = bootstrap_store()
     table = await run_in_threadpool(store.client.describe_table, TableName=store.table)
     if table.get("Table", {}).get("TableStatus") != "ACTIVE":
@@ -157,6 +166,7 @@ async def binding_proof(body: BindingProofRequest, request: Request):
         "state": state,
         "quiescent": quiescent,
         "domain_schema": binding.domain_database_schema,
+        "binding_sha256": hashlib.sha256(json.dumps(asdict(binding), sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "domain": binding.domain,
         "org_id": binding.org_id,
         "adp_org_id": binding.adp_org_id,

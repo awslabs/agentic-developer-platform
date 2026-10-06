@@ -123,7 +123,11 @@ def test_native_source_projection_is_paused_without_lifecycle_mounts(native):
     paid_worker.validate(env, lock)
     docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
     paid_worker.project(env, lock, docs)
-    by_kind = {doc["kind"]: doc for doc in docs[1:]}
+    by_kind = {
+        doc["kind"]: doc
+        for doc in docs[1:]
+        if doc["metadata"]["name"] != "superplane-paid-worker-binding"
+    }
     scaled = by_kind["ScaledJob"]
     assert scaled["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
     assert scaled["spec"]["maxReplicaCount"] == 0
@@ -214,7 +218,11 @@ def test_lifecycle_projection_preserves_reviewed_mounts_and_separates_schemas(na
     paid_worker.validate(env, lock)
     docs = [{"metadata": {"labels": {LABEL: "owned"}}}]
     paid_worker.project(env, lock, docs)
-    by_kind = {doc["kind"]: doc for doc in docs[1:]}
+    by_kind = {
+        doc["kind"]: doc
+        for doc in docs[1:]
+        if doc["metadata"]["name"] != "superplane-paid-worker-binding"
+    }
     job = by_kind["ScaledJob"]
     assert job["spec"]["maxReplicaCount"] == 0
     assert job["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "true"
@@ -251,3 +259,204 @@ def test_lifecycle_requires_separated_schemas_and_pinned_policy(native, key, val
     env["paid_worker"][key] = value
     with pytest.raises(Refusal):
         paid_worker.validate(env, lock)
+
+
+def test_native_activation_repeats_proof_before_worker_enable(native, monkeypatch):
+    from installation import lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    events = []
+    installer = SimpleNamespace(
+        env=env,
+        lock=lock,
+        receipt={
+            "adapter_stage": {
+                "native_worker": {
+                    "snapshot": {"uid": "selected"},
+                    "proof": {"binding_sha256": "a" * 64},
+                }
+            }
+        },
+        apply=lambda docs: events.append(("apply", docs)),
+    )
+    monkeypatch.setattr(
+        lifecycle_worker,
+        "installed_snapshot",
+        lambda _, active=False: events.append(("snapshot", active))
+        or {"uid": "selected"},
+    )
+    monkeypatch.setattr(
+        lifecycle_worker,
+        "proof",
+        lambda _, state: events.append(("proof", state))
+        or {"state": state, "binding_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        lifecycle_worker,
+        "worker_documents",
+        lambda _, active=False: ["active" if active else "paused"],
+    )
+    assert lifecycle_worker.activate(installer) == {
+        "state": "executable",
+        "binding_sha256": "a" * 64,
+    }
+    assert events == [
+        ("snapshot", False),
+        ("proof", "prepared"),
+        ("apply", ["active"]),
+        ("snapshot", True),
+        ("proof", "executable"),
+    ]
+
+
+def test_native_activation_refuses_replaced_preparation_before_mutation(
+    native, monkeypatch
+):
+    from installation import lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    installer = SimpleNamespace(
+        env=env,
+        lock=lock,
+        receipt={
+            "adapter_stage": {
+                "native_worker": {
+                    "snapshot": {"uid": "selected"},
+                    "proof": {"binding_sha256": "a" * 64},
+                }
+            }
+        },
+        apply=Mock(),
+    )
+    monkeypatch.setattr(
+        lifecycle_worker, "installed_snapshot", lambda _: {"uid": "replaced"}
+    )
+    with pytest.raises(Refusal, match="changed before activation"):
+        lifecycle_worker.activate(installer)
+    installer.apply.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change", [None, "stale", "wrong-role", "caller-receipt", "nonquiescent"]
+)
+def test_live_proof_requires_current_exact_protected_response(native, change):
+    from datetime import UTC, datetime, timedelta
+    from installation import lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    report = {
+        **lifecycle_worker.expected_binding(env, lock),
+        "version": 1,
+        "binding_sha256": "a" * 64,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "installed": True,
+        "state": "prepared",
+        "quiescent": True,
+        "domain": "superplane",
+        "org_id": env["org_id"],
+        "adp_org_id": env["adp_org_id"],
+        "domain_schema": env["database"]["schema"],
+    }
+    if change == "stale":
+        report["checked_at"] = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+    if change == "wrong-role":
+        report["worker_role_arn"] += "-replacement"
+    if change == "caller-receipt":
+        report = {"verified": True}
+    if change == "nonquiescent":
+        report["quiescent"] = False
+    installer = SimpleNamespace(
+        env=env, lock=lock, kube=Mock(return_value=report), json=lambda value: value
+    )
+    if change:
+        with pytest.raises(Refusal):
+            lifecycle_worker.proof(installer, "prepared")
+    else:
+        assert lifecycle_worker.proof(installer, "prepared") == report
+    assert installer.kube.call_args.kwargs["data"]
+    assert "python" in installer.kube.call_args.args
+
+
+def test_activation_keeps_exact_network_endpoints_and_inert_source(native):
+    from installation import lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    docs = [
+        {
+            "kind": "Namespace",
+            "metadata": {"name": "source", "labels": {LABEL: "owned"}},
+        }
+    ]
+    paid_worker.project(env, lock, docs)
+    installer = SimpleNamespace(env=env, docs=docs)
+    active = lifecycle_worker.worker_documents(installer, active=True)
+    job = next(d for d in active if d["kind"] == "ScaledJob")
+    network = next(d for d in active if d["kind"] == "NetworkPolicy")
+    assert job["spec"]["maxReplicaCount"] == env["paid_worker"]["max_replica_count"]
+    assert job["metadata"]["annotations"]["autoscaling.keda.sh/paused"] == "false"
+    assert {r["to"][0]["ipBlock"]["cidr"] for r in network["spec"]["egress"][:-1]} == {
+        v["cidr"] for v in env["paid_worker"]["egress"].values()
+    }
+    assert (
+        next(d for d in docs if d["kind"] == "ScaledJob")["spec"]["maxReplicaCount"]
+        == 0
+    )
+
+
+@pytest.mark.parametrize("worker_ready", [False, True])
+def test_api_admission_waits_for_executable_worker_and_restores_on_failure(
+    native, monkeypatch, worker_ready
+):
+    from datetime import UTC, datetime, timedelta
+    from installation import adapter_staging, lifecycle_worker
+
+    env, lock = native
+    lifecycle_config(env)
+    events = []
+    now = datetime.now(UTC)
+    stage = {
+        "state": "verified-disabled",
+        "verified_at": now.isoformat(),
+        "credential_metadata": {
+            "evidence_expires_at": (now + timedelta(minutes=3)).isoformat()
+        },
+        "binding": {"source": "exact"},
+        "deployment_uid": "api",
+    }
+    installer = SimpleNamespace(
+        env=env,
+        lock=lock,
+        receipt={"adapter_stage": stage},
+        docs=[],
+        save=Mock(),
+        apply=lambda docs: events.append("API enabled"),
+    )
+    monkeypatch.setattr(adapter_staging, "snapshot", lambda _: {"source": "exact"})
+    monkeypatch.setattr(
+        adapter_staging, "wait_api", lambda _: {"metadata": {"uid": "api"}}
+    )
+    monkeypatch.setattr(adapter_staging, "api_document", lambda _: {})
+    monkeypatch.setattr(adapter_staging, "project", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        adapter_staging, "restore_disabled", lambda _: events.append("restore disabled")
+    )
+
+    def activate(_):
+        events.append("worker executable proof")
+        if not worker_ready:
+            raise Refusal("executable proof failed")
+        return {"state": "executable"}
+
+    monkeypatch.setattr(lifecycle_worker, "activate", activate)
+    if worker_ready:
+        adapter_staging.activate(installer)
+        assert events == ["worker executable proof", "API enabled"]
+        assert stage["state"] == "activated-awaiting-full-verification"
+    else:
+        with pytest.raises(Refusal, match="executable proof failed"):
+            adapter_staging.activate(installer)
+        assert events == ["worker executable proof", "restore disabled"]

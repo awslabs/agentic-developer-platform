@@ -293,3 +293,29 @@ def test_failed_applied_role_verification_precedes_any_foundations(
     foundations.assert_not_called()
     assert any("apply" in args for args, _ in tools.calls)
     assert tools.route["enabled"] is False
+
+
+def test_known_legacy_route_upgrade_keeps_role_identity_and_exact_new_policy(planned):
+    installer, plan = planned
+    evidence = installer.receipt["api_producer_role_preflight"]
+    evidence.pop("role_missing")
+    evidence.update(role_id="AROATEST", legacy_routes=True)
+    change = plan["resource_changes"][0]["change"]
+    change["actions"] = ["update"]
+    change["after_unknown"] = {}
+    change["after"].update(
+        arn=producer_role.expected_arn(installer.env), unique_id="AROATEST"
+    )
+    producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "REPLACED"
+    with pytest.raises(Refusal, match="identity differs"):
+        producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "AROATEST"
+    change["after"]["inline_policy"][0]["policy"] = json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+    )
+    with pytest.raises(Refusal, match="inline policy differs"):
+        producer_role.inspect_plan(installer, plan)

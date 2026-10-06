@@ -1620,6 +1620,8 @@ class Installer:
                     "ConfigMap",
                     "Service",
                     "PodDisruptionBudget",
+                    "ScaledJob",
+                    "TriggerAuthentication",
                 }
             ]
         )
@@ -2257,7 +2259,12 @@ class Installer:
                 )
             )
             require(
-                runtime.get("mode") == "management"
+                runtime.get("mode")
+                == (
+                    "full"
+                    if self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                    else "management"
+                )
                 and runtime.get("release_id") == self.release
                 and runtime.get("source_revision") == self.lock["source_revision"]
                 and runtime.get("domain_auth_enforced") is True,
@@ -2565,10 +2572,17 @@ class Installer:
                     self.phase(
                         "adapter-stage-verification", lambda: verify(self, token)
                     )
-                    if not self.control_plane_only:
+                    if (
+                        not self.control_plane_only
+                        or self.env.get("paid_worker", {}).get("mode")
+                        == "native-lifecycle"
+                    ):
                         self.phase("adapter-activation", lambda: activate(self))
                 self.phase("private-verification", self.private_services)
-                if self.env.get("api_adapters") and not self.control_plane_only:
+                if self.env.get("api_adapters") and (
+                    not self.control_plane_only
+                    or self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                ):
                     from .adapter_staging import verify_active
 
                     self.phase(
@@ -2684,6 +2698,13 @@ class Installer:
             and self.receipt["verification"]["registered_workspaces"] == expected_count,
             "Durable organization/registrations changed across management restart",
         )
+        from . import lifecycle_worker
+
+        if lifecycle_worker.enabled(self.env):
+            lifecycle_worker.installed_snapshot(self, active=True)
+            self.receipt["adapter_stage"]["native_executable_proof"] = (
+                lifecycle_worker.proof(self, "executable")
+            )
         self.receipt["verification"]["restart_persistence_verified"] = True
 
     def resume(self, previous):

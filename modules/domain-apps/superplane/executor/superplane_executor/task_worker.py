@@ -137,7 +137,9 @@ async def pools(stack):
                 heads = await connection.fetch(
                     "SELECT version_num FROM alembic_version"
                 )
-                if len(heads) != 1:
+                if len(heads) != 1 or heads[0]["version_num"] != required(
+                    "SUPERPLANE_DOMAIN_SCHEMA_HEAD"
+                ):
                     raise OperationRefused("domain migration head unavailable")
         result.append(pool)
     return result

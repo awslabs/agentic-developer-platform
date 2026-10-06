@@ -13,6 +13,7 @@ from superplane_executor import task_worker
 async def test_pools_keep_domain_and_harness_connections_separate(monkeypatch):
     for key, value in {
         "SUPERPLANE_DOMAIN_SCHEMA": "superplane",
+        "SUPERPLANE_DOMAIN_SCHEMA_HEAD": "domain-head",
         "SUPERPLANE_OPERATION_SCHEMA": "superplane_operations",
         "SUPERPLANE_DOMAIN_DSN_FILE": "/private/domain",
         "SUPERPLANE_EXECUTION_DSN_FILE": "/private/execution",

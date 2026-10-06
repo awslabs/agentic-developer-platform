@@ -183,6 +183,10 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 # absent from the public Gateway projection. INTERNAL_ROUTES means machine auth,
 # so putting a private user-authenticated route there would weaken its boundary.
 PRIVATE_DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    ("GET", "/internal/installation/organization-bootstrap"): (
+        Scope.ORGANIZATION,
+        Permission.ADMINISTER,
+    ),
     (
         "GET",
         "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",

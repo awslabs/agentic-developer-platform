@@ -256,3 +256,26 @@ async def test_prepared_proof_refuses_existing_shared_work_before_workload_reads
         await proof.binding_proof(proof.BindingProofRequest(domain="superplane", org_id=binding.org_id, state="prepared"), Mock())
     assert refused.value.status_code == 409
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_quiescence_proof_does_not_claim_installed_or_read_worker(installed, monkeypatch):
+    binding, _, calls, _ = installed
+    produced = Mock(return_value=binding)
+    monkeypatch.setattr(proof, 'producer', produced)
+    @asynccontextmanager
+    async def domain(_):
+        async def mapped(*_): return binding.adp_org_id
+        yield SimpleNamespace(fetchval=mapped)
+    @asynccontextmanager
+    async def shared(_):
+        async def outstanding(*_): return False
+        yield SimpleNamespace(fetchval=outstanding)
+    monkeypatch.setattr(proof, 'domain_connect', domain)
+    monkeypatch.setattr(proof, 'operation_connect', shared)
+    result = await proof.binding_proof(proof.BindingProofRequest(domain='superplane', org_id=binding.org_id, state='quiescent'), Mock())
+    assert result['quiescent'] is True
+    assert result['installed'] is False
+    assert result['org_id'] == binding.org_id
+    assert produced.call_count == 2
+    assert calls == []

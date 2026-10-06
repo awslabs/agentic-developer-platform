@@ -34,7 +34,7 @@ locals {
     Statement = [{
       Effect = "Allow"
       Action = "execute-api:Invoke"
-      Resource = [for route in ["producer-readiness", "verify-run", "dispatch"] :
+      Resource = [for route in ["producer-readiness", "verify-run", "dispatch", "binding-proof", "current-identity"] :
         "arn:aws:execute-api:${var.aws_region}:${var.account_id}:${var.api_producer_role.api_id}/${var.api_producer_role.stage}/POST/internal/v1/controller-execution/${route}"
       ]
     }]
