@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.github/actions/upload-ci-evidence-s3/**'
+      - '.github/scripts/upload_ci_evidence_s3.py'
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
@@ -356,7 +358,7 @@ jobs:
         # (coverage combine) before the total means anything.
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: coverage-report-shard-${{ matrix.shard }}
           path: modules/gateway/coverage.xml
@@ -418,11 +420,10 @@ jobs:
         run: pytest tests/agentauth/ -q -m chat_ports --timeout=60 --junitxml=chat-port-results.xml
       - name: Upload test evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: chat-port-results-${{ github.sha }}
           path: modules/gateway/chat-port-results.xml
-          if-no-files-found: error
 
   frontend-test:
     name: Frontend Unit Tests
