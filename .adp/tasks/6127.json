@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T00:14:43.126Z",
+  "updated_at": "2026-10-06T00:17:59.532Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -30,7 +30,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Commit 02119b1; startup composition remains AC-05."
+      "note": "Commit 02119b1; production composition remains AC-05."
     },
     {
       "id": "AC-01-t1",
@@ -46,7 +46,7 @@
         "modules/gateway/tests/internal/test_domain_current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "Local Gateway and domain identity tests passed."
+      "note": "Focused tests passed."
     },
     {
       "id": "AC-01-t2",
@@ -75,7 +75,7 @@
       "files": [
         "modules/gateway/tests/orchestration/test_internal_plane_guard.py"
       ],
-      "note": "Commit e243ee4; focused local Gateway suite passed 110 tests. Final-head CI pending.",
+      "note": "Commit e243ee4; focused local Gateway suite passed 110 tests.",
       "commits": [
         "e243ee4"
       ]
@@ -108,7 +108,7 @@
         "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py",
         "modules/domain-apps/superplane/executor/IDENTITY-ALIGNMENT.md"
       ],
-      "note": "Domain CI run 37390584089 at 528c407 passed all four PostgreSQL identity tests; updated-head CI remains pending.",
+      "note": "Domain CI run 37390584089 at 528c407 passed all four PostgreSQL identity tests.",
       "commits": [
         "e497897"
       ]
@@ -137,7 +137,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py"
       ],
-      "note": "Commit 3b87cc0; missing policy cannot bypass enabled identity enforcement. Covered by AC-03-t4.",
+      "note": "Commit 3b87cc0; covered by AC-03-t4.",
       "commits": [
         "3b87cc0"
       ]
@@ -147,19 +147,22 @@
       "kind": "code",
       "criterion": "AC-03",
       "title": "Revalidate stored organization identity at worker admission and credential boundaries",
-      "status": "open",
+      "status": "done",
       "covers": [],
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py"
       ],
-      "note": ""
+      "note": "Commit c3589f7; operation resolution distinguishes current identity denial from outage and checks the stored binding. Protected execution/renewal requester and approver checks remain AC-04; production composition remains AC-05.",
+      "commits": [
+        "c3589f7"
+      ]
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
       "title": "Run API and worker grant tests for read, spend, provision, renew and administer implications",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-03-c1",
         "AC-03-c2"
@@ -167,7 +170,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "Worker portion and complete implication matrix remain."
+      "note": "DB-backed API and worker matrix passed for all five grant kinds and their implication sets; adjacent local suites: 244 passed."
     },
     {
       "id": "AC-03-t2",
@@ -211,7 +214,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
       ],
-      "note": "Added to verify the API slice independently of AC-03-t1's unfinished worker scope; four adjacent suites passed 238 tests locally."
+      "note": "Local mapped API assertions passed."
     },
     {
       "id": "AC-04-c1",
@@ -307,7 +310,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Route exists; signed composition remains to be proven."
+      "note": "Route exists; actual signed composition remains to be proven."
     },
     {
       "id": "AC-05-t1",
