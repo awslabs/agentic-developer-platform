@@ -427,6 +427,16 @@ def compose(request, reviewed, env, lock, operator):
         queue_arn=resources["queue_arn"],
     )
     prepared_env = dict(env, paid_worker=selected)
+    prepared_env["api_adapters"] = {
+        **env["api_adapters"],
+        "dispatcher": {
+            **dispatcher,
+            "operation_database_secret_ref": {
+                "name": "superplane-operation-api-db",
+                "key": "dsn",
+            },
+        },
+    }
     paid_worker.validate(prepared_env, lock)
     require(
         isinstance(env.get("org_id"), str)
