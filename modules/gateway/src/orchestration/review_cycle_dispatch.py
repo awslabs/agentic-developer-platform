@@ -18,7 +18,6 @@ from boto3.dynamodb.types import TypeSerializer
 from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError
-from src.agentauth.bootstrap_failure import is_bootstrap_failure
 from src.agentauth.engine import get_engine_authority_writer, validate_engine_authority
 from src.agentauth.grants import AgentAction, DelegatedGrant, TargetRelationship
 from src.agentauth.launch_configuration import resolve_launch_configuration
@@ -37,6 +36,7 @@ from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import DISPATCH_KIND, CycleBlockedError, CycleObservation
 from .run_store import EngineRunStore
 from .stage_attempts import stage_attempts
+from .startup_recovery import is_retryable_bootstrap_failure
 
 ACTOR = "system:review-cycle"
 
@@ -312,15 +312,15 @@ class ReviewCycleServices:
         active = continuation_run_id(dispatches[-1].operation_key) if dispatches else attempt_run_id(node.id, node.attempts)
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
         status = raw.get("status", {}).get("S")
-        bootstrap_failed = bool(dispatches) and is_bootstrap_failure(raw)
+        bootstrap_failed = bool(dispatches) and is_retryable_bootstrap_failure(raw)
         review_failed = bool(dispatches) and failed_review(raw)
-        if status in {"cancelled", "revoked"} or (
+        if (status in {"cancelled", "revoked"} and not bootstrap_failed) or (
             status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed and not review_failed
         ):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
         return {
             "active_run_id": active,
-            "worker_complete": status == "completed",
+            "worker_complete": status == "completed" or bootstrap_failed,
             "bootstrap_retry_of": active if bootstrap_failed else None,
             "review_retry_of": active if review_failed else None,
             "head_sha": await self.head(binding),
@@ -501,7 +501,7 @@ class ReviewCycleServices:
                     # Explicit review-only policies retain read-only contents
                     # access. The persona itself cannot grant repair authority.
                     pass
-            bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_bootstrap_failure(raw)
+            bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_retryable_bootstrap_failure(raw)
             review_retry = detail.get("review_retry_of") == detail["active_run_id"] and failed_review(raw)
             if (
                 not bootstrap_retry
@@ -538,7 +538,9 @@ class ReviewCycleServices:
                 envelope.update(await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona))
             except Exception:
                 raise CycleBlockedError("persona_model_selection_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
-            envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
+            # Start the worker clock when its assignment is prepared, after any
+            # admission wait. The saved receipt preserves this timestamp on replay.
+            envelope.update(message_id=run_id, arrived_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), work_claim_required=True)
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
             envelope["correlation"].update(

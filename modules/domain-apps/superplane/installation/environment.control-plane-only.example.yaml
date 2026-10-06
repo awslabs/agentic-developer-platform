@@ -53,3 +53,12 @@ control_plane_only: true
 # controller_ownership: single-workspace-controller
 # secrets.workspace_access: adp/dev/superplane/workspace-access
 # control_plane_only: false   (or remove this field)
+
+# Required for live preflight/execution, optional for offline planning only.
+# Resolve from the authenticated selected connection and independently verified IAM
+# role inventory, never from ambient credentials. See installation/README.md.
+# deployment_identity:
+#   service: aws
+#   connection_label: <authorized connection label>
+#   expected_role_arn: <full IAM role ARN including path>
+#   expected_role_id: <immutable IAM RoleId>

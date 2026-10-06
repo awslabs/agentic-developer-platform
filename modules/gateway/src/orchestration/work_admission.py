@@ -382,9 +382,9 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         raw = await run_in_threadpool(store._read, f"TENANT#{row.org_id}", f"EXEC#{row.active_run_id}")
         if not raw or raw.get("tenant_id") != {"S": row.org_id}:
             continue
-        from src.agentauth.bootstrap_failure import is_bootstrap_failure
+        from .startup_recovery import is_retryable_bootstrap_failure
 
-        if is_bootstrap_failure(raw):
+        if is_retryable_bootstrap_failure(raw):
             # The review controller owns this failed startup and reserves its
             # successor under the same claim and per-stage allowance.
             continue

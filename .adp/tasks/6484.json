@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6484,
-  "updated_at": "2026-10-06T00:07:47.581Z",
+  "updated_at": "2026-10-06T00:21:14.062Z",
   "tasks": [
     {
       "id": "AC01-c1",
@@ -14,7 +14,7 @@
         "modules/domain-apps/superplane/contracts/access-cases-v1.json",
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Covered by AC01-t1; pushed at adbdaf1.",
+      "note": "Preserved from adbdaf1; unchanged by the prepared merge and covered by AC01-t1.",
       "commits": [
         "adbdaf1"
       ]
@@ -31,7 +31,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Included in passing final local and remote suites."
+      "note": "Revalidated in the merged-tree contract suite: 89 passed, 2 documented expected failures overall."
     },
     {
       "id": "AC02-c1",
@@ -44,7 +44,7 @@
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Covered by AC02-t1; pushed at 6412476.",
+      "note": "Preserved from 6412476; unchanged by the prepared merge and covered by AC02-t1.",
       "commits": [
         "6412476"
       ]
@@ -61,7 +61,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Included in passing final local and remote suites."
+      "note": "Mounted-route and client-surface contract checks passed on the merged working tree."
     },
     {
       "id": "AC03-c1",
@@ -75,7 +75,7 @@
         "modules/domain-apps/superplane/contracts/access-cases-v1.json",
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Covered by AC03-t1; pushed at 81ec76d.",
+      "note": "Preserved from 81ec76d; unchanged by the prepared merge and covered by AC03-t1.",
       "commits": [
         "81ec76d"
       ]
@@ -92,7 +92,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Included in passing final local and remote suites."
+      "note": "Permission implication, organization-scope and revoked-grant contract cases passed on the merged working tree."
     },
     {
       "id": "AC04-c1",
@@ -106,7 +106,7 @@
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json",
         "modules/domain-apps/superplane/contracts/access-cases-v1.json"
       ],
-      "note": "Covered by AC04-t1; pushed at d16445f. Owner disposition remains separate.",
+      "note": "Preserved from d16445f and covered by AC04-t1. Proposals remain explicitly unapproved.",
       "commits": [
         "d16445f"
       ]
@@ -123,7 +123,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Harness approval suite: 41 passed; included in passing final API and remote suites."
+      "note": "Approval-binding and delegation contract fixtures passed on the merged tree. Previously supplied standalone Harness evidence is retained, not rerun."
     },
     {
       "id": "AC04-c2",
@@ -135,7 +135,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "External decision required: domain/auth owners must approve or amend the proposed approver handoff, presets, assignment ceiling, revocation bound and last-administrator recovery."
+      "note": "The decision record still requires domain/auth-owner disposition and Harness approval-owner agreement for D1. No approval was supplied; the reviewer cannot fabricate it."
     },
     {
       "id": "AC04-t2",
@@ -149,7 +149,7 @@
       "files": [
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md"
       ],
-      "note": "Depends on a recorded AC04-c2 owner disposition; none was provided."
+      "note": "Requires the missing recorded owner dispositions from AC04-c2."
     },
     {
       "id": "AC05-c1",
@@ -162,7 +162,7 @@
         "modules/domain-apps/superplane/contracts/PERMISSIONS-DECISIONS.md",
         "modules/domain-apps/superplane/contracts/action-permissions-v1.json"
       ],
-      "note": "Covered by AC05-t1; pushed at 45306e8.",
+      "note": "Preserved from 45306e8; unchanged by the merge and covered by the retained and refreshed contract evidence.",
       "commits": [
         "45306e8"
       ]
@@ -179,7 +179,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
       ],
-      "note": "Pinned local API suite: 445 passed, 2 expected failures; Gateway CLI: 280 passed; UI: 21 passed. Exact-head remote Domain CI run 37390408382 succeeded."
+      "note": "Retains supplied pre-merge evidence at 45306e8: API 445 passed/2 expected failures, Gateway 280 passed, UI 21 passed, and Domain CI run 37390408382 succeeded. Published merge-head evidence is tracked separately."
     },
     {
       "id": "AC05-t2",
@@ -191,7 +191,37 @@
         "AC05-c1"
       ],
       "files": [],
-      "note": "External domain/auth-owner review is required; a ready PR and passing CI are not sign-off."
+      "note": "Required domain/auth-owner review remains unavailable. Passing tests and this reconciliation are not that sign-off."
+    },
+    {
+      "id": "AC05-t3",
+      "kind": "test",
+      "criterion": "AC05",
+      "title": "Verify prepared base reconciliation with pinned offline contract tests",
+      "status": "done",
+      "covers": [
+        "AC05-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": "Added for the requested base reconciliation. Tested working-tree merge of HEAD 79e85dedf26ac085d0110f793b4045b76e5f6d2b and base 3848a2c251fdd119718addd123509648eee83e9c. Branch changes are disjoint; incoming files match base; no unresolved entries, conflict markers or whitespace errors. With transfer-constraints.txt in /tmp/superplane-6484-merge-venv, pytest -q tests/test_permission_contract.py --tb=short -rx passed 89 tests with 2 known expected failures. Public-docs check: 1,434 files, 0 findings."
+    },
+    {
+      "id": "AC05-t4",
+      "kind": "test",
+      "criterion": "AC05",
+      "title": "Verify controller-published merge revision with exact-head Domain and Gateway CI",
+      "status": "open",
+      "covers": [
+        "AC01-c1",
+        "AC02-c1",
+        "AC03-c1",
+        "AC04-c1",
+        "AC05-c1"
+      ],
+      "files": [],
+      "note": "Added because prior remote evidence predates the prepared base merge. Controller-owned publication and final-head CI remain pending; no commit, push or merge was performed."
     }
   ]
 }
