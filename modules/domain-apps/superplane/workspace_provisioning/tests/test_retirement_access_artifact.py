@@ -9,6 +9,7 @@ from workspace_provisioning.artifacts import canonical, continuation_parameters
 from workspace_provisioning.retirement_access_artifact import (
     access_metadata,
     access_result,
+    access_target,
     validate_access_artifact,
 )
 from workspace_provisioning.runtime_config import LifecycleRefused
@@ -77,6 +78,24 @@ def test_access_result_retains_both_allocations_and_never_claims_retirement(
     assert "grants" not in result
     with pytest.raises(LifecycleRefused, match="phase"):
         continuation_parameters(row)
+
+
+def test_control_artifact_uses_only_approved_target_not_apply_metadata(access_case):  # noqa: F811
+    operation, _, _ = access_case
+    plan = compile_plan(*inputs())
+    row = artifact(operation, plan)
+    expected = json.loads(row["target_json"])
+    assert access_target(plan) == expected
+    extended = {
+        **expected,
+        "workspace_name": "display-only",
+        "environment": "dev",
+    }
+    row["target_json"] = canonical(extended)
+    with pytest.raises(LifecycleRefused, match="original allocation"):
+        validate_access_artifact(row, plan)
+    row["target_json"] = canonical(access_target(plan))
+    assert validate_access_artifact(row, plan) == grant_identities(plan)
 
 
 @pytest.mark.parametrize(
