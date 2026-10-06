@@ -251,4 +251,142 @@ async def test_installation_readiness_masks_offline_capabilities_without_live_de
         "allocation_inventory": missing != "operation_store",
     }
     assert response["dependencies"][missing] is False
+    assert response["paid_admission_enabled"] is False
+    assert response["paid_worker_binding"]["executable"] is False
     assert response["observations"] == {}
+
+
+@pytest.mark.parametrize("proof,expected", [(True, True), (False, False)])
+async def test_scoped_installation_binding_requires_current_worker_proof(
+    monkeypatch, proof, expected
+):
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.routers import installation as router
+
+    org_id = uuid.uuid4()
+    worker = SimpleNamespace(binding_ready=AsyncMock(return_value=proof))
+    composition = SimpleNamespace(dispatcher=worker)
+    app = SimpleNamespace(
+        state=SimpleNamespace(trust_composition=composition, domain_policy=object())
+    )
+    submitter = SimpleNamespace(
+        workspaces=[], lease_scopes={f"controller_management/{org_id}"}
+    )
+    dependencies = AsyncMock(
+        return_value=dict.fromkeys(
+            ("operation_store", "authority", "lifecycle_registry"), True
+        )
+    )
+    prepared = AsyncMock(return_value=True)
+    capabilities = AsyncMock(
+        return_value=dict.fromkeys(
+            (
+                "credential_evidence",
+                "operation_facade",
+                "provider_authority",
+                "allocation_inventory",
+            ),
+            True,
+        )
+    )
+    monkeypatch.setattr(router, "runtime_dependencies", dependencies)
+    monkeypatch.setattr(router, "prepared_lifecycle_binding", prepared)
+    monkeypatch.setattr(router, "capabilities_async", capabilities)
+    monkeypatch.setattr(
+        "app.operation_activation.expected_lifecycle_binding",
+        lambda: {"pin": "expected"},
+    )
+    result = await router.installation_readiness(
+        SimpleNamespace(app=app), submitter, org_id
+    )
+    assert result["paid_worker_binding"] == {
+        "prepared": True,
+        "executable": expected,
+    }
+    assert result["paid_admission_enabled"] is expected
+    worker.binding_ready.assert_awaited_once_with(str(org_id), {"pin": "expected"})
+    assert result["observations"] == {}
+
+    if proof:
+        prepared.side_effect = [True, False]
+        result = await router.installation_readiness(
+            SimpleNamespace(app=app), submitter, org_id
+        )
+        assert result["paid_admission_enabled"] is False
+        prepared.side_effect = None
+    submitter.lease_scopes = {"budget_monitor/global"}
+    result = await router.installation_readiness(
+        SimpleNamespace(app=app), submitter, org_id
+    )
+    assert result["paid_admission_enabled"] is expected
+    worker.binding_ready.reset_mock()
+    result = await router.installation_readiness(SimpleNamespace(app=app), submitter)
+    assert result["paid_worker_binding"] == {"prepared": True, "executable": False}
+    worker.binding_ready.assert_not_awaited()
+
+
+async def test_unscoped_installation_cannot_probe_another_organization(monkeypatch):
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.routers import installation as router
+    from fastapi import HTTPException
+
+    probe = AsyncMock()
+    monkeypatch.setattr(router, "runtime_dependencies", probe)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(HTTPException) as refusal:
+        await router.installation_readiness(
+            request,
+            SimpleNamespace(workspaces=[], lease_scopes=frozenset()),
+            uuid.uuid4(),
+        )
+    assert refusal.value.status_code == 403
+    probe.assert_not_awaited()
+
+
+def test_readiness_command_selects_authenticated_organization_proof(
+    monkeypatch, capsys
+):
+    import uuid
+    from types import SimpleNamespace
+
+    import httpx
+
+    from app.config import settings
+
+    org_id = uuid.uuid4()
+    monkeypatch.setattr(
+        settings,
+        "observation_submitters",
+        json.dumps(
+            [{"credential": "test-only", "lease_scopes": ["budget_monitor/global"]}]
+        ),
+    )
+    requests = []
+
+    def read(url, **kwargs):
+        requests.append((url, kwargs))
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"paid_admission_enabled": False},
+        )
+
+    monkeypatch.setattr(httpx, "get", read)
+    assert installation.main(["readiness", "--org-id", str(org_id)]) == 0
+    assert requests == [
+        (
+            "http://127.0.0.1:8000/internal/installation",
+            {
+                "headers": {"Authorization": "test-only"},
+                "timeout": 10,
+                "follow_redirects": False,
+                "params": {"org_id": str(org_id)},
+            },
+        )
+    ]
+    assert json.loads(capsys.readouterr().out) == {"paid_admission_enabled": False}

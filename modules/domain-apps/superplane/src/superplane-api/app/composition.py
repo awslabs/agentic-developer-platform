@@ -396,10 +396,16 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
         result._closeables.append(result.dispatcher)
         execution._verify_run = result.dispatcher.verify_run
 
+    async def activation_ready():
+        from app.installation import prepared_lifecycle_binding
+
+        return await prepared_lifecycle_binding(result)
+
     adapters: dict[str, Any] = {}
     if PORT_OPERATION_FACADE in outstanding:
         adapters[PORT_OPERATION_FACADE] = HarnessOperationFacade(
             enabled=result.dispatch_enabled,
+            activation_verify=activation_ready,
             lifecycle_verify=result.dispatcher.binding_ready
             if result.dispatcher
             else None,

@@ -3,12 +3,16 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from superplane_contracts import Submitter
 
 from app.config import settings
 from app.database import get_session
-from app.installation import capabilities_async, runtime_dependencies
+from app.installation import (
+    capabilities_async,
+    prepared_lifecycle_binding,
+    runtime_dependencies,
+)
 from app.management import management_only
 from app.middleware.auth import get_current_org
 from app.routers.heartbeat import _authenticated_submitter
@@ -18,11 +22,29 @@ router = APIRouter(prefix="/internal")
 
 @router.get("/installation")
 async def installation_readiness(
-    request: Request, submitter: Submitter = Depends(_authenticated_submitter)
+    request: Request,
+    submitter: Submitter = Depends(_authenticated_submitter),
+    org_id: uuid.UUID | None = None,
 ):
-    dependencies = await runtime_dependencies(
-        getattr(request.app.state, "trust_composition", None)
-    )
+    """Distinguish locally prepared from installed proof for an authorized org."""
+    if org_id is not None and not (
+        "budget_monitor/global" in getattr(submitter, "lease_scopes", ())
+        or f"controller_management/{org_id}" in getattr(submitter, "lease_scopes", ())
+    ):
+        raise HTTPException(403, "installation organization scope required")
+    composition = getattr(request.app.state, "trust_composition", None)
+    dependencies = await runtime_dependencies(composition)
+    prepared = await prepared_lifecycle_binding(composition, dependencies)
+    executable = False
+    if prepared and org_id is not None:
+        from app.operation_activation import expected_lifecycle_binding
+
+        try:
+            executable = await composition.dispatcher.binding_ready(
+                str(org_id), expected_lifecycle_binding()
+            ) and await prepared_lifecycle_binding(composition)
+        except Exception:
+            executable = False
     capabilities = await capabilities_async()
     for port, dependency in (
         ("provider_authority", "operation_store"),
@@ -32,12 +54,14 @@ async def installation_readiness(
     capabilities["operation_facade"] = capabilities["operation_facade"] and all(
         dependencies.values()
     )
+    executable = executable and all(capabilities.values())
     return {
         "release_id": os.environ.get("SUPERPLANE_RELEASE_ID"),
         "source_revision": os.environ.get("SUPERPLANE_SOURCE_REVISION"),
         "mode": "management" if management_only() else "full",
         "operation_dispatch_enabled": settings.superplane_operation_dispatch_enabled,
-        "paid_admission_enabled": settings.superplane_operation_dispatch_enabled,
+        "paid_admission_enabled": executable,
+        "paid_worker_binding": {"prepared": prepared, "executable": executable},
         "domain_auth_enforced": getattr(request.app.state, "domain_policy", None)
         is not None,
         # Exactly the four booleans, unchanged: the post-rollout recheck asserts

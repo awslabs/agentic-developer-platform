@@ -196,6 +196,7 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
             ledger=budget,
         ),
         lifecycle_verify=dispatcher.binding_ready,
+        activation_verify=AsyncMock(return_value=True),
     )
     monkeypatch.setattr(provisioning, "_facade", facade)
     document = {"version": 1, "tenants": {str(org_id): policy()}}

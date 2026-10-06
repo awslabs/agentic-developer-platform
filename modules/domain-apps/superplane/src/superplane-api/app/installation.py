@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import uuid
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -100,38 +101,67 @@ async def runtime_dependencies(composition) -> dict[str, bool]:
     ):
         return result
     try:
-        await asyncio.wait_for(connections.ensure_ready(), timeout=10)
-        result["operation_store"] = True
-        async with engine.connect() as connection:
-            for table, column in (
-                ("organization_grants", "org_id, principal, permissions, revoked_at"),
-                (
-                    "workspace_grants",
-                    "org_id, workspace_id, principal, permissions, revoked_at",
-                ),
-                (
-                    "operation_approvals",
-                    "org_id, workspace_id, requester, plan_digest, expires_at, revoked",
-                ),
-            ):
-                await asyncio.wait_for(
-                    connection.execute(text(f"SELECT {column} FROM {table} LIMIT 0")),
-                    timeout=10,
-                )
-            result["authority"] = True
-            await asyncio.wait_for(
-                connection.execute(
-                    text(
-                        "SELECT operation_id, org_id, workspace_id, phase, plan_digest "
-                        "FROM workspace_lifecycle_control_operations LIMIT 0"
-                    )
-                ),
-                timeout=10,
-            )
-            result["lifecycle_registry"] = True
+        async with asyncio.timeout(10):
+            await connections.ensure_ready()
+            result["operation_store"] = True
+            await _read_runtime_tables(engine, result)
     except Exception:
         return result
     return result
+
+
+async def _read_runtime_tables(engine, result):
+    async with engine.connect() as connection:
+        for table, column in (
+            ("organization_grants", "org_id, principal, permissions, revoked_at"),
+            (
+                "workspace_grants",
+                "org_id, workspace_id, principal, permissions, revoked_at",
+            ),
+            (
+                "operation_approvals",
+                "org_id, workspace_id, requester, plan_digest, expires_at, revoked",
+            ),
+        ):
+            await connection.execute(text(f"SELECT {column} FROM {table} LIMIT 0"))
+        result["authority"] = True
+        await connection.execute(
+            text(
+                "SELECT operation_id, org_id, workspace_id, phase, plan_digest "
+                "FROM workspace_lifecycle_control_operations LIMIT 0"
+            )
+        )
+        result["lifecycle_registry"] = True
+
+
+async def prepared_lifecycle_binding(composition, dependencies=None) -> bool:
+    """Only local configuration and current dependencies; not an installed proof."""
+    from app.adapters.operation_dispatch import OperationDispatcher
+    from app.operation_activation import (
+        expected_lifecycle_binding,
+        require_admission_enabled,
+    )
+    from app.services.provisioning import ProvisioningUnavailable, get_operation_facade
+
+    if dependencies is None:
+        dependencies = await runtime_dependencies(composition)
+    if not all(
+        dependencies.get(key) is True
+        for key in ("operation_store", "authority", "lifecycle_registry")
+    ):
+        return False
+    try:
+        require_admission_enabled(lifecycle=True)
+        expected_lifecycle_binding()
+    except ProvisioningUnavailable:
+        return False
+    dispatcher = getattr(composition, "dispatcher", None)
+    facade = get_operation_facade()
+    return (
+        isinstance(dispatcher, OperationDispatcher)
+        and dispatcher.enabled
+        and getattr(facade, "_lifecycle_verify", None) == dispatcher.binding_ready
+    )
 
 
 def capabilities() -> dict[str, bool]:
@@ -324,7 +354,10 @@ def main(argv=None) -> int:
             "readiness",
         ),
     )
+    parser.add_argument("--org-id", type=uuid.UUID)
     args = parser.parse_args(argv)
+    if args.org_id is not None and args.action != "readiness":
+        parser.error("--org-id is only supported for readiness")
     try:
         if args.action in {"adapter-stage", "adapter-active"}:
             import sys
@@ -393,6 +426,7 @@ def main(argv=None) -> int:
                 headers={"Authorization": grant["credential"]},
                 timeout=10,
                 follow_redirects=False,
+                **({"params": {"org_id": str(args.org_id)}} if args.org_id else {}),
             )
             result.raise_for_status()
             print(json.dumps(result.json()))

@@ -62,10 +62,16 @@ class HarnessOperationFacade:
     """
 
     def __init__(
-        self, service: Any, *, enabled: bool = True, lifecycle_verify=None
+        self,
+        service: Any,
+        *,
+        enabled: bool = True,
+        lifecycle_verify=None,
+        activation_verify=None,
     ) -> None:
         self._service = service
         self._lifecycle_verify = lifecycle_verify
+        self._activation_verify = activation_verify
         if type(enabled) is not bool:
             raise ValueError("operation admission enabled must be a boolean")
         self._enabled = enabled
@@ -102,6 +108,14 @@ class HarnessOperationFacade:
         from app.operation_activation import expected_lifecycle_binding
 
         require_admission_enabled(enabled=self._enabled, lifecycle=True)
+        try:
+            dependencies_ready = (
+                self._activation_verify is not None and await self._activation_verify()
+            )
+        except Exception:
+            dependencies_ready = False
+        if not dependencies_ready:
+            raise ProvisioningUnavailable("paid worker dependencies are unavailable")
         if self._lifecycle_verify is None or not await self._lifecycle_verify(
             org_id, expected_lifecycle_binding()
         ):
