@@ -41,6 +41,7 @@ on:
     branches: [main]
     paths:
       - 'modules/domain-apps/superplane/infra/control-plane/**'
+      - 'modules/domain-apps/superplane/infra/installer-access/**'
       # The workspaces root module (#5532, w6-09). Its tests run in the matrixed `tests`
       # job below; it has no entry in the credentialed `plan` job, which is deliberate —
       # see the matrix comment there.
@@ -108,6 +109,8 @@ jobs:
             dir: modules/domain-apps/superplane/infra/domain-runtime
           - name: lifecycle-foundations
             dir: modules/domain-apps/superplane/infra/lifecycle-foundations
+          - name: installer-access
+            dir: modules/domain-apps/superplane/infra/installer-access
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
     env:
@@ -153,6 +156,13 @@ jobs:
       - name: Terraform validate
         working-directory: ${{ matrix.dir }}
         run: terraform validate
+
+      - name: Validate installer Namespace RBAC root (no backend)
+        if: matrix.name == 'installer-access'
+        working-directory: modules/domain-apps/superplane/infra/installer-access/namespace-rbac
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
 
       - name: Run every .tftest.hcl and prove none was skipped
         working-directory: ${{ matrix.dir }}
