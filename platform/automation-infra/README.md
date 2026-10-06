@@ -83,6 +83,75 @@ write statement. Project dispatch and source staging remain limited to
 `build_project_names`. These inputs do not create a CodeBuild project or ECR
 repository; verify those separately in their canonical owning states.
 
+## Superplane source and paid release capabilities
+
+The independent **automation state owner** can enable these default-off build
+capabilities for the protected `aws-e/adp` workflows:
+
+```hcl
+enable_superplane_operator_source = true
+enable_superplane_paid_release    = true
+```
+
+Source export adds only versioned read/write of
+`superplane/releases/operator-source/<environment>/*/{bundles,consumers,manifests}/*`
+and metadata reads of the one `adp-terraform-state-<account>` bucket. Paid release
+adds only `adp-<environment>-superplane-paid-worker` to project/source dispatch,
+`adp-superplane-paid-worker` to an explicit ECR read inventory, conditional writes
+to `superplane/releases/paid-worker/dispatch/*/{claim,child}.json`, and bucket
+versioning/lifecycle reads. The lifecycle IAM action is
+`s3:GetLifecycleConfiguration`. Existing null ECR inventory retains its previous
+read scope. Source-only and paid-only flags work independently. No delete, claim
+reset, bucket changes, IAM mutation, runtime deployment, or source-repository
+token delegation is granted. Human recovery reads remain with the existing
+operator; the paid CLI itself only writes its durable evidence.
+
+Use the existing reviewed inputs and backend of this maintained root, never the
+domain installation state or its connected role. For the current dev rollout the
+state owner must independently verify account `879318057152`, region `us-east-1`,
+state key `dev/trusted-automation/terraform.tfstate`, existing role
+`adp-dev-trusted-build`, and source destination authorization. Keep all current
+inventory inputs; do not replace them with a demo-only subset. With that owner's
+already authorized profile active, the handoff commands from the repository root
+are:
+
+```bash
+aws sts get-caller-identity
+terraform -chdir=platform/automation-infra init -reconfigure \
+  -backend-config=bucket=adp-terraform-state-879318057152 \
+  -backend-config=key=dev/trusted-automation/terraform.tfstate \
+  -backend-config=region=us-east-1
+terraform -chdir=platform/automation-infra plan \
+  -var-file=/private/existing-reviewed-automation.tfvars \
+  -var=enable_superplane_operator_source=true \
+  -var=enable_superplane_paid_release=true \
+  -target=aws_iam_role_policy.build_dispatch \
+  -out=/private/superplane-build-authority.tfplan
+terraform -chdir=platform/automation-infra show -no-color \
+  /private/superplane-build-authority.tfplan
+```
+
+Review must show **one in-place update**, solely
+`aws_iam_role_policy.build_dispatch`, retaining all existing project/role/trust
+identities and adding only the bounded statements above. Refuse create, delete,
+replacement, unrelated drift or any role/trust change; targeting can include
+dependencies, so it is not itself proof of scope. After review and authorization,
+apply that exact saved plan:
+
+```bash
+terraform -chdir=platform/automation-infra apply \
+  /private/superplane-build-authority.tfplan
+```
+
+Retain both opt-ins in the owner's normal inputs to avoid reverting them later.
+The domain build preparation must separately create the dedicated paid project
+and immutable repository before dispatch. Both workflows are main-only, manual,
+and use the existing protected `adp-build-dev` environment. The source workflow
+publishes private repository history only to the explicitly authorized operator
+and destination; successful source receipts, not unauthenticated manifest fields,
+provide the independent manifest hash/version trust anchor. See
+[operator source transport](../../modules/domain-apps/superplane/releases/OPERATOR-SOURCE.md).
+
 ## Ordered rollout
 
 This is an upgrade procedure after GitHub has already been connected. It does

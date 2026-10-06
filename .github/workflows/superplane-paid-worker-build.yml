@@ -1,0 +1,79 @@
+name: Superplane Paid Worker Build
+
+# Source read and authenticated main ancestry stay in their owning repository.
+# The operator only provisions infrastructure through its own selected role.
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Selected AWS account with the prepared paid builder
+        required: true
+      region:
+        description: Selected AWS region
+        required: true
+      environment:
+        description: Selected environment; determines exact prepared project
+        required: true
+      python_image:
+        description: Independently reviewed Python 3.12 image by sha256 digest
+        required: true
+
+concurrency:
+  group: superplane-paid-worker-${{ github.sha }}-${{ inputs.account_id }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 360
+    environment: adp-build-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source belongs to reviewed main history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = aws-e/adp
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish reviewed build dispatcher identity
+        uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ inputs.region }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install the maintained release resolver dependency
+        run: python3 -m pip install --quiet PyYAML
+      - name: Dispatch the existing exact-source paid release once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ACCOUNT: ${{ inputs.account_id }}
+          BUILD_REGION: ${{ inputs.region }}
+          BUILD_ENVIRONMENT: ${{ inputs.environment }}
+          PYTHON_IMAGE: ${{ inputs.python_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 modules/domain-apps/superplane/releases/build_paid_worker.py \
+            --account "$BUILD_ACCOUNT" --region "$BUILD_REGION" \
+            --environment "$BUILD_ENVIRONMENT" --source-sha "$GITHUB_SHA" \
+            --python-image "$PYTHON_IMAGE" --receipt "$RUNNER_TEMP/paid-worker-build.json"
+      - name: Retain original dispatch reconciliation receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: superplane-paid-worker-build-receipt
+          path: ${{ runner.temp }}/paid-worker-build.json
+          if-no-files-found: ignore
+          retention-days: 30
