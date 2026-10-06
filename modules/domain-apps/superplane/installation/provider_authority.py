@@ -38,7 +38,15 @@ def installed_config(namespace, cluster):
         isinstance(namespace, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", namespace)
     )
     context = subprocess.run(
-        ["kubectl", "config", "view", "--minify", "--raw", "-o", "jsonpath={.clusters}"],
+        [
+            "kubectl",
+            "config",
+            "view",
+            "--minify",
+            "--raw",
+            "-o",
+            "jsonpath={.clusters}",
+        ],
         check=True,
         capture_output=True,
         timeout=30,

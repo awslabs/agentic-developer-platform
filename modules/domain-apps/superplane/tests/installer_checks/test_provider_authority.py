@@ -314,9 +314,28 @@ def test_owner_kubernetes_context_must_match_selected_eks_identity(monkeypatch):
     def command(argv, **kwargs):
         calls.append(argv)
         assert argv[-1] == "jsonpath={.clusters}"
-        return SimpleNamespace(stdout=json.dumps([{"cluster": {"server": "https://foreign.invalid", "certificate-authority-data": "foreign"}}]))
+        return SimpleNamespace(
+            stdout=json.dumps(
+                [
+                    {
+                        "cluster": {
+                            "server": "https://foreign.invalid",
+                            "certificate-authority-data": "foreign",
+                        }
+                    }
+                ]
+            )
+        )
 
     monkeypatch.setattr(owner.subprocess, "run", command)
     with pytest.raises(ValueError):
-        owner.installed_config("adp", {"endpoint": "https://selected.invalid", "certificateAuthority": {"data": "selected"}})
-    assert len(calls) == 1  # No request to the unverified cluster, no user/token projection.
+        owner.installed_config(
+            "adp",
+            {
+                "endpoint": "https://selected.invalid",
+                "certificateAuthority": {"data": "selected"},
+            },
+        )
+    assert (
+        len(calls) == 1
+    )  # No request to the unverified cluster, no user/token projection.
