@@ -175,8 +175,10 @@ class AuditedAdminRoute(APIRoute):
                                 operation,
                                 event_type="admin_operation_refused" if refused else "admin_operation_failed",
                                 outcome=(
-                                    "refused" if operation.refusal is not None and not operation.effects_started
-                                    else "denied" if refused and not operation.effects_started
+                                    "refused"
+                                    if operation.refusal is not None and not operation.effects_started
+                                    else "denied"
+                                    if refused and not operation.effects_started
                                     else "reconciliation_required"
                                 ),
                                 extra={

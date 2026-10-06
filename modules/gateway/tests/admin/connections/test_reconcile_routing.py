@@ -24,14 +24,26 @@ def test_repair_request_refuses_caller_selected_destination():
 
 @pytest.mark.asyncio
 async def test_attested_canonical_binding_repairs_only_forward_projection(db_session, monkeypatch):
-    db_session.add(Organization(
-        id="canonical", name="Canonical", aws_accounts=[], role_mappings={}, settings={},
-        github_installation_ids=["42"], github_org_id="98765",
-    ))
-    db_session.add(ChannelTenantMap(
-        provider="github", provider_scope_id="98765", installation_id="42",
-        org_id="canonical", install_metadata={"account_id": "98765"},
-    ))
+    db_session.add(
+        Organization(
+            id="canonical",
+            name="Canonical",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=["42"],
+            github_org_id="98765",
+        )
+    )
+    db_session.add(
+        ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",
+            installation_id="42",
+            org_id="canonical",
+            install_metadata={"account_id": "98765"},
+        )
+    )
     await db_session.commit()
 
     github = MagicMock()
@@ -40,9 +52,9 @@ async def test_attested_canonical_binding_repairs_only_forward_projection(db_ses
     monkeypatch.setattr("src.admin.connections.service._get_github_app_credentials", lambda: ("1", "key"))
     monkeypatch.setattr("src.admin.connections.github_client.GitHubAppClient", lambda *args: github)
     projection = Projection(extra={"trigger_policy": {"S": "deny"}})
-    monkeypatch.setattr("src.admin.identity_index.IdentityIndexClient", lambda: IdentityIndexClient(
-        table_name="test-only", dynamodb_client=projection
-    ))
+    monkeypatch.setattr(
+        "src.admin.identity_index.IdentityIndexClient", lambda: IdentityIndexClient(table_name="test-only", dynamodb_client=projection)
+    )
 
     assert await service.reconcile_routing("canonical", 42, "historical", db_session) == ("repaired", "historical")
     github.get_installation.assert_awaited_once_with(42)
@@ -57,7 +69,8 @@ class Projection:
     def __init__(self, owner="historical", *, revoked=False, extra=None):
         self.item = (
             {"identity_type": {"S": "github_installation_id"}, "identity_value": {"S": "42"}, "org_id": {"S": owner}, **(extra or {})}
-            if owner else None
+            if owner
+            else None
         )
         self.revoked = revoked
         self.before_transaction = None
@@ -78,8 +91,10 @@ class Projection:
         assert effect["ConditionExpression"] == "attribute_exists(identity_type) AND org_id = :observed"
         if self.revoked or not self.item or self.item["org_id"] != effect["ExpressionAttributeValues"][":observed"]:
             raise ClientError(
-                {"Error": {"Code": "TransactionCanceledException", "Message": "refused"},
-                 "CancellationReasons": [{"Code": "ConditionalCheckFailed"}]},
+                {
+                    "Error": {"Code": "TransactionCanceledException", "Message": "refused"},
+                    "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+                },
                 "TransactWriteItems",
             )
         if "Update" in operation:
@@ -140,13 +155,15 @@ async def test_audit_effect_boundary_starts_only_at_transaction():
     token = current_operation.set(operation)
     try:
         missing = Projection(owner=None)
-        assert (await IdentityIndexClient(table_name="test-only", dynamodb_client=missing).reconcile_installation_routing(
-            42, "historical", "canonical"
-        ))[0] == "missing_projection"
+        assert (
+            await IdentityIndexClient(table_name="test-only", dynamodb_client=missing).reconcile_installation_routing(42, "historical", "canonical")
+        )[0] == "missing_projection"
         assert operation.effects_started is False
-        assert (await IdentityIndexClient(table_name="test-only", dynamodb_client=Projection()).reconcile_installation_routing(
-            42, "historical", "canonical"
-        ))[0] == "repaired"
+        assert (
+            await IdentityIndexClient(table_name="test-only", dynamodb_client=Projection()).reconcile_installation_routing(
+                42, "historical", "canonical"
+            )
+        )[0] == "repaired"
         assert operation.effects_started is True
     finally:
         current_operation.reset(token)
@@ -207,17 +224,20 @@ async def test_route_audits_repair_and_refusal(monkeypatch):
     response = await routes.reconcile_github_routing("canonical", 42, request, MagicMock(), actor)
     assert response.outcome == "repaired"
     assert audit.await_args.kwargs["extra"] == {
-        "expected_projection_org_id": "historical", "observed_projection_org_id": "historical", "authoritative_org_id": "canonical"
+        "expected_projection_org_id": "historical",
+        "observed_projection_org_id": "historical",
+        "authoritative_org_id": "canonical",
     }
 
     operation = Operation("reconcile_github_routing", "/admin/organizations/{org_id}/connections/github/{installation_id}/reconcile-routing")
     token = current_operation.set(operation)
     try:
         monkeypatch.setattr(
-            routes, "reconcile_routing",
-            AsyncMock(side_effect=service.RoutingReconciliationRefusedError(
-                "stale_expectation", observed_org_id="other", authoritative_org_id="canonical"
-            )),
+            routes,
+            "reconcile_routing",
+            AsyncMock(
+                side_effect=service.RoutingReconciliationRefusedError("stale_expectation", observed_org_id="other", authoritative_org_id="canonical")
+            ),
         )
         with pytest.raises(HTTPException) as error:
             await routes.reconcile_github_routing("canonical", 42, request, MagicMock(), actor)

@@ -634,10 +634,13 @@ class TestRouteContract:
         assert client.get("/admin/organizations/org-001/connections/github").status_code == 403
         assert client.post("/admin/organizations/org-001/connections/github", json={"installation_id": FREE_INSTALL}).status_code == 403
         assert client.delete(f"/admin/organizations/org-001/connections/github/{FREE_INSTALL}").status_code == 403
-        assert client.post(
-            f"/admin/organizations/org-001/connections/github/{FREE_INSTALL}/reconcile-routing",
-            json={"expected_projection_org_id": "historical"},
-        ).status_code == 403
+        assert (
+            client.post(
+                f"/admin/organizations/org-001/connections/github/{FREE_INSTALL}/reconcile-routing",
+                json={"expected_projection_org_id": "historical"},
+            ).status_code
+            == 403
+        )
 
     async def test_reconciliation_refusal_audits_observed_and_authoritative_owners(
         self, db_session: AsyncSession, platform_admin_context: TokenContext, monkeypatch: pytest.MonkeyPatch
@@ -650,9 +653,7 @@ class TestRouteContract:
         monkeypatch.setattr(
             connection_routes,
             "reconcile_routing",
-            AsyncMock(side_effect=RoutingReconciliationRefusedError(
-                "stale_expectation", observed_org_id=VICTIM_ORG, authoritative_org_id=OWNER_ORG
-            )),
+            AsyncMock(side_effect=RoutingReconciliationRefusedError("stale_expectation", observed_org_id=VICTIM_ORG, authoritative_org_id=OWNER_ORG)),
         )
         client = _client(user=platform_admin_context, db=db_session)
         response = client.post(
@@ -660,9 +661,7 @@ class TestRouteContract:
             json={"expected_projection_org_id": "historical"},
         )
         assert response.status_code == 409
-        audit = (
-            await db_session.scalars(select(AuditLog).where(AuditLog.event_type == "admin_operation_refused"))
-        ).one()
+        audit = (await db_session.scalars(select(AuditLog).where(AuditLog.event_type == "admin_operation_refused"))).one()
         assert audit.actor_id == platform_admin_context.user_id
         assert audit.details["installation_id"] == FREE_INSTALL
         assert audit.details["expected_projection_org_id"] == "historical"
