@@ -1771,7 +1771,9 @@ def backend_state_location(
     """
     __tracebackhide__ = True
     try:
-        source = environment_source(sources, tf_environment, "superplane-backend.tfvars")
+        source = environment_source(
+            sources, tf_environment, "superplane-backend.tfvars"
+        )
     except EvidenceError:
         raise EvidenceError(
             f"BLOCKED: environment {tf_environment!r} has no superplane-backend.tfvars at the "

@@ -2592,9 +2592,10 @@ def test_the_state_object_is_read_from_the_environments_own_backend_configuratio
         STATE_KEY,
     )
     # Read at the deployed revision, and from the file the lanes actually pass to `-backend-config`.
-    assert "modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars" in sources.hashes, (
-        sorted(sources.hashes)
-    )
+    assert (
+        "modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars"
+        in sources.hashes
+    ), sorted(sources.hashes)
 
 
 @pytest.mark.parametrize(
@@ -4027,9 +4028,9 @@ def test_environment_layout_uses_pinned_directory_metadata_without_new_source_ha
             entries = _contents(name, DEPLOY_SHA)
             return [e for e in entries if not historical or e["name"] != "environments"]
         selected = old_prefix if historical else app_prefix
-        assert name.startswith(
-            selected
-        ), "must not probe another layout after selecting one"
+        assert name.startswith(selected), (
+            "must not probe another layout after selecting one"
+        )
         return _contents(name.replace(old_prefix, app_prefix), DEPLOY_SHA)
 
     sources = t.RevisionSources(github, DEPLOY_SHA)
@@ -4085,9 +4086,9 @@ def test_unreadable_app_environment_never_falls_back_to_a_legacy_copy(payload):
 )
 def test_indeterminate_directory_metadata_never_selects_legacy_environment(listing):
     def github(path):
-        assert (
-            path == f"contents/{MODULE_PATH}?ref={DEPLOY_SHA}"
-        ), "must not fetch any configuration after indeterminate layout"
+        assert path == f"contents/{MODULE_PATH}?ref={DEPLOY_SHA}", (
+            "must not fetch any configuration after indeterminate layout"
+        )
         if listing is None:
             raise EvidenceError("BLOCKED: source listing denied")
         return listing
