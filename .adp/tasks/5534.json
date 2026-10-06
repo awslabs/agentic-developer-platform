@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:16:05.455Z",
+  "updated_at": "2026-10-06T00:25:38.441Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,13 +11,13 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/grant_plan.py:329",
-        "modules/domain-apps/superplane/workspace_provisioning/bootstrap_runtime.py:15"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_inventory.py:379"
       ],
-      "note": "Dormant bootstrap grants and paid-allocation lineage are pushed at 5a65001; approved control-allocation activation and revocation remain.",
+      "note": "Dormant grants and live ownership verification are pushed; approved control-allocation activation and revocation remain.",
       "commits": [
         "c83f065",
-        "5a65001"
+        "5a65001",
+        "80b0d00"
       ]
     },
     {
@@ -30,9 +30,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_bootstrap/tests/test_authority_runtime_postgres.py:900"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_inventory.py:196"
       ],
-      "note": "Bootstrap and lineage tests pass; allocation-bound activation is not implemented or tested."
+      "note": "Ownership and denial tests pass; allocation-bound activation is not implemented or tested."
     },
     {
       "id": "AC-01-c2",
@@ -41,9 +41,7 @@
       "title": "Reconcile retirement effects under successor authority",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py:226"
-      ],
+      "files": [],
       "note": "Production recovery composition remains.",
       "commits": [
         "6a58d0d",
@@ -106,7 +104,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Fresh inventory and admission interlock remain."
+      "note": ""
     },
     {
       "id": "AC-02-c3",
@@ -116,7 +114,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Separate settlements remain."
+      "note": ""
     },
     {
       "id": "AC-02-c-wire",
@@ -164,7 +162,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Workflow inspection remains."
+      "note": ""
     },
     {
       "id": "AC-03-t1",
@@ -176,7 +174,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Local changed-package suites passed; required final-head CI remains."
+      "note": "Required final-head CI remains."
     },
     {
       "id": "AC-04-c1",
