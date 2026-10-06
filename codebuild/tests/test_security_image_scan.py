@@ -16,7 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "codebuild"))
 import scan_security_images as runner
-from security_image_targets import DOC_API_COMPAT, ORIGINAL_GAPS, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, non_runtime_fixtures
+from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, ORIGINAL_GAPS, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, non_runtime_fixtures
 
 
 @pytest.fixture
@@ -179,7 +179,22 @@ def test_original_seven_gaps_keep_their_inventory_identity():
     assert excluded[0]["original_status"] == "failed"
     assert excluded[0]["name"] not in targets
     assert set(ORIGINAL_GAPS) == (targets & set(ORIGINAL_GAPS)) | {excluded[0]["name"]}
-    assert len(targets) + len(excluded) == 41
+    # The frozen denominator belongs to the original run. New image recipes
+    # must still be discovered and scanned without rewriting that baseline.
+    assert ORIGINAL_COVERAGE["expected"] == 41
+    assert ORIGINAL_COVERAGE["succeeded"] == 34
+    assert len(targets) + len(excluded) >= ORIGINAL_COVERAGE["expected"]
+
+
+def test_new_image_recipes_expand_coverage_without_rewriting_baseline(source):
+    before = {target["name"] for target in discover(source)}
+    recipe = source / "modules/new-service/Dockerfile"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text("FROM scratch\n")
+    after = {target["name"] for target in discover(source)}
+    assert after == before | {"modules-new-service"}
+    assert ORIGINAL_COVERAGE["expected"] == 41
+    assert ORIGINAL_COVERAGE["succeeded"] == 34
 
 
 def test_coverage_reconciles_old_and_new_denominators(source, monkeypatch):
