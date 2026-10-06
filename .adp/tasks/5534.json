@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:04:55.858Z",
+  "updated_at": "2026-10-06T00:16:05.455Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,11 +11,13 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/grant_plan.py"
+        "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/grant_plan.py:329",
+        "modules/domain-apps/superplane/workspace_provisioning/bootstrap_runtime.py:15"
       ],
-      "note": "D3 approved the dormant bootstrap grant design; implementation remains.",
+      "note": "Dormant bootstrap grants and paid-allocation lineage are pushed at 5a65001; approved control-allocation activation and revocation remain.",
       "commits": [
-        "c83f065"
+        "c83f065",
+        "5a65001"
       ]
     },
     {
@@ -27,20 +29,22 @@
       "covers": [
         "AC-01-c1"
       ],
-      "files": [],
-      "note": "Seal guard passed previously; exact grant execution remains untested."
+      "files": [
+        "modules/domain-apps/superplane/workspace_bootstrap/tests/test_authority_runtime_postgres.py:900"
+      ],
+      "note": "Bootstrap and lineage tests pass; allocation-bound activation is not implemented or tested."
     },
     {
       "id": "AC-01-c2",
       "kind": "code",
       "criterion": "AC-01",
-      "title": "Reconcile each admitted retirement effect and resume under successor authority",
+      "title": "Reconcile retirement effects under successor authority",
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py:226"
       ],
-      "note": "c2efb4e binds observation to the reviewed artifact; production recovery composition remains.",
+      "note": "Production recovery composition remains.",
       "commits": [
         "6a58d0d",
         "c2efb4e",
@@ -51,21 +55,19 @@
       "id": "AC-01-t2",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Run PostgreSQL phase-boundary and lost-reply successor-recovery tests",
+      "title": "Run PostgreSQL phase-boundary and lost-reply successor tests",
       "status": "open",
       "covers": [
         "AC-01-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_recovery_postgres.py"
-      ],
-      "note": "New artifact cases pass; all production effects are not yet covered."
+      "files": [],
+      "note": "Production-effect coverage remains."
     },
     {
       "id": "AC-01-t3",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Run PostgreSQL cancellation and incomplete-cleanup ownership tests",
+      "title": "Run PostgreSQL cancellation and incomplete-cleanup tests",
       "status": "open",
       "covers": [
         "AC-01-c2"
@@ -90,7 +92,7 @@
       "id": "AC-02-c1",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Admit artifact-bound retirement through the existing API facade",
+      "title": "Admit artifact-bound retirement through the API facade",
       "status": "open",
       "covers": [],
       "files": [],
@@ -100,37 +102,37 @@
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Bind immutable reviewed destroy and complete workload inventory",
+      "title": "Bind reviewed destroy and complete workload inventory",
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Fresh scoped inventory and admission interlock remain."
+      "note": "Fresh inventory and admission interlock remain."
     },
     {
       "id": "AC-02-c3",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Execute ordered owned-resource removal and verify survivors and residual costs",
+      "title": "Remove owned resources and verify survivors and costs",
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Separate allocation settlements remain."
+      "note": "Separate settlements remain."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Expose run_retirement(operation, context) through admitted producer contract",
+      "title": "Expose the admitted retirement producer contract",
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Native worker registration belongs to #5535."
+      "note": "Coordinate worker registration with #5535."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Run PostgreSQL API-to-facade-to-producer integration tests",
+      "title": "Run PostgreSQL API-to-producer integration tests",
       "status": "open",
       "covers": [
         "AC-02-c1",
@@ -145,7 +147,7 @@
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Run survivor, residual-cost and provider-refusal integration tests",
+      "title": "Run survivor, residual-cost and provider-refusal tests",
       "status": "open",
       "covers": [
         "AC-02-c2",
@@ -158,29 +160,29 @@
       "id": "AC-03-c1",
       "kind": "code",
       "criterion": "AC-03",
-      "title": "Require database-backed retirement tests in applicable validation lanes",
+      "title": "Require database-backed retirement validation",
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Inspect workflow before changing it."
+      "note": "Workflow inspection remains."
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
-      "title": "Run affected final-head domain, API, worker and infrastructure suites",
+      "title": "Run final-head affected suites and CI",
       "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Required CI has not run on c2efb4e."
+      "note": "Local changed-package suites passed; required final-head CI remains."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
-      "title": "Document offline evaluator inputs, commands and remaining live gates",
+      "title": "Document evaluator inputs and live gates",
       "status": "open",
       "covers": [],
       "files": [],
@@ -190,7 +192,7 @@
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
-      "title": "Check public documentation and final PR evidence matrix",
+      "title": "Check documentation disclosure and PR evidence",
       "status": "open",
       "covers": [
         "AC-04-c1"
