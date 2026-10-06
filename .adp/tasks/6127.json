@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-05T23:48:25.021Z",
+  "updated_at": "2026-10-06T00:11:06.412Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -14,7 +14,7 @@
         "modules/gateway/src/internal/domain_current_identity.py",
         "modules/gateway/src/internal/domain_operation_routes.py"
       ],
-      "note": "Commit 02119b1; covered by AC-01-t1/t2.",
+      "note": "Commit 02119b1; covered by AC-01-t1/t2/t3.",
       "commits": [
         "02119b1"
       ]
@@ -46,7 +46,7 @@
         "modules/gateway/tests/internal/test_domain_current_identity.py",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
       ],
-      "note": "Gateway 9 passed; domain identity and binding suites passed."
+      "note": "Local Gateway 9 passed; domain identity and binding suites passed."
     },
     {
       "id": "AC-01-t2",
@@ -61,7 +61,24 @@
       "files": [
         "modules/gateway/tests/internal/test_domain_current_identity.py"
       ],
-      "note": "Nonrevoked membership remains valid after workspace switch; unavailable provider is distinct from denial."
+      "note": "A nonrevoked membership remains valid after a workspace switch; outage remains distinct from denial."
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify new authenticated identity route remains in the internal-plane security inventory",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/orchestration/test_internal_plane_guard.py"
+      ],
+      "note": "Added after exact-head Gateway CI exposed the missing allowlist entry. Commit e243ee4; focused local suite 110 passed. Updated-head Gateway CI is queued.",
+      "commits": [
+        "e243ee4"
+      ]
     },
     {
       "id": "AC-02-c1",
@@ -73,7 +90,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/app/organization_binding.py"
       ],
-      "note": "Commit 2c3280a; covered by passing AC-02-t2. Existing migration 036 is reused.",
+      "note": "Commit 2c3280a; covered by AC-02-t2. Existing migration 036 reused.",
       "commits": [
         "2c3280a"
       ]
@@ -83,14 +100,18 @@
       "kind": "test",
       "criterion": "AC-02",
       "title": "Run PostgreSQL migration-preservation tests against existing user references and two-org subjects",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py"
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_users_org_scoped_identity_postgres.py",
+        "modules/domain-apps/superplane/executor/IDENTITY-ALIGNMENT.md"
       ],
-      "note": "New real-migration test committed; skipped locally without PostgreSQL. Exact-head Domain CI queued."
+      "note": "Domain CI run 37390584089 at 528c407 succeeded: four PostgreSQL identity tests passed, 2,396 API tests passed overall. Documentation/evidence commit e497897; updated-head CI remains queued.",
+      "commits": [
+        "e497897"
+      ]
     },
     {
       "id": "AC-02-t2",
@@ -104,7 +125,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py"
       ],
-      "note": "20 local identity/binding tests passed, including UUID collision denial and unaffected legacy access."
+      "note": "Local identity/binding suite 20 passed."
     },
     {
       "id": "AC-03-c1",
@@ -269,7 +290,7 @@
         "modules/gateway/src/internal/controller_execution_routes.py",
         "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
       ],
-      "note": "Route exists; signed transport and actual composition remain to be proven."
+      "note": "Route exists; actual signed composition remains to be proven."
     },
     {
       "id": "AC-05-t1",
