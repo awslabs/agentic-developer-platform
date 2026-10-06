@@ -11,7 +11,7 @@ import { browserReceiptStore } from '@superplane-ui/operations';
 import '@/index.css';
 
 window.sessionStorage.setItem('cognito_access_token', 'browser-fixture');
-const scope = { deploymentId: window.location.origin, orgId: 'fixture-org' };
+const scope = { deploymentId: window.location.origin, orgId: 'fixture-org', principalId: 'fixture-principal' };
 const store = browserReceiptStore(window.localStorage);
 const guard = new ScopeGuard();
 const continuation = new URLSearchParams(window.location.search).has('continuation');

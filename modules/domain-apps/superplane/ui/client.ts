@@ -49,6 +49,7 @@ import {
   type OnboardingPlan,
   type OperationReceipt,
   type OperationApproval,
+  type RetirementAccessReview,
   type RetirementPreviewRequest,
   type RetirementReview,
   assertNoSecretMaterial,
@@ -442,6 +443,42 @@ export function previewRetirement(
   return call(guard, 'previewRetirement', { workspace_id: workspaceId }, request, (raw) => {
     const review = parseRetirementReview(raw);
     return review?.workspace_id === workspaceId && review.request_id === request.operation_id
+      ? review : null;
+  });
+}
+
+export function parseRetirementAccessReview(raw: unknown): RetirementAccessReview | null {
+  if (!isRecord(raw) || !isRecord(raw.access_plan) || !isRecord(raw.authority) ||
+      !isRecord(raw.approval_request) || !isRecord(raw.approval_request.parameters) ||
+      !Array.isArray(raw.preserved) || !raw.preserved.every((value) => typeof value === 'string') ||
+      raw.max_resource_units !== 0 || raw.max_cost_micros !== 0 ||
+      raw.phase !== 'prepare-retirement-access') return null;
+  const fields = [
+    'retirement_request_id', 'request_id', 'workspace_id', 'source_operation_id',
+    'revision', 'allocation_id', 'original_allocation_id', 'inventory_sha256',
+  ] as const;
+  if (fields.some((field) => typeof raw[field] !== 'string' || !raw[field]) ||
+      !/^[a-f0-9]{64}$/.test(raw.revision as string) ||
+      raw.allocation_id === raw.original_allocation_id ||
+      raw.access_plan.request_id !== raw.request_id ||
+      raw.access_plan.retirement_request_id !== raw.retirement_request_id ||
+      raw.access_plan.workspace_id !== raw.workspace_id ||
+      raw.access_plan.original_allocation_id !== raw.original_allocation_id ||
+      raw.access_plan.allocation_id !== raw.allocation_id ||
+      raw.approval_request.workspace_id !== raw.workspace_id ||
+      raw.approval_request.idempotency_key !== raw.request_id ||
+      raw.approval_request.action !== 'provision') return null;
+  return raw as unknown as RetirementAccessReview;
+}
+
+export function previewRetirementAccess(
+  guard: ScopeGuard,
+  workspaceId: string,
+  request: RetirementPreviewRequest,
+): Promise<Outcome<RetirementAccessReview>> {
+  return call(guard, 'previewRetirementAccess', { workspace_id: workspaceId }, request, (raw) => {
+    const review = parseRetirementAccessReview(raw);
+    return review?.workspace_id === workspaceId && review.retirement_request_id === request.operation_id
       ? review : null;
   });
 }
