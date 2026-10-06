@@ -17,6 +17,8 @@ from urllib.parse import urlsplit
 from .demo1_browser import CreationCheckpoint, checked_origin
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant, text
 
+CHECKPOINT_VERSION = "demo1-checkpoint-v2"
+
 
 @dataclass(frozen=True)
 class LiveEnvelope:
@@ -157,8 +159,17 @@ class PrivateCheckpoint:
         if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
             raise EvidenceError("checkpoint: owner-only directory required")
         self.selected = selected
+        binding = {
+            **asdict(selected),
+            "origin": checked_origin(origin),
+            "budget_usd": str(selected.budget_usd),
+            "authorized_at": selected.authorized_at.isoformat(),
+            "deadline": selected.deadline.isoformat(),
+        }
         self.scope = sha256(
-            f"{origin}:{selected.org_id}:{selected.request_id}:{selected.release_source}:{selected.plan_revision}".encode()
+            json.dumps(
+                binding, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
         ).hexdigest()
         self.lock_fd: int | None = None
 
@@ -228,7 +239,7 @@ class PrivateCheckpoint:
         if (
             not isinstance(value, dict)
             or set(value) != {"version", "scope", "checkpoint"}
-            or value["version"] != "demo1-checkpoint-v1"
+            or value["version"] != CHECKPOINT_VERSION
             or value["scope"] != self.scope
         ):
             raise EvidenceError("checkpoint: private selection differs")
@@ -266,7 +277,7 @@ class PrivateCheckpoint:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(
                     {
-                        "version": "demo1-checkpoint-v1",
+                        "version": CHECKPOINT_VERSION,
                         "scope": self.scope,
                         "checkpoint": asdict(checkpoint),
                     },

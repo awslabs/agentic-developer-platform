@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -232,6 +233,7 @@ def test_checkpoint_is_private_durable_and_rejects_replay_and_swapped_scope(tmp_
         assert store.load() is None
         store.save(state)
         assert os.stat(path).st_mode & 0o777 == 0o600
+        assert json.loads(Path(path).read_text())["version"] == "demo1-checkpoint-v2"
         store.save(CreationCheckpoint(**{**vars(state), "submitted": True}))
         with pytest.raises(EvidenceError, match="replay"):
             store.save(state)
@@ -251,6 +253,93 @@ def test_checkpoint_is_private_durable_and_rejects_replay_and_swapped_scope(tmp_
         pytest.raises(EvidenceError, match="selection differs"),
     ):
         foreign.load()
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("release_source", "c" * 40),
+        ("image_digest", "c" * 64),
+        ("schema_revision", "014"),
+        ("connection_id", identifier(77)),
+        ("role", "ExampleOtherRole"),
+        ("account", "000000000000"),
+        ("region", "us-west-2"),
+        ("org_id", identifier(77)),
+        ("requester_id", identifier(77)),
+        ("approver_id", identifier(77)),
+        ("workspace_name", "example-other-workspace"),
+        ("request_id", identifier(77)),
+        ("plan_revision", "d" * 64),
+        ("budget_usd", "101"),
+        ("authorized_at", None),
+        ("deadline", None),
+        ("cleanup_owner", "example-other-owner"),
+        ("recovery_checkpoint", "example-other-checkpoint"),
+        ("survivors", ["example-other-peer"]),
+    ],
+)
+def test_checkpoint_binds_every_private_selection_field(tmp_path, field, replacement):
+    selected, authority, _ = inputs()
+    parsed = DemoInput.parse(selected)
+    path = tmp_path / "checkpoint.json"
+    state = CreationCheckpoint(
+        parsed.request_id,
+        identifier(6),
+        parsed.plan_revision,
+        identifier(8),
+        identifier(9),
+        submitted=True,
+    )
+    with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
+        store.save(state)
+    original = path.read_bytes()
+    if replacement is None:
+        replacement = (
+            datetime.fromisoformat(selected[field]) + timedelta(seconds=1)
+        ).isoformat()
+    changed = DemoInput.parse({**selected, field: replacement})
+    assert changed != parsed
+    with PrivateCheckpoint(str(path), changed, authority["origin"]) as foreign:
+        with pytest.raises(EvidenceError, match="selection differs"):
+            foreign.load()
+        with pytest.raises(EvidenceError, match="selection differs"):
+            foreign.save(state)
+    assert path.read_bytes() == original
+
+
+def test_legacy_checkpoint_cannot_be_resumed_or_silently_rebound(tmp_path):
+    selected, authority, session = inputs()
+    parsed = DemoInput.parse(selected)
+    path = tmp_path / "checkpoint.json"
+    state = CreationCheckpoint(
+        parsed.request_id,
+        identifier(6),
+        parsed.plan_revision,
+        identifier(8),
+        identifier(9),
+        submitted=True,
+    )
+    legacy_scope = sha256(
+        f"{authority['origin']}:{parsed.org_id}:{parsed.request_id}:{parsed.release_source}:{parsed.plan_revision}".encode()
+    ).hexdigest()
+    write_private(
+        path,
+        {
+            "version": "demo1-checkpoint-v1",
+            "scope": legacy_scope,
+            "checkpoint": vars(state),
+        },
+    )
+    original = path.read_bytes()
+    with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
+        with pytest.raises(EvidenceError, match="selection differs"):
+            store.load()
+        with pytest.raises(EvidenceError, match="selection differs"):
+            store.save(state)
+    result, report, _ = launch(tmp_path, selected, authority, session)
+    assert result.returncode == 2 and not report.exists()
+    assert path.read_bytes() == original
 
 
 def test_cli_reports_only_hashes_of_saved_checkpoint(tmp_path):
@@ -294,7 +383,7 @@ def test_malformed_checkpoint_fields_refuse_without_echoing_private_values(tmp_p
     )
     with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
         payload = {
-            "version": "demo1-checkpoint-v1",
+            "version": "demo1-checkpoint-v2",
             "scope": store.scope,
             "checkpoint": {**vars(state), "approval_id": {"private": "do-not-echo"}},
         }

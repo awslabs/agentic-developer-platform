@@ -120,6 +120,17 @@ def _response(
     return value
 
 
+def _plan_parameters_match(parameters: object, plan_revision: str) -> bool:
+    return (
+        isinstance(parameters, dict)
+        and parameters.get("plan_revision") == plan_revision
+        and all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in parameters.items()
+        )
+    )
+
+
 def _approval(
     ticket: dict, selected: DemoInput, checkpoint: CreationCheckpoint, now: datetime
 ) -> str:
@@ -130,8 +141,13 @@ def _approval(
         or not isinstance(ticket.get("request"), dict)
         or ticket.get("request", {}).get("idempotency_key") != selected.request_id
         or ticket.get("request", {}).get("action") != "provision"
+        or not _plan_parameters_match(
+            ticket["request"].get("parameters"), selected.plan_revision
+        )
         or ticket.get("revoked") is not False
-        or selected.approver_id not in ticket.get("approvers", [])
+        or not isinstance(ticket.get("approvers"), list)
+        or not all(isinstance(approver, str) for approver in ticket["approvers"])
+        or selected.approver_id not in ticket["approvers"]
     ):
         raise EvidenceError("browser: approval identity or scope mismatch")
     if instant(ticket.get("expires_at"), "approval expiry") <= now:
@@ -228,8 +244,9 @@ def advance_creation(
             or not isinstance(plan.get("approval_request"), dict)
             or plan["approval_request"].get("idempotency_key") != selected.request_id
             or plan["approval_request"].get("action") != "provision"
-            or plan["approval_request"].get("parameters", {}).get("plan_revision")
-            != selected.plan_revision
+            or not _plan_parameters_match(
+                plan["approval_request"].get("parameters"), selected.plan_revision
+            )
             or plan["approval_request"].get("workspace_id") != plan.get("workspace_id")
             or plan.get("mode") != "managed"
             or not isinstance(plan.get("target"), dict)
@@ -311,12 +328,25 @@ def advance_creation(
     operation = _response(
         transport, "GET", PREFIX + f"/operations/by-idempotency/{selected.request_id}"
     )
-    if (
-        operation.get("idempotency_key") != selected.request_id
-        or operation.get("workspace_id") != checkpoint.workspace_id
-    ):
+    if operation.get("request_id") != selected.request_id:
         raise EvidenceError(
             "browser: recovered operation differs from original request"
+        )
+    operation_id = identifier(
+        operation.get("provisioning_operation_id"), "recovered provisioning operation"
+    )
+    if (
+        "workspace_id" in operation
+        and operation["workspace_id"] is None
+        and operation.get("phase") == "workspace_registration"
+    ):
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "original operation found; workspace registration incomplete",
+        }
+    if operation.get("workspace_id") != checkpoint.workspace_id:
+        raise EvidenceError(
+            "browser: recovered operation differs from original workspace"
         )
     workspace = _response(
         transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
@@ -325,11 +355,9 @@ def advance_creation(
         workspace.get("id") != checkpoint.workspace_id
         or workspace.get("org_id") != selected.org_id
         or workspace.get("name") != selected.workspace_name
+        or workspace.get("provisioning_operation_id") != operation_id
     ):
         raise EvidenceError("browser: workspace re-entry differs from original target")
-    operation_id = identifier(
-        workspace.get("provisioning_operation_id"), "provisioning operation"
-    )
     page = transport.browser_page()
     if (
         inspect_reentry(page, selected.workspace_name)["reason"]

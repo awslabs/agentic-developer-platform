@@ -18,6 +18,12 @@ ACTUAL_WORKSPACE_CLUSTER = "adp-dev-spw-f67f322455acd6f6df9cb4bec015ffce"
 def environment():
     env = {
         "version": 1,
+        "deployment_identity": {
+            "service": "aws",
+            "connection_label": "selected-test-connection",
+            "expected_role_arn": "arn:aws:iam::879318057152:role/deployment/test-installer",
+            "expected_role_id": "AROA" + "A" * 17,
+        },
         "environment": "dev",
         "account_id": "879318057152",
         "region": "us-east-1",
