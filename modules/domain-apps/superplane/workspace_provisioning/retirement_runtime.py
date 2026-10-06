@@ -85,6 +85,13 @@ class RetirementRuntime:
         self.control_verify = control_verify
 
     async def __call__(self, call):
+        outcome, detail, _receipt = await self._execute(call)
+        # These maintained retirement wrappers remove or observe resources. Their
+        # receipt/target IDs are durable in the approved descriptor and ownership
+        # journals, not newly allocated physical provider resource handles.
+        return outcome, detail, None
+
+    async def _execute(self, call):
         operation, binding = await self.context(call)
         lease = operation.grant.lease
         if (
