@@ -27,6 +27,8 @@ def main():
     owners = {}
     audited = {r["path"]: r for r in inventory["ownership_audit"]["records"]}
     actual = {str(p): p for p in SITE.rglob("*.dist-info/RECORD")}
+    if [p for p in actual.values() if p.parent.name == DIST] != [RECORD]:
+        raise ValueError("cryptography distribution identity is ambiguous")
     if set(audited) != set(actual):
         raise ValueError("installed distribution set changed")
     for name, record in actual.items():
