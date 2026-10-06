@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-06T00:16:01.824Z",
+  "updated_at": "2026-10-06T00:45:49.638Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -26,7 +26,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Prior evidence; final-head rerun pending."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-02-c1",
@@ -89,7 +89,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Refusal tests pass."
+      "note": "Refusal tests retained."
     },
     {
       "id": "AC-02-t3",
@@ -114,7 +114,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Source-contract tests pass."
+      "note": "Source-contract tests retained."
     },
     {
       "id": "AC-02-c3",
@@ -139,7 +139,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "Current refusal and malformed-response checks pass; positive contract requires revalidation."
+      "note": "Current refusal tests pass; positive contract requires revalidation."
     },
     {
       "id": "AC-02-c4",
@@ -149,7 +149,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Read-only original-ID re-entry exists; dedicated-managed admission awaits backend producer.",
+      "note": "Read-only original-ID re-entry exists; dedicated-managed admission awaits the backend producer.",
       "commits": [
         "0116fc0"
       ]
@@ -189,7 +189,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior focused evidence retained."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-03-t2",
@@ -201,7 +201,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior negative-path evidence retained."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-03-c2",
@@ -223,7 +223,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Component tests pass."
+      "note": "Prior component evidence retained."
     },
     {
       "id": "AC-03-c3",
@@ -295,7 +295,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Prior frontend evidence retained."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-04-t2",
@@ -307,7 +307,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Prior frontend evidence retained."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-04-c2",
@@ -317,7 +317,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Operation states remain distinct from unverified removal and unknown residual cost.",
+      "note": "Operation states remain distinct from verified removal and unknown residual cost.",
       "commits": [
         "6851867"
       ]
@@ -342,7 +342,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior component implementation retained.",
+      "note": "Prior implementation retained.",
       "commits": [
         "1b3b104"
       ]
@@ -370,7 +370,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Fixture browser workflow 37392225344 passed; retained 360px screenshot inspected. Not live acceptance.",
+      "note": "Fixture browser workflow 37392225344 passed; not live acceptance.",
       "commits": [
         "194af4a",
         "c277efb",
@@ -398,7 +398,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Prior fixture evidence retained."
+      "note": "Prior evidence retained."
     },
     {
       "id": "AC-05-c3",
@@ -407,11 +407,8 @@
       "title": "Expose stable accessible retirement approval, recovery and outcome controls in browser fixture",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
-      ],
-      "note": "5580d0b adds named approval and outcome regions; approval remains unavailable and removal disabled.",
+      "files": [],
+      "note": "Named regions added; removal remains disabled.",
       "commits": [
         "5580d0b"
       ]
@@ -425,12 +422,8 @@
       "covers": [
         "AC-05-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx",
-        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
-      ],
-      "note": "Workflow 37392735728 passed on 5580d0b; inspected 360px denial and re-entry screenshots. Local focused tests, TypeScript and lint pass.",
+      "files": [],
+      "note": "Fixture browser workflow 37392735728 passed; not live acceptance.",
       "commits": [
         "e08e3cd"
       ]
@@ -454,8 +447,15 @@
       "covers": [
         "AC-06-c1"
       ],
-      "files": [],
-      "note": "Open: at 7a05251 local frontend 178 suites/2971 tests, TypeScript, domain UI lint, fixture tests (46), CLI onboarding (136), and UI contract (21) pass. Browser run 37394749830 passed. Previous-head Gateway shard 4 failure was repaired via unserved CLI cleanup-access endpoint parity; final-head Gateway run 37394778280 and domain run 37394778590 remain unverified because GitHub Actions API returns 403 installation rate-limit. Full npm lint fails on five directives unchanged from main; upstream repair filed as #7066. Do not claim final CI or AC-06 acceptance until these are resolved."
+      "files": [
+        "modules/gateway/cli/adp-superplane-onboarding.py",
+        "modules/gateway/tests/cli/test_superplane_onboarding.py"
+      ],
+      "note": "Repair 7a05251 and local suites pass except full npm lint, which fails on five unchanged base directives (#7066). Browser run 37394749830 passes. Final-head Gateway run 37394778280 and domain run 37394778590 are unverified after Actions API HTTP 403 installation rate-limit; do not claim final CI pass.",
+      "commits": [
+        "cc2b40a",
+        "7a05251"
+      ]
     },
     {
       "id": "AC-06-t2",
@@ -479,7 +479,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "Prior focused evidence retained."
+      "note": "Prior evidence retained; final-head parity suite also passes locally."
     }
   ]
 }
