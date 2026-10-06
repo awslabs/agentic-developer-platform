@@ -105,7 +105,19 @@ class ExternalTools:
             raise Refusal("injected external failure")
         result, text, code, error = {}, None, 0, ""
         if "get-caller-identity" in args:
-            result = {"Account": env["account_id"]}
+            selected = env["deployment_identity"]
+            result = {
+                "Account": env["account_id"],
+                "Arn": f"arn:aws:sts::{env['account_id']}:assumed-role/test-installer/fixture",
+                "UserId": selected["expected_role_id"] + ":fixture",
+            }
+        elif "get-role" in args:
+            result = {
+                "Role": {
+                    "Arn": env["deployment_identity"]["expected_role_arn"],
+                    "RoleId": env["deployment_identity"]["expected_role_id"],
+                }
+            }
         elif "describe-cluster" in args:
             name = args[args.index("--name") + 1]
             cluster_detail = {
@@ -1131,7 +1143,7 @@ def test_management_restart_waits_for_old_pod_removal(
         return result
 
     monkeypatch.setattr(tools, "call", with_old_pod)
-    clock = iter(range(10000))
+    clock = iter(range(0, 10000))
     monkeypatch.setattr("installation.runner.time.monotonic", lambda: next(clock))
     monkeypatch.setattr("installation.runner.time.sleep", lambda _: None)
     installer.preflight()

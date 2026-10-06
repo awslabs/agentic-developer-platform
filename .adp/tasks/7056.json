@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 7056,
-  "updated_at": "2026-10-06T00:19:18.822Z",
+  "updated_at": "2026-10-06T00:31:21.349Z",
   "tasks": [
     {
       "id": "AUTH01-c1",
@@ -10,8 +10,11 @@
       "title": "Gate and audit the repair route",
       "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Router mount and handler both require platform admin; refusal and success receipts are audited.",
+      "files": [
+        "modules/gateway/src/admin/org_connections/routes.py",
+        "modules/gateway/src/admin/audit_operation.py"
+      ],
+      "note": "Existing implementation preserved; focused authorization and durable-audit regressions passed.",
       "commits": [
         "498a7a8",
         "cf12129",
@@ -27,8 +30,12 @@
       "covers": [
         "AUTH01-c1"
       ],
-      "files": [],
-      "note": "Nonadmin denial and durable success/refusal receipts passed.",
+      "files": [
+        "modules/gateway/tests/admin/test_org_github_connection_lifecycle.py",
+        "modules/gateway/tests/admin/test_admin_audit_durability.py",
+        "modules/gateway/tests/admin/test_admin_audit_inventory.py"
+      ],
+      "note": "Passed in focused validation and the full Gateway admin suite.",
       "commits": [
         "0db2fbf",
         "498a7a8",
@@ -43,8 +50,10 @@
       "title": "Attest canonical installation ownership before repair",
       "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Existing resolver checks current revocation and fresh GitHub account identity.",
+      "files": [
+        "modules/gateway/src/admin/org_connections/service.py"
+      ],
+      "note": "Existing attestation and canonical-owner checks preserved.",
       "commits": [
         "498a7a8",
         "cf12129"
@@ -59,8 +68,10 @@
       "covers": [
         "OWN02-c1"
       ],
-      "files": [],
-      "note": "Covers verified owner, different tenant, unavailable or denied attestation, and revocation.",
+      "files": [
+        "modules/gateway/tests/admin/connections/test_reconcile_routing.py"
+      ],
+      "note": "Attested ownership and refusal tests passed on the prepared merge.",
       "commits": [
         "498a7a8",
         "cf12129",
@@ -74,8 +85,10 @@
       "title": "Conditionally repair one forward routing projection",
       "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Transaction checks exact existing owner and absent revocation marker; updates only org_id and updated_at.",
+      "files": [
+        "modules/gateway/src/admin/identity_index.py"
+      ],
+      "note": "Existing conditional transaction preserved without changes.",
       "commits": [
         "498a7a8",
         "cf12129",
@@ -91,12 +104,61 @@
       "covers": [
         "ROUTE03-c1"
       ],
-      "files": [],
-      "note": "Covers missing and unreadable rows, stale expectation, concurrent owner change, racing revocation, replay and unrelated policy fields.",
+      "files": [
+        "modules/gateway/tests/admin/connections/test_reconcile_routing.py"
+      ],
+      "note": "Transaction, racing revocation/owner/deletion, replay, preservation and read-failure tests passed.",
       "commits": [
         "498a7a8",
         "cf12129"
       ]
+    },
+    {
+      "id": "ROUTE03-t2",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Verify prepared base merge with focused Gateway unit regressions",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [],
+      "note": "Prior milestone: 99 focused tests and pinned Ruff lint/format checks passed. Final status check still shows no unmerged entries, unstaged changes or Gateway changes relative to HEAD."
+    },
+    {
+      "id": "ROUTE03-t3",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Run full Gateway admin unit suite on the prepared merge",
+      "status": "done",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/admin"
+      ],
+      "note": "From modules/gateway: AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true uv run --locked --extra dev pytest -q -n 4 tests/admin exited 0: 2745 passed, 48 skipped, 1935 warnings in 160.12s. Tested HEAD 42c61a0b33684bde4518aeadaace23eae89554da with prepared base merge 3848a2c251fdd119718addd123509648eee83e9c. Skips are not passes."
+    },
+    {
+      "id": "ROUTE03-t4",
+      "kind": "test",
+      "criterion": "ROUTE03",
+      "title": "Verify published revision and required Gateway CI results",
+      "status": "open",
+      "covers": [
+        "AUTH01-c1",
+        "OWN02-c1",
+        "ROUTE03-c1",
+        "READ04-c1"
+      ],
+      "files": [],
+      "note": "Added to keep final published-revision validation visible. Await controller publication, final head SHA and required CI evidence; no approval or merge is claimed."
     },
     {
       "id": "READ04-c1",
@@ -105,8 +167,10 @@
       "title": "Compare forward projection with canonical owner in verification",
       "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Preserves the existing tri-state response and tenant-scoped cache.",
+      "files": [
+        "modules/gateway/src/admin/connections/service.py"
+      ],
+      "note": "Existing owner-equality verification and tenant-scoped cache preserved.",
       "commits": [
         "498a7a8",
         "cf12129"
@@ -121,8 +185,10 @@
       "covers": [
         "READ04-c1"
       ],
-      "files": [],
-      "note": "Mismatch verification passed; unchanged webhook resolver suite passed 32 tests.",
+      "files": [
+        "modules/gateway/tests/admin/connections/test_onboarding_verification.py"
+      ],
+      "note": "Verification tests passed in the full admin suite. Prior webhook-denial evidence is carried forward for unchanged code; the webhook suite was not rerun.",
       "commits": [
         "498a7a8",
         "cf12129"
