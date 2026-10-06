@@ -8,7 +8,7 @@ deployments receive no domain binding or additional authority.
 This is one bounded recipe for a native Superplane installation. It does not
 create the application queue or roles, prepare databases, install workers, or
 assert that a worker is ready. Use the canonical
-[agent deployment guide](../../../../../docs/adp-platform-deployment/deploy-with-agent.md)
+[agent deployment guide](../../../../docs/adp-platform-deployment/deploy-with-agent.md)
 for deployment authorization and account selection.
 
 ## Prepare the reviewed inputs
