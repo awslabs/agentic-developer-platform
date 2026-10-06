@@ -1,0 +1,30 @@
+{
+  "review_date": "2026-10-06",
+  "issue": 7002,
+  "workflow_variable": "ADP_SECURITY_RUNNER_IMAGE",
+  "runner_digest": "sha256:1780c13e906eeb0bbbb7bac70703316fe08e43492be67da0d6d6819879f74441",
+  "runner_published_source_tag": "c3e95c9ea968e3e3b24e0d681c26d514e6220468",
+  "runner_recipe_sha256": "7d57b37b2acab5e2f1b980e3633fc1474657170e7c4ab7e86e33844e58f6d21e",
+  "automation_digest": "sha256:53228d4ffdce76874fe08daaecf5431969aa7b617ac60d3d5b09306300720902",
+  "original_automation_counts": {
+    "critical": 64,
+    "high": 478
+  },
+  "candidate_counts_each": {
+    "critical": 0,
+    "high": 14
+  },
+  "scanner": "Grype 0.119.0",
+  "runtime_checks": [
+    "Terraform local plan/apply",
+    "Helm chart render",
+    "Kaniko local image build",
+    "AWS CLI skeleton",
+    "checkout Node action",
+    "github-script Node action",
+    "runner hashFiles",
+    "npm offline install/exec",
+    "automation psql/aws/terraform/kubectl"
+  ],
+  "closure_scope": "exact candidate artifacts only; high findings and production rollout remain open"
+}
