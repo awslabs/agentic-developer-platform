@@ -1,3 +1,4 @@
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:46c383b2c236e48d58734e26a44da734a0ef6b7baf6cdb867430bfdbf4d92a86 AS rsync-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 # Official CPython patch release on the same Debian Trixie ABI. Keep SkyPilot's
@@ -73,3 +74,9 @@ PYTHON
 COPY --from=curl-security /out/ /tmp/adp-curl/
 RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
 COPY --from=curl-security /licenses/ /opt/adp-curl-security/
+
+# Keep the reviewed rsync fix in the normal recipe as well as its derivative.
+COPY --from=rsync-security /out/rsync.deb /tmp/adp-rsync.deb
+RUN echo 'a216c57ce614e07105150235a9eee2612e7799856486e2917fc92c65f73d46d1  /tmp/adp-rsync.deb' | sha256sum -c - \
+    && dpkg -i /tmp/adp-rsync.deb && rm /tmp/adp-rsync.deb
+COPY --from=rsync-security /provenance/ /opt/adp-rsync-security/
