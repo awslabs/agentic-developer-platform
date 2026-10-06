@@ -14,7 +14,9 @@ RUN tar -xzf /tmp/osslsigncode.tar.gz --strip-components=1 && rm /tmp/osslsignco
     && DESTDIR=/package cmake --install build \
     && mkdir -p /package/DEBIAN /package/usr/share/doc/osslsigncode \
     && cp LICENSE.txt /package/usr/share/doc/osslsigncode/copyright
-RUN --network=none ctest --test-dir build --output-on-failure --parallel 2
+# The upstream threaded timestamp fixture shares jreq.tsq/jresp.tsr files.
+# Run the complete suite serially to prevent concurrent requests truncating them.
+RUN --network=none ctest --test-dir build --output-on-failure --parallel 1
 COPY workers/security/osslsigncode-control /package/DEBIAN/control
 COPY workers/security/osslsigncode-source.json /package/opt/adp-security/osslsigncode.json
 RUN python -c 'import hashlib,json; from pathlib import Path; p=Path("/package/opt/adp-security/osslsigncode.json"); d=json.loads(p.read_text()); d["binary_sha256"]=hashlib.sha256(Path("/package/usr/bin/osslsigncode").read_bytes()).hexdigest(); p.write_text(json.dumps(d,indent=2)+"\n")' \
