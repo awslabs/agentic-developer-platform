@@ -14,13 +14,13 @@ from botocore.exceptions import ClientError
 from harness_jobs.execution import disposition_for, read_call
 from harness_jobs.execution_plan import PlanProgress, confirmed_plan_progress
 from harness_jobs.identity import OperationRefused
-from harness_jobs.leases import lock_lease
 from harness_jobs.inventory import (
     AllocationResource,
     InventoryAuthority,
     ResourceObservation,
     ResourcePresence,
 )
+from harness_jobs.leases import lock_lease
 from harness_jobs.store import OperationStore
 
 from .plan import Plan
@@ -613,9 +613,7 @@ class Finalizer:
             await self.persist(operation, target, calls, assessment)
             if not assessment.inventory or not assessment.inventory.complete:
                 raise OperationRefused("complete allocation accounting unavailable")
-            from .cleanup_snapshot import capture
-
-            await capture(self, operation, target, plan, assessment)
+            await self.capture_cleanup(operation, target, plan, assessment)
             if record.action == "teardown" and not assessment.may_mark_released:
                 raise OperationRefused("teardown retains resource exposure")
             return assessment
@@ -633,6 +631,11 @@ class Finalizer:
             raise OperationRefused(
                 "allocation reconciliation requires recovery"
             ) from None
+
+    async def capture_cleanup(self, operation, target, plan, assessment):
+        from .cleanup_snapshot import capture
+
+        await capture(self, operation, target, plan, assessment)
 
     def token_for(self, operation):
         return next(

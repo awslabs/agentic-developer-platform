@@ -33,6 +33,7 @@ LIFECYCLE_PHASES = frozenset(
     {"prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"}
 )
 RETIREMENT_ACCESS_PHASE = "prepare-retirement-access"
+RETIREMENT_PHASE = "retire-workspace"
 
 
 def require_selected_task_mode(*, lifecycle, phase=None):
@@ -44,7 +45,8 @@ def require_selected_task_mode(*, lifecycle, phase=None):
         if mode != "native-lifecycle":
             raise OperationRefused("paid worker refuses workspace lifecycle tasks")
         if phase is not None and phase not in LIFECYCLE_PHASES | {
-            RETIREMENT_ACCESS_PHASE
+            RETIREMENT_ACCESS_PHASE,
+            RETIREMENT_PHASE,
         }:
             raise OperationRefused("paid worker lifecycle phase is unavailable")
 
@@ -303,15 +305,25 @@ async def execute(transport, original, deadline, stop):
         transport.brokered_provider = lifecycle
         if lifecycle and phase is None:
             raise OperationRefused("paid worker lifecycle phase is missing")
-        if phase in LIFECYCLE_PHASES and "runtime_config_sha256" not in parameters:
+        if (
+            phase in LIFECYCLE_PHASES | {RETIREMENT_PHASE}
+            and "runtime_config_sha256" not in parameters
+        ):
             raise OperationRefused("paid worker lifecycle configuration is missing")
         domain, execution = await pools(stack)
-        if phase == RETIREMENT_ACCESS_PHASE:
+        if phase in {RETIREMENT_ACCESS_PHASE, RETIREMENT_PHASE}:
             from workspace_provisioning.retirement_access_runtime import (
                 run_retirement_access,
             )
 
-            await run_retirement_access(
+            if phase == RETIREMENT_PHASE:
+                from workspace_provisioning.retirement_composer import run_retirement
+
+                runner = run_retirement
+            else:
+                runner = run_retirement_access
+
+            await runner(
                 operation,
                 SimpleNamespace(
                     connect=execution.acquire,

@@ -100,6 +100,18 @@ class RetirementFinalizer(Finalizer):
         # cannot select another allocation through a locally invented token.
         return self.authority_token(operation)
 
+    async def accounting_with_costs(self, operation, target, calls, assessment=None):
+        # Controller Plan.read is a different domain protocol. Retirement uses
+        # original allocation/provider evidence and never invents a zero cost.
+        return self.accounting(operation, calls, assessment)
+
+    async def capture_cleanup(self, operation, target, plan, assessment):
+        # The canonical lifecycle ownership rows and shared allocation report
+        # remain durable. Controller deployment snapshots do not represent a
+        # workspace retirement, and parsing its request as Controller Plan fails.
+        if not assessment.may_mark_released:
+            raise OperationRefused("retirement allocation still has exposure")
+
     async def verify_step(self, operation, inventory, authorize):
         current, target, artifact = await self.context(
             operation.grant.lease.operation_id
