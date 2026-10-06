@@ -74,7 +74,7 @@ async def retirement_facts(
     ):
         raise ProvisioningRefused("workspace lacks an immutable bootstrap operation")
     artifact = await read_artifact(
-        composition.operation_connect,
+        composition.domain_connect,
         artifact_id=original.parameters.get("lifecycle_artifact_id"),
         org_id=str(org_id),
         workspace_id=str(workspace_id),
