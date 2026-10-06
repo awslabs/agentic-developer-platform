@@ -207,12 +207,31 @@ def inspect_plan(installer, plan):
                 and not unknown.get("unique_id"),
                 "Existing managed role plan identity differs from live preflight",
             )
+        computed = {"arn", "id", "unique_id", "create_date", "tags_all"}
+        if evidence.get("role_missing"):
+            # AWS 6.67 computes these Optional+Computed fields on CREATE even
+            # with an exact name and explicit empty attachments. Only the saved
+            # configuration's literal empty list proves no attachment intent;
+            # an omitted, referenced or unknown list is not equivalent.
+            expressions = configurations.get(address.split("[")[0], {}).get(
+                "expressions", {}
+            )
+            if (
+                after.get("name") == expected_name(env)
+                and not has_unknown(unknown.get("name"))
+                and after.get("name_prefix") is None
+                and "name_prefix" not in expressions
+                and unknown.get("name_prefix") is True
+            ):
+                computed.add("name_prefix")
+            if (
+                expressions.get("managed_policy_arns") == {"constant_value": []}
+                and after.get("managed_policy_arns") in (None, [])
+                and unknown.get("managed_policy_arns") is True
+            ):
+                computed.add("managed_policy_arns")
         require(
-            not any(
-                has_unknown(v)
-                for k, v in unknown.items()
-                if k not in {"arn", "id", "unique_id", "create_date", "tags_all"}
-            ),
+            not any(has_unknown(v) for k, v in unknown.items() if k not in computed),
             "Managed role plan has unknown authority",
         )
         for key, value in expected.items():

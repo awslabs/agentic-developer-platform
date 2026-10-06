@@ -163,9 +163,15 @@ def role_identity(installer, cluster, *, allow_missing=False, allow_legacy=False
                 )
             )["PolicyDocument"]
         )
-    for policy in installer.json(
+    attached = installer.json(
         installer.aws("iam", "list-attached-role-policies", "--role-name", role_name)
-    )["AttachedPolicies"]:
+    )["AttachedPolicies"]
+    if env.get("api_producer_role"):
+        from .producer_role import expected_arn
+
+        if producer["role_arn"] == expected_arn(env):
+            require(attached == [], "Managed API producer role has attached policies")
+    for policy in attached:
         arn = policy["PolicyArn"]
         version = installer.json(
             installer.aws("iam", "get-policy", "--policy-arn", arn)
