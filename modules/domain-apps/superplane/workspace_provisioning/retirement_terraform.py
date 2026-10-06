@@ -7,14 +7,14 @@ KMS and provisioning principal again before invoking Terraform.
 """
 
 import asyncio
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 from harness_jobs.execution import CallOutcome
 from harness_jobs.identity import OperationRefused
@@ -122,10 +122,11 @@ class ReviewedDestroy:
 
 
 class TerraformDestroy:
-    def __init__(self, *, python_binary, guard_script, terraform_binary):
+    def __init__(self, *, python_binary, guard_script, terraform_binary, process=None):
         self.python_binary = str(Path(python_binary).resolve(strict=True))
         self.guard_script = str(Path(guard_script).resolve(strict=True))
         self.terraform_binary = str(Path(terraform_binary).resolve(strict=True))
+        self.process = process
 
     async def execute(self, artifact, inventory, parameters, authorize):
         content = artifact.read(inventory, parameters)
@@ -159,6 +160,43 @@ class TerraformDestroy:
             for key, value in artifact.target.items():
                 arguments.extend(["--" + key.replace("_", "-"), value])
             await authorize()
+            if self.process is not None:
+                # Native production uses the maintained renewable credential
+                # bridge and isolated environment. No ambient AWS/profile state.
+                from .process import WorkerProcesses
+
+                loop = asyncio.get_running_loop()
+
+                def verify():
+                    future = asyncio.run_coroutine_threadsafe(authorize(), loop)
+                    try:
+                        return future.result(timeout=30)
+                    except BaseException:
+                        future.cancel()
+                        raise
+
+                worker = WorkerProcesses(
+                    binaries={**self.process.binaries, "python": self.python_binary},
+                    directory=self.process.directory,
+                    session=self.process.session,
+                    region=self.process.region,
+                    verify=verify,
+                )
+                outcome = await asyncio.to_thread(
+                    worker.run,
+                    arguments,
+                    timeout=int(parameters["max_runtime_seconds"]),
+                )
+                await authorize()
+                return (
+                    CallOutcome.SUCCEEDED
+                    if outcome.returncode == 0
+                    else CallOutcome.UNKNOWN,
+                    "reviewed destroy applied"
+                    if outcome.returncode == 0
+                    else "reviewed destroy requires reconciliation",
+                    artifact.plan_file_sha256,
+                )
             # Child output can contain provider internals. Keep it in the protected
             # process; the shared receipt receives only a fixed summary and digest.
             process = await asyncio.create_subprocess_exec(

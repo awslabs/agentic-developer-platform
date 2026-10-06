@@ -172,11 +172,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
     parser.add_argument("--continuation-checkpoint")
+    parser.add_argument("--retirement-checkpoint")
     parser.add_argument("--observe-provider", action="store_true")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--observe-runtime", action="store_true")
     action.add_argument("--observe-ownership", action="store_true")
     action.add_argument("--advance-creation", action="store_true")
+    action.add_argument("--review-retirement-access", action="store_true")
+    action.add_argument("--advance-retirement-access", action="store_true")
     action.add_argument(
         "--advance-continuation",
         choices=("apply-infrastructure", "bootstrap-workspace"),
@@ -184,6 +187,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
+            if bool(arguments.advance_retirement_access) != bool(
+                arguments.retirement_checkpoint
+            ):
+                raise EvidenceError(
+                    "cleanup preparation: explicit advancement and its private checkpoint required together"
+                )
             if bool(arguments.advance_continuation) != bool(
                 arguments.continuation_checkpoint
             ) or (arguments.advance_continuation and arguments.observe_provider):
@@ -191,7 +200,10 @@ def main(argv: list[str] | None = None) -> int:
                     "continuation: choose one phase and its private checkpoint without provider observation"
                 )
             if arguments.observe_provider and (
-                arguments.observe_runtime or arguments.observe_ownership
+                arguments.observe_runtime
+                or arguments.observe_ownership
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
             ):
                 raise EvidenceError(
                     "provider: choose provider observation alone or with browser advancement"
@@ -219,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             if (
                 arguments.advance_creation
                 or arguments.advance_continuation
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
                 or arguments.observe_ownership
                 or arguments.observe_provider
             ):
@@ -230,11 +244,19 @@ def main(argv: list[str] | None = None) -> int:
                 envelope=envelope
                 if arguments.advance_creation
                 or arguments.advance_continuation
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
                 or arguments.observe_ownership
                 or arguments.observe_provider
                 else None,
             ) as store:
-                if arguments.advance_creation or arguments.advance_continuation:
+                if (
+                    arguments.advance_creation
+                    or arguments.advance_continuation
+                    or arguments.review_retirement_access
+                    or arguments.advance_retirement_access
+                ):
+                    from .demo1_cleanup import PrivateCleanup
                     from .demo1_continuation import PrivateContinuation
                     from .demo1_journey import advance_browser
 
@@ -251,7 +273,17 @@ def main(argv: list[str] | None = None) -> int:
                             if arguments.advance_continuation
                             else nullcontext()
                         )
-                        with continuation as phase_store:
+                        cleanup = (
+                            PrivateCleanup(
+                                arguments.retirement_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                            )
+                            if arguments.advance_retirement_access
+                            else nullcontext()
+                        )
+                        with continuation as phase_store, cleanup as cleanup_store:
                             report.update(
                                 advance_browser(
                                     selected,
@@ -259,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
                                     session,
                                     store,
                                     continuation_store=phase_store,
+                                    cleanup_store=cleanup_store,
+                                    review_retirement_access=arguments.review_retirement_access,
                                 )
                             )
                     except EvidenceError as error:
@@ -346,7 +380,12 @@ def main(argv: list[str] | None = None) -> int:
         except EvidenceError as error:
             print(f"BLOCKED: {error}")
             return 2
-        if arguments.advance_creation or arguments.advance_continuation:
+        if (
+            arguments.advance_creation
+            or arguments.advance_continuation
+            or arguments.review_retirement_access
+            or arguments.advance_retirement_access
+        ):
             label = "Live browser phase"
         elif arguments.observe_ownership:
             label = "Live historical ownership observation"
@@ -361,6 +400,9 @@ def main(argv: list[str] | None = None) -> int:
             arguments.observe_runtime
             or arguments.advance_creation
             or arguments.advance_continuation
+            or arguments.review_retirement_access
+            or arguments.advance_retirement_access
+            or arguments.retirement_checkpoint
             or arguments.continuation_checkpoint
             or arguments.observe_ownership
             or arguments.observe_provider

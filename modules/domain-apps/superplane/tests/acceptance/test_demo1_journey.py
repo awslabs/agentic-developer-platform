@@ -470,6 +470,40 @@ def test_missing_browser_dependency_refuses_before_remote_reads(driver, monkeypa
     assert not driver.producer.calls and not driver.page.service.calls
 
 
+@pytest.mark.parametrize("remaining", [0, 7])
+def test_transport_rechecks_runtime_after_presend(driver, monkeypatch, remaining):
+    driver.page.url = driver.envelope.origin + "/superplane"
+    budget = 30_000
+    requests = []
+
+    def evaluate(script, arguments):
+        requests.append(arguments)
+        return [200, {}, driver.page.release]
+
+    def presend():
+        nonlocal budget
+        budget = remaining
+
+    monkeypatch.setattr(driver.page, "evaluate", evaluate)
+    transport = PlaywrightBrowserTransport(
+        driver.page,
+        driver.envelope.origin,
+        release_id=driver.envelope.runtime_target.release_id,
+        remaining_ms=lambda: budget,
+    )
+    if remaining == 0:
+        with pytest.raises(EvidenceError, match="runtime exhausted"):
+            transport.request(
+                "POST", "/api/superplane/v1/workspaces", {}, before_send=presend
+            )
+        assert all(request["method"] == "GET" for request in requests)
+    else:
+        transport.request(
+            "POST", "/api/superplane/v1/workspaces", {}, before_send=presend
+        )
+        assert requests[-1]["timeout"] == remaining
+
+
 def test_changed_release_in_creation_reply_retains_submitted_identity(
     driver, monkeypatch
 ):

@@ -22,9 +22,9 @@ from harness_jobs.approval import (
 from harness_jobs.identity import OperationRequest, ResolvedPrincipal
 
 from app import auth
-from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.config import settings
 from app.current_identity import MappedProducerIdentityReader
+from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
     DOMAIN_ROUTES,
     PRIVATE_DOMAIN_ROUTES,
@@ -113,13 +113,12 @@ def test_all_permission_implications_and_non_implications(granted, requested):
 
 
 
-def test_absent_effective_access_and_grant_administration_surfaces():
+def test_available_workspace_grants_and_absent_other_access_surfaces():
     actions = {action["id"]: action for action in MATRIX["actions"]}
     for name, scope, permission in (
         ("workspace.access.effective", "workspace", Permission.READ.value),
         ("org.access.effective", "organization", Permission.READ.value),
         ("org.access.manage", "organization", Permission.ADMINISTER.value),
-        ("workspace.access.manage", "workspace", Permission.ADMINISTER.value),
         ("workspace.share", "workspace", Permission.ADMINISTER.value),
         ("cluster.use", "cluster", "cluster:use"),
         ("cluster.administer", "cluster", "cluster:administer"),
@@ -129,6 +128,12 @@ def test_absent_effective_access_and_grant_administration_surfaces():
         assert actions[name]["permission"] == permission
         assert actions[name]["surface"] == "absent"
         assert actions[name]["routes"] == []
+    workspace_grants = actions["workspace.access.manage"]
+    assert workspace_grants["scope"] == "workspace"
+    assert workspace_grants["permission"] == Permission.ADMINISTER.value
+    assert workspace_grants["surface"] == "ui:grantWorkspaceAccess"
+    assert workspace_grants["routes"] == ["POST /workspaces/{workspace_id}/access/v1/grants"]
+    assert {"typed_target", "same_tenant", "current_membership", "assignable_ceiling"} <= set(workspace_grants["extra"])
     assert actions["org.access.manage"]["organization_grant"] == ORGANIZATION_ADMINISTER
     assert actions["org.access.effective"]["organization_grant"] == ORGANIZATION_READ
     for name in ("org.access.effective", "workspace.access.effective"):
@@ -224,7 +229,9 @@ def test_sensitive_actions_have_independent_requirements():
     ))
     assert actions["approval.decision"]["principal"] == "human"
     assert "selected_distinct_current_human_approver" in actions["approval.decision"]["extra"]
-    assert actions["workspace.access.manage"]["routes"] == []
+    assert actions["workspace.access.manage"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants"
+    ]
     assert actions["cluster.use"]["scope"] != actions["workspace.read"]["scope"]
     # Do not turn first-install bootstrap or machine transport restrictions into
     # blanket action permissions for subsequent workspaces or cluster observers.

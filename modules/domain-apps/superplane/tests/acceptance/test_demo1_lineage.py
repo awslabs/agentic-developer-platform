@@ -466,16 +466,13 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
     assert (driver.path / "checkpoint.json").read_bytes() == saved
     assert len(producer.probes) == 1
     calls = driver.page.service.calls[before:]
-    assert not any(
-        method == "POST" and not path.endswith("/retirement/preview")
-        for method, path, _ in calls
-    )
+    assert all(method == "GET" for method, _, _ in calls)
     if failure:
         assert result is None or not result.get("browser", {}).get("creation_observed")
         assert not any(path.endswith("/retirement/preview") for _, path, _ in calls)
     else:
         assert details == [(identifier(10), current_request, current_id)]
-        assert previews == [current_id]
+        assert previews == []
         assert result["browser"]["creation_observed"] is True
         assert result["browser"]["lineage"]["current_phase"] == (
             "bootstrap-workspace" if bootstrap else "apply-infrastructure"

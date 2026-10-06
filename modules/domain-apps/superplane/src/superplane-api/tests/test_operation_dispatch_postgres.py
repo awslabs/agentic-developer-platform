@@ -143,6 +143,7 @@ async def dispatch(settlement, installation_postgres_url, monkeypatch, tmp_path)
     dispatcher = OperationDispatcher(
         connections.connect,
         transport,
+        domain_connect=connections.connect,
         policy_for=lambda org: SimpleNamespace(adp_org_id="adp-tenant"),
     )
     try:
@@ -249,7 +250,10 @@ async def test_uncertain_dispatch_remains_pending_until_verified_retry(
     transport.lose_dispatch_reply = False
     transport.alter = {}
     restarted = OperationDispatcher(
-        connections.connect, transport, policy_for=dispatcher.policy_for
+        connections.connect,
+        transport,
+        domain_connect=dispatcher.domain_connect,
+        policy_for=dispatcher.policy_for,
     )
     retry = await restarted.drain_once()
     assert (retry.delivered, retry.failed, retry.exhausted) == (1, 0, 0)
@@ -330,7 +334,10 @@ async def test_expired_recovery_dispatch_survives_restart_with_original_paid_ids
         before = await read_lease(connection, operation_id=identity["operation_id"])
     assert await dispatcher.recover_once() == (identity["operation_id"],)
     restarted = OperationDispatcher(
-        connections.connect, transport, policy_for=dispatcher.policy_for
+        connections.connect,
+        transport,
+        domain_connect=dispatcher.domain_connect,
+        policy_for=dispatcher.policy_for,
     )
     assert await restarted.recover_once() == (identity["operation_id"],)
     assert (
@@ -445,3 +452,106 @@ async def test_recovery_mismatched_receipt_preserves_retryable_durable_lease(dis
     assert await dispatcher.recover_once() == ()
     transport.alter = {}
     assert await dispatcher.recover_once() == (identity["operation_id"],)
+
+
+async def test_dispatch_and_recovery_with_mutually_isolated_database_roles(
+    dispatch,
+    installation_postgres_url,
+):
+    """Production pools cannot read the opposite owner's schema, even by name."""
+    from asyncpg.exceptions import InsufficientPrivilegeError
+    from sqlalchemy.engine import make_url
+    from app.adapters.harness_connection import HarnessConnections
+
+    dispatcher, transport, connections, identity, register = dispatch
+    await register()
+    suffix = uuid.uuid4().hex[:12]
+    domain_schema = "dispatch_domain_" + suffix
+    shared_role, domain_role = "shared_" + suffix, "domain_" + suffix
+    domain_tables = [
+        "organizations",
+        "cloud_accounts",
+        "clusters",
+        "workspaces",
+        "deployments",
+        "controller_deployment_operations",
+        "workspace_lifecycle_control_operations",
+        "operation_budget_reservations",
+    ]
+    pools = []
+    async with connections.connect() as admin:
+        shared_schema = await admin.fetchval("SELECT current_schema()")
+        await admin.execute(f'CREATE SCHEMA "{domain_schema}"')
+        for table in domain_tables:
+            await admin.execute(f'ALTER TABLE "{table}" SET SCHEMA "{domain_schema}"')
+        for role, schema in (
+            (shared_role, shared_schema),
+            (domain_role, domain_schema),
+        ):
+            await admin.execute(f'CREATE ROLE "{role}" LOGIN')
+            await admin.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{role}"')
+            await admin.execute(
+                f'GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{role}"'
+            )
+            await admin.execute(
+                f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{role}"'
+            )
+    try:
+        for role, schema in (
+            (shared_role, shared_schema),
+            (domain_role, domain_schema),
+        ):
+            url = make_url(installation_postgres_url).set(
+                drivername="postgresql", username=role
+            )
+            pool = HarnessConnections(
+                url.render_as_string(hide_password=False),
+                {
+                    "ssl": "disable",
+                    "server_settings": {"search_path": schema},
+                },
+            )
+            await pool.open()
+            pools.append(pool)
+        shared, domain = pools
+        async with shared.connect() as connection:
+            assert await connection.fetchval("SELECT to_regclass('workspaces')") is None
+            with pytest.raises(InsufficientPrivilegeError):
+                await connection.fetch(f'SELECT * FROM "{domain_schema}".workspaces')
+        async with domain.connect() as connection:
+            assert (
+                await connection.fetchval("SELECT to_regclass('harness_operations')")
+                is None
+            )
+            with pytest.raises(InsufficientPrivilegeError):
+                await connection.fetch(
+                    f'SELECT * FROM "{shared_schema}".harness_operations'
+                )
+        dispatcher.connect = shared.connect
+        dispatcher.domain_connect = domain.connect
+        dispatcher.policy_for = None  # Canonical organization mapping uses domain pool.
+        assert (await dispatcher.drain_once()).delivered == 1
+        assert await dispatcher.recover_once() == (identity["operation_id"],)
+        async with domain.connect() as connection:
+            await connection.execute(
+                "UPDATE operation_budget_reservations SET max_runtime_seconds=max_runtime_seconds+1"
+            )
+        assert await dispatcher.recover_once() == ()
+        async with domain.connect() as connection:
+            await connection.execute(
+                "UPDATE organizations SET adp_org_id='foreign-tenant'"
+            )
+        dispatcher.policy_for = lambda org: SimpleNamespace(adp_org_id="adp-tenant")
+        assert await dispatcher.recover_once() == ()
+    finally:
+        for pool in pools:
+            await pool.aclose()
+        async with connections.connect() as admin:
+            for table in domain_tables:
+                await admin.execute(
+                    f'ALTER TABLE "{domain_schema}"."{table}" SET SCHEMA "{shared_schema}"'
+                )
+            await admin.execute(f'DROP SCHEMA "{domain_schema}"')
+            for role in (shared_role, domain_role):
+                await admin.execute(f'DROP OWNED BY "{role}"')
+                await admin.execute(f'DROP ROLE "{role}"')

@@ -62,6 +62,7 @@ class Records:
         self.in_snapshot = False
         parameters = {
             "plan_revision": self.scope["plan_revision"],
+            "allocation_id": "a" * 64,
             "lifecycle_request": canonical({"mode": "existing-account-managed"}),
             "lifecycle_inputs": canonical({"cluster_placement": "dedicated"}),
             "lifecycle_allocation_max_resource_units": "10",

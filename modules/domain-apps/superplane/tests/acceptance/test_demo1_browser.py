@@ -595,3 +595,373 @@ def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
             "POST", "https://example.invalid/api/superplane/v1/workspaces", {}
         )
     assert len(calls) == 1
+
+
+def native_proof(selected, count=3):
+    phases = ["prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace"]
+    return {
+        "version": 1,
+        "org_id": selected.org_id,
+        "workspace_id": identity(10),
+        "root_request_id": selected.request_id,
+        "root_operation_id": identity(12),
+        "current_operation_id": identity(11 + count),
+        "plan_revision": selected.plan_revision,
+        "phases": [
+            {
+                "operation_id": identity(12 + index),
+                "request_id": selected.request_id
+                if index == 0
+                else identity(30 + index),
+                "payload_digest": str(index + 1) * 64,
+                "phase": phase,
+                "state": "succeeded",
+                "source_artifact_id": str(index) * 64 if index else None,
+            }
+            for index, phase in enumerate(phases[:count])
+        ],
+    }
+
+
+def native_responses(selected, transport, monkeypatch, proof):
+    replace_response(
+        monkeypatch,
+        transport,
+        "/operations/by-idempotency/" + selected.request_id,
+        {"state": "succeeded", "lifecycle_lineage": proof},
+    )
+    replace_response(
+        monkeypatch,
+        transport,
+        "/workspaces/" + identity(10),
+        {
+            "provisioning_operation_id": proof["current_operation_id"]
+            if proof
+            else identity(14),
+            "status": "Ready",
+            "cluster_health": "Healthy",
+            "last_heartbeat": "2026-10-05T11:02:00+00:00",
+        },
+    )
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize(
+    "current_state",
+    ["pending", "running", "succeeded", "failed", "cancelled", "unknown"],
+)
+def test_native_recovery_follows_verified_phases_without_resubmitting_or_claiming_ready(
+    selected, uncertain_creation, monkeypatch, count, current_state
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected, count)
+    proof["phases"][-1]["state"] = current_state
+    native_responses(selected, transport, monkeypatch, proof)
+    if count == 1:
+        replace_response(
+            monkeypatch,
+            transport,
+            "/operations/by-idempotency/" + selected.request_id,
+            {"state": current_state},
+        )
+    seen = []
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+
+    def inspect(*args):
+        seen.append(args[1:])
+        return {
+            "reason": "original identities visible; session and provider authority unverified"
+        }
+
+    monkeypatch.setattr(demo1_browser, "inspect_original_details", inspect)
+    recovered, report = advance(selected, transport, checkpoint)
+    assert recovered == checkpoint
+    assert seen == [
+        (
+            checkpoint.workspace_id,
+            proof["phases"][-1]["request_id"],
+            proof["current_operation_id"],
+        )
+    ]
+    assert report["status"] == "BLOCKED"
+    if count < 3 or current_state != "succeeded":
+        assert report["readiness"] == "UNKNOWN"
+        assert all(method == "GET" for method, _, _ in transport.calls)
+    else:
+        assert report["readiness"] == "FRESH_WORKSPACE_ONLY"
+        assert "recovered read-only" in report["reason"]
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    lifecycle = report["lifecycle"]
+    assert lifecycle["status"] == (
+        "FAIL" if current_state in ("failed", "cancelled") else "BLOCKED"
+    )
+    for phase in proof["phases"]:
+        recorded = lifecycle["phases"][phase["phase"]]
+        assert recorded["state"] == phase["state"]
+        assert recorded["operation_ref"] == demo1_browser.reference(
+            phase["operation_id"]
+        )
+    assert all(check["status"] == "BLOCKED" for check in lifecycle["checks"].values())
+    assert not any(
+        path.endswith(("/workspaces", "/continue")) for _, path, _ in transport.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "unavailable",
+        "org",
+        "workspace",
+        "root",
+        "request",
+        "revision",
+        "missing_digest",
+        "artifact",
+        "reordered",
+        "skipped",
+        "repeated",
+        "unfinished_source",
+        "wrong_current",
+        "too_long",
+        "invalid_state",
+    ],
+)
+def test_native_recovery_refuses_unverified_foreign_partial_and_reordered_chains(
+    selected, uncertain_creation, monkeypatch, invalid
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected)
+    if invalid == "unavailable":
+        proof = None
+    elif invalid in {"org", "workspace", "root", "request"}:
+        key = {
+            "org": "org_id",
+            "workspace": "workspace_id",
+            "root": "root_operation_id",
+            "request": "root_request_id",
+        }[invalid]
+        proof[key] = identity(99)
+    elif invalid == "revision":
+        proof["plan_revision"] = "e" * 64
+    elif invalid == "missing_digest":
+        proof["phases"][1].pop("payload_digest")
+    elif invalid == "artifact":
+        proof["phases"][1]["source_artifact_id"] = None
+    elif invalid == "reordered":
+        proof["phases"].reverse()
+    elif invalid == "skipped":
+        proof["phases"].pop(1)
+    elif invalid == "repeated":
+        proof["phases"][1]["operation_id"] = identity(12)
+    elif invalid == "unfinished_source":
+        proof["phases"][1]["state"] = "running"
+    elif invalid == "wrong_current":
+        proof["phases"][-1]["operation_id"] = identity(99)
+    elif invalid == "too_long":
+        proof["phases"].append(proof["phases"][-1])
+    elif invalid == "invalid_state":
+        proof["phases"][-1]["state"] = "ready"
+    native_responses(selected, transport, monkeypatch, proof)
+    with pytest.raises(EvidenceError):
+        advance(selected, transport, checkpoint)
+    assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+def test_expired_submitted_approval_recovers_only_actual_original_admission(
+    selected, uncertain_creation, monkeypatch
+):
+    transport, checkpoint = uncertain_creation
+    proof = native_proof(selected)
+    native_responses(selected, transport, monkeypatch, proof)
+    replace_response(
+        monkeypatch,
+        transport,
+        "/" + checkpoint.approval_id,
+        {"expires_at": "2026-10-05T11:01:30+00:00"},
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    recovered, report = advance(selected, transport, checkpoint)
+    assert recovered == checkpoint and recovered.submitted
+    assert report["status"] == "BLOCKED"
+    assert "recovered read-only" in report["reason"]
+    assert report["creation_observed"] is True
+    assert report["readiness"] == "FRESH_WORKSPACE_ONLY"
+    assert report["retirement"] == "BLOCKED"
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
+    assert any(
+        path.endswith("/operations/by-idempotency/" + selected.request_id)
+        for _, path, _ in transport.calls
+    )
+
+
+def test_expired_unsubmitted_approval_cannot_create(selected, monkeypatch):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.calls.clear()
+    replace_response(
+        monkeypatch,
+        transport,
+        "/" + checkpoint.approval_id,
+        {"expires_at": "2026-10-05T11:01:30+00:00"},
+    )
+    with pytest.raises(EvidenceError, match="approval expired"):
+        advance(selected, transport, checkpoint)
+    assert not checkpoint.submitted
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operations/" in path for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "pending",
+        "revoked",
+        "late_decision",
+        "foreign_approval",
+        "foreign_request",
+        "missing_admission",
+    ],
+)
+def test_expired_submitted_checkpoint_cannot_invent_or_resubmit_admission(
+    selected, uncertain_creation, monkeypatch, invalid
+):
+    transport, checkpoint = uncertain_creation
+    changes = {"expires_at": "2026-10-05T11:01:30+00:00"}
+    if invalid == "pending":
+        changes["result"] = "pending"
+    elif invalid == "revoked":
+        changes["revoked"] = True
+    elif invalid == "late_decision":
+        changes["decided_at"] = "2026-10-05T11:01:31+00:00"
+    elif invalid == "foreign_approval":
+        changes["approval_id"] = identity(99)
+    replace_response(monkeypatch, transport, "/" + checkpoint.approval_id, changes)
+    if invalid == "foreign_request":
+        replace_response(
+            monkeypatch,
+            transport,
+            "/operations/by-idempotency/" + selected.request_id,
+            {"request_id": identity(99)},
+        )
+    if invalid == "missing_admission":
+        original = transport.request
+
+        def unavailable(method, path, body=None):
+            response = original(method, path, body)
+            if "/operations/by-idempotency/" in path:
+                return 404, {"detail": "operation not found"}
+            return response
+
+        monkeypatch.setattr(transport, "request", unavailable)
+    if invalid in ("foreign_request", "missing_admission"):
+        with pytest.raises(EvidenceError):
+            advance(selected, transport, checkpoint)
+        assert not any(
+            path.endswith("/workspaces/" + checkpoint.workspace_id)
+            for _, path, _ in transport.calls
+        )
+    else:
+        recovered, report = advance(selected, transport, checkpoint)
+        assert recovered == checkpoint
+        assert report["status"] == "BLOCKED"
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize("invalid", ["revoked", "late_decision", "foreign_approval"])
+def test_unsubmitted_approval_must_still_allow_exact_effect(
+    selected, monkeypatch, invalid
+):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.calls.clear()
+    changes = {
+        "revoked": {"revoked": True},
+        "late_decision": {"decided_at": "2026-10-05T11:59:00+00:00"},
+        "foreign_approval": {"approval_id": identity(99)},
+    }[invalid]
+    replace_response(monkeypatch, transport, "/" + checkpoint.approval_id, changes)
+    with pytest.raises(EvidenceError):
+        advance(selected, transport, checkpoint)
+    assert not checkpoint.submitted
+    assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+def test_native_reentry_refuses_workspace_changed_during_browser_refresh(
+    selected, uncertain_creation, monkeypatch
+):
+    transport, checkpoint = uncertain_creation
+    native_responses(selected, transport, monkeypatch, native_proof(selected))
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+
+    def refresh(*args):
+        replace_response(
+            monkeypatch,
+            transport,
+            "/workspaces/" + checkpoint.workspace_id,
+            {"provisioning_operation_id": identity(99)},
+        )
+        return {
+            "reason": "original identities visible; session and provider authority unverified"
+        }
+
+    monkeypatch.setattr(demo1_browser, "inspect_original_details", refresh)
+    with pytest.raises(EvidenceError, match="workspace changed"):
+        advance(selected, transport, checkpoint)
+    assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+def test_native_creation_keeps_guarded_retirement_preview(selected, monkeypatch):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    native_responses(selected, transport, monkeypatch, native_proof(selected))
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    checkpoint, report = advance(selected, transport, checkpoint)
+    assert checkpoint.submitted
+    assert report["status"] == "BLOCKED"
+    assert "retirement preview denied" in report["reason"]
+    assert transport.calls[-1][1].endswith("/retirement/preview")
+    assert not any(path.endswith("/retirement") for _, path, _ in transport.calls)

@@ -20,9 +20,17 @@ def advance_browser(
     store,
     *,
     continuation_store=None,
+    cleanup_store=None,
+    review_retirement_access=False,
     clock=lambda: datetime.now(UTC),
     monotonic=time.monotonic,
 ):
+    if review_retirement_access and continuation_store is not None:
+        raise EvidenceError("journey: retirement review cannot advance a continuation")
+    if cleanup_store is not None and (
+        continuation_store is not None or review_retirement_access
+    ):
+        raise EvidenceError("journey: cleanup preparation must run as a separate phase")
     if envelope.runtime_target is None or store.version != "demo1-checkpoint-v3":
         raise EvidenceError("journey: runtime-bound execution checkpoint required")
     try:
@@ -46,9 +54,13 @@ def advance_browser(
 
     storage_state, session_storage = browser_state_parts(session, envelope.origin)
     saved = store.load()
-    if continuation_store is not None and (saved is None or not saved.submitted):
+    if (
+        continuation_store is not None
+        or cleanup_store is not None
+        or review_retirement_access
+    ) and (saved is None or not saved.submitted):
         raise EvidenceError(
-            "journey: original submitted creation required before continuation"
+            "journey: original submitted creation required before lifecycle follow-up"
         )
     reader = RuntimeReader(selected, envelope.runtime_target)
     runtime = reader.observe(remaining_ms() / 1000)
@@ -106,7 +118,9 @@ def advance_browser(
                     checkpoint=saved,
                     persist=store.save,
                     verify_lineage=verify_lineage,
-                    preview_retirement=continuation_store is None,
+                    preview_retirement=continuation_store is None
+                    and cleanup_store is None
+                    and not review_retirement_access,
                     effects_authorized=True,
                     now=clock(),
                 )
@@ -120,6 +134,23 @@ def advance_browser(
                         continuation_store,
                         clock=clock,
                         verified_source=result["operation_ref"],
+                    )
+                if review_retirement_access:
+                    from .demo1_retirement import review_access
+
+                    result["retirement_access"] = review_access(
+                        selected, envelope, transport, saved, result, now=clock()
+                    )
+                if cleanup_store is not None:
+                    from .demo1_cleanup import advance_cleanup
+
+                    result["cleanup_preparation"] = advance_cleanup(
+                        selected,
+                        envelope,
+                        transport,
+                        cleanup_store,
+                        result,
+                        clock=clock,
                     )
                 remaining_ms()
             finally:

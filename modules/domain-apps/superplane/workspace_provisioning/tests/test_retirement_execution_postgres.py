@@ -47,7 +47,7 @@ separate authorization. Offline evidence — however real the database — never
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -76,9 +76,11 @@ from harness_jobs.execution_plan import (
     step_key,
 )
 from harness_jobs.execution_rpc import ExecutionGrant, ExecutionRPCServer
+from harness_jobs.leases import LeaseRefused
 from harness_jobs.recovery import request_cancellation, sweep_expired_leases
 from harness_jobs.store import stored_outcome
 
+from workspace_provisioning.artifacts import digest
 from workspace_provisioning.retirement_plan import (
     DELETE_COMPONENT,
     DELETE_NAMESPACE,
@@ -258,7 +260,15 @@ def _plan():
     )
 
 
-async def _open(harness, plan, *, ledger=None, key="retire-ws-1"):
+async def _open(
+    harness,
+    plan,
+    *,
+    ledger=None,
+    key="retire-ws-1",
+    retirement_inventory=None,
+    approved_parameters=None,
+):
     """Admit the retirement through the REAL facade, plan included in the request.
 
     The encoded plan travels as the `execution_steps` parameter, so the approval's
@@ -281,6 +291,12 @@ async def _open(harness, plan, *, ledger=None, key="retire-ws-1"):
             "idempotency_key": key,
             "allocation_id": "original-workspace-allocation",
             "original_allocation_id": "original-workspace-allocation",
+            **(
+                {"retirement_inventory_sha256": digest(asdict(retirement_inventory))}
+                if retirement_inventory is not None
+                else {}
+            ),
+            **(approved_parameters or {}),
         },
     )
 
@@ -546,6 +562,48 @@ def test_a_lost_reply_at_any_boundary_stays_unresolved_and_is_never_reissued(
             with pytest.raises(ProviderCallRefused, match="Preceding"):
                 await worker.step(plan.steps[index + 1].step_id)
             assert len(cloud.calls) == attempted
+
+        async def inconclusive_observation(key, provider, kind, target):
+            assert (key, provider, kind, target) == (
+                step_key(record, boundary),
+                boundary.provider,
+                boundary.operation_kind,
+                boundary.target,
+            )
+            return CallOutcome.UNKNOWN, "provider absence not established", None
+
+        async with harness.connect() as connection:
+            await connection.execute(
+                "UPDATE harness_operation_leases SET expires_at="
+                "clock_timestamp()-interval '1 second' WHERE operation_id=$1",
+                progress.operation_id,
+            )
+            report = await sweep_expired_leases(
+                connection,
+                observe_call=inconclusive_observation,
+                max_reconcile_attempts=1,
+            )
+            assert report.results[0].action == "unknown"
+            assert report.retained == 1
+            row = await connection.fetchrow(
+                "SELECT stage, outcome FROM harness_provider_call_intent "
+                "WHERE idempotency_key=$1",
+                step_key(record, boundary),
+            )
+            assert row["stage"] == CallStage.UNRESOLVED.value
+            assert stored_outcome(row["outcome"]) == CallOutcome.UNKNOWN.value
+            assert (
+                await connection.fetchval(
+                    "SELECT state FROM harness_operations WHERE operation_id=$1",
+                    progress.operation_id,
+                )
+                == "unknown"
+            )
+        assert len(cloud.calls) == attempted
+        with pytest.raises(LeaseRefused, match="unknown"):
+            await harness.lease(
+                progress.operation_id, holder="successor", attempt="attempt-2"
+            )
 
     harness.run(scenario())
 

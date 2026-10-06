@@ -178,3 +178,67 @@ async def installation_credential_evidence(
         "credential_version_verified": False,
         "raw_material_returned": False,
     }
+
+
+@router.get("/installation/organization-bootstrap")
+async def installation_organization_bootstrap(
+    request: Request,
+    org_id=Depends(get_current_org),
+    db=Depends(get_session),
+):
+    """Current human organization authority before the first native workspace.
+
+    This is a control-plane installation check, not credential delegation or a
+    workspace grant. Normal create admission still verifies its exact credential.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi import HTTPException
+    from superplane_auth.policy import Permission
+
+    from app.auth import authorize_organization_operation
+    from app.current_identity import IdentityUnavailable, require_current_identity
+    from app.operation_activation import dispatch_enabled
+
+    if not management_only() or dispatch_enabled():
+        raise HTTPException(
+            409, "organization control requires the disabled adapter stage"
+        )
+    caller = getattr(request.state, "caller", None)
+    if (
+        caller is None
+        or caller.principal.org_id != str(org_id)
+        or caller.principal.account_type != "human"
+        or not caller.source_org_id
+        or not caller.identity_evidence
+    ):
+        raise HTTPException(403, "verified organization identity is required")
+    await authorize_organization_operation(db, caller, Permission.ADMINISTER)
+    # Drop the first read transaction and repeat current authority after the
+    # adapter probe; no cached grant or membership can authorize activation.
+    ports = await capabilities_async()
+    await db.rollback()
+    try:
+        await require_current_identity(
+            getattr(request.app.state, "current_identity_reader", None),
+            subject=caller.principal.subject,
+            principal_type="human",
+            adp_org_id=caller.source_org_id,
+            membership_id=caller.identity_evidence,
+        )
+    except IdentityUnavailable:
+        raise HTTPException(
+            403, "current ADP organization authority required"
+        ) from None
+    await authorize_organization_operation(db, caller, Permission.ADMINISTER)
+    if len(ports) != 4 or not all(value is True for value in ports.values()):
+        raise HTTPException(503, "organization adapter capabilities unavailable")
+    return {
+        "control_version": 1,
+        "mode": "organization-bootstrap",
+        "org_id": str(org_id),
+        "evidence_expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        "organization_authority_verified": True,
+        "credential_metadata_verified": False,
+        "raw_material_returned": False,
+    }

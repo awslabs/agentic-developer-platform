@@ -259,7 +259,9 @@ async def test_delivered_but_unheld_cancellation_does_not_release_quota(cancella
     c = cancellable
     created = await create(c)
     gateway = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
-    dispatcher = OperationDispatcher(c.connections.connect, gateway)
+    dispatcher = OperationDispatcher(
+        c.connections.connect, gateway, domain_connect=c.connections.connect
+    )
     assert (await dispatcher.drain_once()).delivered == 1
     result = await cancel(c, created)
     assert (

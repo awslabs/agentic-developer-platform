@@ -1,8 +1,8 @@
 """Immutable cleanup-access evidence, never a generic provisioning continuation."""
 
-from dataclasses import asdict
 import json
 import re
+from dataclasses import asdict
 
 from superplane_bootstrap.kube_grants import _digest as grant_digest
 
@@ -13,7 +13,17 @@ from .runtime_config import LifecycleRefused
 READY = "retirement-access-ready"
 
 
-def access_metadata(plan, identities):
+def access_target(plan):
+    return {
+        "account_id": plan.cluster_arn.split(":")[4],
+        "cluster_arn": plan.cluster_arn,
+        "org_id": plan.org_id,
+        "workspace_id": plan.workspace_id,
+        "aws_region": plan.cluster_arn.split(":")[3],
+    }
+
+
+def access_metadata(plan, identities, *, reviewed_destroy=None, retirement_fence=None):
     """Whitelist exact adapter readback; no provider response extras are persisted."""
     if not isinstance(identities, dict) or set(identities) != {
         spec["key"] for spec in plan.grants
@@ -67,13 +77,22 @@ def access_metadata(plan, identities):
             ):
                 raise LifecycleRefused("cleanup EKS policy authority changed")
         grants.append({"spec": spec, "identity": identity})
-    return {
+    result = {
         "next_phase": READY,
         "retirement_access_plan": asdict(plan),
         "retirement_access_plan_sha256": plan.revision,
         "retirement_access_recipe_sha256": digest(plan.recipe()),
         "grants": grants,
     }
+    if reviewed_destroy is not None or retirement_fence is not None:
+        from .retirement_destroy_producer import validate_destroy_metadata
+        from .retirement_fence import validate_fence_metadata
+
+        result["reviewed_destroy"] = validate_destroy_metadata(reviewed_destroy)
+        result["retirement_fence"] = validate_fence_metadata(retirement_fence)
+        if reviewed_destroy["original_allocation_id"] != plan.original_allocation_id:
+            raise LifecycleRefused("destroy artifact exchanged its original allocation")
+    return result
 
 
 def validate_access_artifact(row, plan):
@@ -86,14 +105,7 @@ def validate_access_artifact(row, plan):
     parameters = json.loads(row["parameters_json"])
     if (
         not isinstance(metadata, dict)
-        or json.loads(row["target_json"])
-        != {
-            "account_id": plan.cluster_arn.split(":")[4],
-            "cluster_arn": plan.cluster_arn,
-            "org_id": plan.org_id,
-            "workspace_id": plan.workspace_id,
-            "aws_region": plan.cluster_arn.split(":")[3],
-        }
+        or json.loads(row["target_json"]) != access_target(plan)
         or (row["org_id"], row["workspace_id"], row["account_id"])
         != (plan.org_id, plan.workspace_id, plan.cluster_arn.split(":")[4])
         or parameters.get("lifecycle_phase") != PHASE
@@ -118,7 +130,18 @@ def validate_access_artifact(row, plan):
     ):
         raise LifecycleRefused("cleanup artifact grant set differs from its plan")
     identities = {item["spec"]["key"]: item["identity"] for item in grants}
-    if canonical(metadata) != canonical(access_metadata(plan, identities)):
+    preparation = parameters.get("retirement_prepare_destroy")
+    extra = {}
+    if preparation is not None:
+        if preparation != "v1" or any(
+            not isinstance(metadata.get(key), dict)
+            for key in ("reviewed_destroy", "retirement_fence")
+        ):
+            raise LifecycleRefused("destroy preparation contract changed")
+        extra = {
+            key: metadata.get(key) for key in ("reviewed_destroy", "retirement_fence")
+        }
+    if canonical(metadata) != canonical(access_metadata(plan, identities, **extra)):
         raise LifecycleRefused("cleanup artifact contains changed or extra evidence")
     return identities
 
@@ -137,14 +160,23 @@ def access_result(row, plan):
     }
 
 
-async def record_access_artifact(facts, effects, identities):
+async def record_access_artifact(facts, effects, identities, **prepared):
     """Persist readback under the access operation's lease and outer intent lock."""
     from harness_jobs.store import OperationStore
 
     operation, plan = facts.operation, facts.plan
     lease = operation.grant.lease
-    metadata = access_metadata(plan, identities)
-    if canonical(await effects.complete()) != canonical(identities):
+    if bool(prepared) != (
+        operation.request.parameters.get("retirement_prepare_destroy") == "v1"
+    ):
+        raise LifecycleRefused("cleanup preparation evidence differs from approval")
+    metadata = access_metadata(plan, identities, **prepared)
+    confirmed = dict(identities)
+    if "retirement_fence" in prepared:
+        from .retirement_fence import KEY
+
+        confirmed[KEY] = prepared["retirement_fence"]
+    if canonical(await effects.complete()) != canonical(confirmed):
         raise LifecycleRefused("cleanup artifact differs from confirmed grant journal")
     values = {
         "org_id": lease.org_id,
@@ -156,7 +188,7 @@ async def record_access_artifact(facts, effects, identities):
         "producer_fence_token": lease.fence_token,
         "request_revision": operation.request.parameters["plan_revision"],
         "account_id": plan.cluster_arn.split(":")[4],
-        "target_json": facts.artifact["target_json"],
+        "target_json": canonical(access_target(plan)),
         "parameters_json": canonical(dict(operation.request.parameters)),
         "artifact_metadata_json": canonical(metadata),
     }

@@ -68,10 +68,10 @@ This opt-in command advances **one creation/recovery phase**, not a complete
 create/Ready/remove acceptance run. It can request an approval and, on a later
 invocation after the independently signed-in approver allows that exact plan,
 submit workspace creation. It never decides approvals or submits retirement.
-The maintained retirement producer still refuses admission pending its approved
-cleanup-access and immutable-grant contract. Operations must separately authorize
-the creation phase and retain a named cleanup owner and deadline; this command
-is not permission to spend or a substitute for the missing removal contract.
+The prepared source now includes managed retirement producer contracts, but this
+driver has not integrated or verified positive retirement and cleanup against them.
+Operations must separately authorize the creation phase and retain a named cleanup
+owner and deadline; this command is not permission to spend or a removal driver.
 
 Use the v2 authority/runtime target and private files described below. Install
 the repository browser CI's pinned `playwright==1.55.0` and its Chromium runtime
@@ -143,7 +143,9 @@ directory is moved during persistence, retain its original checkpoint for
 reconciliation; a blocked result does not prove that no earlier effects occurred.
 Do not remove lock files to bypass a running process.
 If the creation reply is lost, reruns
-read the original operation rather than submit another creation. Pending
+read the original operation rather than submit another creation. A submitted
+checkpoint makes this phase read-only, even if the old approval remains valid;
+it never requests a retirement preview on recovery. Pending
 registration, unknown readiness and unavailable retirement stay BLOCKED. The
 exit status is always **2** for this incomplete lifecycle, including when the
 creation phase was observed; check `browser` and `checkpoint` in the private
@@ -342,14 +344,13 @@ PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
 Complete lifecycle reporting and positive retirement integration remain harness
 work. Do not substitute planned resources or invented authority. These remaining
 source requirements are separate from #5540's later live evaluation.
-The current mounted producer also imposes a source-contract dependency:
-`retirement_facts` requires a complete deletion plan, while the bootstrap-only
-plan does not complete teardown of a managed dedicated cluster; retirement
-admission remains explicitly unavailable. Cleanup-access compiler and artifact
-validators alone do not make that dedicated admission path available. The
-lifecycle producer owners (#5534/#5535) must expose the reviewed dedicated
-destroy-plan and immutable-grant admission contract before the harness can use
-it. A provider census or a supplied private file cannot waive that refusal.
+The prepared base supplies managed retirement preview/admission and cleanup-access
+producer code from the lifecycle owners (#5534/#5535). Its presence is not verified
+harness integration or evidence that a selected deployment exposes those contracts.
+The remaining driver work must consume the actual dedicated destroy plan, immutable
+cleanup grant and canonical resource coverage before enabling retirement. A provider
+census or a supplied private file cannot replace those checks. Until that wiring and
+its tests are complete, the driver continues to refuse positive retirement.
 
 The existing diagnostic AWS reader treats an error as absence only for a matching
 resource-kind error, exact AWS operation and selected resource identity in a
@@ -362,6 +363,108 @@ Credential-free CLI integration coverage:
 ```sh
 PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
   modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py -q
+```
+
+### Review managed cleanup preparation
+
+After the original workspace reaches a verified successful bootstrap, this explicit
+command reads the maintained cleanup-access preview. It reuses the private v2
+authority, exact runtime observation, authenticated requester session and original
+creation checkpoint described above. The requester needs the maintained workspace
+provision permission. No new credential or live authorization is supplied by this
+documentation; the operations owner must authorize the exact target first.
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --review-retirement-access \
+  --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --report "$DEMO1_PRIVATE_DIR/retirement-review.json"
+```
+
+Use a new report filename on each invocation. This phase never creates a workspace,
+requests or decides an approval, submits cleanup preparation, activates the creation
+fence or deletes resources. It sends only authenticated reads plus the maintained
+`retirement/access/preview` POST, which constructs a review without provider effects.
+The original checkpoint is unchanged. It cannot be combined with provider observation
+or another browser advancement option.
+
+`browser.retirement_access.review_status: OBSERVED` means the producer response
+matches the verified bootstrap, original retirement identity, dedicated AWS target,
+derived control allocation, bounded preparation request and exact plan/recipe hashes.
+The separate approval and immutable execution grant are **not** established by that
+preview. Proposed fencing is not observed fencing; an inventory digest is not proof
+of complete current ownership or absence. Denial, incomplete bootstrap, malformed
+responses and workspace changes refuse the review. The command always exits **2**
+with overall **BLOCKED**, including a compatible review. This preview does not admit
+preparation. Independent readiness, actual fenced inventory, approved deletion, cleanup and cost
+evidence remain unfinished harness work, not operations-evaluator implementation.
+
+Offline tests use synthetic provider facts and the maintained request compiler:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_retirement.py \
+  modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_access_review.py -q
+```
+
+The producer-compatibility case uses the existing disposable PostgreSQL bootstrap
+fixture. It does not access AWS or establish deployed acceptance.
+
+### Submit separately approved cleanup preparation
+
+The next explicit command requests the maintained preparation approval, then on a
+later invocation submits it only after the selected distinct human has approved
+that exact request through the existing approval UI. The driver never decides an
+approval or reuses the creation approval. **Preparation can change the live target:**
+its approved scope installs the temporary cleanup mapping, activates the original
+creation fence, inventories workloads and prepares a deletion-only Terraform plan.
+It does not authorize or submit deletion. Use this only with separately authorized
+live scope and the named cleanup owner; source review does not grant that permission.
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m superplane_acceptance.demo1_cli \
+  --mode live --advance-retirement-access \
+  --private-input "$DEMO1_PRIVATE_DIR/selection.json" \
+  --authority "$DEMO1_PRIVATE_DIR/authority.json" \
+  --browser-state "$DEMO1_PRIVATE_DIR/requester-state.json" \
+  --checkpoint "$DEMO1_PRIVATE_DIR/checkpoint.json" \
+  --retirement-checkpoint "$DEMO1_PRIVATE_DIR/cleanup.json" \
+  --report "$DEMO1_PRIVATE_DIR/cleanup-report.json"
+```
+
+Keep the separate owner-only preparation checkpoint alongside the original creation
+checkpoint. It binds the execution selection, original retirement and bootstrap
+identities, derived control request, allocation, exact revision and approval. Use a
+new report filename for every invocation. The first report normally says
+`awaiting independent cleanup-preparation approval`; find the approval ID in the
+private preparation checkpoint and hand that exact request to the designated human.
+No requester impersonation or exported approver session is supported.
+
+After approval, the driver checks the current plan, ticket, source workspace and
+release binding and saves `submitted: true` before the admission request can leave
+the browser. A definite pre-send refusal remains retryable under the same identities.
+An uncertain reply does not reset submission. Reruns first read the original shared
+admission by its saved request identity; only a matching existing admission permits
+the exact reconciliation POST to repair lost control registration. Missing or denied
+admission leaves recovery blocked, without a replacement request or approval. An
+expired historical ticket is not renewed. The original creation checkpoint never
+changes during this phase; preserve both checkpoints after any persistence failure.
+
+`browser.cleanup_preparation` reports the preparation admission and execution state,
+not an immutable cleanup grant, observed fencing, verified inventory or retirement.
+Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
+and provider-verified cleanup remain unfinished harness work. Do not remove the
+fence, grant or checkpoints to force another attempt; retain cleanup ownership for
+the maintained recovery path and later deletion approval.
+
+Run the offline CLI admission and recovery fixtures:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup.py -q
 ```
 
 ### Independent API runtime observation
@@ -486,9 +589,9 @@ workspace-selection button, `Readiness` region, `Review this plan` group and
 `Review an operation approval` region. It can check visibility after refresh,
 but **does not** sign a user in, submit creation or prove Ready. The proposed
 `Workspace retirement` region / `Review removal` button are not rendered at
-this pin, so no selector or success claim is made for them. The server's
-retirement admission currently refuses; a future success contract belongs
-to #5534/#5535 rather than a fixture invented here.
+this pin, so no selector or success claim is made for them. That pinned server's
+retirement admission refuses; the later producer contracts supplied by #5534/#5535
+still require harness integration rather than a fixture-invented success.
 
 Source-only #5730 extensions `8ef3966cd617e657fff4e8ab7f047b9ce15e59ef`
 and `061fc683927cf13b4897a07318f76317baf17ee7` now render `Workspace
@@ -1455,3 +1558,41 @@ executed against the real boundary by someone authorized to do so. U12's baselin
 and serving criteria now have an implemented check (above), but it has not been
 run: capture requires a registered environment and authorized access, which remain
 open.
+
+Native managed recovery retains the original create checkpoint while the workspace
+advances through separately approved prepare, apply and bootstrap operations. The
+authenticated recovery endpoint optionally returns `lifecycle_lineage`: a bounded,
+contiguous chain verified against each original paid admission and immutable
+artifact digest. The browser follows only those verified current request/operation
+IDs; it never substitutes an arbitrary latest operation. Missing or invalid native
+lineage refuses recovery evidence. A partial chain reports readiness as unknown,
+even if a workspace row claims Ready. Completed bootstrap still requires fresh
+workspace observations, independent readiness evidence and the maintained removal
+flow; lineage alone cannot establish a working or cleaned-up demo. Historical
+artifact expiry is ignored only for these read-only identity checks, never for
+new continuation previews, approval or admission.
+
+A saved `submitted` creation checkpoint may read its original admitted operation
+when the original approval has since expired, been revoked or become unavailable.
+Recovery verifies the authenticated requester, original admitted operation and
+workspace lineage; an old approval ticket cannot create or replace that evidence.
+This path performs GETs only and reports BLOCKED; it cannot resubmit creation,
+preview retirement or grant another effect. An unsubmitted checkpoint still needs
+a currently valid, exact-plan, distinct-human approval decided before expiry.
+Retirement must use its own maintained preview and separately approved operation.
+Native and separately admitted continuation histories both feed the sanitized
+execution-state snapshot. Invalid native history cannot fall back to an unrelated
+continuation, and workspace identity is checked again after browser refresh.
+
+Run the merged recovery and checkpoint contracts without live access:
+
+```sh
+PYTHONPATH=modules/domain-apps/superplane python3 -m pytest \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_runtime.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_lineage.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_journey.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_continuation.py \
+  modules/domain-apps/superplane/tests/acceptance/test_demo1_cli.py -q
+```

@@ -93,6 +93,8 @@ def test_component_consumers(path, expected):
     [
         ".github/workflows/superplane-domain-ci.yml",
         ".github/scripts/superplane_ci_scope.py",
+        ".github/scripts/superplane_postgres_gate.py",
+        ".github/scripts/tests/test_superplane_postgres_gate.py",
         "modules/domain-apps/superplane/contracts/schema.json",
         "modules/domain-apps/superplane/releases/transfer-constraints.txt",
         "modules/domain-apps/superplane/src/new-component/app.py",

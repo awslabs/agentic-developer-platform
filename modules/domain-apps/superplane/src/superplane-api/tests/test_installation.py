@@ -148,6 +148,9 @@ def test_packaged_capabilities_compose_native_configuration_without_live_binding
         ADP_GATEWAY_INTERNAL_URL="https://127.0.0.1:1",
         ADP_GATEWAY_INTERNAL_API_KEY="offline-test-not-secret",
         SUPERPLANE_PAID_WORKER_MODE="native-controller",
+        SUPERPLANE_DB_SCHEMA="superplane",
+        SUPERPLANE_OPERATION_DATABASE_URL="postgresql://test@127.0.0.1:1/operations",
+        SUPERPLANE_OPERATION_DB_SCHEMA="superplane_operations",
         SUPERPLANE_OPERATION_DISPATCH_ENABLED="false",
     )
     result = subprocess.run(
@@ -165,7 +168,7 @@ def test_packaged_capabilities_compose_native_configuration_without_live_binding
         "credential_evidence": False,
         "operation_facade": True,
         "provider_authority": True,
-    }
+    }, (report, result.stderr)
     assert all(probe["composition"]["installed"] for probe in report["probes"].values())
     assert all(probe["conformant"] is False for probe in report["probes"].values())
 

@@ -131,6 +131,11 @@ def scoped_entry_client(source, *, role_arn, region, verify, external_id=None):
             raise LifecycleRefused(
                 "EKS revocation identity belongs to another account or region"
             )
+        if getattr(source, "_superplane_scoped_entry", None) is not None:
+            verify()
+            session = source._superplane_scoped_entry(entry_arn)
+            verify()
+            return session.client("eks", region_name=region)
         policy = canonical(
             {
                 "Version": "2012-10-17",

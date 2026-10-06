@@ -91,6 +91,8 @@ export interface EndpointDeclaration {
 export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
+  getWorkspaceAccess: { method: 'GET', path: '/workspaces/{workspace_id}/access/v1/me', served: true },
+  grantWorkspaceAccess: { method: 'POST', path: '/workspaces/{workspace_id}/access/v1/grants', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
   batchResult: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/result', served: true },
   batchAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting', served: true },
@@ -159,13 +161,13 @@ export const ENDPOINTS = {
   previewRetirementAccess: {
     method: 'POST',
     path: '/workspaces/{workspace_id}/retirement/access/preview',
-    served: false,
+    served: true,
     capability: 'reviewing separate cleanup access for workspace removal',
   },
   admitRetirementAccess: {
     method: 'POST',
     path: '/workspaces/{workspace_id}/retirement/access',
-    served: false,
+    served: true,
     capability: 'requesting approved cleanup access for workspace removal',
   },
 
@@ -468,13 +470,14 @@ export interface RetirementReview {
     target: string;
   }[];
   preserved: readonly string[];
-  admission_available: false;
-  blocked_reason: 'staged_cleanup_access_required';
-  approval_request: null;
+  admission_available: boolean;
+  blocked_reason: string | null;
+  approval_request: Record<string, unknown> | null;
   revision: string;
 }
 
 export interface RetirementAccessReview {
+  admission_available?: boolean;
   retirement_request_id: string;
   request_id: string;
   workspace_id: string;

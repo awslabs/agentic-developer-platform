@@ -53,7 +53,7 @@ function accessReview() {
 }
 
 describe('retirement access producer boundary', () => {
-  it('tracks the exact dormant router, request fields and source preview rather than advertising access prematurely', () => {
+  it('tracks all three serving boundaries without treating serving as admission readiness', () => {
     const api = source('main.py');
     const router = source('routers/retirement_access.py');
     const service = source('services/retirement_access.py');
@@ -63,12 +63,12 @@ describe('retirement access producer boundary', () => {
       ['admitRetirementAccess', '/workspaces/{workspace_id}/retirement/access'],
     ] as const) {
       expect(ENDPOINTS[name].path).toBe(path);
-      expect(router).toContain(`@router.post("${path}")`);
+      expect(router).toContain(`"${path}",`);
       const mounted = api.includes('app.include_router(retirement_access_router)');
       const allowlisted = routeEntries.some(([method, route]) => method === 'POST' && route === path);
       const inventoried = inventory.includes(`("POST", "${path}")`);
       expect(ENDPOINTS[name].served).toBe(mounted && allowlisted && inventoried);
-      expect(ENDPOINTS[name].served).toBe(false);
+      expect(ENDPOINTS[name].served).toBe(true);
     }
     expect(router).toContain('body.operation_id');
     expect(router).toContain('body.plan_revision');
@@ -82,12 +82,15 @@ describe('retirement access producer boundary', () => {
 
   it('never sends access review requests until all three serving boundaries are present', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const previous = ENDPOINTS.previewRetirementAccess.served;
+    (ENDPOINTS.previewRetirementAccess as { served: boolean }).served = false;
     try {
       const result = await previewRetirementAccess(new ScopeGuard(), workspaceId, { operation_id: requestId });
       expect(result).toMatchObject({ ok: false, unavailable: { reason: 'not-deployed', endpoint: 'previewRetirementAccess' } });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
+      (ENDPOINTS.previewRetirementAccess as { served: boolean }).served = previous;
     }
   });
 
@@ -113,10 +116,10 @@ describe('retirement access producer boundary', () => {
   });
 
   it('keeps the old retirement admission response blocked even with a fabricated approval', () => {
-    const service = source('services/retirement.py');
-    expect(service).toContain('"admission_available": False');
-    expect(service).toContain('"blocked_reason": "staged_cleanup_access_required"');
-    expect(service).toContain('raise ProvisioningUnavailable(');
+    const service = source('services/managed_retirement.py');
+    expect(service).toContain('await require_runtime(org_id)');
+    expect(service).toContain('require_managed_control_source');
+    expect(service).toContain('approval.record.approval_id');
     expect(parseRetirementReview({ ...accessReview(), admission_available: true, approval_request: accessReview().approval_request })).toBeNull();
   });
 });

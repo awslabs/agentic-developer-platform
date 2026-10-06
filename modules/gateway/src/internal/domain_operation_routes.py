@@ -32,7 +32,7 @@ from src.internal.domain_operation_runtime import (
     validate_paid_execution,
     worker_binding,
 )
-from src.internal.domain_operation_store import aws_client, binding_for, harness, operation_connect, secret
+from src.internal.domain_operation_store import aws_client, binding_for, domain_connect, harness, operation_connect, secret
 from src.shared.database import get_db
 
 
@@ -184,7 +184,7 @@ async def current_identity_readiness(body: DomainScope, request: Request, db: As
 @router.post("/producer-readiness")
 async def producer_readiness(body: DomainScope, request: Request):
     binding = producer(request, body)
-    async with operation_connect(binding) as connection:
+    async with domain_connect(binding) as connection:
         mapped = await connection.fetchval("SELECT adp_org_id FROM organizations WHERE id::text=$1", binding.org_id)
     if mapped != binding.adp_org_id:
         raise HTTPException(503, "domain tenant mapping unavailable")
@@ -489,3 +489,38 @@ async def settlement(body: SettlementRequest, request: Request):
     if result != {"receipt_id": body.receipt_id}:
         raise HTTPException(503, "settlement acknowledgement unavailable")
     return result
+
+
+class ProviderSessionRequest(OperationRequest):
+    region: str = Field(min_length=1, max_length=32)
+    access_entry_arn: str | None = Field(default=None, max_length=2048)
+
+
+from src.internal.credential_routes import get_secrets_manager  # noqa: E402
+from src.shared.database import get_db  # noqa: E402
+
+
+@router.post("/provider-session")
+async def provider_session_route(body: ProviderSessionRequest, request: Request, db=Depends(get_db), sm=Depends(get_secrets_manager)):
+    from src.auth.vault_delivery import DeliveryRefusedError
+    from src.internal.domain_provider_session import provider_session
+    from src.internal.sts_assume_service import STSAssumeError
+
+    try:
+        result = await provider_session(request, body, db, sm)
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+    except (DeliveryRefusedError, STSAssumeError, ValueError, KeyError, TypeError):
+        raise HTTPException(403, "paid provider session refused") from None
+
+
+@router.post("/provider-preflight")
+async def provider_preflight_route(body: ProviderSessionRequest, request: Request, db=Depends(get_db), sm=Depends(get_secrets_manager)):
+    from src.auth.vault_delivery import DeliveryRefusedError
+    from src.internal.domain_provider_session import provider_session
+
+    try:
+        return await provider_session(request, body, db, sm, preflight_only=True)
+    except (DeliveryRefusedError, ValueError, KeyError, TypeError):
+        raise HTTPException(403, "paid provider preflight refused") from None

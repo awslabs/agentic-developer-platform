@@ -12,7 +12,7 @@ from uuid import uuid4
 from .demo1_c1 import inspect_original_details, inspect_reentry, retirement_preview
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant
 from .demo1_lineage import lineage_report
-from .demo1_report import lifecycle_report, reference
+from .demo1_report import lifecycle_report, reference, validate_operations
 
 PREFIX = "/api/superplane/v1"
 
@@ -102,6 +102,9 @@ class PlaywrightBrowserTransport:
             raise EvidenceError("browser: authorized runtime exhausted")
         if before_send is not None:
             before_send()
+            timeout = min(30_000, self.remaining_ms())
+            if timeout <= 0:
+                raise EvidenceError("browser: authorized runtime exhausted")
         try:
             result = self.page.evaluate(
                 """async ({method, path, body, timeout}) => {
@@ -194,7 +197,10 @@ def _plan_parameters_match(parameters: object, plan_revision: str) -> bool:
 
 
 def _approval(
-    ticket: dict, selected: DemoInput, checkpoint: CreationCheckpoint, now: datetime
+    ticket: dict,
+    selected: DemoInput,
+    checkpoint: CreationCheckpoint,
+    now: datetime,
 ) -> str:
     if (
         ticket.get("approval_id") != checkpoint.approval_id
@@ -212,7 +218,8 @@ def _approval(
         or selected.approver_id not in ticket["approvers"]
     ):
         raise EvidenceError("browser: approval identity or scope mismatch")
-    if instant(ticket.get("expires_at"), "approval expiry") <= now:
+    expiry = instant(ticket.get("expires_at"), "approval expiry")
+    if expiry <= now:
         raise EvidenceError("browser: approval expired")
     if ticket.get("result") == "pending":
         return "pending"
@@ -222,6 +229,7 @@ def _approval(
         or not selected.authorized_at
         <= instant(ticket.get("decided_at"), "approval decision")
         <= now
+        or instant(ticket.get("decided_at"), "approval decision") >= expiry
     ):
         raise EvidenceError("browser: distinct human approval not verified")
     return "allowed-once"
@@ -244,6 +252,69 @@ def workspace_reading(workspace: dict, now: datetime) -> str:
         "FRESH_WORKSPACE_ONLY"
         if -timedelta(seconds=30) <= now - heartbeat <= timedelta(minutes=5)
         else "UNKNOWN"
+    )
+
+
+def _native_reentry(operation, workspace, selected, checkpoint):
+    """Follow only the authenticated server's bounded original-admission proof."""
+    lineage = operation.get("lifecycle_lineage")
+    phases = ("prepare-infrastructure", "apply-infrastructure", "bootstrap-workspace")
+    if (
+        not isinstance(lineage, dict)
+        or lineage.get("version") != 1
+        or lineage.get("org_id") != selected.org_id
+        or lineage.get("workspace_id") != checkpoint.workspace_id
+        or lineage.get("root_request_id") != selected.request_id
+        or lineage.get("root_operation_id") != operation["provisioning_operation_id"]
+        or lineage.get("current_operation_id")
+        != workspace.get("provisioning_operation_id")
+        or lineage.get("plan_revision") != selected.plan_revision
+        or not isinstance(lineage.get("phases"), list)
+        or not 1 <= len(lineage["phases"]) <= 3
+    ):
+        raise EvidenceError("browser: native lifecycle lineage unavailable or differs")
+    chain = lineage["phases"]
+    operation_ids, request_ids = set(), set()
+    for index, phase in enumerate(chain):
+        if not isinstance(phase, dict) or phase.get("phase") != phases[index]:
+            raise EvidenceError("browser: native lifecycle phases are not contiguous")
+        operation_id = identifier(phase.get("operation_id"), "lifecycle operation")
+        request_id = identifier(phase.get("request_id"), "lifecycle request")
+        digest(phase.get("payload_digest"), "lifecycle admission digest")
+        if operation_id in operation_ids or request_id in request_ids:
+            raise EvidenceError("browser: native lifecycle identities repeat")
+        operation_ids.add(operation_id)
+        request_ids.add(request_id)
+        if index == 0:
+            if (
+                operation_id != operation["provisioning_operation_id"]
+                or request_id != selected.request_id
+                or phase.get("state") != operation.get("state")
+                or phase.get("source_artifact_id") is not None
+            ):
+                raise EvidenceError(
+                    "browser: native lifecycle original identity differs"
+                )
+        else:
+            digest(phase.get("source_artifact_id"), "lifecycle source artifact")
+        if index < len(chain) - 1 and phase.get("state") != "succeeded":
+            raise EvidenceError("browser: native lifecycle source has not completed")
+    current = chain[-1]
+    if current["operation_id"] != lineage["current_operation_id"]:
+        raise EvidenceError("browser: native lifecycle current identity differs")
+    operations = [
+        {
+            key: phase.get(key)
+            for key in ("phase", "request_id", "operation_id", "state")
+        }
+        for phase in chain
+    ]
+    validate_operations(operations)
+    return (
+        current["operation_id"],
+        current["request_id"],
+        len(chain) == 3 and current.get("state") == "succeeded",
+        operations,
     )
 
 
@@ -350,6 +421,7 @@ def advance_creation(
         in (checkpoint.request_id, checkpoint.approval_id)
     ):
         raise EvidenceError("browser: saved creation checkpoint differs")
+    read_only_recovery = checkpoint.submitted
     if not checkpoint.submitted:
         approval = _response(
             transport, "GET", PREFIX + f"/operation-approvals/{checkpoint.approval_id}"
@@ -437,6 +509,8 @@ def advance_creation(
     workspace = _response(
         transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
     )
+    native_complete = None
+    native_operations = None
     if (
         workspace.get("id") != checkpoint.workspace_id
         or workspace.get("org_id") != selected.org_id
@@ -448,7 +522,11 @@ def advance_creation(
     )
     current_request = selected.request_id
     lineage = None
-    if current_id != operation_id:
+    if "lifecycle_lineage" in operation:
+        current_id, current_request, native_complete, native_operations = (
+            _native_reentry(operation, workspace, selected, checkpoint)
+        )
+    elif current_id != operation_id:
         if verify_lineage is None:
             raise EvidenceError("browser: immutable continuation lineage required")
         lineage = verify_lineage(checkpoint, operation_id, current_id)
@@ -481,7 +559,7 @@ def advance_creation(
             "status": "BLOCKED",
             "reason": "workspace operation not verified after refresh",
         }
-    if lineage is not None:
+    if lineage is not None or native_operations is not None:
         refreshed = _response(
             transport, "GET", PREFIX + f"/workspaces/{checkpoint.workspace_id}"
         )
@@ -498,7 +576,8 @@ def advance_creation(
         selected.request_id,
         lineage["operations"]
         if lineage is not None
-        else [
+        else native_operations
+        or [
             {
                 "phase": "prepare-infrastructure",
                 "request_id": selected.request_id,
@@ -514,6 +593,24 @@ def advance_creation(
             "reason": "creation re-entry verified; continuation requires separate approval",
             "creation_observed": True,
             "operation_ref": reference(current_id),
+            "lifecycle": progress,
+            **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
+        }
+    if native_complete is False:
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "native lifecycle awaiting completed approved bootstrap",
+            "creation_observed": True,
+            "readiness": "UNKNOWN",
+            "lifecycle": progress,
+        }
+    if read_only_recovery:
+        return checkpoint, {
+            "status": "BLOCKED",
+            "reason": "original admission recovered read-only; retirement requires separate invocation",
+            "creation_observed": True,
+            "readiness": workspace_reading(workspace, now),
+            "retirement": "BLOCKED",
             "lifecycle": progress,
             **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
         }
