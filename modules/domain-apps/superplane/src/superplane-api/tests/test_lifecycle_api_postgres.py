@@ -35,9 +35,10 @@ from app.adapters.operation_authority_source import (
 from app.config import settings
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
-from app.models.controller_deployment import ControllerDeploymentOperation
-from app.models.deployment import Deployment
-from app.models.lifecycle import WorkspaceLifecycleArtifact
+from app.models.lifecycle import (
+    WorkspaceLifecycleArtifact,
+    WorkspaceLifecycleControlOperation,
+)
 from app.models.operation_approval import OperationApproval
 from app.models.organization import Organization
 from app.models.organization_grant import OrganizationGrantRecord
@@ -130,12 +131,11 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
                     CloudAccount,
                     Cluster,
                     Workspace,
-                    Deployment,
-                    ControllerDeploymentOperation,
                     OrganizationGrantRecord,
                     WorkspaceGrantRecord,
                     OperationApproval,
                     WorkspaceLifecycleArtifact,
+                    WorkspaceLifecycleControlOperation,
                 )
             ],
         )

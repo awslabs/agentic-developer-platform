@@ -291,7 +291,13 @@ async def test_batch_api_to_real_worker_and_finalizer_preserves_uid_and_allocati
         == 0
     )
     runtime.cloud.leaked_volume = leaked_volume
-    await runtime.execute(retirement)
+    if leaked_volume:
+        with pytest.raises(
+            OperationRefused, match="allocation reconciliation requires recovery"
+        ):
+            await runtime.execute(retirement)
+    else:
+        await runtime.execute(retirement)
     async with c.sessions() as db:
         intent = await db.get(Deployment, created["job_id"])
         assert intent.status == ("Deleting" if leaked_volume else "Deleted")

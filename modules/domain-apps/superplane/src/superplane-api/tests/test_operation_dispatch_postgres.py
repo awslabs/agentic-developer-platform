@@ -1,7 +1,6 @@
 """The actual shared outbox waits for durable domain workspace registration."""
 
 import json
-import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta

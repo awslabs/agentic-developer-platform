@@ -253,12 +253,12 @@ async def test_cancel_during_provider_reply_keeps_original_effect_and_quota(
 
 async def test_delivered_but_unheld_cancellation_does_not_release_quota(cancellable):
     from app.adapters.operation_dispatch import OperationDispatcher
+    from app.operation_activation import expected_lifecycle_binding
     from tests.test_operation_dispatch_postgres import GatewayTransport
 
     c = cancellable
     created = await create(c)
-    gateway = GatewayTransport()
-    gateway.alter = {"adp_org_id": "adp-test"}
+    gateway = GatewayTransport(expected_lifecycle_binding(), adp_org_id="adp-test")
     dispatcher = OperationDispatcher(c.connections.connect, gateway)
     assert (await dispatcher.drain_once()).delivered == 1
     result = await cancel(c, created)
