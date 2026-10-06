@@ -1,0 +1,385 @@
+{
+  "version": 1,
+  "issue": 6127,
+  "updated_at": "2026-10-06T01:19:49.010Z",
+  "tasks": [
+    {
+      "id": "AC-01-c1",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Serve authenticated producer-bound human identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "02119b1",
+      "commits": [
+        "02119b1"
+      ]
+    },
+    {
+      "id": "AC-01-c-wire",
+      "kind": "code",
+      "criterion": "AC-01",
+      "title": "Consume typed organization-bound identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "02119b1"
+    },
+    {
+      "id": "AC-01-t1",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Test two-organization identity fixtures",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Focused tests passed."
+    },
+    {
+      "id": "AC-01-t2",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Reject invalid current identities",
+      "status": "done",
+      "covers": [
+        "AC-01-c1",
+        "AC-01-c-wire"
+      ],
+      "files": [],
+      "note": "Authenticated route tests passed."
+    },
+    {
+      "id": "AC-01-t3",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Verify internal-route security inventory",
+      "status": "done",
+      "covers": [
+        "AC-01-c1"
+      ],
+      "files": [],
+      "note": "e243ee4",
+      "commits": [
+        "e243ee4"
+      ]
+    },
+    {
+      "id": "AC-02-c1",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Preserve organization-local subject mapping",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "2c3280a; reused migration 036.",
+      "commits": [
+        "2c3280a"
+      ]
+    },
+    {
+      "id": "AC-02-t1",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Test PostgreSQL migration preservation",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": "Four tests passed in earlier Domain CI; final-head CI pending.",
+      "commits": [
+        "e497897"
+      ]
+    },
+    {
+      "id": "AC-02-t2",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Reject ambiguous legacy mappings",
+      "status": "done",
+      "covers": [
+        "AC-02-c1"
+      ],
+      "files": [],
+      "note": "Local binding tests passed."
+    },
+    {
+      "id": "AC-03-c1",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Require current identity and explicit API grants",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "3b87cc0",
+      "commits": [
+        "3b87cc0"
+      ]
+    },
+    {
+      "id": "AC-03-c2",
+      "kind": "code",
+      "criterion": "AC-03",
+      "title": "Revalidate stored worker organization identity",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "c3589f7",
+      "commits": [
+        "c3589f7"
+      ]
+    },
+    {
+      "id": "AC-03-t1",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test API and worker permission implications",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "Database-backed grant matrix passed."
+    },
+    {
+      "id": "AC-03-t2",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject revoked grants and bootstrap fallback",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "819594e",
+      "commits": [
+        "819594e"
+      ]
+    },
+    {
+      "id": "AC-03-t3",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Reject shared-cluster and cross-workspace authority",
+      "status": "done",
+      "covers": [
+        "AC-03-c1",
+        "AC-03-c2"
+      ],
+      "files": [],
+      "note": "6a9083f",
+      "commits": [
+        "6a9083f"
+      ]
+    },
+    {
+      "id": "AC-03-t4",
+      "kind": "test",
+      "criterion": "AC-03",
+      "title": "Test mapped API grant and identity checks",
+      "status": "done",
+      "covers": [
+        "AC-03-c1"
+      ],
+      "files": [],
+      "note": "Local assertions passed."
+    },
+    {
+      "id": "AC-04-c1",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Recheck durable requester and approver",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "e5cd337",
+      "commits": [
+        "e5cd337"
+      ]
+    },
+    {
+      "id": "AC-04-c2",
+      "kind": "code",
+      "criterion": "AC-04",
+      "title": "Separate human and service credentials",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "9581395",
+      "commits": [
+        "9581395"
+      ]
+    },
+    {
+      "id": "AC-04-t1",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test revocation before executor side effects",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "8301f5a; earlier exact-head Gateway CI passed.",
+      "commits": [
+        "8301f5a"
+      ]
+    },
+    {
+      "id": "AC-04-t2",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject principal and subject substitution",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "API and worker assertions passed."
+    },
+    {
+      "id": "AC-04-t3",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Reject cross-workspace credential and observation substitution",
+      "status": "done",
+      "covers": [
+        "AC-04-c1",
+        "AC-04-c2"
+      ],
+      "files": [],
+      "note": "b8ad6cd; new Gateway PostgreSQL cases await exact-head execution.",
+      "commits": [
+        "b8ad6cd"
+      ]
+    },
+    {
+      "id": "AC-04-t4",
+      "kind": "test",
+      "criterion": "AC-04",
+      "title": "Test persisted-human revalidation",
+      "status": "done",
+      "covers": [
+        "AC-04-c1"
+      ],
+      "files": [],
+      "note": "Focused Gateway tests passed."
+    },
+    {
+      "id": "AC-05-c1",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Compose signed reader and signer-aware readiness",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "2938dd9",
+      "commits": [
+        "2938dd9"
+      ]
+    },
+    {
+      "id": "AC-05-c-wire",
+      "kind": "code",
+      "criterion": "AC-05",
+      "title": "Wire registered-producer transport to domain consumers",
+      "status": "done",
+      "covers": [],
+      "files": [],
+      "note": "50b4bcf",
+      "commits": [
+        "50b4bcf"
+      ]
+    },
+    {
+      "id": "AC-05-t1",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test API/PostgreSQL/registered-worker composition",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/internal/test_paid_domain_operation_postgres.py"
+      ],
+      "note": "Committed in 8c9230b and formatted in 5d0de9c. Skipped locally without pgserver; exact-head Gateway CI run 37398302464 remains queued. Do not count as passed.",
+      "commits": [
+        "5d0de9c",
+        "8c9230b"
+      ]
+    },
+    {
+      "id": "AC-05-t2",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test onboarding and restart preservation",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": ""
+    },
+    {
+      "id": "AC-05-t3",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Reject provider outage and missing membership before effects",
+      "status": "open",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": ""
+    },
+    {
+      "id": "AC-05-t4",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Verify deployed identity against an authorized live target",
+      "status": "blocked",
+      "covers": [
+        "AC-05-c1",
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
+    },
+    {
+      "id": "AC-05-t5",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test startup composition and signer-aware readiness",
+      "status": "done",
+      "covers": [
+        "AC-05-c1"
+      ],
+      "files": [],
+      "note": "Prior focused suites passed."
+    },
+    {
+      "id": "AC-05-t6",
+      "kind": "test",
+      "criterion": "AC-05",
+      "title": "Test signed registered-producer identity transport and scoped readiness",
+      "status": "done",
+      "covers": [
+        "AC-05-c-wire"
+      ],
+      "files": [],
+      "note": "Prior focused suites passed."
+    }
+  ]
+}

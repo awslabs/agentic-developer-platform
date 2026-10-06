@@ -75,6 +75,10 @@ async def validate_paid_execution(record, grant, *, store, allow_terminal=False)
     if binding.adp_org_id != record.tenant_id or grant.repo_scope != frozenset({binding.repo}):
         raise BootstrapRefusedError("paid domain tenant binding refused")
     operation = await paid_operation(binding, original["operation_id"], require_current=original["mode"] == "execution" and not allow_terminal)
+    if original["mode"] == "recovery" and not allow_terminal and binding.current_identity_enforced:
+        from src.internal.domain_current_identity import revalidate_original_humans
+
+        await revalidate_original_humans(operation, adp_org_id=binding.adp_org_id)
     for key in ("operation_id", "job_id", "attempt_id", "org_id", "workspace_id"):
         if original[key] != operation[key]:
             raise BootstrapRefusedError("original domain admission changed")

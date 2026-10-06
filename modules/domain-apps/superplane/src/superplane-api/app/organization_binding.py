@@ -11,10 +11,18 @@ from app.models.organization import Organization
 
 async def bind_caller(db, caller):
     source = caller.principal.org_id
+    try:
+        legacy_id = uuid.UUID(source)
+    except (ValueError, TypeError, AttributeError):
+        legacy_id = None
     organization = await db.scalar(
         select(Organization).where(Organization.adp_org_id == source)
     )
     if organization is not None:
+        if legacy_id is not None:
+            legacy = await db.get(Organization, legacy_id)
+            if legacy is not None and legacy.id != organization.id:
+                raise HTTPException(403, "ADP organization has ambiguous domain bindings")
         return replace(
             caller,
             principal=replace(caller.principal, org_id=str(organization.id)),
@@ -22,13 +30,11 @@ async def bind_caller(db, caller):
         )
     # Retain the pre-U23 UUID behavior only for an unbound legacy organization.
     # A UUID-shaped ADP claim cannot bypass a different explicit binding.
-    try:
-        identifier = uuid.UUID(source)
-    except (ValueError, TypeError, AttributeError):
+    if legacy_id is None:
         raise HTTPException(
             403, "ADP organization has no reviewed domain binding"
         ) from None
-    organization = await db.get(Organization, identifier)
+    organization = await db.get(Organization, legacy_id)
     if organization is not None and organization.adp_org_id not in (None, source):
         raise HTTPException(403, "ADP organization does not match the domain binding")
     return caller

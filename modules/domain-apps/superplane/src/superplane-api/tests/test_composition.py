@@ -566,3 +566,17 @@ async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
         )
     finally:
         await composition.aclose()
+async def test_current_identity_composition_shares_registered_producer_transport():
+    from app.current_identity import MappedProducerIdentityReader
+
+    class Configured(_WithOperationStore):
+        superplane_operation_gateway_url = "https://gateway.example"
+        superplane_operation_gateway_region = "us-east-1"
+
+    result = compose(Configured())
+    try:
+        assert result.dispatcher is not None
+        assert isinstance(result.identity_reader, MappedProducerIdentityReader)
+        assert result.identity_reader.transport is result.dispatcher.transport
+    finally:
+        await result.aclose()

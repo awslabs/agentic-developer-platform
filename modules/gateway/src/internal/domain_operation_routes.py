@@ -10,11 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from src.admin.cognito_claims import cognito_user_pool_id
 from src.agentauth.bootstrap import issue_bound_credential
 from src.agentauth.workload import WORKLOAD_HEADER
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.domain_current_identity import current_human_identity
 from src.internal.domain_operation_dispatch import dispatch
 from src.internal.domain_operation_runtime import (
     PRODUCER_SCOPE,
@@ -29,6 +33,7 @@ from src.internal.domain_operation_runtime import (
     worker_binding,
 )
 from src.internal.domain_operation_store import aws_client, binding_for, harness, operation_connect, secret
+from src.shared.database import get_db
 
 
 class DomainOperationRoute(APIRoute):
@@ -66,6 +71,11 @@ class DomainScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
     domain: Literal["superplane"]
     org_id: str = Field(min_length=1, max_length=255)
+
+
+class CurrentIdentityRequest(DomainScope):
+    subject: str = Field(min_length=1, max_length=255)
+    principal_type: Literal["human", "service"]
 
 
 class DispatchRequest(DomainScope):
@@ -131,9 +141,44 @@ class SettlementRequest(Empty):
 
 def producer(request, body):
     binding = binding_for(body.domain, body.org_id)
-    if current_registry(request, PRODUCER_SCOPE) != binding.producer_registry_id:
+    registry_id = current_registry(request, PRODUCER_SCOPE)
+    principal = getattr(request.state, "token_context", None)
+    if registry_id != binding.producer_registry_id or getattr(principal, "org_id", None) != binding.adp_org_id:
         raise HTTPException(403, "paid domain producer refused")
     return binding
+
+
+@router.post("/current-identity")
+async def current_identity(body: CurrentIdentityRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    binding = producer(request, body)
+    if body.principal_type != "human":
+        raise HTTPException(403, "current identity refused")
+    identity = await current_human_identity(db, subject=body.subject, adp_org_id=binding.adp_org_id)
+    if producer(request, body) != binding:
+        raise HTTPException(403, "current identity refused")
+    return identity
+
+
+@router.post("/current-identity/readiness")
+async def current_identity_readiness(body: DomainScope, request: Request, db: AsyncSession = Depends(get_db)):
+    binding = producer(request, body)
+    pool_id = cognito_user_pool_id()
+    if not pool_id:
+        raise HTTPException(503, "current identity provider unavailable")
+
+    def check_cognito():
+        response = aws_client("cognito-idp").list_users(UserPoolId=pool_id, Limit=1)
+        if not isinstance(response.get("Users"), list):
+            raise ValueError("Cognito identity response unavailable")
+
+    try:
+        await run_in_threadpool(check_cognito)
+    except Exception:
+        raise HTTPException(503, "current identity provider unavailable") from None
+    await db.execute(text("SELECT 1"))
+    if producer(request, body) != binding:
+        raise HTTPException(403, "current identity producer refused")
+    return {"version": 1, "domain": binding.domain, "org_id": binding.org_id, "adp_org_id": binding.adp_org_id}
 
 
 @router.post("/producer-readiness")
