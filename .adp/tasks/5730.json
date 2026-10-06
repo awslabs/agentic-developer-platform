@@ -409,22 +409,23 @@
       "kind": "code",
       "criterion": "AC-05",
       "title": "Expose stable accessible retirement approval, recovery and outcome controls in browser fixture",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Next source task; approval must remain capability-gated."
+      "files": ["modules/domain-apps/superplane/ui/RetirementPanel.tsx", "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"],
+      "note": "5580d0b adds accessible retirement approval and outcome regions while preserving unavailable admission; fixture scenarios use original IDs and deny deletion.",
+      "commits": ["5580d0b"]
     },
     {
       "id": "AC-05-t4",
       "kind": "test",
       "criterion": "AC-05",
       "title": "Test retirement keyboard, narrow-screen, expired-session and denial journeys in browser",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-05-c3"
       ],
-      "files": [],
-      "note": "Pending."
+      "files": ["modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx", "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py", "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"],
+      "note": "Browser workflow 37392735728 passed on 5580d0b, including 360/1280px re-entry, denial and session-expiry screenshots. 48 frontend and 46 fixture tests, TypeScript and domain lint passed locally; no positive retirement admission claimed."
     },
     {
       "id": "AC-06-c1",
