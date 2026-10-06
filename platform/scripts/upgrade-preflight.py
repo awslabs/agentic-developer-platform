@@ -130,11 +130,13 @@ def check_worker_security(state, release=False):
                          'a paused deployment is maintenance, not release acceptance')
 
 
-def prepare(directory, account, region, environment, gateway=True, webhook=True):
+def prepare(directory, account, region, environment, gateway=True, webhook=True, worker_migration=False):
     directory = Path(directory)
     identity = aws(region, 'sts', 'get-caller-identity')
     if identity['Account'] != account:
         raise ValueError('Preflight AWS account differs from upgrade target')
+    if (directory / 'worker-migration.json').exists() and not worker_migration:
+        raise ValueError('Resume this worker migration with its original --migrate-workers evidence')
 
     def current_state(module):
         # Resume retains the original integration baseline, but ownership must
@@ -148,11 +150,17 @@ def prepare(directory, account, region, environment, gateway=True, webhook=True)
 
     # Resume must inspect current state, never accept the original pre-migration
     # snapshot as proof. Check before any deployment or network mutation.
+    if worker_migration and not (gateway and webhook and (directory / 'webhook-ingress-before.tfstate').exists()):
+        raise ValueError('Worker migration requires an existing full gateway/webhook deployment')
     if (gateway or webhook) and (directory / 'webhook-ingress-before.tfstate').exists():
         installed_workers = current_state('webhook-ingress')
         if (list(state_tools.resources(installed_workers))
                 or state_tools.output(installed_workers, 'worker_security_rollout') is not None):
-            check_worker_security(installed_workers, release=bool(os.environ.get('ADP_RELEASE_DIR')))
+            if worker_migration:
+                migration = load(Path(__file__).with_name('upgrade-workers.py'), 'worker_migration_preflight')
+                migration.validate(directory, os.environ['ADP_WORKER_MIGRATION_EVIDENCE'], account, region, environment)
+            else:
+                check_worker_security(installed_workers, release=bool(os.environ.get('ADP_RELEASE_DIR')))
     platform = current_state('platform')
     settings = check_settings(platform, region)
     check_operator(platform, identity, region, f'adp-{environment}-eks-cluster')
@@ -199,6 +207,7 @@ if __name__ == '__main__':
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--skip-gateway', action='store_true')
     parser.add_argument('--skip-webhook', action='store_true')
+    parser.add_argument('--worker-migration', action='store_true')
     args = vars(parser.parse_args())
     args['gateway'] = not args.pop('skip_gateway')
     args['webhook'] = not args.pop('skip_webhook')
