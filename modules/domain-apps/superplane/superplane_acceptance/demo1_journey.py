@@ -186,7 +186,7 @@ def advance_browser(
                             provider=provider,
                         )
                         result["cleanup_preparation"]["reason"] = (
-                            "immutable preparation, canonical recorded deletion plan and current EKS cleanup entry verified; Kubernetes grants, fence, provider inventory and deletion remain unverified"
+                            "immutable preparation, canonical recorded deletion plan and current recorded cleanup grants and fence verified; complete provider inventory and deletion remain unverified"
                         )
                         _, result["retirement_review"] = read_teardown_review(
                             selected,

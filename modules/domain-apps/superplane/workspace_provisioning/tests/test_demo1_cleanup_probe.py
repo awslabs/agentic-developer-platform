@@ -200,6 +200,25 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
         return connection.inventory
 
     monkeypatch.setattr(_demo1_cleanup_probe, "canonical_inventory", inventory)
+
+    async def transport(connect, plan, bootstrap, paid):
+        async with connect() as connection:
+            assert connection.in_snapshot
+        assert (
+            plan.bootstrap_artifact_id == bootstrap.parameters["lifecycle_artifact_id"]
+        )
+        assert (
+            paid["operation_id"]
+            == bootstrap.parameters["lifecycle_source_operation_id"]
+        )
+        return {
+            "cluster_arn": plan.cluster_arn,
+            "cluster_name": plan.cluster_arn.rsplit("/", 1)[-1],
+            "cluster_endpoint": "https://example.invalid",
+            "cluster_certificate_authority_data": "ZmljdGlvbmFs",
+        }
+
+    monkeypatch.setattr(_demo1_cleanup_probe, "cluster_transport", transport)
     records = Records(composed)
     result = records.collect()
     assert result["status"] == "OBSERVED" and result["scope"] == records.scope
@@ -209,6 +228,8 @@ def test_cleanup_probe_reads_real_compiler_contract_and_refuses_changed_evidence
         result["grants"] == json.loads(records.row["artifact_metadata_json"])["grants"]
     )
     assert digest(result["grants"]) == result["grant_set_sha256"]
+    assert len(result["kubernetes"]["grants"]) == 8
+    assert digest(result["kubernetes"]) == result["kubernetes_inventory_sha256"]
     assert result["plan_file_sha256"] == "d" * 64
     inventory, plan, _, _, policy, _ = composed
     source = SimpleNamespace(

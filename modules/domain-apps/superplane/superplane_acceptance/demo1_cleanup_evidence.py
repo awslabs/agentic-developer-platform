@@ -1,6 +1,9 @@
 """Bind recorded cleanup grants and destroy-plan hashes to the original admission."""
 
+from workspace_provisioning.artifacts import digest as artifact_digest
+
 from .demo1_cleanup_grants import observe_grants
+from .demo1_cleanup_kubernetes import observe_kubernetes
 from .demo1_evidence import EvidenceError, digest, identifier, instant
 from .demo1_report import reference
 
@@ -54,6 +57,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         "backend_sha256",
         "retirement_plan_sha256",
         "retirement_revision_sha256",
+        "kubernetes_inventory_sha256",
     )
     require(
         runtime.get("status") == "OBSERVED"
@@ -70,6 +74,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
             "producer_fence_token",
             "grant_count",
             "grants",
+            "kubernetes",
         }
         and observed["status"] == "OBSERVED"
         and observed["scope"] == scope
@@ -94,10 +99,26 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
     current = observe_grants(
         provider, selected, observed["grants"], observed["grant_set_sha256"]
     )
+    material = observed["kubernetes"]
+    require(
+        isinstance(material, dict)
+        and isinstance(material.get("transport"), dict)
+        and isinstance(material.get("fence"), dict)
+        and material["transport"].get("cluster_arn")
+        == observed["grants"][0]["spec"]["cluster_arn"]
+        and artifact_digest(material["fence"]) == observed["fence_sha256"]
+    )
+    kubernetes = observe_kubernetes(
+        provider,
+        selected,
+        original.workspace_id,
+        observed["kubernetes"],
+        observed["kubernetes_inventory_sha256"],
+    )
     require(store.load() == saved)
     return {
         "status": "OBSERVED",
-        "scope": "immutable preparation and canonical recorded deletion plan, plus current EKS cleanup entry; Kubernetes grants, fence, provider inventory, plan bytes and cleanup unverified",
+        "scope": "immutable preparation, recorded deletion plan and current recorded EKS/Kubernetes grants and fence; complete provider inventory, plan bytes and cleanup unverified",
         "release_ref": runtime["release_ref"],
         "observed_at": now.isoformat(),
         "recorded_at": observed["recorded_at"],
@@ -106,6 +127,7 @@ def observe_cleanup(reader, store, preparation, max_runtime_seconds, *, now, pro
         "producer_fence_token": observed["producer_fence_token"],
         "grant_count": observed["grant_count"],
         "current_eks_grants": current,
+        "current_kubernetes": kubernetes,
         **{
             key.removesuffix("_sha256").removesuffix("_id") + "_ref": reference(
                 observed[key]

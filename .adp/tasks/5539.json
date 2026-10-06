@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-06T05:51:28.147Z",
+  "updated_at": "2026-10-06T06:03:06.977Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -65,7 +65,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Retained canonical-ownership evidence. Full-plan mismatch regressions pass in this milestone's focused selection.",
+      "note": "Retained canonical-ownership evidence. Affected full-plan mismatch tests pass again; new tests reject foreign apply lineage, changed TLS identity and replaced Kubernetes objects.",
       "commits": [
         "023c2a3"
       ]
@@ -81,7 +81,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Affected cleanup and creation recovery regressions pass again. Current-grant refusals preserve both original checkpoints.",
+      "note": "Affected cleanup and creation recovery regressions pass again. Kubernetes observation refusals preserve both original checkpoints.",
       "commits": [
         "1481dd2"
       ]
@@ -97,7 +97,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": "Retained evidence. Current EKS access does not establish cleanup, serving acceptance or zero cost.",
+      "note": "Retained evidence. Recorded grant and fence observations do not establish cleanup, serving acceptance or zero cost.",
       "commits": [
         "76fa319"
       ]
@@ -179,7 +179,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Fixture behavior and sanitized reporting preserved. Current EKS evidence remains separate from deletion authority.",
+      "note": "Fixture behavior and sanitized reporting preserved. Current observations remain separate from deletion authority.",
       "commits": [
         "8116dfc"
       ]
@@ -281,7 +281,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
       ],
-      "note": "R1 remains open. Current cleanup EKS entry verification is implemented and tested. Kubernetes grants/fence, resource coverage, readiness, exact plan bytes, separately approved destruction/recovery and cleanup reporting remain unfinished.",
+      "note": "R1 remains open. Recorded EKS/Kubernetes grants and active creation-fence checks are implemented and tested. Complete resource coverage, readiness, exact plan bytes, separately approved destruction/recovery and cleanup reporting remain unfinished.",
       "commits": [
         "9c7a3ec"
       ]
@@ -308,7 +308,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Updated the existing preparation command's guidance with current EKS mapping checks, refusal behavior and explicit remaining Kubernetes/fence/deletion limitations.",
+      "note": "Updated the existing preparation command's guidance with pinned Kubernetes transport, grant/fence validation, observer-permission refusal and the limits of point-in-time evidence.",
       "commits": [
         "68d882c"
       ]
@@ -423,7 +423,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "Retained scope and preflight evidence. Full-plan and current-grant refusals preserve checkpoints."
+      "note": "Retained scope and preflight evidence. Full-plan and current-provider refusals preserve checkpoints."
     },
     {
       "id": "AC-02-t13",
@@ -447,7 +447,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "Preparation, recovery, canonical teardown comparison and current EKS mapping have focused evidence. Complete readiness-to-retirement orchestration and positive provider cleanup remain unverified."
+      "note": "Preparation, recovery, canonical teardown comparison and recorded EKS/Kubernetes grant/fence observations have focused evidence. Complete readiness-to-retirement orchestration and positive cleanup remain unverified."
     },
     {
       "id": "AC-02-c-runtime",
@@ -471,7 +471,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Runtime-suite evidence retained; affected cleanup CLI integration passes with current EKS evidence."
+      "note": "Runtime-suite evidence retained; affected cleanup CLI integration passes with Kubernetes observation evidence."
     },
     {
       "id": "AC-02-c-browser-driver",
@@ -483,7 +483,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py"
       ],
-      "note": "Successful cleanup preparation now verifies the recorded cleanup EKS entry before public teardown review. No deletion approval or submission occurs."
+      "note": "Successful cleanup preparation now verifies recorded EKS/Kubernetes grants and the active fence before public teardown review. No deletion approval or submission occurs."
     },
     {
       "id": "AC-02-t16",
@@ -635,7 +635,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Accepted census preserved; it does not replace canonical ownership, fencing or cleanup authority."
+      "note": "Accepted census preserved; it does not replace canonical ownership or cleanup authority."
     },
     {
       "id": "AC-02-t22",
@@ -753,7 +753,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Retained persistence evidence. Affected journey, teardown mismatch and new grant-refusal checkpoint tests pass."
+      "note": "Retained persistence evidence. Affected journey, teardown mismatch and new Kubernetes-refusal checkpoint tests pass."
     },
     {
       "id": "AC-02-c-base",
@@ -763,7 +763,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Controller-prepared base 941490408d3cb6ea70164e06460f84d58229cb84 has no conflicts. Its two staged documentation changes remain untouched over HEAD c7bed2ab83d55f07b39a81e85af67975bdab5085."
+      "note": "Controller-prepared base 7a4689bfe9775b2243e3229b6ec75ee41c6f9116 is conflict-free. Its five staged workflow/agent-factory changes remain untouched over HEAD 113236d9c8bf66eb7e06108cb9536a555ae5cea3."
     },
     {
       "id": "AC-02-t27",
@@ -780,7 +780,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Prior reconciliation evidence retained. No unmerged entries; staged and unstaged diff checks pass."
+      "note": "Prior reconciliation evidence retained. No unmerged entries; staged and unstaged diff checks pass. Unrelated base-package suites were not repeated."
     },
     {
       "id": "AC-02-c-access-review",
@@ -873,7 +873,7 @@
         "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
         "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py"
       ],
-      "note": "The probe now returns verified grant records for independent EKS comparison. Raw records are not copied into the public report."
+      "note": "The pinned probe now also supplies original apply-bound transport, canonical cleanup grant identities and fence metadata. Raw transport and grant records are excluded from reports."
     },
     {
       "id": "AC-02-t31",
@@ -892,7 +892,7 @@
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py"
       ],
-      "note": "Artifact CLI and producer-compatibility tests pass, including exported grant-record/digest consistency and malformed grant refusal."
+      "note": "Affected artifact CLI and compiler compatibility tests pass. The compiler fixture supplies synthetic transport; separate transport tests execute real immutable-artifact digest and producer-binding validation."
     },
     {
       "id": "AC-02-c-teardown-review",
@@ -954,13 +954,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_grants.py",
-        "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_grants.py"
       ],
-      "note": "Added as a bounded prerequisite for AC-02-c-browser. Reuses maintained EksGrants validation, checks selected account/role before each bounded read, compares immutable entry identity, rejects associated policies or incomplete responses, and rechecks the entry after policy enumeration. Reports sanitized point-in-time evidence only; Kubernetes grants, fence and deletion authority remain unverified."
+      "note": "Accepted EKS entry observation from controller checkpoint 113236d preserved. New Kubernetes checks build on it without changing its account/role, immutable-identity or policy-response checks."
     },
     {
       "id": "AC-02-t34",
@@ -976,10 +972,45 @@
       ],
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_grants.py",
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py"
+      ],
+      "note": "Retained prior 161-test milestone. Affected CLI EKS refusals pass again; unchanged standalone EKS-grant suite not repeated."
+    },
+    {
+      "id": "AC-02-c-kubernetes-authority",
+      "kind": "code",
+      "criterion": "AC-02",
+      "title": "Observe recorded Kubernetes cleanup grants and the active creation fence through pinned TLS",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_kubernetes.py",
+        "modules/domain-apps/superplane/superplane_acceptance/_demo1_cleanup_probe.py",
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_cleanup_evidence.py",
+        "modules/domain-apps/superplane/superplane_acceptance/demo1_journey.py",
+        "modules/domain-apps/superplane/tests/acceptance/README.md"
+      ],
+      "note": "Added as the next bounded prerequisite for AC-02-c-browser. Reads the original immutable apply artifact and exact producer lineage, compares endpoint/CA with a fresh EKS observation, and uses private temporary TLS configuration through the selected observer connection. Reuses KubeGrants and maintained fence validation for six recorded roles/bindings and two fence objects, rechecking the fence after grant reads. No mutations, role fallback, complete-resource claim or ongoing deletion authority."
+    },
+    {
+      "id": "AC-02-t35",
+      "kind": "test",
+      "criterion": "AC-02",
+      "title": "Run pinned Kubernetes authority, artifact-lineage and checkpoint-preserving refusal offline fixtures",
+      "status": "done",
+      "covers": [
+        "AC-02-c-kubernetes-authority",
+        "AC-02-c-cleanup-evidence",
+        "AC-02-c-browser-driver",
+        "AC-02-c2"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_kubernetes.py",
         "modules/domain-apps/superplane/tests/acceptance/test_demo1_cleanup_evidence.py",
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_transport.py",
         "modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py"
       ],
-      "note": "From /work/repo, /tmp/adp-5539-review-venv/bin/python -m pytest modules/domain-apps/superplane/tests/acceptance/{test_demo1_cleanup_grants,test_demo1_cleanup_evidence,test_demo1_teardown,test_demo1_cleanup,test_demo1_journey}.py modules/domain-apps/superplane/workspace_provisioning/tests/test_demo1_cleanup_probe.py -q -x --tb=short: 161 passed, no skips, one XDG_RUNTIME_DIR fallback warning. Synthetic responses cover wrong role/account, foreign or replaced entries, changed grants, broadened policies, incomplete reads, denied/missing responses, timeouts, expired scope and checkpoint preservation. Seven-file Ruff lint/format, public-doc checker and staged/unstaged diff checks passed. No live calls executed."
+      "note": "From /work/repo, /tmp/adp-5539-review-venv/bin/python -m pytest modules/domain-apps/superplane/tests/acceptance/{test_demo1_cleanup_kubernetes,test_demo1_cleanup_evidence,test_demo1_teardown,test_demo1_cleanup,test_demo1_journey}.py modules/domain-apps/superplane/workspace_provisioning/tests/{test_demo1_cleanup_probe,test_demo1_cleanup_transport}.py -q -x --tb=short: 179 passed, no skips, one XDG_RUNTIME_DIR fallback warning. Tests use synthetic provider/record responses with real grant, fence and artifact validators; cover foreign lineage, TLS replacement, changed UIDs/permissions/aggregation labels, inactive/stale fences, denied/malformed/timed-out reads, private-file cleanup and checkpoint preservation. Eight-file Ruff lint/format, public-doc checker (1,435 files, zero findings), staged/unstaged diff checks passed. Local changes are over 113236d9c8bf66eb7e06108cb9536a555ae5cea3 with prepared base 7a4689bfe9775b2243e3229b6ec75ee41c6f9116. No live calls executed."
     },
     {
       "id": "AC-03-c1",
@@ -1084,10 +1115,11 @@
         "AC-02-c-cleanup-evidence",
         "AC-02-c-teardown-review",
         "AC-02-c-canonical-review",
-        "AC-02-c-current-grants"
+        "AC-02-c-current-grants",
+        "AC-02-c-kubernetes-authority"
       ],
       "files": [],
-      "note": "This milestone has 161 passing focused tests. Full affected suites, maintained Chromium lifecycle coverage and required CI on the final published head remain pending.",
+      "note": "This milestone has 179 passing focused tests. Full affected suites, maintained Chromium lifecycle coverage and required CI on the final published head remain pending.",
       "commits": [
         "d4deb9c"
       ]
@@ -1127,7 +1159,7 @@
       "files": [
         "modules/domain-apps/superplane/tests/acceptance/README.md"
       ],
-      "note": "Prior publication retained at controller-supplied HEAD c7bed2ab83d55f07b39a81e85af67975bdab5085. This milestone remains local for controller publication; no commit, GitHub or credential operations performed.",
+      "note": "Prior publication retained at controller-supplied HEAD 113236d9c8bf66eb7e06108cb9536a555ae5cea3. This milestone remains local for controller publication; no commit, GitHub or credential operations performed.",
       "commits": [
         "63e9cdd"
       ]

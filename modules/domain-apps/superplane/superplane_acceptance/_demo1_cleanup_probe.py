@@ -5,7 +5,7 @@ import json
 import re
 import sys
 from contextlib import asynccontextmanager, contextmanager, suppress
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -271,6 +271,20 @@ async def collect(connect, scope, policy):
                 deletion.completes_teardown
                 and deletion_request.parameters["plan_revision"] == digest(retirement)
             )
+            transport = await cluster_transport(
+                snapshot, plan, bootstrap, operations[paid_id]
+            )
+            kubernetes = {
+                "transport": transport,
+                "grants": [
+                    asdict(grant)
+                    for grant in inventory.grants
+                    if grant.spec["key"].startswith("cleanup-")
+                    or grant.spec["key"]
+                    in {"retirement-fence-policy", "retirement-fence-binding"}
+                ],
+                "fence": fence,
+            }
             return {
                 "status": "OBSERVED",
                 "scope": scope,
@@ -281,6 +295,8 @@ async def collect(connect, scope, policy):
                 "producer_fence_token": row["producer_fence_token"],
                 "grant_count": len(metadata["grants"]),
                 "grants": metadata["grants"],
+                "kubernetes": kubernetes,
+                "kubernetes_inventory_sha256": digest(kubernetes),
                 "grant_set_sha256": digest(metadata["grants"]),
                 "fence_sha256": digest(fence),
                 "inventory_sha256": plan.inventory_sha256,
@@ -294,6 +310,51 @@ async def collect(connect, scope, policy):
                 "retirement_plan_sha256": digest(retirement),
                 "retirement_revision_sha256": payload_digest(deletion_request),
             }
+
+
+async def cluster_transport(connect, plan, bootstrap, paid):
+    from account_factory.modes import from_mapping
+
+    from workspace_provisioning.artifacts import read_artifact
+    from workspace_provisioning.retirement_managed_access import (
+        verify_managed_access_artifact,
+    )
+
+    require(plan.bootstrap_artifact_id == bootstrap.parameters["lifecycle_artifact_id"])
+    row = await read_artifact(
+        connect,
+        artifact_id=plan.bootstrap_artifact_id,
+        org_id=plan.org_id,
+        workspace_id=plan.workspace_id,
+        require_fresh=False,
+    )
+    require(
+        bootstrap.parameters["lifecycle_source_operation_id"] == paid["operation_id"]
+        and all(
+            row[artifact] == paid[source]
+            for artifact, source in (
+                ("source_operation_id", "operation_id"),
+                ("source_job_id", "job_id"),
+                ("source_attempt_id", "attempt_id"),
+                ("source_payload_digest", "plan_digest"),
+                ("source_request_payload", "request_payload"),
+            )
+        )
+    )
+    outputs = verify_managed_access_artifact(
+        row,
+        from_mapping(json.loads(bootstrap.parameters["lifecycle_request"])),
+        plan,
+    )
+    return {
+        key: outputs[key]
+        for key in (
+            "cluster_arn",
+            "cluster_name",
+            "cluster_endpoint",
+            "cluster_certificate_authority_data",
+        )
+    }
 
 
 async def run(scope):

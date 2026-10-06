@@ -478,9 +478,20 @@ requires an empty and complete associated-policy response, then re-reads the ent
 to detect replacement during the observation. The account and role are checked
 before every EKS read; denied, missing, changed or incomplete responses refuse.
 `browser.cleanup_preparation.artifact.current_eks_grants` records only sanitized
-references and the observation time. This read does not establish current Kubernetes
-grants or fence state, fetch plan bytes, establish complete resource coverage, or
-authorize deletion. The original private target and operation bindings and raw grant
+references and the observation time. The command then reads the six recorded
+Kubernetes cleanup roles/bindings and the two original creation-fence objects.
+It binds the cluster endpoint and CA to the immutable original apply artifact and
+its exact successful producer, then compares those values with a fresh EKS read.
+Kubernetes requests use that pinned TLS configuration and the same selected observer
+connection, with an account/role check before each read. No installer-role fallback
+or permission changes are attempted; unavailable observer permissions refuse.
+The maintained validators compare original UIDs, generation and permissions,
+including RBAC aggregation labels. The fence must be active, observed by Kubernetes
+and type-checked without warnings; it is read again after the grant checks.
+`browser.cleanup_preparation.artifact.current_kubernetes` records only sanitized
+references and observation time. Private temporary transport files are removed on
+success or refusal. These reads do not fetch plan bytes, establish complete resource
+coverage, or authorize deletion. The original private target and operation bindings and raw grant
 records are checked but not copied into the report. Both checkpoints remain unchanged
 if the observation refuses; no new preparation or deletion is submitted to recover it.
 After that read, the command requests the maintained public retirement preview.
@@ -499,9 +510,9 @@ membership refuses the review. This observer does not acquire the execution
 locks: its database snapshot is evidence, not ongoing authority to delete.
 This is a review read only: it neither requests deletion approval nor submits
 retirement. Canonical recorded coverage does not prove complete current provider
-inventory, current Kubernetes grant/fence state, exact plan-file bytes or successful
-cleanup. The EKS mapping read is a point-in-time observation, not a lock or continuing
-execution authority.
+inventory, exact plan-file bytes or successful cleanup. EKS/Kubernetes grant and
+fence reads are point-in-time observations, not locks or continuing execution
+authority. They do not prove that no additional grants or provider resources exist.
 Exit status remains **2/BLOCKED**. The separately approved destroy-plan submission
 and provider-verified cleanup remain unfinished harness work. Do not remove the
 fence, grant or checkpoints to force another attempt; retain cleanup ownership for
