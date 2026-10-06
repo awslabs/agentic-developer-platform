@@ -579,6 +579,9 @@ class IdentityIndexClient:
                     "ExpressionAttributeValues": values,
                 }
             }
+        from src.admin.audit_operation import mark_admin_effects
+
+        mark_admin_effects()
         try:
             await asyncio.to_thread(self._client.transact_write_items, TransactItems=[guard, operation])
         except ClientError as exc:

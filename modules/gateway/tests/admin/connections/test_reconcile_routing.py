@@ -135,6 +135,24 @@ async def test_unreadable_row_is_not_treated_as_missing():
 
 
 @pytest.mark.asyncio
+async def test_audit_effect_boundary_starts_only_at_transaction():
+    operation = Operation("reconcile_github_routing", "/admin/organizations/{org_id}/connections/github/{installation_id}/reconcile-routing")
+    token = current_operation.set(operation)
+    try:
+        missing = Projection(owner=None)
+        assert (await IdentityIndexClient(table_name="test-only", dynamodb_client=missing).reconcile_installation_routing(
+            42, "historical", "canonical"
+        ))[0] == "missing_projection"
+        assert operation.effects_started is False
+        assert (await IdentityIndexClient(table_name="test-only", dynamodb_client=Projection()).reconcile_installation_routing(
+            42, "historical", "canonical"
+        ))[0] == "repaired"
+        assert operation.effects_started is True
+    finally:
+        current_operation.reset(token)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state,tenant,reason",
     [

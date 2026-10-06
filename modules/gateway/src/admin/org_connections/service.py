@@ -63,7 +63,6 @@ class RoutingReconciliationRefusedError(Exception):
 
 async def reconcile_routing(org_id: str, installation_id: int, expected_org_id: str, db: AsyncSession) -> tuple[str, str]:
     """Attest canonical ownership before touching a single forward projection."""
-    from src.admin.audit_operation import mark_admin_effects
     from src.admin.connections.github_client import GitHubAppClient
     from src.admin.connections.service import _get_github_app_credentials
     from src.admin.identity_index import IdentityIndexClient
@@ -93,7 +92,6 @@ async def reconcile_routing(org_id: str, installation_id: int, expected_org_id: 
     if owner.tenant_id != org_id:
         raise RoutingReconciliationRefusedError("canonical_owner_differs_from_target", authoritative_org_id=owner.tenant_id)
 
-    mark_admin_effects()
     try:
         outcome, observed = await IdentityIndexClient().reconcile_installation_routing(installation_id, expected_org_id, org_id)
     except Exception as exc:
