@@ -21,6 +21,21 @@ def result(value):
     return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")
 
 
+def image_contract():
+    return {
+        "image_contract_version": 1,
+        "configuration_verified": False,
+        "authority_verified": False,
+        "production_ready": False,
+        "required_ports": [
+            "credential_evidence",
+            "provider_authority",
+            "allocation_inventory",
+            "operation_facade",
+        ],
+    }
+
+
 def encoded(value):
     return json.dumps(value, sort_keys=True).encode()
 
@@ -138,6 +153,9 @@ class ImageTools:
         if args[:2] == ["docker", "pull"]:
             return result({})
         if args[:2] == ["docker", "run"]:
+            if "image-contract" in args:
+                assert "--env" not in args and "env" not in kwargs
+                return result(image_contract())
             return result({"controller_management": True})
         raise AssertionError(args)
 
@@ -168,6 +186,10 @@ class Probe:
         pass
 
     def run(self, *args, **kwargs):
+        if args[0] == "superplane-api":
+            assert args[1] == ["python", "-m", "app.installation", "image-contract"]
+            assert not kwargs.get("values")
+            return result(image_contract())
         return result({"controller_management": True})
 
 
