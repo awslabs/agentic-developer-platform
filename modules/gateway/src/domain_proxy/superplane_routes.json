@@ -20,6 +20,14 @@
     "/workspaces/{workspace_id}"
   ],
   [
+    "GET",
+    "/workspaces/{workspace_id}/access/v1/me"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/access/v1/grants"
+  ],
+  [
     "DELETE",
     "/workspaces/{workspace_id}"
   ],
