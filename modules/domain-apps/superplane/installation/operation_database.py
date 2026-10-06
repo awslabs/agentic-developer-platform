@@ -250,8 +250,8 @@ def execute(installer, plan, approved, admin_url):
         }
         installer.receipt["operation_secret_versions"] = versions
         installer.save()
+        addresses = installer.resolve_database_addresses(endpoint)
         with ClusterProbe(installer) as probe:
-            addresses = installer.resolve_database_addresses(endpoint)
             probe.isolate(
                 database_cidrs=[a + ("/128" if ":" in a else "/32") for a in addresses],
                 database_port=target["port"],

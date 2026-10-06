@@ -35,7 +35,11 @@ AWS CLI v2 with conditional S3 PUT/DELETE support, and kubectl. Set
 `image_execution: cluster` for private RDS or machines without Docker. This path
 verifies ECR manifest/config digests and OCI source labels, tests actual
 NetworkPolicy traffic, and executes pinned image checks in a temporary restricted
-namespace. Probe pods have no AWS/Kubernetes identity; database probes allow only
+namespace. Probe pods have no AWS/Kubernetes identity. Database address discovery
+uses the qualified API image in a credential-free, DNS-only pod, verifies the
+selected resolver over UDP and TCP, and validates a bounded address set for the
+exact RDS endpoint. It does not execute in the shared Gateway. Discovery cleanup
+finishes before a separate database probe receives credentials and allows only
 DNS and the selected RDS addresses/port. Cleanup checks the namespace UID and
 records completion. The default `docker` path requires local Docker and database
 reachability. Keep output directories private and outside the checkout.
