@@ -1,21 +1,19 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-05T23:51:45.178Z",
+  "updated_at": "2026-10-06T00:04:55.858Z",
   "tasks": [
     {
       "id": "AC-01-c1",
       "kind": "code",
       "criterion": "AC-01",
       "title": "Preserve original sealed allocation and establish separate exact-name cleanup authority",
-      "status": "blocked",
+      "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_plan.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_runtime.py"
+        "modules/domain-apps/superplane/workspace_bootstrap/superplane_bootstrap/grant_plan.py"
       ],
-      "note": "Original-seal refusal is tested. D3 still needs an approved scoped procedure to create exact-name cluster RBAC without a broad cluster-admin fallback.",
+      "note": "D3 approved the dormant bootstrap grant design; implementation remains.",
       "commits": [
         "c83f065"
       ]
@@ -24,16 +22,13 @@
       "id": "AC-01-t1",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Run PostgreSQL allocation-bound cleanup-authority unit and integration tests",
-      "status": "blocked",
+      "title": "Run PostgreSQL allocation-bound cleanup-authority tests",
+      "status": "open",
       "covers": [
         "AC-01-c1"
       ],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_access_seal_postgres.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
-      ],
-      "note": "Seal-guard test passes; real allocation-bound grant execution awaits D3."
+      "files": [],
+      "note": "Seal guard passed previously; exact grant execution remains untested."
     },
     {
       "id": "AC-01-c2",
@@ -45,24 +40,26 @@
       "files": [
         "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py"
       ],
-      "note": "Checkpoint 6a58d0d hardens attempt identity. Still needs a production provider observer under protected successor recovery authority.",
+      "note": "c2efb4e binds observation to the reviewed artifact; production recovery composition remains.",
       "commits": [
-        "6a58d0d"
+        "6a58d0d",
+        "c2efb4e",
+        "ff18b2e"
       ]
     },
     {
       "id": "AC-01-t2",
       "kind": "test",
       "criterion": "AC-01",
-      "title": "Run PostgreSQL phase-boundary failure and lost-reply successor-recovery tests",
+      "title": "Run PostgreSQL phase-boundary and lost-reply successor-recovery tests",
       "status": "open",
       "covers": [
         "AC-01-c2"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_execution_postgres.py"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_recovery_postgres.py"
       ],
-      "note": "All planned lost-reply boundaries pass against PostgreSQL; observer is doubled until production recovery is composed."
+      "note": "New artifact cases pass; all production effects are not yet covered."
     },
     {
       "id": "AC-01-t3",
@@ -73,10 +70,8 @@
       "covers": [
         "AC-01-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
-      ],
-      "note": "Cancellation must not erase prior effects or release uncertain allocation."
+      "files": [],
+      "note": ""
     },
     {
       "id": "AC-01-t4",
@@ -88,10 +83,8 @@
         "AC-01-c1",
         "AC-01-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
-      ],
-      "note": "Cover unauthorized operations and adopted-resource preservation."
+      "files": [],
+      "note": ""
     },
     {
       "id": "AC-02-c1",
@@ -100,25 +93,18 @@
       "title": "Admit artifact-bound retirement through the existing API facade",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/services/retirement.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/services/retirement_access.py"
-      ],
-      "note": "Review-only refusal stays until full approved admission is wired."
+      "files": [],
+      "note": "Review-only refusal remains."
     },
     {
       "id": "AC-02-c2",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Bind immutable reviewed destroy and complete workload inventory to managed retirement",
+      "title": "Bind immutable reviewed destroy and complete workload inventory",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_plan.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_inventory.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_terraform.py"
-      ],
-      "note": "Namespace deletion requires fresh complete scoped inventory and an admission interlock."
+      "files": [],
+      "note": "Fresh scoped inventory and admission interlock remain."
     },
     {
       "id": "AC-02-c3",
@@ -127,29 +113,24 @@
       "title": "Execute ordered owned-resource removal and verify survivors and residual costs",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_runtime.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_finalizer.py"
-      ],
-      "note": "Settle original and control allocations separately, only after authoritative verification."
+      "files": [],
+      "note": "Separate allocation settlements remain."
     },
     {
       "id": "AC-02-c-wire",
       "kind": "code",
       "criterion": "AC-02",
-      "title": "Expose run_retirement(operation, context) through the admitted producer contract",
+      "title": "Expose run_retirement(operation, context) through admitted producer contract",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_entrypoint.py"
-      ],
-      "note": "Coordinate native worker registration with #5535; no caller-selected dispatch."
+      "files": [],
+      "note": "Native worker registration belongs to #5535."
     },
     {
       "id": "AC-02-t1",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Run real PostgreSQL API-to-facade-to-producer retirement integration tests",
+      "title": "Run PostgreSQL API-to-facade-to-producer integration tests",
       "status": "open",
       "covers": [
         "AC-02-c1",
@@ -157,26 +138,21 @@
         "AC-02-c3",
         "AC-02-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_admission_postgres.py",
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
-      ],
-      "note": "Double only external cloud transport; bind original sealed allocation."
+      "files": [],
+      "note": ""
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
-      "title": "Run survivor, residual-cost and provider-refusal negative integration tests",
+      "title": "Run survivor, residual-cost and provider-refusal integration tests",
       "status": "open",
       "covers": [
         "AC-02-c2",
         "AC-02-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests"
-      ],
-      "note": "Neither survivors nor unknown costs may produce terminal teardown success."
+      "files": [],
+      "note": ""
     },
     {
       "id": "AC-03-c1",
@@ -185,58 +161,54 @@
       "title": "Require database-backed retirement tests in applicable validation lanes",
       "status": "open",
       "covers": [],
-      "files": [
-        ".github/workflows"
-      ],
-      "note": "Inspect existing workflow first; modify only if database tests can otherwise silently skip."
+      "files": [],
+      "note": "Inspect workflow before changing it."
     },
     {
       "id": "AC-03-t1",
       "kind": "test",
       "criterion": "AC-03",
-      "title": "Run affected domain, API, worker and infrastructure suites on final PR head",
+      "title": "Run affected final-head domain, API, worker and infrastructure suites",
       "status": "open",
       "covers": [
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Include shared Harness Jobs and Gateway checks if shared code changes; report CI separately."
+      "note": "Required CI has not run on c2efb4e."
     },
     {
       "id": "AC-04-c1",
       "kind": "code",
       "criterion": "AC-04",
-      "title": "Document exact offline evaluator inputs, commands and remaining live gates",
+      "title": "Document offline evaluator inputs, commands and remaining live gates",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/README.md"
-      ],
-      "note": "Do not publish private deployment identifiers or imply live acceptance."
+      "files": [],
+      "note": ""
     },
     {
       "id": "AC-04-t1",
       "kind": "test",
       "criterion": "AC-04",
-      "title": "Run documentation disclosure check and verify final PR evidence matrix",
+      "title": "Check public documentation and final PR evidence matrix",
       "status": "open",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Use python3 scripts/check-public-docs.py and link actual final-head results."
+      "note": ""
     },
     {
       "id": "AC-04-t2",
       "kind": "test",
       "criterion": "AC-04",
-      "title": "Obtain independent review and required CI before foreground-owned merge",
+      "title": "Obtain independent review and required CI",
       "status": "open",
       "covers": [
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Foreground owns merge; a ready PR is not merged code-story closure."
+      "note": "Foreground owns merge."
     }
   ]
 }
