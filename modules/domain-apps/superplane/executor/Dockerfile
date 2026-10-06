@@ -78,6 +78,11 @@ USER 65531:65532
 ENV PATH="/opt/executor/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     AWS_MAX_ATTEMPTS=1 AWS_RETRY_MODE=standard \
     SUPERPLANE_LIFECYCLE_STATE_DIR=/var/lib/superplane-lifecycle
+# The tools-stage check cannot establish compatibility with the selected Python
+# base. Exercise the copied binaries under the final non-root runtime as well;
+# incompatible libc/Python combinations must fail the build, not the first task.
+RUN --network=none python -c 'import sys; assert sys.version_info[:2] == (3, 12)' && \
+    terraform version && kubectl version --client && aws --version
 
 FROM runtime AS controller-service
 ENTRYPOINT ["superplane-execution-service"]

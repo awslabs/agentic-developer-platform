@@ -8,6 +8,7 @@ from pathlib import Path
 import _release_path  # noqa: F401
 import pytest
 import yaml
+
 from releases.resolve_lock import (
     BuildInputs,
     LockError,
@@ -97,7 +98,7 @@ def test_build_inputs_cannot_inject_workflow_environment(revision):
     "bad_input", [None, "repository", "revision", "source", "context", "tag"]
 )
 def test_buildspec_runs_only_the_selected_domain_build(
-    tmp_path, component, short, bad_input
+    tmp_path, component, short, bad_input, api_python_image=None
 ):
     """The build script builds one component from maintained source, and nothing else.
 
@@ -188,6 +189,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
     }
     if component in {"superplane-executor", "superplane-paid-worker"}:
         env["PYTHON_IMAGE"] = "python:3.12-slim@sha256:" + "d" * 64
+    if component == "superplane-api" and api_python_image is not None:
+        env["PYTHON_IMAGE"] = api_python_image
     if bad_input == "repository":
         env["ECR_REPO"] = "adp-gateway"
     if bad_input == "revision":
@@ -202,7 +205,12 @@ def test_buildspec_runs_only_the_selected_domain_build(
     if bad_input == "tag":
         env["IMAGE_TAG"] = "latest"
     result = subprocess.run(
-        ["bash", "-c", command], cwd=tmp_path, env=env, capture_output=True, text=True
+        ["bash", "-c", command],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if bad_input:
         assert result.returncode != 0
@@ -250,10 +258,31 @@ def test_buildspec_runs_only_the_selected_domain_build(
         calls = trace.read_text()
         # Tagged by the ADP commit; the origin revision rides along as a label. Both are
         # asserted because collapsing them is the regression this guards.
+        expected_tag = adp_commit
+        if component == "superplane-api" and api_python_image:
+            expected_tag += "-py-" + api_python_image.rsplit("@sha256:", 1)[1]
         assert (
-            "docker push " + env["REGISTRY"] + "/" + env["ECR_REPO"] + ":" + adp_commit
+            "docker push "
+            + env["REGISTRY"]
+            + "/"
+            + env["ECR_REPO"]
+            + ":"
+            + expected_tag
+            + "\n"
             in calls
         )
+        assert "--image-ids imageTag=" + expected_tag + " " in calls
+        # The actual build's published tag/labels must satisfy installer inputs.
+        from installation.image_provenance import ImageProvenance
+
+        source = {"source_revision": adp_commit}
+        labels = {"org.opencontainers.image.revision": adp_commit}
+        if component == "superplane-api" and api_python_image:
+            source["python_image"] = api_python_image
+            labels["org.opencontainers.image.base.name"] = api_python_image
+        provenance = ImageProvenance.from_source(component, source)
+        provenance.verify_tags([expected_tag])
+        provenance.verify_labels(labels)
         assert "org.opencontainers.image.revision=" + adp_commit in calls
         assert "com.adp.superplane.origin.revision=" + "a" * 40 in calls
         assert (
@@ -277,6 +306,9 @@ def test_buildspec_runs_only_the_selected_domain_build(
             assert build_call.endswith(" ."), (
                 "executor needs the repository build context"
             )
+        if component == "superplane-api" and api_python_image:
+            assert "--build-arg PYTHON_IMAGE=" + api_python_image in calls
+            assert "org.opencontainers.image.base.name=" + api_python_image in calls
         # The origin revision must never become the tag: rebuilds from later ADP commits
         # would collide on it, so "which build is running" would stop having an answer.
         assert ":" + "a" * 40 not in calls
@@ -299,7 +331,7 @@ def test_api_build_watches_every_staged_source_package():
 
     module = ROOT / RELEASE.parent
     stage = (module / "src/superplane-api/scripts/stage-domain-auth.sh").read_text()
-    table = re.search(r"^packages=\((.*?)^\)", stage, re.MULTILINE | re.S)
+    table = re.search(r"^packages=\((.*?)^\)", stage, re.MULTILINE | re.DOTALL)
     sources = re.findall(r'"([^":]+):', table.group(1))
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/superplane-api-build.yml").read_text()
@@ -309,3 +341,83 @@ def test_api_build_watches_every_staged_source_package():
     for source in sources:
         normalized = (ROOT / RELEASE.parent / source).resolve().relative_to(ROOT)
         assert f"{normalized.as_posix()}/**" in paths
+
+
+@pytest.mark.parametrize(
+    "python_image,invalid",
+    [
+        ("example.invalid/approved-python@sha256:" + "d" * 64, False),
+        ("python:3.12-slim", True),
+        ("example.invalid/python@sha256:" + "d" * 63, True),
+        ("example.invalid/python@sha256:" + "d" * 64 + "\nOTHER=value", True),
+    ],
+)
+def test_api_selected_python_base_is_forwarded_or_refused_before_aws(
+    tmp_path, python_image, invalid
+):
+    test_buildspec_runs_only_the_selected_domain_build(
+        tmp_path,
+        "superplane-api",
+        "api",
+        "python" if invalid else None,
+        api_python_image=python_image,
+    )
+
+
+@pytest.mark.parametrize(
+    "python_image,accepted",
+    [
+        ("", True),
+        ("example.invalid/python@sha256:" + "d" * 64, True),
+        ("python:3.12-slim", False),
+        ("example.invalid/python@sha256:" + "d" * 64 + '",type=SECRETS_MANAGER', False),
+        ("example.invalid/python@sha256:" + "d" * 64 + "\nOTHER=value", False),
+    ],
+)
+def test_api_workflow_validates_base_before_trusted_build(
+    tmp_path, python_image, accepted
+):
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/superplane-api-build.yml").read_text()
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    validation = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name", "").startswith("Validate optional Python")
+    )
+    authorization = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("uses") == "./.github/actions/trusted-build"
+    )
+    assert validation < authorization
+    environment_file = tmp_path / "github-env"
+    source = "c" * 40
+    result = subprocess.run(
+        ["bash", "-c", steps[validation]["run"]],
+        env={
+            "PATH": os.defpath,
+            "PYTHON_IMAGE": python_image,
+            "GITHUB_SHA": source,
+            "GITHUB_ENV": str(environment_file),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is accepted
+    if accepted:
+        expected_tag = source
+        if python_image:
+            expected_tag += "-py-" + python_image.rsplit("@sha256:", 1)[1]
+        assert environment_file.read_text() == "ECR_IMAGE_TAG=" + expected_tag + "\n"
+        assert len(expected_tag) <= 128
+        reporting = next(
+            step["run"]
+            for step in steps
+            if step.get("name") == "Report produced digest"
+        )
+        assert "imageTag=${ECR_IMAGE_TAG}" in reporting
+    else:
+        assert not environment_file.exists()

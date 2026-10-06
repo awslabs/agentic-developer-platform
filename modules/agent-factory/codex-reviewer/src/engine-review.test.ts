@@ -1295,3 +1295,81 @@ test("the reviewer resumes from the branch board file when the developer left on
   assert.deepEqual(after.tasks?.map(task => task.status), ["done", "done", "done"]);
   assert.match(await state.git("log", "-1", "--format=%s"), /^fix\(review #42\): AC2-c1$/);
 });
+
+
+test("clean base movement revalidates without repeated publication or spending repair retries", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  const bases = [state.sha];
+  await state.git("checkout", "-b", "main");
+  for (let index = 0; index < 4; index++) {
+    await writeFile(join(state.workspace, `base-${index}.md`), "independent documentation\n");
+    await state.git("add", ".");
+    await state.git("commit", "-m", `base revision ${index}`);
+    bases.push(await state.git("rev-parse", "HEAD"));
+  }
+  await state.git("push", state.remote, "main");
+  await state.git("checkout", "story");
+  let reviews = 0, observations = 0, waits = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async prompt => {
+      assert.match(prompt, new RegExp(`base commit ${state.pr.base.sha}`));
+      assert.equal(await state.git("rev-parse", "HEAD"), state.sha);
+      if (reviews++) assert.match(prompt, /controller-ci-evidence/);
+      return approved;
+    },
+    fix: async () => assert.fail("clean base changes need no source repair"),
+    checks: async head => {
+      observations++;
+      state.pr.base.sha = bases[Math.min(observations, 4)]!;
+      return checkObservation(head, observations === 1 ? "pending" : "passed", state.pr.base.sha);
+    },
+    wait: async () => { waits++; },
+    deliver: async result => {
+      assert.equal(result.reviewed_base_sha, bases[4]);
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(waits, 1);
+  assert.equal(reviews, 4);
+  assert.equal(result.merged, true);
+  assert.equal(result.sha, state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+});
+
+test("canonical strict-base repair still integrates and validates the published child", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  await state.git("checkout", "-b", "main");
+  await writeFile(join(state.workspace, "base.md"), "new base behavior\n");
+  await state.git("add", ".");
+  await state.git("commit", "-m", "base update");
+  const base = await state.git("rev-parse", "HEAD");
+  await state.git("push", state.remote, "main");
+  await state.git("checkout", "story");
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github,
+    review: async () => approved,
+    fix: async prompt => {
+      repairs++;
+      assert.match(prompt, /prepared a merge/);
+      assert.equal(await state.git("rev-parse", "MERGE_HEAD"), base);
+      return { outcome: "complete", summary: "Validated required base integration", remainingWork: [] };
+    },
+    checks: async head => {
+      state.pr.base.sha = base;
+      return { ...checkObservation(head, "passed", base), base_repair_required: repairs === 0 };
+    },
+    deliver: async result => {
+      assert.equal(await state.git("rev-parse", "HEAD^2"), base);
+      assert.equal(result.report.verdict, "approve");
+      return { state: "merged" };
+    },
+  });
+  assert.equal(repairs, 1);
+  assert.notEqual(result.sha, state.sha);
+  assert.equal(result.merged, true);
+});

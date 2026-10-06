@@ -54,13 +54,14 @@ async def preview(composition, db, org_id, workspace_id, request_id):
     )
     if inventory.cluster_ownership != "adp-created":
         raise ProvisioningUnavailable("only dedicated managed retirement is composed")
+    original_request_id = workspace.operation_id
     async with composition.domain_connect() as connection:
         rows = await connection.fetch(
             "SELECT a.artifact_id FROM workspace_lifecycle_control_operations c "
             "JOIN workspace_lifecycle_artifacts a ON a.source_operation_id=c.operation_id "
             "AND a.org_id=c.org_id AND a.workspace_id=c.workspace_id "
             "WHERE c.org_id=$1 AND c.workspace_id=$2 AND c.source_bootstrap_operation_id=$3 "
-            "AND c.request_id=$4 AND c.phase='prepare-retirement-access'",
+            "AND c.request_id=$4 AND c.phase='prepare-retirement-access' LIMIT 2",
             str(org_id),
             str(workspace_id),
             source.operation_id,
@@ -101,6 +102,22 @@ async def preview(composition, db, org_id, workspace_id, request_id):
             ],
         )
     request, deletion = retirement_request(inventory, plan, row, source, policy)
+    from app.services.lifecycle_evidence import (
+        cleanup_preparation,
+        workspace_pointer_matches,
+    )
+
+    preparation = await cleanup_preparation(
+        composition.operation_connect,
+        row=row,
+        plan=plan,
+        request=request,
+        source_operation_id=source.operation_id,
+    )
+    if not await workspace_pointer_matches(
+        db, org_id, workspace_id, original_request_id, source.operation_id
+    ):
+        raise ProvisioningUnavailable("workspace provisioning identity changed")
     review = {
         "request_id": str(request_id),
         "workspace_id": str(workspace_id),
@@ -117,6 +134,7 @@ async def preview(composition, db, org_id, workspace_id, request_id):
         "admission_available": True,
         "blocked_reason": None,
         "revision": payload_digest(request),
+        "cleanup_preparation": preparation,
         "approval_request": {
             "workspace_id": str(workspace_id),
             "action": request.action,

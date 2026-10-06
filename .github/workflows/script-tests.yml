@@ -120,6 +120,7 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/exact_image_disposition.py'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -243,6 +244,7 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/exact_image_disposition.py'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -368,9 +370,10 @@ jobs:
       # cannot reach it. No other workflow executes it either: without this step
       # the S19 (#5618) coverage gate -- "every expected image must produce a
       # real result" -- is asserted by tests that never run.
-      - name: Run container scan inventory tests
+      - name: Run container scan inventory and exact-image verifier tests
         working-directory: ${{ github.workspace }}
         run: |
           pytest \
             codebuild/tests/test_security_image_scan.py \
+            codebuild/tests/test_exact_image_disposition.py \
             -v --tb=short --timeout=60

@@ -13,5 +13,11 @@ to stats handlers, and corrects diagnostic formatting flagged by the new Go vet.
 Test-only updates preserve literal diffs and validate the new telemetry scope
 representation without dropping assertions. HCL and cty versions remain unchanged.
 
+The native worker follow-up pins github.com/golang-jwt/jwt/v4 v4.5.2
+(CVE-2025-30204) and golang.org/x/mod v0.40.0 (GO-2026-6179 and
+GO-2026-6180). The x/mod module graph also requires x/tools v0.49.0.
+Their module checksums are retained in the patch; build-time module resolution
+remains read-only.
+
 Original HashiCorp license and copyright remain in LICENSE. This is not an
 unmodified upstream release. No live workspace state migration is implied.

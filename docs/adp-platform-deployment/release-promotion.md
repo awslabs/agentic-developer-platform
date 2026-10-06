@@ -39,7 +39,7 @@ build once -> immutable manifest and artifacts -> integration-test acceptance
                                           pre-production acceptance
 ```
 
-The release path wraps `deploy-all.sh --update`. Existing GitHub App settings,
+The release path wraps `deploy.sh --update`. Existing GitHub App settings,
 secrets and installation mappings are preserved by the normal upgrade checks.
 AWS DevOps Agent is outside this implementation.
 
@@ -54,7 +54,7 @@ Both stages use `us-east-1` even though their Terraform environment name remains
 > **Current boundary:** the implemented chain stops at pre-production.
 > Production and demo-environment promotion are not implemented. Do not treat a
 > successful pre-production run as production approval. Installed agent-context
-> fails release preflight because `deploy-all.sh --update` would include it but
+> fails release preflight because `deploy.sh --update` would include it but
 > the manifest does not cover its artifacts. Superplane has its own deploy flow;
 > a core release leaves its Terraform state and workloads outside the upgrade.
 
@@ -81,7 +81,7 @@ Review release workflow/buildspec changes as privileged platform code.
 Each target account also needs its own operator tfvars for the gateway and webhook
 ingress. Store these in that account's private Terraform state bucket, not in the
 repository or release artifacts. The release workflow reads them before checking
-out the selected source SHA and passes their paths to `deploy-all.sh --update`.
+out the selected source SHA and passes their paths to `deploy.sh --update`.
 For integration-test, after verifying the AWS profile resolves to `000000000220`:
 
 ```bash
@@ -155,7 +155,7 @@ This dispatch is not a dry run. For a new release it:
 4. writes and publishes the manifest last, so a partial upload is not a release;
 5. invokes the reusable upgrade workflow for integration-test;
 6. assumes `adp-release-deploy`, takes the account release lock and runs
-   `deploy-all.sh --update` using only the selected artifacts;
+   `deploy.sh --update` using only the selected artifacts;
 7. runs mandatory acceptance and uploads `acceptance-integration-test`.
 
 Record the GitHub run ID, release ID, source SHA and manifest SHA256. Review the

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
+from app.schemas.lifecycle_evidence import CleanupPreparationEvidence
 from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
 from app.services.retirement import admit_retirement, preview_retirement
 
@@ -43,6 +44,7 @@ class RetirementReviewResponse(BaseModel):
     blocked_reason: str | None = None
     approval_request: dict | None = None
     revision: str
+    cleanup_preparation: CleanupPreparationEvidence | None = None
 
 
 class RetirementAdmissionResponse(BaseModel):

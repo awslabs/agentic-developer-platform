@@ -258,18 +258,31 @@ async def operation_response(request, db, org_id, identity, *, by_request):
             # Optional history must never overwrite the queried admission's state.
             # Failure leaves recovery available but supplies no continuation proof.
             result["lifecycle_lineage"] = None
+            result["applied_ownership"] = None
             if workspace is not None:
-                from workspace_provisioning.lineage import verified_native_lineage
+                from app.services.lifecycle_evidence import (
+                    native_evidence,
+                    workspace_pointer_matches,
+                )
 
                 try:
-                    result["lifecycle_lineage"] = await verified_native_lineage(
-                        composition.operation_connect,
-                        composition.domain_connect,
+                    current_operation_id = workspace.provisioning_operation_id
+                    lineage, ownership = await native_evidence(
+                        composition,
                         org_id=str(org_id),
                         workspace_id=str(workspace.id),
                         root_operation_id=row["operation_id"],
-                        current_operation_id=workspace.provisioning_operation_id,
+                        current_operation_id=current_operation_id,
                     )
+                    if await workspace_pointer_matches(
+                        db,
+                        org_id,
+                        workspace.id,
+                        row["idempotency_key"],
+                        current_operation_id,
+                    ):
+                        result["lifecycle_lineage"] = lineage
+                        result["applied_ownership"] = ownership
                 except Exception:
                     pass
         return result

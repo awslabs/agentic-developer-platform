@@ -541,7 +541,12 @@ not claim the separate E02 password-challenge/non-admin acceptance scenario.
 The `assistant` selection adds E43–E50 to the existing EC2 runner, state,
 report, recovery and cleanup. E50 is the executable baseline for the currently
 supported WebSocket protocol: ordinary-user identity, server-issued session,
-correlated final response and owned HTTP history readback. It uses the registered
+worker lifecycle, correlated final response and owned HTTP history readback.
+It pins the existing `intent-refinement` persona to select the worker path and
+requires `RUN_STARTED` and `RUN_FINISHED` for the same server session/task before
+the final response. A classifier-only reply cannot pass. The saved assistant
+message must also carry that task ID. These are the current worker's events,
+not proof of sandbox isolation or durable/replay semantics. It uses the registered
 `assistant_baseline` remote driver. Offline compatibility tests consume frames
 from the production response router, including its one-based chunk sequence.
 `hosted-chat` (D01) remains a separate CLI Task diagnostic.
