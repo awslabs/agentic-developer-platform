@@ -43,7 +43,15 @@ class RetirementObservations:
             raise OperationRefused("retirement inventory provider account changed")
 
     def catalog(
-        self, inventory, artifact, parameters, known, creation_keys=frozenset()
+        self,
+        inventory,
+        artifact,
+        parameters,
+        known,
+        creation_keys=frozenset(),
+        *,
+        include_bootstrap=True,
+        infrastructure_document=None,
     ):
         self._scope(inventory)
         result = dict(known)
@@ -54,40 +62,43 @@ class RetirementObservations:
             if ref not in result:
                 result[ref] = AllocationResource(ref, "aws", ref, kind, creation_keys)
 
-        for item in inventory.components:
+        for item in inventory.components if include_bootstrap else ():
             if item.owned and item.desired["kind"] not in {
                 "ClusterRole",
                 "ClusterRoleBinding",
             }:
                 add("bootstrap-component", body=item.desired, identity=item.identity)
-        for item in inventory.grants:
+        for item in inventory.grants if include_bootstrap else ():
             if item.spec.get("body", {}).get("kind") not in {
                 "ClusterRole",
                 "ClusterRoleBinding",
             }:
                 add("bootstrap-grant", spec=item.spec, identity=item.identity)
-        for item in inventory.prerequisites:
+        for item in inventory.prerequisites if include_bootstrap else ():
             if item.removable:
                 add(
                     "bootstrap-prerequisite",
                     prerequisite_kind=item.kind,
                     identifier=item.identifier,
                 )
-        if inventory.remove_namespace:
+        if inventory.remove_namespace and include_bootstrap:
             add(
                 "owned-namespace", name=inventory.namespace, uid=inventory.namespace_uid
             )
-        if not inventory.components_complete:
+        if not inventory.components_complete and include_bootstrap:
             # A durable uncertainty is part of membership, not an empty-success
             # branch. No provider observation can turn missing ownership into zero.
             add("unresolved-bootstrap-ownership", workspace=inventory.workspace_id)
         if inventory.cluster_ownership == "adp-created":
-            if artifact is None:
+            if artifact is None and infrastructure_document is None:
                 raise OperationRefused(
                     "managed retirement requires its reviewed state inventory"
                 )
-            _, rendered, _ = artifact.read(inventory, parameters)
-            document = json.loads(rendered)
+            if infrastructure_document is None:
+                _, rendered, _ = artifact.read(inventory, parameters)
+                document = json.loads(rendered)
+            else:
+                document = infrastructure_document
             for change in document["resource_changes"]:
                 if (
                     change.get("mode", "managed") != "managed"
@@ -397,6 +408,24 @@ class RetirementObservations:
                 "RouteTables",
                 "RouteTableIds",
                 "InvalidRouteTableID.NotFound",
+            ),
+            "aws_default_security_group": (
+                "describe_security_groups",
+                "SecurityGroups",
+                "GroupIds",
+                "InvalidGroup.NotFound",
+            ),
+            "aws_vpc_endpoint": (
+                "describe_vpc_endpoints",
+                "VpcEndpoints",
+                "VpcEndpointIds",
+                "InvalidVpcEndpointId.NotFound",
+            ),
+            "aws_vpc_security_group_ingress_rule": (
+                "describe_security_group_rules",
+                "SecurityGroupRules",
+                "SecurityGroupRuleIds",
+                "InvalidSecurityGroupRuleId.NotFound",
             ),
             "aws_security_group": (
                 "describe_security_groups",

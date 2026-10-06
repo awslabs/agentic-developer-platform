@@ -226,3 +226,55 @@ def test_fresh_discovery_retains_detached_volume_after_it_leaves_provider_listin
         reader.observe(record, subsequent["vol-leaked"]).presence
         is ResourcePresence.ABSENT
     )
+
+
+@pytest.mark.parametrize(
+    "kind,method,key,argument,missing",
+    [
+        (
+            "aws_default_security_group",
+            "describe_security_groups",
+            "SecurityGroups",
+            "GroupIds",
+            "InvalidGroup.NotFound",
+        ),
+        (
+            "aws_vpc_endpoint",
+            "describe_vpc_endpoints",
+            "VpcEndpoints",
+            "VpcEndpointIds",
+            "InvalidVpcEndpointId.NotFound",
+        ),
+        (
+            "aws_vpc_security_group_ingress_rule",
+            "describe_security_group_rules",
+            "SecurityGroupRules",
+            "SecurityGroupRuleIds",
+            "InvalidSecurityGroupRuleId.NotFound",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "code,presence",
+    [
+        (None, ResourcePresence.PRESENT),
+        ("missing", ResourcePresence.ABSENT),
+        ("UnauthorizedOperation", ResourcePresence.UNKNOWN),
+    ],
+)
+def test_managed_network_resources_require_exact_provider_observation(
+    observer, kind, method, key, argument, missing, code, presence
+):
+    reader, record, clients = observer
+
+    def read(**kwargs):
+        assert kwargs == {argument: ["original-id"]}
+        if code:
+            raise ProviderError(missing if code == "missing" else code)
+        return {key: [{"id": "original-id"}]}
+
+    clients["ec2"] = SimpleNamespace(**{method: read})
+    item = resource(
+        reader, "terraform-resource", resource_type=kind, identity={"id": "original-id"}
+    )
+    assert reader.observe(record, item).presence is presence

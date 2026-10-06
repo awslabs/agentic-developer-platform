@@ -88,6 +88,7 @@ class RetirementFinalizer(Finalizer):
             operation.request.parameters,
             known,
             creation_keys,
+            include_bootstrap=target["inventory"].preserve_cluster,
         )
 
     async def observe(self, operation, target, artifact, resource):
@@ -99,6 +100,15 @@ class RetirementFinalizer(Finalizer):
         # This must return the actual authority verified by authenticate; a worker
         # cannot select another allocation through a locally invented token.
         return self.authority_token(operation)
+
+    async def listing_providers(self, operation):
+        from .provider_listings import lifecycle_providers
+
+        return await lifecycle_providers(
+            self.provider.execution_pool.acquire,
+            operation.grant.lease,
+            operation.request.parameters["allocation_id"],
+        )
 
     async def accounting_with_costs(self, operation, target, calls, assessment=None):
         # Controller Plan.read is a different domain protocol. Retirement uses
@@ -119,7 +129,16 @@ class RetirementFinalizer(Finalizer):
         if current.request != operation.request or target["inventory"] != inventory:
             raise OperationRefused("retirement inventory changed before verification")
         await authorize()
-        resources = await self.discover(current, target, artifact, [])
+        known = await self.discover(current, target, artifact, [])
+        # Bootstrap journal objects are later, nonbillable cleanup obligations.
+        # Check every one directly without changing sealed infrastructure membership.
+        resources = await asyncio.to_thread(
+            self.observations.catalog,
+            inventory,
+            artifact,
+            current.request.parameters,
+            known,
+        )
         if not resources:
             raise OperationRefused("retirement has no established provider inventory")
         for resource in resources.values():
