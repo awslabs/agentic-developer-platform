@@ -57,6 +57,11 @@ on:
         required: false
         type: string
         default: ''
+      adp_approved_revision:
+        description: 'Assistant rollout approval for this run only: full 40-hex commit whose protected assistant files this candidate must match (see docs/architecture/assistant-deploy-boundary.md).'
+        required: false
+        type: string
+        default: ''
       account_id:
         description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
         required: false
@@ -186,6 +191,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
@@ -193,6 +199,34 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Resolve last successfully deployed revision
+        id: deployed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A run is only a deployment when the job carrying the guard actually
+          # ran and succeeded; runs whose deploy job was skipped do not count.
+          baseline=""
+          while read -r run_id head_sha; do
+            deployed=$(gh api "repos/${{ github.repository }}/actions/runs/${run_id}/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.name == "Build and Deploy Backend" and .conclusion == "success")] | length')
+            if [ "$deployed" -gt 0 ]; then baseline="$head_sha"; break; fi
+          done < <(gh api "repos/${{ github.repository }}/actions/workflows/gateway-deploy.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=10" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
+          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard assistant auto-deployment
+        env:
+          ADP_ASSISTANT_DEPLOY_COMPONENT: gateway
+          ADP_ASSISTANT_DEPLOY_TARGET: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
+          ADP_ASSISTANT_DEPLOY_CANDIDATE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_ASSISTANT_APPROVED_TARGET: ${{ vars.ADP_ASSISTANT_APPROVED_TARGET }}
+          ADP_ASSISTANT_APPROVED_REVISION: ${{ vars.ADP_ASSISTANT_APPROVED_REVISION }}
+          ADP_ASSISTANT_DISPATCH_APPROVED_REVISION: ${{ inputs.adp_approved_revision }}
+          ADP_DEPLOYED_BASELINE: ${{ steps.deployed.outputs.baseline }}
+        run: bash scripts/check-assistant-deploy-boundary.sh
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
