@@ -150,7 +150,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
     step.operation_kind.startsWith('delete-') || step.operation_kind.startsWith('revoke-')) ?? [];
 
   return (
-    <section aria-label="Workspace retirement" className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+    <section aria-label="Workspace retirement" className="min-w-0 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
       <h3 className="font-semibold">Workspace retirement</h3>
       <div role="group" aria-label="Removal request" className="mt-3 space-y-2">
         {requestId && <p className="break-all">Saved removal request ID: {requestId}</p>}
@@ -191,8 +191,8 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
         </div>
       )}
       {review && (
-        <div ref={reviewRef} tabIndex={-1} role="group" className="mt-4 space-y-3" aria-label="Retirement review">
-          <dl className="grid gap-2 text-sm sm:grid-cols-2">
+        <div ref={reviewRef} tabIndex={-1} role="group" className="mt-4 min-w-0 space-y-3 rounded p-2" aria-label="Retirement review">
+          <dl className="grid min-w-0 gap-2 text-sm sm:grid-cols-2 [&>div]:min-w-0">
             <div><dt>Workspace ID</dt><dd className="break-all">{review.workspace_id}</dd></div>
             <div><dt>Review request ID</dt><dd className="break-all">{review.request_id}</dd></div>
             <div><dt>Original operation ID</dt><dd className="break-all">{review.source_operation_id}</dd></div>
@@ -206,7 +206,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
             <h4 className="font-semibold">Owned deletion steps</h4>
             {deletionSteps.length === 0 ? <p>No owned deletion steps were reported.</p> : (
               <ol className="list-decimal pl-5">{deletionSteps.map((step) => (
-                <li key={step.step_id} className="break-words">{step.operation_kind}: {step.target} ({step.provider})</li>
+                <li key={step.step_id} className="[overflow-wrap:anywhere]">{step.operation_kind}: {step.target} ({step.provider})</li>
               ))}</ol>
             )}
           </div>
@@ -214,7 +214,7 @@ export function RetirementPanel({ workspaceId, scope, store, guard, sessionToken
             <h4 className="font-semibold">Preserved resources</h4>
             {review.preserved.length === 0 ? <p>No preserved resources were reported.</p> : (
               <ul className="list-disc pl-5">{review.preserved.map((resource) => (
-                <li key={resource} className="break-words">{resource}</li>
+                <li key={resource} className="[overflow-wrap:anywhere]">{resource}</li>
               ))}</ul>
             )}
             <p className="text-sm">These are planned survivors, not verified preservation evidence.</p>

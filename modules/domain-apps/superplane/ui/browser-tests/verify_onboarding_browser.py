@@ -356,6 +356,18 @@ def exercise(page, requests, failure):
         assert page.evaluate(
             "document.documentElement.scrollWidth <= window.innerWidth"
         )
+        if not failure:
+            assert page.get_by_role("group", name="Retirement review").evaluate(
+                """review => {
+                    const bounds = review.getBoundingClientRect();
+                    return review.scrollWidth <= review.clientWidth &&
+                        [...review.querySelectorAll('dd, li')].every(item => {
+                            const box = item.getBoundingClientRect();
+                            return item.scrollWidth <= item.clientWidth &&
+                                box.left >= bounds.left && box.right <= bounds.right;
+                        });
+                }"""
+            )
         page.screenshot(
             path=str(
                 OUTPUT / f"onboarding-{'failure' if failure else 'success'}-{width}.png"
