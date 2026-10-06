@@ -121,6 +121,17 @@ def validate_parents(files, path):
     return parents
 
 
+def direct_hardlink(files, target):
+    path = normal_path(target)
+    validate_parents(files, path)
+    entry = files.get(path)
+    require(
+        entry is not None and entry["kind"] == "file",
+        "hardlink target must be a direct regular file",
+    )
+    return path, entry
+
+
 def resolve_file(files, path):
     path = normal_path(path)
     for _ in range(40):
@@ -291,11 +302,7 @@ def collect_oci(archive, platform_digest):
                             "mode": member.mode,
                         }
                     elif member.islnk():
-                        target, entry = resolve_file(files, member.linkname)
-                        require(
-                            entry["kind"] == "file",
-                            "hardlink target is not a regular file",
-                        )
+                        target, entry = direct_hardlink(files, member.linkname)
                         files[name] = copy.deepcopy(entry)
                         if target in retained:
                             retained[name] = retained[target]
@@ -576,6 +583,7 @@ def verify_deb(path, package, selected_files):
         for member in archive:
             name = normal_path(member.name)
             require(name not in files, "duplicate package payload path")
+            validate_parents(files, name)
             if member.isfile():
                 content = archive.extractfile(member).read()
                 files[name] = {
@@ -593,8 +601,7 @@ def verify_deb(path, package, selected_files):
                     "mode": member.mode,
                 }
             elif member.islnk():
-                _, target = resolve_file(files, member.linkname)
-                require(target["kind"] == "file", "unsupported package hardlink")
+                _, target = direct_hardlink(files, member.linkname)
                 files[name] = copy.deepcopy(target)
             else:
                 raise Invalid("unsupported package special file")

@@ -685,3 +685,22 @@ def test_decision_package_id_must_equal_mapped_occurrence(bundle):
     record = receipt(bundle, observation)
     with pytest.raises(D.Invalid, match="decision package identity mismatch"):
         derive(bundle, record, observation)
+
+
+def test_hardlink_does_not_dereference_symlink_target():
+    files = {
+        "/regular": {"kind": "file", "sha256": "f" * 64},
+        "/link": {"kind": "symlink", "target": "/regular"},
+    }
+    with pytest.raises(D.Invalid, match="direct regular file"):
+        D.direct_hardlink(files, "/link")
+    assert D.direct_hardlink(files, "/regular") == ("/regular", files["/regular"])
+
+
+def test_hardlink_cannot_traverse_symlink_parent():
+    files = {
+        "/real/file": {"kind": "file"},
+        "/link": {"kind": "symlink", "target": "/real"},
+    }
+    with pytest.raises(D.Invalid, match="non-directory parent"):
+        D.direct_hardlink(files, "/link/file")
