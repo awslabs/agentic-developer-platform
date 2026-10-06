@@ -121,6 +121,19 @@ class Issue6998MappingTest(unittest.TestCase):
         self.assertIn("403 Forbidden", catalog["sourceVerification"])
         self.assertIn("not recovered", catalog["candidateRawRetention"])
         self.assertIn("ready PR #7023", handoff["acceptance"]["AC-04"])
+        comparison = handoff["suiteFailureComparison"]
+        for path in comparison["unchangedFiles"]:
+            blobs = [subprocess.check_output(
+                ["git", "rev-parse", f"{revision}:{path}"], cwd=ROOT, text=True
+            ).strip() for revision in (handoff["testedRevision"], comparison["mainRevision"])]
+            self.assertEqual(blobs[0], blobs[1], path)
+        for revision in (handoff["testedRevision"], comparison["mainRevision"]):
+            paths = subprocess.check_output(
+                ["git", "ls-tree", "-r", "--name-only", revision, comparison["missingFixtureTree"]],
+                cwd=ROOT, text=True
+            )
+            self.assertFalse(paths.strip(), revision)
+
         self.assertIsNone(catalog["candidateImageDigest"])
         self.assertTrue(all(record["disposition"] == "unresolved" for record in catalog["records"]))
 

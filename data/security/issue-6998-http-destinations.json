@@ -49,6 +49,16 @@
       "codexReviewer": "npm ci --include=dev and npm test (including build) ran: 196/198 tests passed; two installed-skill fixture tests cannot find the expected superplane/SKILL.md reference",
       "security": "Focused HTTP-boundary and caller checks passed; four selector/catalog tests passed; prior current-registry candidate Semgrep mapped 18 native-critical results, none accepted as resolved; original SARIF HeadObject returned 403 Forbidden"
     },
+    "suiteFailureComparison": {
+      "mainRevision": "7a4689bfe9775b2243e3229b6ec75ee41c6f9116",
+      "unchangedFiles": [
+        "modules/agent-factory/agent/src/experience-save-hook.test.ts",
+        "modules/agent-factory/agent/src/experience-save-hook.ts",
+        "modules/agent-factory/agent/src/lib/doorAuth.ts",
+        "modules/agent-factory/codex-reviewer/src/skill-execution.test.ts"
+      ],
+      "missingFixtureTree": "domain-apps/superplane/agent/skills"
+    },
     "acceptance": {
       "AC-01": "blocked: selected customer role is verified but frozen report HeadObject returned 403 Forbidden; original private SARIF requires separately authorized scan-reader access",
       "AC-02": "local boundary fixtures pass; no live destination or image claim",
