@@ -365,3 +365,5 @@ metadata negotiation is response minimization, not a separate RBAC capability.
 ### Optional native paid-worker source preparation
 
 The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused at zero replicas; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.
+
+The separate [domain runtime preparation source](RUNTIME-PREPARATION.md) provides a reviewed-plan entry point for the dedicated queue and IAM roles. It is not connected to the installer until the foreground owner reviews and wires it; shared registry/Gateway/database authority and real binding proof remain independent prerequisites.
