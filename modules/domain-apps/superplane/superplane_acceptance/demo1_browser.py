@@ -60,7 +60,7 @@ class PlaywrightBrowserTransport:
         try:
             result = self.page.evaluate(
                 """async ({method, path, body}) => {
-                  const token = localStorage.getItem('cognito_access_token');
+                  const token = sessionStorage.getItem('cognito_access_token');
                   if (!token) return [401, null];
                   const response = await fetch(path, {
                     method, credentials: 'same-origin',
