@@ -1,0 +1,123 @@
+{
+  "created_at": "2026-10-06T06:40:07.575748+00:00",
+  "packages": [
+    {
+      "package": "libssl3t64",
+      "version": "3.5.7-1~deb13u3",
+      "installed_version": "3.5.7-1~deb13u2",
+      "architecture": "amd64",
+      "file": "libssl3t64_3.5.7-1~deb13u3_amd64.deb",
+      "sha256": "ff16bc048bcd7d1b256094450b79c77947d8e76fe2a24bd99b91021d591fa074",
+      "url": "https://security.debian.org/debian-security/pool/updates/main/o/openssl/libssl3t64_3.5.7-1~deb13u3_amd64.deb"
+    },
+    {
+      "package": "openssl",
+      "version": "3.5.7-1~deb13u3",
+      "installed_version": "3.5.7-1~deb13u2",
+      "architecture": "amd64",
+      "file": "openssl_3.5.7-1~deb13u3_amd64.deb",
+      "sha256": "43a9cbcf2a8a0e1f0a1c3f5a33ee1f56b269690e7a2129f2b2d0582e789589d7",
+      "url": "https://security.debian.org/debian-security/pool/updates/main/o/openssl/openssl_3.5.7-1~deb13u3_amd64.deb"
+    },
+    {
+      "package": "openssl-provider-legacy",
+      "version": "3.5.7-1~deb13u3",
+      "installed_version": "3.5.7-1~deb13u2",
+      "architecture": "amd64",
+      "file": "openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb",
+      "sha256": "c12e0266c4780749a4702b8959ac979689f4182e18eed85a8a5eb90ed0e16eab",
+      "url": "https://security.debian.org/debian-security/pool/updates/main/o/openssl/openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb"
+    },
+    {
+      "package": "libpcre2-8-0",
+      "version": "10.46-1~deb13u3",
+      "installed_version": "10.46-1~deb13u2",
+      "architecture": "amd64",
+      "file": "libpcre2-8-0_10.46-1~deb13u3_amd64.deb",
+      "sha256": "e226f661d918f04daf38cdbc4806b7ed7d6ef95c7eb0ade692fc350e31970040",
+      "url": "https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.46-1~deb13u3_amd64.deb"
+    }
+  ],
+  "wheels": [
+    {
+      "package": "GitPython",
+      "version": "3.1.60",
+      "file": "gitpython-3.1.60-py3-none-any.whl",
+      "sha256": "39548bffb8fa0f3a548133348868bb4838e79d73283052207dc97781a569b6b4",
+      "url": "https://files.pythonhosted.org/packages/71/63/ba28697918b7c190af9f3f21940d03e8814e25dd4ddd39d6929f3a553995/gitpython-3.1.60-py3-none-any.whl",
+      "requires_python": ">=3.7",
+      "requires_dist": [
+        "gitdb<5,>=4.0.1",
+        "typing-extensions>=3.10.0.2; python_version < \"3.10\"",
+        "coverage[toml]; extra == \"test\"",
+        "basedpyright==1.39.9; (python_version >= \"3.9\" and sys_platform != \"cygwin\") and extra == \"test\"",
+        "ddt!=1.4.3,>=1.1.1; extra == \"test\"",
+        "mock; python_version < \"3.8\" and extra == \"test\"",
+        "mypy==1.18.2; python_version >= \"3.9\" and extra == \"test\"",
+        "pre-commit; extra == \"test\"",
+        "pytest>=7.3.1; extra == \"test\"",
+        "pytest-cov; extra == \"test\"",
+        "pytest-instafail; extra == \"test\"",
+        "pytest-mock; extra == \"test\"",
+        "pytest-sugar; extra == \"test\"",
+        "typing-extensions; python_version < \"3.11\" and extra == \"test\"",
+        "sphinx<8,>=7.4.7; extra == \"doc\"",
+        "sphinx_rtd_theme; extra == \"doc\"",
+        "sphinx-autodoc-typehints; extra == \"doc\""
+      ],
+      "installed_version": "3.1.59"
+    },
+    {
+      "package": "urllib3",
+      "version": "2.8.0",
+      "file": "urllib3-2.8.0-py3-none-any.whl",
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+      "url": "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl",
+      "requires_python": ">=3.10",
+      "requires_dist": [
+        "brotli>=1.2.0; platform_python_implementation == \"CPython\" and extra == \"brotli\"",
+        "brotlicffi>=1.2.0.0; platform_python_implementation != \"CPython\" and extra == \"brotli\"",
+        "h2<5,>=4; extra == \"h2\"",
+        "pysocks!=1.5.7,<2.0,>=1.5.6; extra == \"socks\"",
+        "backports-zstd>=1.0.0; python_version < \"3.14\" and extra == \"zstd\""
+      ],
+      "installed_version": "2.7.0"
+    },
+    {
+      "package": "virtualenv",
+      "version": "21.7.13",
+      "file": "virtualenv-21.7.13-py3-none-any.whl",
+      "sha256": "1bea5af7463f59c4719db48fe739579a2a4f569c96f26c086edda85c96da9f59",
+      "url": "https://files.pythonhosted.org/packages/9a/ce/e74453531b0c49a58d0e8a4f9bab4495705859fee4a4f7de27d58f4a791a/virtualenv-21.7.13-py3-none-any.whl",
+      "requires_python": ">=3.9",
+      "requires_dist": [
+        "distlib<1,>=0.3.7",
+        "filelock<4,>=3.24.2; python_version >= \"3.10\"",
+        "filelock<=3.19.1,>=3.16.1; python_version < \"3.10\"",
+        "platformdirs<5,>=3.9.1",
+        "python-discovery>=1.6",
+        "typing-extensions>=4.13.2; python_version < \"3.11\""
+      ],
+      "installed_version": "21.3.3"
+    },
+    {
+      "package": "python-discovery",
+      "version": "1.6.0",
+      "file": "python_discovery-1.6.0-py3-none-any.whl",
+      "sha256": "d4e244cf17b8b29819ed78003d55fbacf86eda23425b075454fff9271b79377a",
+      "url": "https://files.pythonhosted.org/packages/43/5e/21abf578182fb15006a57faf3711a1e659e29d600d19b6e557eae908c81d/python_discovery-1.6.0-py3-none-any.whl",
+      "requires_python": ">=3.8",
+      "requires_dist": [
+        "filelock>=3.15.4"
+      ],
+      "installed_version": "1.3.1"
+    }
+  ],
+  "base_platform": "sha256:f05fb1c2485d0703df55a3cd82817beb608e89beaab5e14f041a9bce3033ada7",
+  "base_config": "sha256:941bcd04393d157466b0ce3a1799c54fe71f7cc4aa2b70c0dccd7d3ce55c5396",
+  "python_versions": {
+    "PyJWT": "2.14.0",
+    "ray": "2.58.0",
+    "skypilot": "0.12.3"
+  }
+}
