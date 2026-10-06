@@ -1249,17 +1249,10 @@ class Installer:
 
     def terraform(self):
         tf = self.directory / "terraform"
-        tf.mkdir(exist_ok=True)
-        # Copy only the maintained module files: Terraform's working data and
-        # reviewed plan stay in the private run directory, not the checkout.
-        for source in (MODULE / "infra/control-plane").glob("*.tf"):
-            # The module's release lock is a relative path. Keep its exact bytes
-            # and resolve that one expression against the maintained source.
-            text = source.read_text().replace(
-                "${path.module}/../../releases/superplane.lock.yaml",
-                str(MODULE / "releases/superplane.lock.yaml"),
-            )
-            (tf / source.name).write_text(text)
+        from .terraform_sources import stage_control_plane
+        from .image_build_ownership import preserve_domain_builds, runtime_plan
+
+        stage_control_plane(tf, self.lock)
         variables = {
             "environment": self.env["environment"],
             "account_id": self.env["account_id"],
@@ -1271,6 +1264,7 @@ class Installer:
             "jwt_secret_name": self.env["secrets"]["observation"],
             "cors_allowed_origins": [self.env["origin"]],
             "api_producer_role": self.env.get("api_producer_role"),
+            "manage_image_builds": preserve_domain_builds(self.env),
             # workspace_cluster_context is deferred in control-plane-only mode;
             # the Terraform module must treat an absent/null value as no-op.
             "workspace_cluster_context": ""
@@ -1299,7 +1293,9 @@ class Installer:
             self.commands.call([*prefix, "show", "-json", "installation.tfplan"])
         )
         report = validate_plan(
-            plan, account_id=self.env["account_id"], environment=self.env["environment"]
+            runtime_plan(self.env, plan),
+            account_id=self.env["account_id"],
+            environment=self.env["environment"],
         )
         require(
             report.ok and not report.has_destructive_changes,

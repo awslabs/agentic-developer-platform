@@ -188,6 +188,9 @@ def validate(
     """
     control_plane_only = control_plane_mode(env, control_plane_only) or preparation
     require(env.get("version") == 1, "environment.version must be 1")
+    from .image_build_ownership import preserve_domain_builds
+
+    preserve_domain_builds(env)
     allowed = {
         "version",
         "deployment_identity",
@@ -212,6 +215,7 @@ def validate(
         "controller_ownership",
         "control_plane_only",
         "image_execution",
+        "image_build_ownership",
         "gateway_namespace",
         "cluster_dns_ip",
         "execution",

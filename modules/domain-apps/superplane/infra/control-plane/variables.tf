@@ -395,3 +395,9 @@ variable "cost_center" {
   description = "Cost attribution tag for domain-app spend."
   default     = "engineering"
 }
+
+variable "manage_image_builds" {
+  description = "Explicitly enroll existing image lanes only after coordinated state ownership migration. Installation keeps this false; never disable an already enrolled state without a reviewed transfer."
+  type        = bool
+  default     = false
+}
