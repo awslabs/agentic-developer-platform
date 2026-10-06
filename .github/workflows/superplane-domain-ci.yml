@@ -159,6 +159,11 @@ jobs:
         # dependency set, also used by the domain integration suites.
         run: pip install -e ".[dev]" "setuptools>=75.0" wheel
 
+      - name: Install acceptance bootstrap dependency
+        if: ${{ matrix.component == 'domain' }}
+        # Acceptance imports the maintained retirement/grant contracts directly.
+        run: python3 -m pip install -e modules/domain-apps/superplane/workspace_bootstrap
+
       - name: Report selected coverage
         env:
           COMPONENT: ${{ matrix.component }}

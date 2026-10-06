@@ -163,9 +163,23 @@ class RuntimeReader:
             text(metadata["resourceVersion"], "pod version"),
         )
 
-    def observe(self, max_runtime_seconds: int) -> dict:
+    def observe(
+        self,
+        max_runtime_seconds: int,
+        *,
+        ownership_scope=None,
+        lineage_scope=None,
+        cleanup_scope=None,
+    ) -> dict:
         self.expires = self.monotonic() + max_runtime_seconds
         try:
+            _require(
+                sum(
+                    scope is not None
+                    for scope in (ownership_scope, lineage_scope, cleanup_scope)
+                )
+                == 0
+            )
             return self._observe()
         except (
             OSError,

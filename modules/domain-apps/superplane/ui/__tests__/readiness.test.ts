@@ -152,6 +152,11 @@ describe('freshness', () => {
 });
 
 describe('workspace readiness', () => {
+  it('accepts the native bootstrap active status only with healthy fresh evidence', () => {
+    expect(workspaceReading(workspace({ status: 'active' }), NOW).ready).toBe(true);
+    expect(workspaceReading(workspace({ status: 'active', last_heartbeat: LONG_AGO }), NOW).ready).not.toBe(true);
+    expect(workspaceReading(workspace({ status: 'active', cluster_health: 'Degraded' }), NOW).ready).not.toBe(true);
+  });
   it('requires both a successful status and a fresh healthy observation', () => {
     expect(workspaceReading(workspace(), NOW).ready).toBe(true);
   });

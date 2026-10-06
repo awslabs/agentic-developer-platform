@@ -34,6 +34,10 @@ class Transport:
             get_by_role=lambda *args, **kwargs: SimpleNamespace(is_visible=lambda: True)
         )
 
+    def create_workspace(self, body, before_send):
+        before_send()
+        return self.request("POST", "/api/superplane/v1/workspaces", body)
+
     def request(self, method, path, body=None):
         self.calls.append((method, path, body))
         if path == "/api/auth/me":
@@ -91,6 +95,13 @@ class Transport:
                 "reason": None,
                 "observed_at": "2026-10-05T11:02:00+00:00",
                 "retryable": False,
+                "lifecycle_lineage": {
+                    **native_proof(self.selected),
+                    "current_operation_id": identity(12),
+                    "phases": [
+                        {**native_proof(self.selected)["phases"][0], "state": "pending"}
+                    ],
+                },
             }
         if path.endswith("/workspaces/" + identity(10)) and method == "GET":
             return 200, {
@@ -343,7 +354,12 @@ def test_reentry_requires_the_recovered_operation_identity(
         "/workspaces/" + identity(10),
         {"provisioning_operation_id": operation_id},
     )
-    with pytest.raises(EvidenceError, match="workspace re-entry differs"):
+    reason = (
+        "native lifecycle lineage unavailable or differs"
+        if operation_id
+        else "current operation: invalid value"
+    )
+    with pytest.raises(EvidenceError, match=reason):
         advance(selected, transport, checkpoint)
     assert all(method == "GET" for method, _, _ in transport.calls)
 
@@ -462,6 +478,103 @@ def test_saved_approval_can_expire_before_creation(selected):
     assert not any(path.endswith("/workspaces") for _, path, _ in transport.calls)
 
 
+@pytest.mark.parametrize("lost_response", [False, True])
+@pytest.mark.parametrize("ticket_state", ["expired", "revoked", "unavailable"])
+def test_submitted_operation_resumes_after_approval_expiry_without_recreation(
+    selected, monkeypatch, lost_response, ticket_state
+):
+    transport = Transport(selected)
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.lost = lost_response
+    saved = []
+    checkpoint, report = advance_creation(
+        selected,
+        transport,
+        origin=transport.origin,
+        checkpoint=checkpoint,
+        persist=saved.append,
+        effects_authorized=True,
+        now=datetime(2026, 10, 5, 11, 2, tzinfo=UTC),
+    )
+    assert checkpoint.submitted and saved == [checkpoint]
+    assert report["status"] == "BLOCKED"
+    assert sum(path.endswith("/workspaces") for _, path, _ in transport.calls) == 1
+    transport.lost = False
+    transport.calls.clear()
+    original = transport.request
+
+    def request(method, path, body=None):
+        status, response = original(method, path, body)
+        if path.endswith("/operation-approvals/" + checkpoint.approval_id):
+            if ticket_state == "unavailable":
+                return 503, None
+            if ticket_state == "revoked":
+                response["revoked"] = True
+        return status, response
+
+    monkeypatch.setattr(transport, "request", request)
+    for _attempt in range(2):
+        resumed, report = advance_creation(
+            selected,
+            transport,
+            origin=transport.origin,
+            checkpoint=checkpoint,
+            effects_authorized=True,
+            now=datetime(2026, 10, 5, 11, 59, 30, tzinfo=UTC),
+        )
+        assert resumed == checkpoint
+        assert report["status"] == "BLOCKED" and report["creation_observed"] is True
+    assert (
+        sum(
+            path.endswith("/operations/by-idempotency/" + selected.request_id)
+            for _, path, _ in transport.calls
+        )
+        == 2
+    )
+    assert (
+        sum(
+            path.endswith("/workspaces/" + checkpoint.workspace_id)
+            for _, path, _ in transport.calls
+        )
+        == 4
+    )
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
+    assert not any(path.endswith("/workspaces") for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize("field", ["user_id", "org_id"])
+def test_submitted_recovery_still_requires_selected_authenticated_principal(
+    selected, uncertain_creation, monkeypatch, field
+):
+    transport, checkpoint = uncertain_creation
+    replace_response(monkeypatch, transport, "/api/auth/me", {field: identity(99)})
+    with pytest.raises(EvidenceError, match="requester or organization differs"):
+        advance_creation(
+            selected,
+            transport,
+            origin=transport.origin,
+            checkpoint=checkpoint,
+            effects_authorized=True,
+            now=datetime(2026, 10, 5, 11, 59, 30, tzinfo=UTC),
+        )
+    assert transport.calls == [("GET", "/api/auth/me", None)]
+
+
 def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright", SimpleNamespace())
     monkeypatch.setitem(
@@ -471,7 +584,7 @@ def test_browser_adapter_keeps_authentication_in_same_origin_page(monkeypatch):
 
     def evaluate(script, arguments):
         calls.append((script, arguments))
-        return [200, {"version": 1}]
+        return [200, {"version": 1}, None]
 
     page = SimpleNamespace(url="https://example.invalid/workspaces", evaluate=evaluate)
     transport = demo1_browser.PlaywrightBrowserTransport(
@@ -543,7 +656,10 @@ def native_responses(selected, transport, monkeypatch, proof):
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
-@pytest.mark.parametrize("current_state", ["succeeded", "running"])
+@pytest.mark.parametrize(
+    "current_state",
+    ["pending", "running", "succeeded", "failed", "cancelled", "unknown"],
+)
 def test_native_recovery_follows_verified_phases_without_resubmitting_or_claiming_ready(
     selected, uncertain_creation, monkeypatch, count, current_state
 ):
@@ -589,11 +705,21 @@ def test_native_recovery_follows_verified_phases_without_resubmitting_or_claimin
         assert all(method == "GET" for method, _, _ in transport.calls)
     else:
         assert report["readiness"] == "FRESH_WORKSPACE_ONLY"
-        assert "retirement preview denied" in report["reason"]
-        assert transport.calls[-1][1].endswith("/retirement/preview")
+        assert "recovered read-only" in report["reason"]
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    lifecycle = report["lifecycle"]
+    assert lifecycle["status"] == (
+        "FAIL" if current_state in ("failed", "cancelled") else "BLOCKED"
+    )
+    for phase in proof["phases"]:
+        recorded = lifecycle["phases"][phase["phase"]]
+        assert recorded["state"] == phase["state"]
+        assert recorded["operation_ref"] == demo1_browser.reference(
+            phase["operation_id"]
+        )
+    assert all(check["status"] == "BLOCKED" for check in lifecycle["checks"].values())
     assert not any(
-        path.endswith("/workspaces") or path.endswith("/continue")
-        for _, path, _ in transport.calls
+        path.endswith(("/workspaces", "/continue")) for _, path, _ in transport.calls
     )
 
 
@@ -614,6 +740,7 @@ def test_native_recovery_follows_verified_phases_without_resubmitting_or_claimin
         "unfinished_source",
         "wrong_current",
         "too_long",
+        "invalid_state",
     ],
 )
 def test_native_recovery_refuses_unverified_foreign_partial_and_reordered_chains(
@@ -649,6 +776,8 @@ def test_native_recovery_refuses_unverified_foreign_partial_and_reordered_chains
         proof["phases"][-1]["operation_id"] = identity(99)
     elif invalid == "too_long":
         proof["phases"].append(proof["phases"][-1])
+    elif invalid == "invalid_state":
+        proof["phases"][-1]["state"] = "ready"
     native_responses(selected, transport, monkeypatch, proof)
     with pytest.raises(EvidenceError):
         advance(selected, transport, checkpoint)
@@ -683,13 +812,13 @@ def test_expired_submitted_approval_recovers_only_actual_original_admission(
     )
     recovered, report = advance(selected, transport, checkpoint)
     assert recovered == checkpoint and recovered.submitted
-    assert report == {
-        "status": "BLOCKED",
-        "reason": "original admission recovered read-only; creation approval expired",
-        "creation_observed": True,
-        "readiness": "FRESH_WORKSPACE_ONLY",
-    }
+    assert report["status"] == "BLOCKED"
+    assert "recovered read-only" in report["reason"]
+    assert report["creation_observed"] is True
+    assert report["readiness"] == "FRESH_WORKSPACE_ONLY"
+    assert report["retirement"] == "BLOCKED"
     assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
     assert any(
         path.endswith("/operations/by-idempotency/" + selected.request_id)
         for _, path, _ in transport.calls
@@ -756,13 +885,96 @@ def test_expired_submitted_checkpoint_cannot_invent_or_resubmit_admission(
             return response
 
         monkeypatch.setattr(transport, "request", unavailable)
+    if invalid in ("foreign_request", "missing_admission"):
+        with pytest.raises(EvidenceError):
+            advance(selected, transport, checkpoint)
+        assert not any(
+            path.endswith("/workspaces/" + checkpoint.workspace_id)
+            for _, path, _ in transport.calls
+        )
+    else:
+        recovered, report = advance(selected, transport, checkpoint)
+        assert recovered == checkpoint
+        assert report["status"] == "BLOCKED"
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert not any("/operation-approvals/" in path for _, path, _ in transport.calls)
+
+
+@pytest.mark.parametrize("invalid", ["revoked", "late_decision", "foreign_approval"])
+def test_unsubmitted_approval_must_still_allow_exact_effect(
+    selected, monkeypatch, invalid
+):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    transport.calls.clear()
+    changes = {
+        "revoked": {"revoked": True},
+        "late_decision": {"decided_at": "2026-10-05T11:59:00+00:00"},
+        "foreign_approval": {"approval_id": identity(99)},
+    }[invalid]
+    replace_response(monkeypatch, transport, "/" + checkpoint.approval_id, changes)
     with pytest.raises(EvidenceError):
         advance(selected, transport, checkpoint)
+    assert not checkpoint.submitted
     assert all(method == "GET" for method, _, _ in transport.calls)
-    assert not any(
-        path.endswith("/workspaces/" + checkpoint.workspace_id)
-        for _, path, _ in transport.calls
+
+
+def test_native_reentry_refuses_workspace_changed_during_browser_refresh(
+    selected, uncertain_creation, monkeypatch
+):
+    transport, checkpoint = uncertain_creation
+    native_responses(selected, transport, monkeypatch, native_proof(selected))
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
     )
+
+    def refresh(*args):
+        replace_response(
+            monkeypatch,
+            transport,
+            "/workspaces/" + checkpoint.workspace_id,
+            {"provisioning_operation_id": identity(99)},
+        )
+        return {
+            "reason": "original identities visible; session and provider authority unverified"
+        }
+
+    monkeypatch.setattr(demo1_browser, "inspect_original_details", refresh)
+    with pytest.raises(EvidenceError, match="workspace changed"):
+        advance(selected, transport, checkpoint)
+    assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+def test_native_creation_keeps_guarded_retirement_preview(selected, monkeypatch):
+    transport = Transport(selected)
+    checkpoint, _ = advance(selected, transport)
+    transport.approved = True
+    native_responses(selected, transport, monkeypatch, native_proof(selected))
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_reentry",
+        lambda *args: {
+            "reason": "read-only re-entry visible; sign-in, authority and Ready not independently proved"
+        },
+    )
+    monkeypatch.setattr(
+        demo1_browser,
+        "inspect_original_details",
+        lambda *args: {
+            "reason": "original identities visible; session and provider authority unverified"
+        },
+    )
+    checkpoint, report = advance(selected, transport, checkpoint)
+    assert checkpoint.submitted
+    assert report["status"] == "BLOCKED"
+    assert "retirement preview denied" in report["reason"]
+    assert transport.calls[-1][1].endswith("/retirement/preview")
+    assert not any(path.endswith("/retirement") for _, path, _ in transport.calls)
 
 
 @pytest.mark.parametrize("session_token", ["current-workspace-token", None])
@@ -788,9 +1000,10 @@ const storage = value => ({getItem: key => key === 'cognito_access_token' ? valu
 const request = runInNewContext('(' + script + ')', {
   sessionStorage: storage(token),
   localStorage: storage('stale-other-workspace-token'),
+  AbortSignal: {timeout: milliseconds => ({fixtureTimeout: milliseconds})},
   fetch: async (path, options) => {
     calls.push({path, ...options});
-    return {status: 200, json: async () => ({version: 1})};
+    return {status: 200, json: async () => ({version: 1}), headers: {get: () => null}};
   },
 });
 request(args).then(result => process.stdout.write(JSON.stringify({result, calls})));
@@ -824,6 +1037,8 @@ request(args).then(result => process.stdout.write(JSON.stringify({result, calls}
                 "path": "/api/superplane/v1/capabilities",
                 "method": "GET",
                 "credentials": "same-origin",
+                "redirect": "error",
+                "signal": {"fixtureTimeout": 30_000},
                 "headers": {
                     "Authorization": "Bearer current-workspace-token",
                     "Content-Type": "application/json",

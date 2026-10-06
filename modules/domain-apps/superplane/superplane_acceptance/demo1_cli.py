@@ -7,6 +7,8 @@ import json
 import os
 import stat
 import tempfile
+import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,16 +28,21 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def _read_private(filename: str) -> object:
+def _read_private(filename: str, *, directory_fd: int | None = None) -> object:
     path = Path(filename)
-    if not path.is_absolute():
+    if directory_fd is None and not path.is_absolute():
         raise EvidenceError("input: absolute private file required")
+    if directory_fd is not None and (not filename or filename != path.name):
+        raise EvidenceError("input: private directory entry required")
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+        )
         with os.fdopen(descriptor, "rb") as stream:
             metadata = os.fstat(stream.fileno())
             if (
                 not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
                 or metadata.st_mode & 0o077
                 or metadata.st_nlink != 1
                 or not 0 < metadata.st_size <= MAX_PRIVATE_BYTES
@@ -123,12 +130,19 @@ def _criteria(scenario: dict) -> dict:
     }
 
 
-def _publish(document: dict, filename: str) -> None:
+def _new_report_path(filename: str) -> Path:
     path = Path(filename)
     if not path.is_absolute() or not path.parent.is_dir() or path.parent.is_symlink():
         raise EvidenceError(
             "report: absolute new file in an existing directory required"
         )
+    if path.exists() or path.is_symlink():
+        raise EvidenceError("report: new file required; retain original checkpoint")
+    return path
+
+
+def _publish(document: dict, filename: str) -> None:
+    path = _new_report_path(filename)
     temporary = None
     try:
         descriptor, name = tempfile.mkstemp(prefix=".demo1-report-", dir=path.parent)
@@ -157,10 +171,50 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authority")
     parser.add_argument("--browser-state")
     parser.add_argument("--checkpoint")
-    parser.add_argument("--observe-runtime", action="store_true")
+    parser.add_argument("--continuation-checkpoint")
+    parser.add_argument("--retirement-checkpoint")
+    parser.add_argument("--removal-checkpoint")
+    parser.add_argument("--observe-provider", action="store_true")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--observe-runtime", action="store_true")
+    action.add_argument("--observe-ownership", action="store_true")
+    action.add_argument("--advance-creation", action="store_true")
+    action.add_argument("--review-retirement-access", action="store_true")
+    action.add_argument("--advance-retirement-access", action="store_true")
+    action.add_argument("--advance-removal", action="store_true")
+    action.add_argument(
+        "--advance-continuation",
+        choices=("apply-infrastructure", "bootstrap-workspace"),
+    )
     arguments = parser.parse_args(argv)
     if arguments.mode == "live":
         try:
+            if bool(
+                arguments.advance_retirement_access or arguments.advance_removal
+            ) != bool(arguments.retirement_checkpoint):
+                raise EvidenceError(
+                    "cleanup preparation: explicit advancement and its private checkpoint required together"
+                )
+            if bool(arguments.advance_removal) != bool(arguments.removal_checkpoint):
+                raise EvidenceError(
+                    "removal: explicit advancement and private removal checkpoint required together"
+                )
+            if bool(arguments.advance_continuation) != bool(
+                arguments.continuation_checkpoint
+            ) or (arguments.advance_continuation and arguments.observe_provider):
+                raise EvidenceError(
+                    "continuation: choose one phase and its private checkpoint without provider observation"
+                )
+            if arguments.observe_provider and (
+                arguments.observe_runtime
+                or arguments.observe_ownership
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
+                or arguments.advance_removal
+            ):
+                raise EvidenceError(
+                    "provider: choose provider observation alone or with browser advancement"
+                )
             if arguments.fixture or not all(
                 (
                     arguments.private_input,
@@ -180,10 +234,191 @@ def main(argv: list[str] | None = None) -> int:
             envelope = LiveEnvelope.parse(_read_private(arguments.authority), selected)
             session = _read_private(arguments.browser_state)
             report = preflight_report(selected, envelope, session)
+            expires = time.monotonic() + envelope.max_runtime_seconds
+            if (
+                arguments.advance_creation
+                or arguments.advance_continuation
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
+                or arguments.advance_removal
+                or arguments.observe_ownership
+                or arguments.observe_provider
+            ):
+                _new_report_path(arguments.report)
             with PrivateCheckpoint(
-                arguments.checkpoint, selected, envelope.origin
+                arguments.checkpoint,
+                selected,
+                envelope.origin,
+                envelope=envelope
+                if arguments.advance_creation
+                or arguments.advance_continuation
+                or arguments.review_retirement_access
+                or arguments.advance_retirement_access
+                or arguments.advance_removal
+                or arguments.observe_ownership
+                or arguments.observe_provider
+                else None,
             ) as store:
+                if (
+                    arguments.advance_creation
+                    or arguments.advance_continuation
+                    or arguments.review_retirement_access
+                    or arguments.advance_retirement_access
+                ):
+                    from .demo1_cleanup import PrivateCleanup
+                    from .demo1_continuation import PrivateContinuation
+                    from .demo1_journey import advance_browser
+
+                    report["evidence_mode"] = "live-browser-phase-unverified"
+                    try:
+                        continuation = (
+                            PrivateContinuation(
+                                arguments.continuation_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                                arguments.advance_continuation,
+                            )
+                            if arguments.advance_continuation
+                            else nullcontext()
+                        )
+                        cleanup = (
+                            PrivateCleanup(
+                                arguments.retirement_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                            )
+                            if arguments.advance_retirement_access
+                            else nullcontext()
+                        )
+                        with continuation as phase_store, cleanup as cleanup_store:
+                            report.update(
+                                advance_browser(
+                                    selected,
+                                    envelope,
+                                    session,
+                                    store,
+                                    continuation_store=phase_store,
+                                    cleanup_store=cleanup_store,
+                                    review_retirement_access=arguments.review_retirement_access,
+                                )
+                            )
+                    except EvidenceError as error:
+                        report["reason"] = str(error)
+                if arguments.advance_removal:
+                    from datetime import UTC, datetime
+                    from .demo1_cleanup import PrivateCleanup
+                    from .demo1_removal import PrivateRemoval, run_removal
+
+                    report["version"] = "demo1-live-result-v1"
+                    report["evidence_mode"] = "live-demo1-dedicated-scope"
+                    report["scope"] = "dedicated Demo 1 workspace lifecycle only"
+                    report["broader_acceptance"] = {
+                        "status": "UNVERIFIED",
+                        "live_acceptance": report.pop("live_acceptance"),
+                        "criteria": report.pop("criteria"),
+                        "reason": "broader story scenarios, full account inventory and residual cost remain unverified",
+                    }
+                    try:
+                        with PrivateCleanup(
+                            arguments.retirement_checkpoint,
+                            selected,
+                            envelope,
+                            store.load(),
+                        ) as cleanup_store:
+                            with PrivateRemoval(
+                                arguments.removal_checkpoint,
+                                selected,
+                                envelope,
+                                store.load(),
+                                cleanup_store.load(),
+                            ) as removal_store:
+                                report.update(
+                                    run_removal(
+                                        selected,
+                                        envelope,
+                                        session,
+                                        store,
+                                        cleanup_store,
+                                        removal_store,
+                                        clock=lambda: datetime.now(UTC),
+                                    )
+                                )
+                    except EvidenceError as error:
+                        report["reason"] = str(error)
+                        report["demo1"] = {"status": "BLOCKED", "cost_usd": None}
                 saved = store.load()
+                if arguments.observe_provider:
+                    from .demo1_current import observe_current_provider
+                    from .demo1_session import observe_in_browser
+
+                    report["evidence_mode"] = "current-provider-unverified"
+                    if arguments.advance_creation and not report.get("browser", {}).get(
+                        "creation_observed"
+                    ):
+                        report["provider"] = {
+                            "status": "BLOCKED",
+                            "reason": "browser creation/re-entry unverified; provider reads not attempted",
+                        }
+                    else:
+                        try:
+                            report.update(
+                                observe_in_browser(
+                                    selected,
+                                    envelope,
+                                    session,
+                                    lambda transport: observe_current_provider(
+                                        selected,
+                                        envelope,
+                                        saved,
+                                        expires - time.monotonic(),
+                                        transport=transport,
+                                    ),
+                                    max_runtime_seconds=expires - time.monotonic(),
+                                )
+                            )
+                        except EvidenceError as error:
+                            report["provider"] = {
+                                "status": "BLOCKED",
+                                "reason": str(error),
+                            }
+                            report["reason"] = (
+                                "provider observation blocked; no cleanup or live acceptance established"
+                            )
+                if arguments.observe_ownership:
+                    from .demo1_ownership import observe_ownership, ownership_report
+                    from .demo1_runtime import RuntimeReader
+                    from .demo1_session import observe_in_browser
+
+                    report["evidence_mode"] = "historical-ownership-unverified"
+                    if envelope.runtime_target is None:
+                        raise EvidenceError(
+                            "ownership: explicit v2 authority target required before reads"
+                        )
+                    try:
+                        runtime, ownership = observe_in_browser(
+                            selected,
+                            envelope,
+                            session,
+                            lambda transport: observe_ownership(
+                                RuntimeReader(selected, envelope.runtime_target),
+                                saved,
+                                expires - time.monotonic(),
+                                transport=transport,
+                            ),
+                            max_runtime_seconds=expires - time.monotonic(),
+                        )
+                        report["runtime"] = runtime
+                        report["ownership"] = ownership_report(ownership)
+                    except EvidenceError as error:
+                        report["ownership"] = {
+                            "status": "BLOCKED",
+                            "reason": str(error),
+                        }
+                    report["reason"] = (
+                        "historical ownership read attempted; current provider inventory, cost and retirement remain unverified; no lifecycle effects"
+                    )
                 if saved is not None:
                     report["checkpoint"] = {
                         "request_ref": reference(saved.request_id),
@@ -212,10 +447,44 @@ def main(argv: list[str] | None = None) -> int:
         except EvidenceError as error:
             print(f"BLOCKED: {error}")
             return 2
-        print("Live selection preflight: BLOCKED (not lifecycle acceptance)")
+        if (
+            arguments.advance_creation
+            or arguments.advance_continuation
+            or arguments.review_retirement_access
+            or arguments.advance_retirement_access
+            or arguments.advance_removal
+        ):
+            label = "Live browser phase"
+        elif arguments.observe_ownership:
+            label = "Live historical ownership observation"
+        elif arguments.observe_provider:
+            label = "Live selected provider observation"
+        else:
+            label = "Live selection preflight"
+        if (
+            arguments.advance_removal
+            and report.get("demo1", {}).get("status") == "PASS"
+        ):
+            print(
+                "Demo 1: PASS (dedicated workspace scope; broader acceptance and cost remain unverified)"
+            )
+            return 0
+        print(f"{label}: BLOCKED (not lifecycle acceptance)")
         return 2
     try:
-        if arguments.observe_runtime:
+        if (
+            arguments.observe_runtime
+            or arguments.advance_creation
+            or arguments.advance_continuation
+            or arguments.review_retirement_access
+            or arguments.advance_retirement_access
+            or arguments.retirement_checkpoint
+            or arguments.advance_removal
+            or arguments.removal_checkpoint
+            or arguments.continuation_checkpoint
+            or arguments.observe_ownership
+            or arguments.observe_provider
+        ):
             raise EvidenceError("runtime: live mode and explicit authority required")
         if not all((arguments.private_input, arguments.fixture, arguments.report)):
             raise EvidenceError(

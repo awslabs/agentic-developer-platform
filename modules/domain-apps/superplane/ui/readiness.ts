@@ -221,7 +221,7 @@ export function workspaceReading(
     return unknownReading('No workspace selected.');
   }
   const status = workspace.status;
-  if (status !== 'Active' && status !== 'Ready') {
+  if (status !== 'Active' && status !== 'active' && status !== 'Ready') {
     return {
       ready: false,
       reason: `The workspace is "${status}". It cannot run work in this state.`,

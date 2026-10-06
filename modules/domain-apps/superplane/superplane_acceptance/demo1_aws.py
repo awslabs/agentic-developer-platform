@@ -209,6 +209,11 @@ class AwsProviderReader:
         return "present" if matches else "incomplete"
 
     def read_inventory(self, query: InventoryQuery) -> dict:
+        result = self.read_current_inventory(query)
+        result.pop("resource_states")
+        return result
+
+    def read_current_inventory(self, query: InventoryQuery) -> dict:
         if (
             query.connection_id != self.connection_id
             or query.role != self.role_name
@@ -234,16 +239,18 @@ class AwsProviderReader:
         present_owned: list[str] = []
         present_survivors: list[str] = []
         statuses = []
+        resource_states = {}
         for index, (resource, kind, name) in enumerate(parsed):
             observed = self._lookup(kind, name, resource)
             statuses.append(observed)
+            resource_states[resource] = observed
             if observed == "present":
                 (
                     present_owned
                     if index < len(query.expected_owned)
                     else present_survivors
                 ).append(resource)
-            if observed == "denied":
+            if observed in ("denied", "incomplete"):
                 break
         owned_kinds = {kind for _, kind, _ in parsed[: len(query.expected_owned)]}
         survivor_kinds = {kind for _, kind, _ in parsed[len(query.expected_owned) :]}
@@ -275,4 +282,5 @@ class AwsProviderReader:
             "survivors_present": present_survivors,
             "cost_usd": None,
             "observed_at": self.clock().isoformat(),
+            "resource_states": resource_states,
         }

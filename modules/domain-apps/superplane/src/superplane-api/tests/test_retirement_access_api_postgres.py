@@ -377,6 +377,47 @@ async def test_lost_registration_recovers_original_admission_and_blocks_competit
     assert result == await cleanup.admit(first, review, approval)
 
 
+async def test_consumed_cleanup_approval_expiry_does_not_purchase_a_replacement(
+    cleanup, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    from app.adapters import lifecycle_control_registry
+    from app.models.operation_approval import OperationApproval
+
+    request_id = uuid.uuid4()
+    review = await cleanup.preview(request_id)
+    approval_id = await cleanup.fixture.approve(review)
+    register = lifecycle_control_registry.register_control_operation
+
+    async def lost(*args, **kwargs):
+        raise RuntimeError("fixture: cleanup registration lost")
+
+    monkeypatch.setattr(lifecycle_control_registry, "register_control_operation", lost)
+    with pytest.raises(RuntimeError, match="registration lost"):
+        await cleanup.admit(request_id, review, approval_id)
+    async with cleanup.fixture.sessions() as db:
+        ticket = await db.get(OperationApproval, str(approval_id))
+        ticket.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        ticket.revoked = True
+        await db.commit()
+    monkeypatch.setattr(
+        lifecycle_control_registry, "register_control_operation", register
+    )
+    result = await cleanup.admit(request_id, review, approval_id)
+    assert result == await cleanup.admit(request_id, review, approval_id)
+    async with cleanup.fixture.connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM harness_operations WHERE org_id=$1 AND idempotency_key=$2",
+                str(cleanup.fixture.org_id),
+                review["request_id"],
+            )
+            == 1
+        )
+    assert result["retirement_complete"] is False
+
+
 @pytest.mark.parametrize("change", ["revision", "approval", "policy"])
 async def test_changed_review_or_approval_cannot_admit_access(cleanup, change):
     identity = uuid.uuid4()

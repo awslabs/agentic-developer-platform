@@ -17,6 +17,23 @@ from superplane_acceptance.demo1_c1 import (
 from superplane_acceptance.demo1_evidence import DemoInput, EvidenceError
 
 
+def require_visible(visible):
+    if not visible:
+        raise RuntimeError("fixture visibility timeout")
+
+
+def test_visibility_wait_does_not_race_a_second_visibility_read():
+    from superplane_acceptance.demo1_c1 import _visible_after_wait
+
+    reads = []
+    locator = SimpleNamespace(
+        wait_for=lambda **kwargs: None,
+        is_visible=lambda: reads.append("redraw"),
+    )
+    assert _visible_after_wait(locator) is True
+    assert reads == []
+
+
 def preview_body(selected, phase, retirement_id):
     return {
         "request_id": retirement_id,
@@ -80,7 +97,9 @@ def test_missing_workspace_after_refresh_stays_blocked():
 
     def get_by_role(role, *, name, exact=False):
         return SimpleNamespace(
-            wait_for=lambda **kwargs: None,
+            wait_for=lambda **kwargs: require_visible(
+                not (name == "example-workspace" and reloaded)
+            ),
             is_visible=lambda: not (name == "example-workspace" and reloaded),
             click=lambda: None,
         )
@@ -189,7 +208,14 @@ def test_server_backed_reentry_checks_original_ids_after_details_refresh(
                 wait_for=lambda **kwargs: None,
                 is_visible=lambda: True,
                 get_by_text=lambda value, exact: SimpleNamespace(
-                    wait_for=lambda **kwargs: None,
+                    wait_for=lambda **kwargs: require_visible(
+                        value in identities
+                        and not (
+                            missing_after_refresh
+                            and state["refreshes"]
+                            and value == missing
+                        )
+                    ),
                     is_visible=lambda: (
                         value in identities
                         and not (
@@ -233,16 +259,18 @@ def test_unavailable_original_details_do_not_refresh_or_claim_reentry(unavailabl
             raise RuntimeError("private browser error")
         if name == "Workspace details":
             return SimpleNamespace(
-                wait_for=lambda **kwargs: None,
+                wait_for=lambda **kwargs: require_visible(unavailable != "details"),
                 is_visible=lambda: unavailable != "details",
                 get_by_text=lambda value, exact: SimpleNamespace(
-                    wait_for=lambda **kwargs: None,
+                    wait_for=lambda **kwargs: require_visible(
+                        unavailable != "identity"
+                    ),
                     is_visible=lambda: unavailable != "identity",
                 ),
             )
         assert (role, name, exact) == ("button", "Refresh workspace details", True)
         return SimpleNamespace(
-            wait_for=lambda **kwargs: None,
+            wait_for=lambda **kwargs: require_visible(unavailable != "refresh"),
             is_visible=lambda: unavailable != "refresh",
             click=lambda: clicks.append(name),
         )

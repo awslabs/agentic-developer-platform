@@ -6,13 +6,13 @@ import fcntl
 import json
 import os
 import stat
-import tempfile
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Self
-from urllib.parse import urlsplit
+from uuid import uuid4
 
 from .demo1_browser import CreationCheckpoint, checked_origin
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant, text
@@ -123,38 +123,24 @@ class LiveEnvelope:
 
 
 def validate_browser_state(value: object, origin: str) -> None:
-    if not isinstance(value, dict) or set(value) != {"cookies", "origins"}:
-        raise EvidenceError("live: private browser state unavailable")
-    origins = value["origins"]
-    cookies = value["cookies"]
-    if (
-        not isinstance(origins, list)
-        or len(origins) != 1
-        or not isinstance(origins[0], dict)
-        or origins[0].get("origin") != origin
-    ):
-        raise EvidenceError("live: browser state belongs to another origin")
-    storage = origins[0].get("localStorage")
-    if not isinstance(storage, list) or not any(
-        isinstance(item, dict)
-        and item.get("name") == "cognito_access_token"
-        and isinstance(item.get("value"), str)
-        and item["value"]
-        for item in storage
-    ):
-        raise EvidenceError("live: authenticated requester browser state required")
-    hostname = urlsplit(origin).hostname
-    if not isinstance(cookies, list) or any(
-        not isinstance(cookie, dict) or cookie.get("domain") != hostname
-        for cookie in cookies
-    ):
-        raise EvidenceError("live: cross-origin browser cookies refused")
+    from .demo1_session import browser_state_parts
+
+    browser_state_parts(value, origin)
 
 
 class PrivateCheckpoint:
     """One cooperating process per private checkpoint, with atomic durable replacement."""
 
-    def __init__(self, path: str, selected: DemoInput, origin: str):
+    state_type = CreationCheckpoint
+
+    def __init__(
+        self,
+        path: str,
+        selected: DemoInput,
+        origin: str,
+        *,
+        envelope: LiveEnvelope | None = None,
+    ):
         self.path = Path(path)
         if (
             not self.path.is_absolute()
@@ -162,9 +148,13 @@ class PrivateCheckpoint:
             or self.path.parent.is_symlink()
         ):
             raise EvidenceError("checkpoint: absolute private path required")
-        parent = self.path.parent.stat()
+        try:
+            parent = self.path.parent.stat()
+        except OSError:
+            raise EvidenceError("checkpoint: private directory unavailable") from None
         if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
             raise EvidenceError("checkpoint: owner-only directory required")
+        self.directory_identity = (parent.st_dev, parent.st_ino)
         self.selected = selected
         binding = {
             **asdict(selected),
@@ -173,38 +163,95 @@ class PrivateCheckpoint:
             "authorized_at": selected.authorized_at.isoformat(),
             "deadline": selected.deadline.isoformat(),
         }
+        self.version = CHECKPOINT_VERSION
+        if envelope is not None:
+            if envelope.origin != origin or envelope.runtime_target is None:
+                raise EvidenceError("checkpoint: execution runtime selection required")
+            self.version = "demo1-checkpoint-v3"
+            binding["execution"] = {
+                **asdict(envelope),
+                "cleanup_deadline": envelope.cleanup_deadline.isoformat(),
+            }
         self.scope = sha256(
             json.dumps(
                 binding, sort_keys=True, separators=(",", ":"), allow_nan=False
             ).encode()
         ).hexdigest()
         self.lock_fd: int | None = None
+        self.directory_fd: int | None = None
+        self._pending_submission = None
 
     def __enter__(self) -> Self:
-        lock_path = self.path.with_name(self.path.name + ".lock")
+        if self.lock_fd is not None or self.directory_fd is not None:
+            raise EvidenceError("checkpoint: runner already holds this checkpoint")
         try:
-            descriptor = os.open(
-                lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+            self.directory_fd = os.open(
+                self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
             )
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_mode & 0o077
-                or metadata.st_nlink != 1
-            ):
-                raise EvidenceError("checkpoint: private lock file required")
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.lock_fd = descriptor
+            self._assert_directory()
+            self.lock_fd = os.open(
+                self.path.name + ".lock",
+                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+                dir_fd=self.directory_fd,
+            )
+            self._assert_held()
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._assert_held()
         except (OSError, EvidenceError):
-            if "descriptor" in locals():
-                os.close(descriptor)
+            self.__exit__()
             raise EvidenceError("checkpoint: another runner or unsafe lock") from None
         return self
 
     def __exit__(self, *_unused) -> None:
+        self._pending_submission = None
         if self.lock_fd is not None:
             os.close(self.lock_fd)
             self.lock_fd = None
+        if self.directory_fd is not None:
+            os.close(self.directory_fd)
+            self.directory_fd = None
+
+    def _assert_directory(self) -> None:
+        if self.directory_fd is None:
+            raise EvidenceError("checkpoint: lock required")
+        try:
+            directory = os.fstat(self.directory_fd)
+            parent = os.stat(self.path.parent, follow_symlinks=False)
+            if (
+                (directory.st_dev, directory.st_ino) != self.directory_identity
+                or (parent.st_dev, parent.st_ino) != self.directory_identity
+                or not stat.S_ISDIR(parent.st_mode)
+                or directory.st_uid != os.geteuid()
+                or directory.st_mode & 0o077
+            ):
+                raise EvidenceError("checkpoint: locked directory changed")
+        except OSError:
+            raise EvidenceError("checkpoint: locked directory unavailable") from None
+
+    def _assert_held(self) -> None:
+        self._assert_directory()
+        if self.lock_fd is None:
+            raise EvidenceError("checkpoint: lock required")
+        try:
+            locked = os.fstat(self.lock_fd)
+            entry = os.stat(
+                self.path.name + ".lock",
+                dir_fd=self.directory_fd,
+                follow_symlinks=False,
+            )
+            if (
+                (entry.st_dev, entry.st_ino) != (locked.st_dev, locked.st_ino)
+                or not stat.S_ISREG(locked.st_mode)
+                or locked.st_uid != os.geteuid()
+                or locked.st_mode & 0o077
+                or locked.st_nlink != 1
+            ):
+                raise EvidenceError("checkpoint: locked directory or file changed")
+        except OSError:
+            raise EvidenceError(
+                "checkpoint: locked directory or file unavailable"
+            ) from None
 
     def _validate(self, state: CreationCheckpoint) -> None:
         if (
@@ -236,55 +283,78 @@ class PrivateCheckpoint:
             raise EvidenceError("checkpoint: original request lineage differs")
 
     def load(self) -> CreationCheckpoint | None:
-        if self.lock_fd is None:
-            raise EvidenceError("checkpoint: lock required")
-        if not self.path.exists() and not self.path.is_symlink():
+        self._assert_held()
+        try:
+            os.stat(self.path.name, dir_fd=self.directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            self._assert_held()
             return None
+        except OSError:
+            raise EvidenceError("checkpoint: private file unavailable") from None
         from .demo1_cli import _read_private
 
-        value = _read_private(str(self.path))
+        value = _read_private(self.path.name, directory_fd=self.directory_fd)
+        self._assert_held()
         if (
             not isinstance(value, dict)
             or set(value) != {"version", "scope", "checkpoint"}
-            or value["version"] != CHECKPOINT_VERSION
+            or value["version"] != self.version
             or value["scope"] != self.scope
         ):
             raise EvidenceError("checkpoint: private selection differs")
         saved = value["checkpoint"]
         if (
             not isinstance(saved, dict)
-            or set(saved) != set(CreationCheckpoint.__dataclass_fields__)
+            or set(saved) != set(self.state_type.__dataclass_fields__)
             or type(saved["submitted"]) is not bool
         ):
             raise EvidenceError("checkpoint: invalid saved state")
-        state = CreationCheckpoint(**saved)
+        state = self.state_type(**saved)
         self._validate(state)
         return state
 
     def save(self, checkpoint: CreationCheckpoint) -> None:
-        if self.lock_fd is None:
-            raise EvidenceError("checkpoint: lock required")
+        self._pending_submission = None
+        self._assert_held()
         previous = self.load()
         if previous and (
-            previous.request_id != checkpoint.request_id
-            or previous.workspace_id != checkpoint.workspace_id
-            or previous.plan_revision != checkpoint.plan_revision
-            or previous.approval_id != checkpoint.approval_id
-            or previous.retirement_request_id != checkpoint.retirement_request_id
+            {**asdict(previous), "submitted": checkpoint.submitted}
+            != asdict(checkpoint)
             or (previous.submitted and not checkpoint.submitted)
         ):
             raise EvidenceError("checkpoint: request replay or identity change refused")
+        self._write(checkpoint)
+        if previous and not previous.submitted and checkpoint.submitted:
+            self._pending_submission = (previous, checkpoint)
+
+    def restore_unsent(self, checkpoint: CreationCheckpoint) -> CreationCheckpoint:
+        pending = self._pending_submission
+        self._pending_submission = None
+        self._assert_held()
+        if pending is None or pending[1] != checkpoint or self.load() != checkpoint:
+            raise EvidenceError(
+                "checkpoint: current unsent submission required; retain original request"
+            )
+        self._write(pending[0])
+        return pending[0]
+
+    def _write(self, checkpoint: CreationCheckpoint) -> None:
+        self._assert_held()
         self._validate(checkpoint)
         temporary = None
         try:
-            descriptor, filename = tempfile.mkstemp(
-                prefix=".demo1-checkpoint-", dir=self.path.parent
+            filename = ".demo1-checkpoint-" + uuid4().hex
+            descriptor = os.open(
+                filename,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=self.directory_fd,
             )
-            temporary = Path(filename)
+            temporary = filename
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(
                     {
-                        "version": CHECKPOINT_VERSION,
+                        "version": self.version,
                         "scope": self.scope,
                         "checkpoint": asdict(checkpoint),
                     },
@@ -292,19 +362,23 @@ class PrivateCheckpoint:
                 )
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            self._assert_held()
+            os.replace(
+                temporary,
+                self.path.name,
+                src_dir_fd=self.directory_fd,
+                dst_dir_fd=self.directory_fd,
+            )
+            os.fsync(self.directory_fd)
+            self._assert_held()
         except OSError:
             raise EvidenceError(
                 "checkpoint: private write failed; retain original request"
             ) from None
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                with suppress(OSError):
+                    os.unlink(temporary, dir_fd=self.directory_fd)
 
 
 def preflight_report(

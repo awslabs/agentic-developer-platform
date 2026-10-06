@@ -45,6 +45,8 @@ jobs:
           fi
       - name: Check serving interactions and layout with fixture transports
         run: python modules/domain-apps/superplane/ui/browser-tests/verify_browser.py
+      - name: Check Demo 1 session transport and maintained onboarding re-entry
+        run: python modules/domain-apps/superplane/ui/browser-tests/verify_demo1_browser.py
       - name: Retain browser evidence
         if: always()
         uses: actions/upload-artifact@v7

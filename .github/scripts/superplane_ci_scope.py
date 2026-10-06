@@ -68,6 +68,11 @@ def classify(paths: list[str]) -> set[str]:
         return set(COMPONENTS) | {"persona"}
     selected = set()
     for path in paths:
+        if path in {
+            MODULE + "superplane_acceptance/" + name + ".py"
+            for name in ("demo1_browser", "demo1_c1", "demo1_journey", "demo1_session")
+        }:
+            selected.add("ui")
         if (
             path.startswith(MODULE + "ui/")
             or path == ".github/workflows/superplane-ui-browser-ci.yml"
