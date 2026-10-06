@@ -897,3 +897,132 @@ def test_cli_trusted_runtime_runs_public_bootstrap_and_recovery(
         assert json.loads(capsys.readouterr().out)["registered"]
         assert runtime.store.read(WORKSPACE_ID) is not None
         assert len(calls) == 1
+
+
+def test_managed_bootstrap_journals_dormant_exact_cleanup_grants(runtime):
+    import json
+
+    runtime.factory.original_allocation_id = "original-allocation"
+    result = runtime.run()
+    assert result.ready, repr(result.refusal)
+    rows = runtime.store.store.execute(
+        "SELECT plan_json, progress_json FROM workspace_bootstrap_authority "
+        "WHERE workspace_id=:workspace_id",
+        {"workspace_id": WORKSPACE_ID},
+    )
+    plan, progress = (
+        json.loads(rows[0][key]) for key in ("plan_json", "progress_json")
+    )
+    grants = [s for s in plan["grants"] if s["key"].startswith("cleanup-")]
+    assert len(grants) == 6
+    assert {s["kind"] for s in grants} == {"kubernetes"}
+    assert {s["lifetime"] for s in grants} == {"workspace"}
+    assert {s["actor"] for s in grants} == {"registrar"}
+    assert {s["original_allocation_id"] for s in grants} == {"original-allocation"}
+    (group,) = {s["cleanup_group"] for s in grants}
+    assert group.endswith(":cleanup")
+    assert all(
+        group not in entry["kubernetesGroups"]
+        for entry in runtime.cloud.entries.values()
+    )
+    assert set(runtime.cloud.entries) == {runtime.clients.principals["supervisor"]}
+    for spec in grants:
+        identity = progress[spec["key"]]["identity"]
+        assert identity["uid"] and identity["digest"]
+        assert identity["generation"] == spec["generation"]
+        assert progress[spec["key"]]["phase"] == "granted"
+        rules = spec["body"].get("rules", [])
+        assert all(set(rule["verbs"]) == {"get", "delete"} for rule in rules)
+        assert all(rule.get("resourceNames") for rule in rules)
+    cluster = next(s for s in grants if s["key"] == "cleanup-cluster-role")
+    assert cluster["body"]["rules"][0]["resourceNames"] == [NAMESPACE]
+    assert all("*" not in rule["resourceNames"] for rule in cluster["body"]["rules"])
+
+
+def test_existing_eks_mapping_refuses_dormant_cleanup_grant(runtime, monkeypatch):
+    from superplane_bootstrap import authority_backend
+
+    runtime.factory.original_allocation_id = "original-allocation"
+    compile_grants = authority_backend.compile_grants
+
+    def mapped(*args, **kwargs):
+        plan = compile_grants(*args, **kwargs)
+        group = next(
+            spec["cleanup_group"]
+            for spec in plan["grants"]
+            if spec["key"] == "cleanup-cluster-binding"
+        )
+        principal = f"arn:aws:iam::{ACCOUNT_ID}:role/unattributed"
+        runtime.cloud.entries[principal] = {
+            "principalArn": principal,
+            "kubernetesGroups": [group],
+        }
+        return plan
+
+    monkeypatch.setattr(authority_backend, "compile_grants", mapped)
+    result = runtime.run()
+    assert result.refusal and not result.ready
+    assert "temporary bootstrap authority remains unresolved" in str(result.refusal)
+    assert not runtime.cloud.objects
+    assert not any(name == "create-kube" for name, _ in runtime.cloud.events)
+
+
+@pytest.mark.parametrize("change", ["uid", "rules", "subjects"])
+def test_cleanup_grant_drift_prevents_bootstrap_completion(runtime, change):
+    runtime.factory.original_allocation_id = "original-allocation"
+    original = runtime.cloud.event
+
+    def changed(operation, identity):
+        original(operation, identity)
+        if (operation, identity) != (
+            "delete-entry",
+            runtime.clients.principals["registrar"],
+        ):
+            return
+        kind = "ClusterRoleBinding" if change == "subjects" else "ClusterRole"
+        body = next(
+            resource
+            for (resource_kind, _, name), resource in runtime.cloud.objects.items()
+            if resource_kind == kind and name.endswith("cleanup-cluster")
+        )
+        if change == "uid":
+            body["metadata"]["uid"] = "replaced-uid"
+        elif change == "rules":
+            body["rules"][0]["verbs"].append("create")
+        else:
+            body["subjects"][0]["name"] = "another-group"
+
+    runtime.cloud.event = changed
+    result = runtime.run()
+    assert result.refusal and not result.ready
+    assert (
+        not runtime.store.read(WORKSPACE_ID)
+        or not runtime.store.read(WORKSPACE_ID).state == "registered"
+    )
+
+
+def test_adopted_cluster_refuses_original_cleanup_allocation(runtime):
+    from types import SimpleNamespace
+    from superplane_bootstrap.errors import BootstrapRefused
+    from superplane_bootstrap.grant_plan import compile_grants
+
+    journal = SimpleNamespace(
+        target=replace(runtime.target, cluster_ownership="adopted"),
+        generation="a" * 64,
+        original_allocation_id="original-allocation",
+    )
+    with pytest.raises(BootstrapRefused, match="original managed allocation"):
+        compile_grants(journal, runtime.factory.release, runtime.clients.principals)
+
+
+def test_existing_bootstrap_without_original_allocation_cannot_gain_cleanup(runtime):
+    import json
+
+    result = runtime.run()
+    assert result.ready
+    rows = runtime.store.store.execute(
+        "SELECT plan_json FROM workspace_bootstrap_authority WHERE workspace_id=:workspace_id",
+        {"workspace_id": WORKSPACE_ID},
+    )
+    plan = json.loads(rows[0]["plan_json"])
+    assert not any(s["key"].startswith("cleanup-") for s in plan["grants"])

@@ -132,6 +132,7 @@ class BootstrapGrantBackend:
                 self.clients.installer_access, "controller_mode", "legacy"
             ),
         )
+        self._verify_cleanup_unmapped(plan)
         # Only a completed, same-workspace journal can authorize adoption of an
         # existing operational supervisor. Tags or caller-provided ARNs cannot.
         with journal.fenced():
@@ -166,6 +167,10 @@ class BootstrapGrantBackend:
                         "workspace supervisor ownership is ambiguous"
                     )
                 prior[spec["key"]] = candidate
+        if any(key.startswith("cleanup-") for key in prior):
+            raise BootstrapRefused(
+                "cleanup capability from another bootstrap generation cannot be adopted"
+            )
         for i, spec in enumerate(plan["grants"]):
             old = prior.get(spec["key"])
             if old is not None:
@@ -193,6 +198,32 @@ class BootstrapGrantBackend:
                     )
                 plan["grants"][i] = old
         return plan
+
+    def _verify_cleanup_unmapped(self, plan):
+        groups = {
+            spec["cleanup_group"]
+            for spec in plan["grants"]
+            if spec["key"].startswith("cleanup-")
+        }
+        if not groups:
+            return
+        for principal in _pages(
+            self.clients.eks,
+            "list_access_entries",
+            "accessEntries",
+            clusterName=self.clients.target.cluster_name,
+        ):
+            response = self.clients.eks.describe_access_entry(
+                clusterName=self.clients.target.cluster_name,
+                principalArn=principal,
+            )
+            entry = response.get("accessEntry", {})
+            if entry.get("principalArn") != principal or not isinstance(
+                entry.get("kubernetesGroups", []), list
+            ):
+                raise BootstrapRefused("cleanup EKS access inventory is unanswered")
+            if groups.intersection(entry.get("kubernetesGroups", [])):
+                raise BootstrapRefused("cleanup group has an active EKS mapping")
 
     def _adapter(self, spec):
         if (
@@ -375,6 +406,8 @@ class BootstrapGrantBackend:
 
     def create(self, spec):
         self.clients.verify()
+        if spec["key"].startswith("cleanup-"):
+            self._verify_cleanup_unmapped({"grants": [spec]})
         return self._adapter(spec).create(spec)
 
     def delete(self, spec, identity):
@@ -564,6 +597,7 @@ class BootstrapGrantBackend:
             if temporary_groups.intersection(entry.get("kubernetesGroups", [])):
                 raise BootstrapRefused("temporary bootstrap group remains reachable")
         if retained:
+            self._verify_cleanup_unmapped(plan)
             self.verify_supervisor_permissions()
 
     def _aws_inventory(self, service, action, *args):
