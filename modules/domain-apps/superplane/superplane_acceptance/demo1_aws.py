@@ -151,7 +151,7 @@ class AwsProviderReader:
         return (
             isinstance(arn, str)
             and re.fullmatch(
-                rf"arn:(?:aws|aws-us-gov|aws-cn):sts:{self.account}:assumed-role/{re.escape(self.role_name)}/[^/]+",
+                rf"arn:(?:aws|aws-us-gov|aws-cn):sts::{self.account}:assumed-role/{re.escape(self.role_name)}/[^/]+",
                 arn,
             )
             is not None
