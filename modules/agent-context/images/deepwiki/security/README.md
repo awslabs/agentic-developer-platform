@@ -8,8 +8,11 @@ That mode also removes an optional nested next-intl SWC peer. Development
 dependencies are included in the builder despite the base's production ENV.
 
 The runtime keeps Node, Python, Git, upstream API code, and `/app/start.sh`.
-Available Debian updates and GitPython3.1.59 install through normal package
-resolvers and `pip check`. npm/npx are retained at checksum-pinned11.20.0: although start.sh launches
+Available Debian updates, PyJWT 2.14.0, GitPython 3.1.60 and urllib3 2.8.0
+install through normal package resolvers and `pip check`.
+`tests/container/deepwiki_jwt_runtime.py` verifies the application interpreter
+accepts legitimate RSA/EC tokens and rejects six formatted-public-key HMAC
+forgeries; run it in the same offline candidate as the runtime acceptance below. npm/npx are retained at checksum-pinned11.20.0: although start.sh launches
 `node server.js` and `python -m api.main` directly, Next's cold SWC download
 fallback calls a registry helper that executes `npm config get registry`.
 The earlier API-only consumer audit missed this library fallback.
