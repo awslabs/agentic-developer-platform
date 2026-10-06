@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-06T01:28:25.615Z",
+  "updated_at": "2026-10-06T02:29:57.837Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior implementation retained.",
+      "note": "Prior implementation retained; ancestry-only merge leaves feature source unchanged.",
       "commits": [
         "1de1440"
       ]
@@ -26,7 +26,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Prior local evidence retained; supplied Frontend Unit Tests check succeeds at c885af6."
     },
     {
       "id": "AC-02-c1",
@@ -49,7 +49,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Pre-registration recovery without an ID still needs backend discovery.",
+      "note": "Prior implementation retained; pre-registration recovery without an ID still needs backend discovery.",
       "commits": [
         "8ef3966"
       ]
@@ -62,7 +62,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Review-only path retained.",
+      "note": "Review-only path retained; Remove remains disabled.",
       "commits": [
         "061fc68"
       ]
@@ -77,7 +77,7 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Offline fixture evidence only."
+      "note": "Passing fixture evidence retained; supplied browser CI also exercises onboarding and continuation. Not live API evidence."
     },
     {
       "id": "AC-02-t2",
@@ -89,7 +89,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Refusal tests retained."
+      "note": "Local evidence retained; passing browser job at c885af6 executes refusal/re-entry scenarios and asserts no retirement admission request."
     },
     {
       "id": "AC-02-t3",
@@ -102,7 +102,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; compatible release and authorization required."
+      "note": "deployed-target: #5540/live-evaluation owner; compatible release and authorization required. Separate from source merge."
     },
     {
       "id": "AC-02-t4",
@@ -114,7 +114,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Source-contract tests retained."
+      "note": "Prior source-contract and expanded permission-contract evidence retained."
     },
     {
       "id": "AC-02-c3",
@@ -124,7 +124,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Guarded preview exists; positive backend producer contract remains unavailable.",
+      "note": "Guarded preview retained. Positive producer/binding integration belongs to the supervisor/backend owner; not a source-merge requirement.",
       "commits": [
         "b94733b"
       ]
@@ -139,7 +139,7 @@
         "AC-02-c3"
       ],
       "files": [],
-      "note": "Current refusal tests pass; positive contract requires revalidation."
+      "note": "Current refusal and malformed-response evidence retained; positive contract remains unverified."
     },
     {
       "id": "AC-02-c4",
@@ -149,7 +149,7 @@
       "status": "blocked",
       "covers": [],
       "files": [],
-      "note": "Read-only original-ID re-entry exists; dedicated-managed admission awaits the backend producer.",
+      "note": "Read-only original-ID re-entry retained. Positive approval/admission remains with the supervisor/backend owner; Remove must remain disabled.",
       "commits": [
         "0116fc0"
       ]
@@ -164,7 +164,7 @@
         "AC-02-c4"
       ],
       "files": [],
-      "note": "Recovery negatives pass; positive admission requires the producer contract."
+      "note": "Recovery negatives pass; positive admission requires the separately owned producer contract."
     },
     {
       "id": "AC-03-c1",
@@ -189,7 +189,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Passing stale-response and scoped-recovery evidence retained."
     },
     {
       "id": "AC-03-t2",
@@ -201,7 +201,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Prior tests and manual security inspection retained for identical feature source. No live-security acceptance claimed."
     },
     {
       "id": "AC-03-c2",
@@ -223,7 +223,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Prior component evidence retained."
+      "note": "Passing RetirementPanel regression evidence retained."
     },
     {
       "id": "AC-03-c3",
@@ -245,7 +245,7 @@
         "AC-03-c3"
       ],
       "files": [],
-      "note": "Prior regression evidence retained."
+      "note": "Passing OnboardingView regression evidence retained."
     },
     {
       "id": "AC-03-c4",
@@ -270,7 +270,7 @@
         "AC-03-c4"
       ],
       "files": [],
-      "note": "116 focused tests previously passed."
+      "note": "Passing receipt-lineage and retirement recovery evidence retained."
     },
     {
       "id": "AC-04-c1",
@@ -295,7 +295,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Passing readiness and onboarding evidence retained."
     },
     {
       "id": "AC-04-t2",
@@ -307,7 +307,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Passing frontend negative-path evidence retained."
     },
     {
       "id": "AC-04-c2",
@@ -332,7 +332,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": "72 focused tests previously passed."
+      "note": "Passing RetirementPanel outcome evidence retained."
     },
     {
       "id": "AC-05-c1",
@@ -357,7 +357,7 @@
         "AC-05-c1"
       ],
       "files": [],
-      "note": "Component evidence retained."
+      "note": "Passing component evidence retained; supplied browser success provides additional real-browser fixture coverage."
     },
     {
       "id": "AC-05-t2",
@@ -369,8 +369,12 @@
         "AC-05-c1",
         "AC-05-c2"
       ],
-      "files": [],
-      "note": "Fixture browser workflow passed; not live acceptance.",
+      "files": [
+        ".github/workflows/superplane-ui-browser-ci.yml",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_browser.py",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Updated evidence: controller reports success at c885af6 for https://github.com/aws-e/adp/actions/runs/37402725400/job/112074154035. Inspected workflow invokes verify_browser.py, which unconditionally invokes onboarding checks including keyboard interaction and 360/1280px layout assertions. Fixture evidence only, not live acceptance.",
       "commits": [
         "194af4a",
         "c277efb",
@@ -398,7 +402,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Prior evidence retained."
+      "note": "Previously verified 46 offline fixture tests retained; maintained browser job also succeeds at c885af6."
     },
     {
       "id": "AC-05-c3",
@@ -408,7 +412,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Named regions added; removal remains disabled.",
+      "note": "Named regions retained; removal remains disabled.",
       "commits": [
         "5580d0b"
       ]
@@ -422,8 +426,10 @@
       "covers": [
         "AC-05-c3"
       ],
-      "files": [],
-      "note": "Fixture browser workflow passed; not live acceptance.",
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+      ],
+      "note": "Updated evidence: successful browser job 112074154035 in run 37402725400 at c885af6. Inspected driver executes retirement-review-reentry, retirement-denied and each expired-action scenario, checks layout, and asserts no creation/removal admission. Resolves the browser-execution gap at this published revision; no live cleanup claim.",
       "commits": [
         "e08e3cd"
       ]
@@ -436,7 +442,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior implementation retained."
+      "note": "Story implementation and CI wiring retained; newly requested base update changes ancestry only."
     },
     {
       "id": "AC-06-t1",
@@ -448,17 +454,19 @@
         "AC-06-c1"
       ],
       "files": [
-        "modules/gateway/cli/adp-superplane-onboarding.py",
-        "modules/gateway/tests/cli/test_superplane_onboarding.py",
+        "modules/gateway/frontend",
+        "modules/domain-apps/superplane/ui",
         "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py",
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+        ".github/workflows/gateway-ci.yml",
+        ".github/workflows/superplane-ui-browser-ci.yml"
       ],
-      "note": "Repairs 7a05251 and 3e1e18d. Local 178 frontend suites/2,971 tests, TypeScript, domain-UI lint, 136 CLI tests, 46 fixture tests and 21 UI contract tests pass. Gateway CI 37394778280 succeeds; browser in domain run 37397760708 succeeds, but its UI/API jobs remain queued. Full npm lint fails on five unchanged base directives (#7066). Final affected CI and AC-06 acceptance are not established.",
+      "note": "Narrowed remaining gap: API CI and required aggregate/final-head confirmation. Controller supplies successful Gateway run 37402725120 checks, including Frontend Unit Tests, all eight test shards, Test and Build Container; Superplane run 37402725400 supplies successful UI and browser jobs at c885af6b21264b5092286a9d3d65773ac6eb899c. Browser coverage was traced to the onboarding driver. API job 112074153754 is still in progress with no reported failure. Skipped persona/controller jobs are not counted as passes. Previous local 2,971 frontend tests, 89 API tests with two known expected failures, TypeScript, passing lint and manual security evidence remain valid for identical source. Keep open until required checks are bound to the final published revision.",
       "commits": [
         "cc2b40a",
         "7a05251",
         "4caaf18",
-        "3e1e18d"
+        "3e1e18d",
+        "9d03e68"
       ]
     },
     {
@@ -471,7 +479,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540/live-evaluation owner; authorized release and real IDs required."
+      "note": "deployed-target: #5540/live-evaluation owner; authorized release and real IDs required. Separate from source merge; keep original story open for unproved acceptance."
     },
     {
       "id": "AC-06-t3",
@@ -482,8 +490,30 @@
       "covers": [
         "AC-06-c1"
       ],
-      "files": [],
-      "note": "Prior evidence retained; final-head parity suite also passes locally."
+      "files": [
+        "modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py",
+        "modules/gateway/tests/cli/test_superplane_onboarding.py"
+      ],
+      "note": "Previously verified 46 browser-fixture and 136 CLI test passes retained; unchanged suites were not repeated."
+    },
+    {
+      "id": "AC-06-t4",
+      "kind": "test",
+      "criterion": "AC-06",
+      "title": "Verify prepared base merge with focused onboarding, retirement and receipt fixtures",
+      "status": "done",
+      "covers": [
+        "AC-06-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx",
+        "modules/domain-apps/superplane/ui/__tests__/OnboardingView.test.tsx",
+        "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
+        "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts",
+        "modules/domain-apps/superplane/ui/__tests__/contract.test.ts",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_permission_contract.py"
+      ],
+      "note": "Latest verification: HEAD c885af6b21264b5092286a9d3d65773ac6eb899c; prepared MERGE_HEAD ab0f00b920161f3dc2aa480fdfe97be4e955d422. New base and previous base 62306dcf1182e97331870b12c6a3e44e0056104e share tree a8187be61e17047d93c76a931fbcc5ad8b72304c. Prepared index and working tree exactly match HEAD; no conflicts or diff-check errors. Reused established tests for identical content instead of rerunning suites or manufacturing edits."
     }
   ]
 }
