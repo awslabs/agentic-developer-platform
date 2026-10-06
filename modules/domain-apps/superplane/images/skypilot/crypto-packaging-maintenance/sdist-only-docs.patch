@@ -1,0 +1,14 @@
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -109,4 +109,4 @@
+-    "CHANGELOG.rst",
+-    "CONTRIBUTING.rst",
+-
+-    "docs/**/*",
++    { path = "CHANGELOG.rst", format = "sdist" },
++    { path = "CONTRIBUTING.rst", format = "sdist" },
++
++    { path = "docs/**/*", format = "sdist" },
+@@ -124 +124 @@
+-    "tests/**/*.py",
++    { path = "tests/**/*.py", format = "sdist" },

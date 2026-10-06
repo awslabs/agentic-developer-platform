@@ -1,0 +1,30 @@
+{
+  "upstream_version": "46.0.7",
+  "local_version": "46.0.7+adp1",
+  "source_url": "https://files.pythonhosted.org/packages/47/93/ac8f3d5ff04d54bc814e961a43ae5b0b146154c89c61b47bb07557679b18/cryptography-46.0.7.tar.gz",
+  "source_sha256": "e4cfd68c5f3e0bfdad0d38e023239b96a2fe84146481852dffbcca442c245aa5",
+  "patches": {
+    "crypto-chain-budget-production.patch": "a804ea5ddc1120c456391b46ec64a9d48ab4aac40415717d9a08a0dc1d0f4b22",
+    "crypto-pkcs7-production.patch": "72d020743709deeeed411e16ba9f2d13f9e6f16e20fcbd10c4098e9e71a80c55",
+    "sdist-only-docs.patch": "c31e4fbd765d789618e05c2538aa43cf174a01050aabfbff0aabe9d81c9cc8a1"
+  },
+  "production_source_sha256": {
+    "src/rust/cryptography-x509-verification/src/lib.rs": "d466bbcb1feee89fc536fd12d2011d3db3b7852ecaf5a72a14ba9ecde501960b",
+    "src/rust/cryptography-x509-verification/src/policy/mod.rs": "9ba40b49e9ae9491869ac861d5ab152cab5392e3179c92bcb37c778be1ba78c8",
+    "src/rust/src/pkcs7.rs": "b94925abfb57f1c4a8abc735db0a7bce424fa9e4c249dd2f4f72bd40241ab211"
+  },
+  "upstream_patch_authentication": [
+    {
+      "name": "crypto-chain-budget",
+      "url": "https://github.com/pyca/cryptography/commit/4a12cf49675a184e47f912b00b04f3a629283582.patch",
+      "whole_sha256": "ca9333a262eee7f226e4e8364378a542e103cc18f3205ccd6331fb487c1c69d6",
+      "production_sha256": "cd0c72c8029c884266b420436702ae7d3676debf46231a13ebe662f7c7ae7221"
+    },
+    {
+      "name": "crypto-pkcs7",
+      "url": "https://github.com/pyca/cryptography/commit/53fccd93413a8d7f07d6d8999681f27b75cffa3f.patch",
+      "whole_sha256": "97f30bc6ce6cad6db34db25c38955814f925beb939779de723fcee91eb1e18f9",
+      "production_sha256": "e1da90bd34e5d4f79ab4896ef6833308652a383fd3c239b3376dbd77aa37ed3b"
+    }
+  ]
+}
