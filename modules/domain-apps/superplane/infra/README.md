@@ -30,6 +30,13 @@ references into app modules or read their declared outputs. An app may own a
 separate scoped policy on a shared role without owning that role's lifecycle;
 it must not replace or delete another application's grants.
 
+The control-plane ownership guard recognizes the app's Gateway route-read
+inline policy only with its exact environment-scoped name, Gateway role and
+complete `s3:GetObject` permission on the selected account's single public-route
+object. Both prior and planned values must match; unknown permissions or wider
+access remain refused. Removing that policy still triggers the destructive-plan
+gate and does not transfer ownership of the Gateway role to Superplane.
+
 GitHub workflow entrypoints remain in `.github/workflows/` as required by GitHub.
 Shared Terraform roots may compose app-owned modules, and platform teardown may
 order app cleanup before its dependencies. These are integration hooks, not a
