@@ -439,20 +439,26 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                     "--host=127.0.0.1" if arg == "--host=0.0.0.0" else arg
                     for arg in backend["args"]
                 ]
-                backend["env"].extend(
-                    [
-                        # The pinned image has no passwd entry for non-root UID
-                        # 1000. SkyPilot uses getpass.getuser() during import.
-                        {"name": "USER", "value": "skypilot"},
-                        {"name": "PYTHONPATH", "value": "/skypilot-bootstrap"},
-                        {"name": "SUPERPLANE_SKYPILOT_GOVERNED", "value": "true"},
-                        {"name": "AWS_CONFIG_FILE", "value": "/dev/null"},
-                        {"name": "AWS_SHARED_CREDENTIALS_FILE", "value": "/dev/null"},
-                        {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
-                        {"name": "IS_SKYPILOT_SERVER", "value": "true"},
-                        {"name": "PGSSLMODE", "value": "verify-full"},
-                        {"name": "PGSSLROOTCERT", "value": "/database-ca/ca.pem"},
-                    ]
+                overrides = [
+                    # The pinned image has no passwd entry for non-root UID
+                    # 1000. SkyPilot uses getpass.getuser() during import.
+                    {"name": "USER", "value": "skypilot"},
+                    {"name": "PYTHONPATH", "value": "/skypilot-bootstrap"},
+                    {"name": "SUPERPLANE_SKYPILOT_GOVERNED", "value": "true"},
+                    {"name": "AWS_CONFIG_FILE", "value": "/dev/null"},
+                    {"name": "AWS_SHARED_CREDENTIALS_FILE", "value": "/dev/null"},
+                    {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
+                    {"name": "IS_SKYPILOT_SERVER", "value": "true"},
+                    {"name": "PGSSLMODE", "value": "verify-full"},
+                    {"name": "PGSSLROOTCERT", "value": "/database-ca/ca.pem"},
+                ]
+                # Kubernetes treats env as a list keyed by name. Replace the
+                # base entry (including valueFrom), rather than appending a
+                # duplicate that server-side apply cannot parse.
+                backend["env"] = list(
+                    {
+                        item["name"]: item for item in [*backend["env"], *overrides]
+                    }.values()
                 )
                 backend["volumeMounts"].append(
                     {

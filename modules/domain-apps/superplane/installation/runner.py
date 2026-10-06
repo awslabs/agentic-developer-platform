@@ -1525,13 +1525,18 @@ class Installer:
                 for field in ("uid", "resourceVersion"):
                     require(current["metadata"].get(field), "Object identity is absent")
                     write["metadata"][field] = current["metadata"][field]
-            writes.append((write, current is not None))
-        for doc, present in writes:
+            writes.append((write, current))
+        for doc, previous in writes:
+            from .deployment_recovery import force_args
+
+            present = previous is not None
+            recovery_args = force_args(self, doc, previous)
             # Conditional apply fences both replacement and ownership-label races.
             # Create is essential for absent objects: apply could adopt a concurrent one.
             current = self.json(
                 self.kube(
                     *(["apply", "--server-side"] if present else ["create"]),
+                    *recovery_args,
                     "--field-manager=superplane-installer",
                     "-f",
                     "-",

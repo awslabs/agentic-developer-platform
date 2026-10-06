@@ -351,6 +351,26 @@ modules/domain-apps/superplane/deploy.sh \
 
 Then rerun preflight and resume with the newly reviewed plan hash. A terminal failed migration Job is not silently deleted/retried: diagnose its schema state and follow the named restore owner's recovery decision. A new installation attempt requires the failure to be resolved first. Publication or verification failure attempts to disable the public route. A committed PUT with a lost response is recognized only by its complete recorded payload and unique revision; if the prior version remains, a requested publication retries with its original condition. Compensation instead writes a disabled operation directly, never publishing an uncommitted enable. Its receipt retains the superseded enable identity to fence a late commit. Unavailable or conflicting readback retains the pending operation and installation lock, reports route state as unknown, and requires same-receipt recovery. Before returning a compensated failure, changing rollback workloads, removing cleanup workloads, or releasing a recovery lock, the installer waits out the Gateway-advertised cache lifetime and polls the inventoried public workspace path for the Gateway feature-off response while verifying unrelated ADP health. Failed disable observation retains the recovery marker and lock. It never silently claims the previous release remains available or overwrites a foreign registration.
 
+For a historical `kubectl-patch` image ownership conflict, the optional
+`deployment_image_recovery` environment list pins each selected service's `name`,
+`namespace`, observed `uid`, `spec_sha256` (the canonical JSON digest from
+`installation.config.digest` of its current full `spec`) and `images` (container
+name to prior immutable image reference). Capture and review these live values;
+never generate them from the desired manifest. Changing this input requires a
+new installation selection and plan, not editing an existing resume receipt.
+
+Recovery runs only during rollout after migration and bootstrap, under the
+installation lock. It checks ownership, the reviewed current spec/images, exact
+historical image field managers, and a fresh UID/resourceVersion fence. A server
+apply dry-run holding only the reviewed images at their current values must have
+no conflicts. Only then may the exact desired Deployment be applied with conflict
+recovery. Non-image conflicts, replacement, changed prior configuration or a
+concurrent write refuse the operation. The receipt records the per-object
+pre-apply evidence. A retry whose images already match uses ordinary apply.
+This option never enables global force, edits managedFields or advances rollout
+before schema preparation. Remove it from subsequent routine release selections.
+
+
 Rollback records and fences the current route before preparation, separately from the receipt selecting the release to restore. Both rollback and cleanup require the configured version-2 Gateway transport before mutation.
 
 For image/configuration rollback, pass a prior **successful receipt from this same environment** using `--rollback /secure/previous/receipt.json` and a new output directory. The command verifies schema compatibility, restores pinned secret versions and the prior four-service release, and repeats private/public verification. It refuses cross-schema rollback and performs no downgrade or restore automatically.

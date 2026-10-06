@@ -225,11 +225,15 @@ def validate(
         "paid_worker",
         "lifecycle_foundations",
         "api_producer_role",
+        "deployment_image_recovery",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
+    from .deployment_recovery import validate as validate_deployment_recovery
+
+    validate_deployment_recovery(env)
     deployment_identity(env)
     cluster_dns_address(env)
     from .api_adapters import validate as validate_api_adapters
