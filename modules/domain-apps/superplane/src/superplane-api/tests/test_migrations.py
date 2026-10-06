@@ -697,6 +697,41 @@ class TestCredentialReferenceMigrationRefusesToGuess:
         self._apply(connection)
         assert "adp_credential_ids_json" in self._columns(connection, "cloud_accounts")
 
+    def test_supported_account_rows_survive_without_copying_legacy_lists(
+        self, connection
+    ) -> None:
+        connection.exec_driver_sql(
+            "INSERT INTO cloud_accounts "
+            "(id, account_identifier, cross_account_role_arn, secret_arns_json) "
+            "VALUES ('a1', 'account-1', 'arn:aws:iam::000000000000:role/demo', '[]'), "
+            "('a2', 'account-2', NULL, NULL)"
+        )
+        before = connection.exec_driver_sql(
+            "SELECT id, account_identifier, cross_account_role_arn "
+            "FROM cloud_accounts ORDER BY id"
+        ).all()
+        assert len(before) == 2
+        assert connection.exec_driver_sql(
+            "SELECT count(*) FROM credential_registry"
+        ).scalar_one() == 0
+
+        self._apply(connection)
+
+        after = connection.exec_driver_sql(
+            "SELECT id, account_identifier, cross_account_role_arn "
+            "FROM cloud_accounts ORDER BY id"
+        ).all()
+        assert after == before
+        assert connection.exec_driver_sql(
+            "SELECT count(*) FROM cloud_accounts"
+        ).scalar_one() == len(before)
+        assert connection.exec_driver_sql(
+            "SELECT count(*) FROM credential_registry"
+        ).scalar_one() == 0
+        assert connection.exec_driver_sql(
+            "SELECT adp_credential_ids_json FROM cloud_accounts ORDER BY id"
+        ).all() == [(None,), (None,)]
+
     def test_a_credential_row_with_empty_arn_is_refused_unchanged(
         self, connection
     ) -> None:
@@ -750,9 +785,18 @@ class TestCredentialReferenceMigrationRefusesToGuess:
             "'[\"arn:aws:secretsmanager:us-east-1:123456789012:secret:k-AbCdEf\"]')"
         )
 
+        before_columns = self._columns(connection, "cloud_accounts")
+        before_rows = connection.exec_driver_sql(
+            "SELECT id, secret_arns_json FROM cloud_accounts"
+        ).all()
         with pytest.raises(module.UnverifiedCredentialReferencesError) as excinfo:
             self._apply(connection)
         assert "cloud_accounts.secret_arns_json: 1 row(s)" in str(excinfo.value)
+        assert "123456789012" not in str(excinfo.value)
+        assert self._columns(connection, "cloud_accounts") == before_columns
+        assert connection.exec_driver_sql(
+            "SELECT id, secret_arns_json FROM cloud_accounts"
+        ).all() == before_rows
 
     def test_a_refusal_changes_nothing(self, connection) -> None:
         """The decisive property: a refused database is left exactly as it was.
