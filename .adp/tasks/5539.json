@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5539,
-  "updated_at": "2026-10-06T01:32:12Z",
+  "updated_at": "2026-10-06T01:53:08.913Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -236,7 +236,7 @@
       "files": [
         "modules/domain-apps/superplane/superplane_acceptance/demo1_browser.py"
       ],
-      "note": "Source creation/recovery exists; positive retirement and complete released lifecycle interfaces remain unavailable.",
+      "note": "Creation/recovery source exists, but #5534 has not published mounted positive retirement admission; #5730 still depends on that producer contract.",
       "commits": [
         "9c7a3ec"
       ]
@@ -251,7 +251,7 @@
         "AC-02-c-browser"
       ],
       "files": [],
-      "note": "deployed-target: #5540 operations evaluator; approved release and live authorization required. Not attempted."
+      "note": "deployed-target: #5540 operations evaluator; requires a compatible release, admission and separate live authorization. Not attempted."
     },
     {
       "id": "AC-02-c2",
@@ -260,10 +260,8 @@
       "title": "Document commands, private inputs, residual scenarios and evaluator matrix",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
-      ],
-      "note": "Merged offline guidance; tested operator handoff remains under AC-04-c2.",
+      "files": [],
+      "note": "Merged offline guidance.",
       "commits": [
         "68d882c"
       ]
@@ -287,10 +285,8 @@
       "title": "Read selected AWS resource ownership and surviving peers without mutation",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_aws.py"
-      ],
-      "note": "Broker-scoped, read-only source; no live provider read claimed.",
+      "files": [],
+      "note": "Broker-scoped read-only source; no live provider read claimed.",
       "commits": [
         "7e918e6"
       ]
@@ -304,9 +300,7 @@
       "covers": [
         "AC-02-c-browser"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_browser.py"
-      ],
+      "files": [],
       "note": "Source fixtures passed; positive removal is not covered."
     },
     {
@@ -318,9 +312,7 @@
       "covers": [
         "AC-02-c-provider"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_aws.py"
-      ],
+      "files": [],
       "note": "Fake-CLI fixtures passed; no provider-backed absence claim."
     },
     {
@@ -330,10 +322,7 @@
       "title": "Gate live invocation on private authority and persist resumable sanitized evidence",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_cli.py",
-        "modules/domain-apps/superplane/superplane_acceptance/demo1_live.py"
-      ],
+      "files": [],
       "note": "Fail-closed preflight and private checkpoints; effects path remains disabled.",
       "commits": [
         "44e99f9"
@@ -348,10 +337,8 @@
       "covers": [
         "AC-02-c-live-cli"
       ],
-      "files": [
-        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py"
-      ],
-      "note": "Passed in the prior 178-test offline acceptance suite."
+      "files": [],
+      "note": "Passed in the prior offline acceptance suite."
     },
     {
       "id": "AC-03-c1",
@@ -436,7 +423,7 @@
         "AC-02-c-live-cli"
       ],
       "files": [],
-      "note": "Local full offline domain: 6625 passed, 11 skipped, 4 live deselected, 12 subtests passed. Remote domain job passed on source head 563a298 and board-only head d4deb9c; summary check on d4deb9c was queued at last check.",
+      "note": "Local offline domain passed; remote domain checks passed on source head 563a298 and board-only head d4deb9c.",
       "commits": [
         "d4deb9c"
       ]
@@ -474,9 +461,9 @@
       "status": "done",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/tests/acceptance/README.md"
+        "modules/domain-apps/superplane/tests/acceptance/README.md:58"
       ],
-      "note": "63e9cdd publishes the exact guarded preflight invocation and evaluator handoff on ready PR #7052; it always reports BLOCKED and performs no lifecycle effects. Covered by AC-04-t2.",
+      "note": "Commit 63e9cdd publishes the guarded command and truthful evaluator handoff on ready PR #7052.",
       "commits": [
         "63e9cdd"
       ]
@@ -490,8 +477,13 @@
       "covers": [
         "AC-04-c2"
       ],
-      "files": [],
-      "note": "The documented command ran with fictional private inputs and returned exit 2/BLOCKED; 179 acceptance tests, Ruff and public-doc checker passed. Full local offline domain: 6626 passed, 11 manifest skips, 4 live deselected, 12 subtests. Remote run 37396009738 passed domain job and Superplane domain tests on source head 63e9cdd; next metadata-only head may start its own CI. Foreground review/merge and live evaluation remain separate."
+      "files": [
+        "modules/domain-apps/superplane/tests/acceptance/test_demo1_live.py:95"
+      ],
+      "note": "Documented fictional-input command returned exit 2/BLOCKED; 179 acceptance and 6626 offline domain tests passed locally. Final-head Superplane domain checks passed in run 37399671775 at 24d2a7a. Foreground review/merge and live evaluation remain separate.",
+      "commits": [
+        "24d2a7a"
+      ]
     }
   ]
 }
