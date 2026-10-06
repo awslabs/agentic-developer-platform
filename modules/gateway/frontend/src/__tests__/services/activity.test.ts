@@ -16,6 +16,8 @@ import {
   getMyInvocations,
   getMyChains,
   getAllInvocations,
+  getMyTranscript,
+  getAdminTranscript,
 } from '@/services/activity';
 
 vi.mock('@/services/api', async () => {
@@ -116,5 +118,24 @@ describe('Activity service — query param names (Issue #4390)', () => {
   it('getMyInvocations targets the caller-scoped endpoint', async () => {
     await getMyInvocations(DATE_FILTERS);
     expect(vi.mocked(apiClient.get).mock.calls[0][0]).toContain('/me/agent-invocations');
+  });
+});
+
+describe('transcript redirect boundary', () => {
+  it.each(['member', 'admin'])('keeps %s transcript authorization on its first request', async access => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('transcript'));
+    vi.stubGlobal('fetch', fetcher);
+    sessionStorage.setItem('cognito_access_token', 'transcript-token');
+    try {
+      if (access === 'member') await getMyTranscript('run/one');
+      else await getAdminTranscript('run/one', 'tenant');
+      expect(fetcher.mock.calls[0][0]).toContain('run%2Fone');
+      expect(fetcher.mock.calls[0][1]).toMatchObject({
+        redirect: 'error', headers: { Authorization: 'Bearer transcript-token' },
+      });
+    } finally {
+      sessionStorage.removeItem('cognito_access_token');
+      vi.unstubAllGlobals();
+    }
   });
 });

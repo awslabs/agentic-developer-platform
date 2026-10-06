@@ -286,6 +286,7 @@ export async function exchangeBrokerCode(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, app_state: appState }),
+    redirect: 'error',
   });
 
   if (!response.ok) {
@@ -358,6 +359,7 @@ export async function exchangeCodeForTokens(
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
+    redirect: 'error',
   });
 
   if (!response.ok) {
@@ -386,6 +388,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<CognitoT
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
+    redirect: 'error',
   });
 
   if (!response.ok) {
