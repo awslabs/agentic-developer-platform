@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T01:02:33.371Z",
+  "updated_at": "2026-10-06T01:07:39.352Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,9 +11,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_artifact.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_grants.py"
       ],
-      "note": "70801fd fixes control artifact target binding; production activation and exact revocation remain.",
+      "note": "757ae6e adds artifact-bound exact EKS revocation; admitted production activation and revocation remain unwired.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -24,7 +24,8 @@
         "bc6d025",
         "73430b4",
         "fab15ef",
-        "70801fd"
+        "70801fd",
+        "757ae6e"
       ]
     },
     {
@@ -37,9 +38,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_access_artifact.py"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access.py"
       ],
-      "note": "48 local domain tests passed with zero skips, including PostgreSQL paid-control admission; managed grant activation and revocation are not proved.",
+      "note": "63 targeted tests passed, including earlier PostgreSQL paid-control admission; new revocation cases use a doubled provider and in-memory journal.",
       "commits": [
         "b92e027"
       ]
@@ -69,7 +70,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Production-effect coverage remains."
+      "note": "Production-effect successor coverage remains."
     },
     {
       "id": "AC-01-t3",
@@ -81,7 +82,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Not run against the production retirement producer."
+      "note": "Not run against the production producer."
     },
     {
       "id": "AC-01-t4",
@@ -94,7 +95,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Paid-source and artifact-target denial pass; admitted deletion denial remains."
+      "note": "Offline stale-authority and changed-recipe denial pass; admitted-effect denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -104,7 +105,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Retirement admission remains review-only."
+      "note": "Admission remains review-only."
     },
     {
       "id": "AC-02-c2",
@@ -134,7 +135,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Managed producer registration and retirement worker wiring remain.",
+      "note": "Managed producer and worker wiring remain; coordinate native registration with #5535.",
       "commits": [
         "3a02dea",
         "886fab6",
@@ -154,7 +155,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Earlier API cleanup tests passed; no admitted managed API-to-retirement-producer test."
+      "note": "No admitted managed API-to-producer test yet."
     },
     {
       "id": "AC-02-t2",
@@ -189,7 +190,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Focused tests passed; full relevant suites and required CI remain."
+      "note": "Targeted tests passed; full relevant suites and required CI remain."
     },
     {
       "id": "AC-04-c1",
