@@ -9,6 +9,7 @@ from .config import Refusal, deployment_identity, load, require
 from .runner import Commands, atomic, local_lock
 from .runtime_approval import (
     GitHubPlanApproval,
+    GitHubVaultReadAPI,
     decode_json,
     manifest,
     manifest_path,
@@ -63,12 +64,19 @@ def parser():
     result.add_argument(
         "--plan-review", help="Independently approved aws-e/adp plan PR URL"
     )
+    result.add_argument(
+        "--github-vault-label",
+        help="Read approval using this run's explicit GitHub vault connection; never fall back to gh",
+    )
     return result
 
 
 def run(args, *, commands=None, approval_api=None):
     require(
-        args.execute or not (args.approved_plan_sha256 or args.plan_review),
+        args.execute
+        or not (
+            args.approved_plan_sha256 or args.plan_review or args.github_vault_label
+        ),
         "Approval inputs apply only with --execute",
     )
     require(
@@ -78,6 +86,12 @@ def run(args, *, commands=None, approval_api=None):
         and args.plan_review,
         "Runtime apply requires --resume, --approved-plan-sha256 and --plan-review",
     )
+    if args.github_vault_label is not None:
+        require(
+            approval_api is None,
+            "Selected GitHub vault approval transport cannot be overridden",
+        )
+        approval_api = GitHubVaultReadAPI(args.github_vault_label)
     require(not args.output.is_symlink(), "Runtime output cannot be a symlink")
     directory = args.output.absolute()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)

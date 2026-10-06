@@ -6,7 +6,9 @@ and repository permission records can supply the independent approval.
 """
 
 import base64
+import contextlib
 import hashlib
+import io
 import json
 import re
 import stat
@@ -128,6 +130,73 @@ class GitHubReadAPI:
             ["gh", "api", "--hostname", "github.com", path], timeout=30
         )
         return decode_json(result.stdout, maximum=2 * 1024 * 1024)
+
+
+class GitHubVaultReadAPI:
+    """Explicit selected vault transport; credentials stay inside the broker."""
+
+    def __init__(self, label, *, proxy=None):
+        require(
+            isinstance(label, str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", label),
+            "GitHub vault approval requires an explicit bounded connection label",
+        )
+        self.label, self.proxy = label, proxy
+
+    def get(self, path):
+        # These are exactly the maintained approval reader's GET resources.
+        # No caller host, arbitrary repository, redirect or mutation is accepted.
+        allowed = (
+            r"repos/aws-e/adp(?:"
+            r"/pulls/[1-9][0-9]{0,9}(?:/reviews(?:\?per_page=100&page=(?:[1-9]|10)|/[1-9][0-9]{0,19}))?"
+            r"|/contents/docs/runtime-plan-reviews/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json\?ref=[0-9a-f]{40}"
+            r"|/collaborators/[A-Za-z0-9-]{1,80}(?:%5Bbot%5D)?/permission"
+            r")?"
+        )
+        require(
+            isinstance(path, str) and re.fullmatch(allowed, path),
+            "GitHub vault approval read is outside the trusted repository contract",
+        )
+        try:
+            proxy = self.proxy
+            if proxy is None:
+                from adp_cred.client import proxy_http
+
+                proxy = proxy_http
+            # The maintained CLI client prints upstream error details on failure.
+            # Approval failures expose only this reader's fixed refusal, never
+            # upstream response headers/bodies or credential-bearing diagnostics.
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                result = proxy(
+                    "GET",
+                    "https://api.github.com/" + path,
+                    service="github",
+                    label=self.label,
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except (Exception, SystemExit):
+            raise Refusal(
+                "Selected GitHub vault approval transport is unavailable"
+            ) from None
+        require(
+            isinstance(result, dict)
+            and type(result.get("status")) is int
+            and result["status"] == 200
+            and isinstance(result.get("body"), str)
+            and len(result["body"]) <= 2 * 1024 * 1024,
+            "Selected GitHub vault approval read failed",
+        )
+        try:
+            body = result["body"].encode("utf-8")
+        except UnicodeError:
+            raise Refusal("GitHub vault approval response is invalid UTF-8") from None
+        return decode_json(body, maximum=2 * 1024 * 1024)
 
 
 class GitHubPlanApproval:

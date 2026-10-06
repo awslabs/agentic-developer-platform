@@ -89,7 +89,21 @@ to imitate that contract.
 
 ## Authentication availability for operations runs
 
-The GitHub reader uses only the caller's legitimately configured GitHub identity.
+For an admitted operations run with a legitimate private-repository vault
+connection, add `--github-vault-label '<exact GitHub connection label>'` to the
+`--resume --execute` command. This explicitly selects service `github` through
+the maintained `adp_cred.client.proxy_http` broker. No raw token is exported or
+written to `gh` configuration. The run must already have its own authenticated
+invocation binding and permission to use that connection. The reader allows
+only the trusted repository's exact approval GET routes, refuses redirects and
+non-200 responses, bounds response JSON to 2 MiB, and preserves every manifest,
+head, reviewer and current-permission check. A missing client, unavailable vault
+connection or denied response refuses before Terraform; it never falls back to
+`gh` or another connection. The flag applies only to execution, since initial
+planning does not authenticate approval.
+
+Without this flag, the GitHub reader uses the caller's legitimately configured
+`gh` GitHub identity, as before.
 A personal-repository installation token that cannot read private `aws-e/adp`
 metadata cannot execute this approval bridge. A real user-owned vault GitHub
 connection with that access, or a separately maintained authenticated review
