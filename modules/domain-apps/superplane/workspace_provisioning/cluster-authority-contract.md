@@ -33,6 +33,10 @@ service callers need their own current delegation. Missing or unavailable reader
 fail closed, including when the general ingress identity flag is disabled. The
 maintained API passes its configured reader to the cluster resolver. PostgreSQL/API
 fixtures verify this composition, not availability of a deployed #6127 reader.
+With `CURRENT_IDENTITY_ENFORCED=true`, the maintained HTTP ingress additionally
+requires a human identity: an explicit service grant or synthetic delegation
+cannot bypass that gate. Typed service/delegation resolver coverage in compatibility
+mode does not establish support in the enforced API or the production reader.
 Shared preview and runtime remain disabled until the following interfaces are
 composed:
 

@@ -117,7 +117,15 @@ async def test_management_reads_remain_available_without_execution_facade(
             "/internal/vault-sync/trigger", headers=internal_token_header, json={}
         )
     ).status_code == 503
-    assert (await client.get("/readyz")).status_code == 200
+    assert settings.current_identity_enforced is True
+    assert (await client.get("/readyz")).status_code == 503
+    monkeypatch.setattr(settings, "current_identity_enforced", False)
+    assert (await client.get("/readyz")).json() == {
+        "status": "ready",
+        "mode": "management",
+    }
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    assert (await client.get("/readyz")).status_code == 503
 
 
 async def test_management_startup_never_starts_legacy_reconcilers(monkeypatch):

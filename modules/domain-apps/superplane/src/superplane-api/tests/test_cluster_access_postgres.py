@@ -321,10 +321,11 @@ async def test_cluster_resolution_rechecks_current_identity_with_ingress_flag_of
         assert (await client.get("/workspaces", headers=token())).status_code == 200
 
 
-async def test_service_requires_own_typed_grant_and_current_delegation(
+async def test_compatibility_service_requires_own_typed_grant_and_current_delegation(
     cluster_access, enforcing, monkeypatch
 ):
     client, sessions, _, cluster_id, grant_id, _, identities, token = cluster_access
+    monkeypatch.setattr(settings, "current_identity_enforced", False)
     headers = {
         "Authorization": f"Bearer {_mint(enforcing, sub='owner', **{'custom:org_id': ADP_ORG, 'custom:account_type': 'service'})}"
     }
@@ -337,11 +338,31 @@ async def test_service_requires_own_typed_grant_and_current_delegation(
     assert response.status_code == 200, response.text
     assert [row["id"] for row in response.json()["clusters"]] == [str(cluster_id)]
     assert (await client.get(PATH, headers=token())).status_code == 403
-    monkeypatch.setattr(settings, "current_identity_enforced", False)
     identities.identities[("owner", "service")] = replace(
         identities.identities[("owner", "service")], delegation_id=None
     )
     assert (await client.get(PATH, headers=headers)).status_code == 403
+
+
+@pytest.mark.parametrize("delegation_id", [None, "delegation"])
+async def test_enforced_discovery_rejects_service_with_explicit_cluster_grant(
+    cluster_access, enforcing, monkeypatch, delegation_id
+):
+    client, sessions, _, _, grant_id, _, identities, _ = cluster_access
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    identities.identities[("owner", "service")] = replace(
+        identities.identities[("owner", "service")], delegation_id=delegation_id
+    )
+    async with sessions() as session:
+        grant = await session.get(OrganizationGrantRecord, grant_id)
+        grant.principal_type = "service"
+        await session.commit()
+    headers = {
+        "Authorization": f"Bearer {_mint(enforcing, sub='owner', **{'custom:org_id': ADP_ORG, 'custom:account_type': 'service'})}"
+    }
+    response = await client.get(PATH, headers=headers)
+    assert response.status_code == 403, response.text
+    assert response.json() == {"detail": "human domain identity required"}
 
 
 async def test_cluster_scope_rechecked_after_middleware_authorization(
