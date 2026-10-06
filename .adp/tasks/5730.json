@@ -384,7 +384,7 @@
       "kind": "test",
       "criterion": "AC-05",
       "title": "Run real-browser narrow-screen and keyboard checks",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-05-c1",
         "AC-05-c2"
@@ -392,7 +392,7 @@
       "files": [
         "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
       ],
-      "note": "Actual browser results and artifacts pending.",
+      "note": "Fixture browser workflow 37392225344 passed on 6e17714; inspected retained 360px screenshot and verified review-level overflow bounds. No live acceptance claimed.",
       "commits": [
         "194af4a"
       ]
