@@ -1,9 +1,11 @@
 """Tests verifying all SQLAlchemy models are importable and have correct table names."""
 
+import ast
 import html
 import json
 import unicodedata
 import urllib.parse
+from pathlib import Path
 
 import app.models  # noqa: F401 — triggers model registration with Base
 import pytest
@@ -423,6 +425,24 @@ class TestCredentialRecordsHoldAReferenceNotSecretMaterial:
             f"model fields named to hold a secret ARN: {offenders}. Store an opaque ADP "
             f"credential ID instead, so the ADP vault stays the only resolver and "
             f"rotation/revocation keep reaching the credential."
+        )
+
+    def test_application_does_not_read_legacy_secret_arn_fields(self):
+        """Prevent active consumers from bypassing the reference-only model shape."""
+        app_root = Path(__file__).resolve().parents[1] / "app"
+        offenders = []
+        for source_path in app_root.rglob("*.py"):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in {
+                    "secret_arn",
+                    "secret_arns_json",
+                }:
+                    offenders.append(f"{source_path.relative_to(app_root)}:{node.lineno}")
+
+        assert not offenders, (
+            "application reads copied secret-ARN fields instead of ADP credential "
+            f"references: {offenders}"
         )
 
     def test_no_model_field_is_named_to_hold_a_secret_value(self):

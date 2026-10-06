@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5055,
-  "updated_at": "2026-10-06T00:49:54.835Z",
+  "updated_at": "2026-10-06T01:33:51.876Z",
   "tasks": [
     {
       "id": "R5.1-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Mounted behavior verified."
+      "note": "Existing behavior retained; mounted signed access-token and ID-token cases pass on the prepared merge."
     },
     {
       "id": "R5.1-t1",
@@ -23,7 +23,7 @@
         "R5.1-c1"
       ],
       "files": [],
-      "note": "d72fb72",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "d72fb72"
       ]
@@ -36,7 +36,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Mounted and startup behavior verified."
+      "note": "Mounted and startup behavior retained."
     },
     {
       "id": "R5.2-t1",
@@ -48,7 +48,7 @@
         "R5.2-c1"
       ],
       "files": [],
-      "note": "efe6765",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "efe6765"
       ]
@@ -61,7 +61,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Merged validators unchanged."
+      "note": "Production validators unchanged; internal comparison still uses UTF-8 bytes."
     },
     {
       "id": "R5.3-t1",
@@ -73,7 +73,7 @@
         "R5.3-c1"
       ],
       "files": [],
-      "note": "b683a2e",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "b683a2e"
       ]
@@ -88,7 +88,7 @@
         "R5.3-c1"
       ],
       "files": [],
-      "note": "Raw and UTF-8 non-ASCII return 401; b683a2e."
+      "note": "Raw and UTF-8 non-ASCII cases pass, returning 401 without invoking protected handlers."
     },
     {
       "id": "R5.4-c1",
@@ -98,7 +98,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Verified against spoofed headers."
+      "note": "Signed organization context remains authoritative despite spoofed headers."
     },
     {
       "id": "R5.4-t1",
@@ -110,7 +110,7 @@
         "R5.4-c1"
       ],
       "files": [],
-      "note": "2537952",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "2537952"
       ]
@@ -123,7 +123,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Local configuration only."
+      "note": "Local configuration only; no target activation or deployment configuration changes."
     },
     {
       "id": "R5.5-t1",
@@ -135,7 +135,7 @@
         "R5.5-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator needs a named configured API and approved access."
+      "note": "deployed-target: #5540 evaluator needs a named configured API and approved access. Deferred outside this PR's merge scope."
     },
     {
       "id": "R5.5-t2",
@@ -147,7 +147,7 @@
         "R5.5-c1"
       ],
       "files": [],
-      "note": "cdf629e; local-only evidence.",
+      "note": "Both local flag settings pass in the prepared-merge authorization suite; not deployed evidence.",
       "commits": [
         "cdf629e"
       ]
@@ -160,7 +160,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Offline service scope verified; production integration not claimed."
+      "note": "Offline service scope retained; production integration not claimed."
     },
     {
       "id": "R5.6-t1",
@@ -172,7 +172,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "2992049; injected state is not production identity.",
+      "note": "Authorization suite passes, including stored service-grant read, provision denial and subsequent revoked-read denial.",
       "commits": [
         "2992049"
       ]
@@ -187,7 +187,7 @@
         "R5.6-c1"
       ],
       "files": [],
-      "note": "#6127/#6485/#5535 own identity, grant consumption and runtime composition."
+      "note": "#6127/#6485/#5535 own identity, grant consumption and runtime composition outside this reconciliation slice."
     },
     {
       "id": "R5.7-c1",
@@ -197,7 +197,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Mounted behavior verified."
+      "note": "Mounted sanitization and server-derived caller behavior retained."
     },
     {
       "id": "R5.7-t1",
@@ -209,7 +209,7 @@
         "R5.7-c1"
       ],
       "files": [],
-      "note": "314e66d",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "314e66d"
       ]
@@ -222,7 +222,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Mounted PROVISION guard retained; #6993 fixtures unchanged."
+      "note": "Mounted PROVISION guard and existing historical fixtures retained."
     },
     {
       "id": "R6.1-t1",
@@ -234,7 +234,7 @@
         "R6.1-c1"
       ],
       "files": [],
-      "note": "185fd23",
+      "note": "Prior historical evidence retained from the supplied board; current mounted kubeconfig authorization cases pass in test_auth.py.",
       "commits": [
         "185fd23"
       ]
@@ -259,7 +259,7 @@
         "R6.2-c1"
       ],
       "files": [],
-      "note": "0541bff",
+      "note": "Revalidated within the 201 passing authorization tests.",
       "commits": [
         "0541bff"
       ]
@@ -274,7 +274,7 @@
         "R6.2-c1"
       ],
       "files": [],
-      "note": "0541bff"
+      "note": "Unclassified-route denial passes both without credentials and with a valid signed token."
     },
     {
       "id": "R6.3-c1",
@@ -284,7 +284,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Stored grant authoritative offline."
+      "note": "Stored grants remain authoritative in offline fixtures."
     },
     {
       "id": "R6.3-t1",
@@ -296,7 +296,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "2e0cd803",
+      "note": "Synthetic role-claim and stored-grant cases pass; production role issuance remains unverified.",
       "commits": [
         "2e0cd80"
       ]
@@ -311,7 +311,7 @@
         "R6.3-c1"
       ],
       "files": [],
-      "note": "#6127/#6484/#6485 own production identity and grant contracts."
+      "note": "#6127/#6484/#6485 own production identity and grant contracts outside this reconciliation slice."
     },
     {
       "id": "R6.4-c1",
@@ -333,7 +333,7 @@
         "R6.4-c1"
       ],
       "files": [],
-      "note": "Requires the other owners’ composed current-identity runtime."
+      "note": "Requires the other owners' composed current-identity runtime; not established by offline fixtures."
     },
     {
       "id": "COV-85-c1",
@@ -343,19 +343,19 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "No production change; missing-bearer challenge preserved."
+      "note": "No production API/service changes relative to the new base. Missing-bearer challenge and all 461 focused regression cases pass."
     },
     {
       "id": "COV-85-t1",
       "kind": "test",
       "criterion": "COV-85",
       "title": "Measure coverage and run relevant API suites",
-      "status": "done",
+      "status": "open",
       "covers": [
         "COV-85-c1"
       ],
       "files": [],
-      "note": "b1d59b6a; selected existing modules measured 84% combined, with no changed production-logic denominator. Final-head API and Domain checks pass.",
+      "note": "Reopened for the base-integrated revision. From the API directory, /tmp/u14-review-venv/bin/python -m pytest tests/test_auth.py tests/test_internal_token.py tests/test_organization_grants.py -q passed 201 tests; the same command with tests/test_accounts.py tests/test_migrations.py tests/test_models.py passed 260. Full required final-head API/Domain CI remains controller-owned. No changed production-logic coverage denominator; prior 84% existing-module coverage is not a new measurement or a changed-line pass.",
       "commits": [
         "b1d59b6"
       ]
@@ -368,7 +368,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Both locally configured Cognito flag values retain signed-grant admission and forged-token denial; no runtime activation."
+      "note": "Both local Cognito flag settings retain signed-grant admission and forged-token denial. No runtime activation."
     },
     {
       "id": "U14-L1-t1",
@@ -380,7 +380,7 @@
         "U14-L1-c1"
       ],
       "files": [],
-      "note": "deployed-target: #5540 evaluator needs a named API, approved configuration and test identities."
+      "note": "deployed-target: #5540 evaluator needs a named API, approved configuration and test identities. Deferred outside this PR's merge scope."
     },
     {
       "id": "U14-L1-t2",
@@ -394,7 +394,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_auth.py:2755"
       ],
-      "note": "f0e8c6e2; 201 focused and 1,925 broad offline tests passed. Criterion-level evidence and remaining owners recorded on ready PR #7046.",
+      "note": "Supplied PR evidence separates offline results from live and identity-integration obligations. Local flag tests revalidated; wider story remains open.",
       "commits": [
         "f0e8c6e"
       ]
