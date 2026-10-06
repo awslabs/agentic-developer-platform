@@ -55,3 +55,34 @@ def test_admission_receipt_cannot_claim_terminal_cleanup():
         RetirementAdmissionResponse.model_validate(
             {**receipt, "retirement_complete": True}
         )
+
+
+def test_unmounted_access_contract_keeps_distinct_identities_and_refuses_success():
+    from app.routers.retirement_access import (
+        RetirementAccessReceipt,
+        RetirementAccessReviewResponse,
+        router as access_router,
+    )
+
+    paths = {route.path: route for route in access_router.routes}
+    review = paths["/workspaces/{workspace_id}/retirement/access/preview"]
+    admit = paths["/workspaces/{workspace_id}/retirement/access"]
+    assert review.response_model is RetirementAccessReviewResponse
+    assert admit.response_model is RetirementAccessReceipt
+    request_id, retirement_request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    receipt = {
+        "request_id": request_id,
+        "retirement_request_id": retirement_request_id,
+        "workspace_id": str(uuid.uuid4()),
+        "control_operation_id": str(uuid.uuid4()),
+        "phase": "prepare-retirement-access",
+        "state": "admitted",
+        "retryable": False,
+    }
+    parsed = RetirementAccessReceipt.model_validate(receipt)
+    assert parsed.request_id != parsed.retirement_request_id
+    assert parsed.retirement_complete is False
+    with pytest.raises(ValidationError):
+        RetirementAccessReceipt.model_validate({**receipt, "retirement_complete": True})
+    with pytest.raises(ValidationError):
+        RetirementAccessReceipt.model_validate({**receipt, "allocation_id": "injected"})

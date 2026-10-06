@@ -57,6 +57,7 @@ async def preview_access(composition, db, org_id, workspace_id, retirement_reque
         "preserved": list(deletion.preserved),
         "max_resource_units": 0,
         "max_cost_micros": 0,
+        "admission_available": False,
         "approval_request": {
             "workspace_id": str(workspace_id),
             "action": request.action,
@@ -96,6 +97,7 @@ async def _register(composition, db, workspace, record, request):
         "phase": PHASE,
         "state": record["state"],
         "retryable": False,
+        "retirement_complete": False,
     }
 
 
