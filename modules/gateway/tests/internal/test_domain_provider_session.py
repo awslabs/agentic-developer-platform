@@ -38,12 +38,15 @@ def result(**changes):
         {"assumed_role_arn": "arn:aws:sts::000000000000:assumed-role/provider/session"},
         {"assumed_role_id": "AROA" + "A" * 17 + ":another"},
         {"assumed_role_id": "AIDA" + "A" * 17 + ":session"},
-        {"expiration": (datetime.now(UTC) + timedelta(seconds=1000)).isoformat()},
-        {"expiration": datetime.now(UTC).replace(tzinfo=None).isoformat()},
+        lambda: {"expiration": (datetime.now(UTC) + timedelta(seconds=1000)).isoformat()},
+        lambda: {"expiration": datetime.now(UTC).replace(tzinfo=None).isoformat()},
         {"session_token": ""},
     ],
 )
 def test_sdk_response_identity_and_expiry_refuse(change):
+    # Calculate time-sensitive refusals at execution, not collection: a slow CI
+    # shard must not age the oversized session into a valid 900-second grant.
+    change = change() if callable(change) else change
     with pytest.raises(HTTPException):
         broker.verify_session(result(**change), ROLE, datetime.now(UTC) + timedelta(hours=1), issued_at=datetime.now(UTC))
 

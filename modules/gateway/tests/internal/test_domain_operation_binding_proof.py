@@ -320,3 +320,30 @@ def test_native_proof_refuses_legacy_or_extra_credential_mounts(installed, fault
     with pytest.raises(HTTPException) as refused:
         proof.installed_worker(binding, runtime)
     assert refused.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "name,attribute", [("SUPERPLANE_OPERATION_SCHEMA", "database_schema"), ("SUPERPLANE_DOMAIN_SCHEMA", "domain_database_schema")]
+)
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"value": "wrong_schema"},
+        {"value": ""},
+        {"value": "$(SCHEMA)"},
+        {"valueFrom": {"configMapKeyRef": {"name": "other", "key": "schema"}}},
+        {"valueFrom": {"secretKeyRef": {"name": "other", "key": "schema"}}},
+        {"valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
+        None,
+    ],
+)
+def test_binding_proof_checks_container_schema_overrides(installed, name, attribute, override):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": name, **(override or {"value": getattr(binding, attribute)})})
+    if override is None:
+        assert proof.installed_worker(binding, runtime)[0] == binding.worker_image_digests[0]
+    else:
+        with pytest.raises(HTTPException) as refusal:
+            proof.installed_worker(binding, runtime)
+        assert refusal.value.status_code == 503
