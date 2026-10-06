@@ -115,7 +115,8 @@ export function RetirementApproval({ workspaceId, retirementId, review, preparat
   };
   return <section className="space-y-3" aria-label={preparation ? 'Cleanup preparation approval' : 'Removal approval'}>
     <p className="break-all">Request reference: {receipt.idempotencyKey}</p>
-    {receipt.submissionStage !== 'submitted' && !approval && <Button disabled={busy} onClick={() => void ask()}>
+    {receipt.submissionStage !== 'submitted' && (!approval || approval.plan_digest !== review.revision ||
+      approval.revoked || Date.parse(approval.expires_at) <= now) && <Button disabled={busy} onClick={() => void ask()}>
       Request approval for {preparation ? 'cleanup preparation' : 'removal'}
     </Button>}
     {approval && <ApprovalPanel approval={approval} guard={guard} onChange={setApproval} />}

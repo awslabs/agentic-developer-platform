@@ -97,3 +97,105 @@ def test_replaced_saved_destroy_or_source_is_refused(persisted, change):
         parameters["original_allocation_id"] = "another-allocation"
     with pytest.raises((LifecycleRefused, OperationRefused, ValueError)):
         producer.reviewed_destroy_from_access(row, context).read(inventory, parameters)
+
+
+@pytest.mark.parametrize("change", [None, "creating_plan", "foreign_target"])
+def test_producer_uses_original_target_and_saved_deletion_only_bytes(
+    reviewed,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    change,
+):
+    from harness_jobs.identity import OperationRequest
+
+    from .test_lifecycle_policy import runtime_config
+
+    saved, inventory, _ = reviewed
+    target = saved.target
+    original = OperationRequest(
+        "provision",
+        "bootstrap-request",
+        {
+            "workspace_name": target["workspace_name"],
+            "lifecycle_request": json.dumps(
+                {
+                    "mode": "existing-account-managed",
+                    "organization_id": "o-fixture1234",
+                    "management_account_id": "000000000001",
+                    "management_cluster": "management",
+                    "region": target["aws_region"],
+                    "workspace_id": inventory.workspace_id,
+                    "target_account_id": target["account_id"],
+                    "vpc_cidr": "10.64.0.0/16",
+                    "availability_zones": ["us-east-1a", "us-east-1b"],
+                    "cluster_version": "1.31",
+                }
+            ),
+        },
+    )
+    calls = []
+
+    class PreparedProcess:
+        def __init__(self, **kwargs):
+            self.directory = kwargs["directory"]
+            assert kwargs["session"] is session
+
+        def checked(self, argv, **kwargs):
+            calls.append(argv)
+            assert argv[-1] == "--destroy"
+            output = self.directory / "review"
+            output.mkdir()
+            rendered = json.loads(saved.plan_json.read_text())
+            if change == "creating_plan":
+                rendered["resource_changes"][0]["change"]["actions"] = ["create"]
+            (output / "workspace.tfplan").write_bytes(saved.plan_file.read_bytes())
+            (output / "workspace-plan.json").write_text(json.dumps(rendered))
+            authorization = json.loads(saved.authorization.read_text())
+            authorization["plan_sha256"] = sha(output / "workspace-plan.json")
+            (output / "workspace-authorization.proposed.json").write_text(
+                json.dumps(authorization)
+            )
+            (output / "workspace-inventory.json").write_text(
+                '{"destructive_addresses":["aws_eks_cluster.workspace"]}'
+            )
+            (output / "workspace-estimate.json").write_text('{"bounded_monthly_usd":0}')
+            (output / "workspace-backend.json").write_text(
+                json.dumps(authorization["backend"])
+            )
+
+    monkeypatch.setattr(producer, "WorkerProcesses", PreparedProcess)
+    config = runtime_config()
+    config["environment"] = target["environment"]
+    lease = SimpleNamespace(
+        org_id=inventory.org_id, workspace_id=inventory.workspace_id
+    )
+    original_target = {**target}
+    if change == "foreign_target":
+        original_target["workspace_id"] = "other-workspace"
+    facts = SimpleNamespace(
+        source=SimpleNamespace(admitted_request=lambda: original),
+        inventory=inventory,
+        config=config,
+        artifact={"target_json": json.dumps(original_target)},
+        operation=SimpleNamespace(
+            grant=SimpleNamespace(lease=lease), max_runtime_seconds=900
+        ),
+        plan=SimpleNamespace(original_allocation_id=saved.original_allocation_id),
+    )
+    session = object()
+    directory = tmp_path / "preparation"
+    directory.mkdir()
+    if change:
+        with pytest.raises((OperationRefused, LifecycleRefused)):
+            producer.prepare_destroy(
+                facts, SimpleNamespace(), session, directory, lambda: None
+            )
+    else:
+        metadata = producer.prepare_destroy(
+            facts, SimpleNamespace(), session, directory, lambda: None
+        )
+        assert metadata["target"] == target
+        assert metadata["plan_file_sha256"] == saved.plan_file_sha256
+        assert metadata["original_allocation_id"] == saved.original_allocation_id
+        assert metadata["backend_sha256"] == saved.backend_sha256
+    assert len(calls) == 1

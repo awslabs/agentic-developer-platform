@@ -3,7 +3,7 @@
 import json
 from dataclasses import asdict
 
-from harness_jobs.identity import OperationRequest
+from harness_jobs.identity import OperationRequest, payload_digest
 
 from .artifacts import digest
 from .lifecycle_policy import policy_digest, policy_document
@@ -35,9 +35,23 @@ def retirement_request(inventory, access_plan, access_row, source, policy):
         or (source.org_id, source.workspace_id)
         != (inventory.org_id, inventory.workspace_id)
         or source.state != "succeeded"
+        or payload_digest(original) != source.plan_digest
         or source.plan_digest
         != json.loads(access_row["parameters_json"])["retirement_source_payload_digest"]
         or reference.original_allocation_id != access_plan.original_allocation_id
+        or any(
+            reference.target.get(key) != value
+            for key, value in {
+                "org_id": inventory.org_id,
+                "workspace_id": inventory.workspace_id,
+                "account_id": account,
+                "aws_region": region,
+            }.items()
+        )
+        or metadata["retirement_fence"]["identity"]
+        != (access_plan.fence_recipe or {})
+        .get("activate-retirement-fence", {})
+        .get("arguments")
         or access_plan.runtime_config_sha256 != digest(policy["runtime"])
         or "managed" not in policy["permitted_modes"]
         or account not in policy["permitted_target_accounts"]
