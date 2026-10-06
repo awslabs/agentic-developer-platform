@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:21:13.608Z",
+  "updated_at": "2026-10-06T00:27:59.688Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -3856,7 +3856,7 @@
         "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
         "modules/domain-apps/superplane/src/superplane-api/app/routers/installation.py"
       ],
-      "note": "Covered by AC-02-t3; committed and pushed as 930482521.",
+      "note": "Previously completed at 930482521; covered by AC-02-t3.",
       "commits": [
         "9304825"
       ]
@@ -3866,10 +3866,18 @@
       "kind": "code",
       "criterion": "AC-02",
       "title": "Fence paid-worker activation on verified installed binding and current dependencies",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Next task; prepared and executable binding proofs require distinct checks."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/harness_operation_facade.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/composition.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/installation.py"
+      ],
+      "note": "Covered by AC-02-t2; committed and pushed as b154e68f6. The installer’s native-controller projection remains intentionally paused.",
+      "commits": [
+        "b154e68"
+      ]
     },
     {
       "id": "AC-02-t1",
@@ -3882,20 +3890,24 @@
         "AC-02-c2"
       ],
       "files": [],
-      "note": "Pending the activation work; the offline packaged check does not establish live worker binding."
+      "note": "Next task. Focused installer refusal tests passed, but packaged valid-configuration evidence remains pending."
     },
     {
       "id": "AC-02-t2",
       "kind": "test",
       "criterion": "AC-02",
       "title": "Test activation refusal on missing, incompatible, or lost dependencies",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-02-c1",
         "AC-02-c2"
       ],
-      "files": [],
-      "note": "Pending."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py"
+      ],
+      "note": "Missing verifier, lost dependencies, incompatible binding, unauthorized organization, and proof failure remain fail-closed. At b154e68f6, 148 focused API tests, 5 PostgreSQL cases, and 19 installer tests passed."
     },
     {
       "id": "AC-02-t3",
@@ -3909,7 +3921,7 @@
       "files": [
         "modules/domain-apps/superplane/src/superplane-api/tests/test_installation.py"
       ],
-      "note": "Added so AC-02-c1 has independent covering evidence without prematurely completing AC-02-t1. Focused API suite: 110 passed; final touched-file run: 17 passed."
+      "note": "Previously passed at 930482521."
     },
     {
       "id": "AC-03-c1",
@@ -3953,7 +3965,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at 930482521; required checks and handoff remain."
+      "note": "PR head verified at b154e68f6; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
