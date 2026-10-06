@@ -28,6 +28,88 @@ def tar_bytes(entries):
     return output.getvalue()
 
 
+def layer_archive(tmp_path, layers):
+    config = D.canonical(
+        {
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"diff_ids": ["sha256:" + D.sha(layer) for layer in layers]},
+        }
+    )
+
+    def descriptor(data, media):
+        return {
+            "digest": "sha256:" + D.sha(data),
+            "size": len(data),
+            "mediaType": media,
+        }
+
+    manifest = D.canonical(
+        {
+            "schemaVersion": 2,
+            "config": descriptor(config, "application/vnd.oci.image.config.v1+json"),
+            "layers": [
+                descriptor(layer, "application/vnd.oci.image.layer.v1.tar")
+                for layer in layers
+            ],
+        }
+    )
+    archive = tmp_path / "layers.oci.tar"
+    archive.write_bytes(
+        tar_bytes(
+            [
+                ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'),
+                *[
+                    ("blobs/sha256/" + D.sha(data), data)
+                    for data in [config, manifest, *layers]
+                ],
+            ]
+        )
+    )
+    return archive, "sha256:" + D.sha(manifest)
+
+
+def test_opaque_whiteout_and_directory_replacement(tmp_path):
+    layers = [
+        tar_bytes([("tree/old", b"old"), ("other/child", b"child")]),
+        tar_bytes(
+            [
+                ("tree/.wh..wh..opq", b""),
+                ("tree/new", b"new"),
+                ("other", b"replacement"),
+            ]
+        ),
+    ]
+    _, _, files, _ = D.collect_oci(*layer_archive(tmp_path, layers))
+    assert "/tree/old" not in files and "/other/child" not in files
+    assert files["/tree/new"]["sha256"] == D.sha(b"new")
+    assert files["/other"]["sha256"] == D.sha(b"replacement")
+
+
+def test_nonempty_whiteout_refused(tmp_path):
+    layers = [
+        tar_bytes([("tree/old", b"old")]),
+        tar_bytes([("tree/.wh.old", b"nonempty")]),
+    ]
+    with pytest.raises(D.Invalid, match="whiteout representation"):
+        D.collect_oci(*layer_archive(tmp_path, layers))
+
+
+@pytest.mark.parametrize("entry", ["parent/child", "parent/.wh.child"])
+def test_file_parent_for_write_or_whiteout_refused(tmp_path, entry):
+    layers = [tar_bytes([("parent", b"file")]), tar_bytes([(entry, b"")])]
+    with pytest.raises(D.Invalid, match="non-directory parent"):
+        D.collect_oci(*layer_archive(tmp_path, layers))
+
+
+def test_resolve_file_rejects_regular_file_ancestor():
+    with pytest.raises(D.Invalid, match="non-directory path ancestor"):
+        D.resolve_file(
+            {"/parent": {"kind": "file"}, "/parent/child": {"kind": "file"}},
+            "/parent/child",
+        )
+
+
 @pytest.fixture
 def bundle(tmp_path):
     revision = "a" * 40
@@ -558,4 +640,28 @@ def test_effective_scanner_configuration_mismatch_denied(bundle):
         bundle, "scanner_config", lambda config: config.update({"only-fixed": True})
     )
     with pytest.raises(D.Invalid, match="scanner config mismatch"):
+        observed(bundle)
+
+
+def test_conflicting_gate_qualitative_security_severity_denied(bundle):
+    change_json(
+        bundle,
+        "raw_sarif",
+        lambda d: d["runs"][0]["tool"]["driver"]["rules"][0]["properties"].update(
+            {"security-severity": "low"}
+        ),
+    )
+    with pytest.raises(D.Invalid, match="gate-effective severity mismatch"):
+        observed(bundle)
+
+
+def test_conflicting_gate_result_issue_severity_denied(bundle):
+    change_json(
+        bundle,
+        "raw_sarif",
+        lambda d: d["runs"][0]["results"][0].update(
+            properties={"issue_severity": "low"}
+        ),
+    )
+    with pytest.raises(D.Invalid, match="gate-effective severity mismatch"):
         observed(bundle)

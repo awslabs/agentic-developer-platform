@@ -12,6 +12,7 @@ import base64
 import copy
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import posixpath
@@ -21,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -51,6 +53,18 @@ def sha(data):
 
 def object_sha(value):
     return sha(canonical(value))
+
+
+@lru_cache(maxsize=1)
+def maintained_gate():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / ".github/scripts/diff_security_findings.py"
+    )
+    spec = importlib.util.spec_from_file_location("adp_maintained_security_gate", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def file_sha(path):
@@ -96,6 +110,17 @@ def normal_path(name):
     return "/" + posixpath.normpath(name).lstrip("/")
 
 
+def validate_parents(files, path):
+    parents = path.strip("/").split("/")[:-1]
+    for index in range(len(parents)):
+        entry = files.get("/" + "/".join(parents[: index + 1]))
+        require(
+            entry is None or entry["kind"] == "directory",
+            "unsupported write through non-directory parent",
+        )
+    return parents
+
+
 def resolve_file(files, path):
     path = normal_path(path)
     for _ in range(40):
@@ -114,6 +139,12 @@ def resolve_file(files, path):
                     posixpath.normpath(posixpath.join(destination, *parts[index + 1 :]))
                 )
                 break
+            require(
+                entry is None
+                or index == len(parts) - 1
+                or entry["kind"] == "directory",
+                "non-directory path ancestor",
+            )
         else:
             if path not in files:
                 raise MissingFile(path)
@@ -135,6 +166,9 @@ def collect_oci(archive, platform_digest):
     )
     files = {}
     retained = {}
+    # A conservative set of prefixes ever populated. This avoids scanning every
+    # existing file for each new regular file while preserving subtree removal.
+    populated_prefixes = set()
     with tarfile.open(archive, "r:*") as outer:
         members = {}
         for member in outer:
@@ -202,9 +236,14 @@ def collect_oci(archive, platform_digest):
                 names = [normal_path(entry.name) for entry in entries]
                 require(len(names) == len(set(names)), "duplicate path in layer")
                 # Whiteouts apply to lower layers before current-layer additions.
-                for name in names:
+                for member, name in zip(entries, names):
                     leaf = posixpath.basename(name)
                     if leaf.startswith(".wh."):
+                        validate_parents(files, name)
+                        require(
+                            member.isfile() and member.size == 0,
+                            "unsupported whiteout representation",
+                        )
                         parent = posixpath.dirname(name)
                         target = (
                             parent
@@ -220,20 +259,15 @@ def collect_oci(archive, platform_digest):
                 for member, name in zip(entries, names):
                     if posixpath.basename(name).startswith(".wh."):
                         continue
-                    parents = name.strip("/").split("/")[:-1]
-                    require(
-                        not any(
-                            files.get("/" + "/".join(parents[: i + 1]), {}).get("kind")
-                            == "symlink"
-                            for i in range(len(parents))
-                        ),
-                        "unsupported write through symlink parent",
-                    )
-                    if not member.isdir():
+                    parents = validate_parents(files, name)
+                    if not member.isdir() and name in populated_prefixes:
                         for key in list(files):
                             if key.startswith(name.rstrip("/") + "/"):
                                 files.pop(key)
                                 retained.pop(key, None)
+                    populated_prefixes.update(
+                        "/" + "/".join(parents[: i + 1]) for i in range(len(parents))
+                    )
                     retained.pop(name, None)
                     if member.isfile():
                         content = layer.extractfile(member).read()
@@ -494,6 +528,11 @@ def map_findings(sbom, native, sarif):
             help_field(text, "Severity").lower()
             == match["vulnerability"]["severity"].lower(),
             "severity mismatch",
+        )
+        effective_severity, _ = maintained_gate().resolve_sarif_severity(result, rules)
+        require(
+            effective_severity == match["vulnerability"]["severity"].lower(),
+            "gate-effective severity mismatch",
         )
         mappings.append(
             {
