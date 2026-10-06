@@ -1,5 +1,8 @@
 """Source-bound browser journey tests with no live requests."""
 
+import json
+import shutil
+import subprocess
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -760,3 +763,70 @@ def test_expired_submitted_checkpoint_cannot_invent_or_resubmit_admission(
         path.endswith("/workspaces/" + checkpoint.workspace_id)
         for _, path, _ in transport.calls
     )
+
+
+@pytest.mark.parametrize("session_token", ["current-workspace-token", None])
+def test_browser_adapter_executes_javascript_with_current_session_token(
+    monkeypatch, session_token
+):
+    """Execute the shipped JS: a stale persistent token must never authorize."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the browser transport JavaScript")
+    monkeypatch.setitem(sys.modules, "playwright", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "playwright.sync_api", SimpleNamespace(Error=RuntimeError)
+    )
+    calls = []
+
+    def evaluate(script, arguments):
+        program = """
+const {runInNewContext} = require('node:vm');
+const {script, arguments: args, token} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const calls = [];
+const storage = value => ({getItem: key => key === 'cognito_access_token' ? value : null});
+const request = runInNewContext('(' + script + ')', {
+  sessionStorage: storage(token),
+  localStorage: storage('stale-other-workspace-token'),
+  fetch: async (path, options) => {
+    calls.push({path, ...options});
+    return {status: 200, json: async () => ({version: 1})};
+  },
+});
+request(args).then(result => process.stdout.write(JSON.stringify({result, calls})));
+"""
+        completed = subprocess.run(
+            [node, "-e", program],
+            input=json.dumps(
+                {"script": script, "arguments": arguments, "token": session_token}
+            ),
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        observed = json.loads(completed.stdout)
+        calls.extend(observed["calls"])
+        return observed["result"]
+
+    page = SimpleNamespace(url="https://example.invalid/workspaces", evaluate=evaluate)
+    transport = demo1_browser.PlaywrightBrowserTransport(
+        page, "https://example.invalid"
+    )
+    result = transport.request("GET", "/api/superplane/v1/capabilities")
+    if session_token is None:
+        assert result == (401, None)
+        assert calls == []
+    else:
+        assert result == (200, {"version": 1})
+        assert calls == [
+            {
+                "path": "/api/superplane/v1/capabilities",
+                "method": "GET",
+                "credentials": "same-origin",
+                "headers": {
+                    "Authorization": "Bearer current-workspace-token",
+                    "Content-Type": "application/json",
+                },
+            }
+        ]
