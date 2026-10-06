@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 6127,
-  "updated_at": "2026-10-06T00:26:37.604Z",
+  "updated_at": "2026-10-06T00:29:08.385Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Completed in 02119b1.",
+      "note": "02119b1.",
       "commits": [
         "02119b1"
       ]
@@ -62,7 +62,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "Completed in e243ee4; focused Gateway suite passed.",
+      "note": "e243ee4; focused Gateway suite passed.",
       "commits": [
         "e243ee4"
       ]
@@ -75,7 +75,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Completed in 2c3280a; reused migration 036.",
+      "note": "2c3280a; reused migration 036.",
       "commits": [
         "2c3280a"
       ]
@@ -90,7 +90,7 @@
         "AC-02-c1"
       ],
       "files": [],
-      "note": "Four PostgreSQL identity tests passed in earlier Domain CI; final-head CI pending.",
+      "note": "Four tests passed in earlier Domain CI; final-head CI pending.",
       "commits": [
         "e497897"
       ]
@@ -115,7 +115,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Completed in 3b87cc0.",
+      "note": "3b87cc0.",
       "commits": [
         "3b87cc0"
       ]
@@ -128,7 +128,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Completed in c3589f7.",
+      "note": "c3589f7.",
       "commits": [
         "c3589f7"
       ]
@@ -157,7 +157,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Completed in 819594e; adjacent suites passed.",
+      "note": "819594e; adjacent suites passed.",
       "commits": [
         "819594e"
       ]
@@ -173,7 +173,7 @@
         "AC-03-c2"
       ],
       "files": [],
-      "note": "Completed in 6a9083f; four affected local suites passed 155 tests.",
+      "note": "6a9083f; affected local suites passed 155 tests.",
       "commits": [
         "6a9083f"
       ]
@@ -197,13 +197,8 @@
       "title": "Recheck durable original requester and deciding approver at protected execution boundaries",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/gateway/src/internal/domain_current_identity.py",
-        "modules/gateway/src/internal/domain_operation_dispatch.py",
-        "modules/gateway/src/internal/domain_operation_runtime.py",
-        "modules/gateway/src/internal/domain_operation_store.py"
-      ],
-      "note": "Committed and pushed as e5cd337; opt-in binding preserves default compatibility. Covered by AC-04-t4.",
+      "files": [],
+      "note": "e5cd337; covered by AC-04-t4.",
       "commits": [
         "e5cd337"
       ]
@@ -213,10 +208,17 @@
       "kind": "code",
       "criterion": "AC-04",
       "title": "Keep human/service credentials and scoped observations separate",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": ""
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/domain_guard.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_authority_source.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/current_identity.py"
+      ],
+      "note": "9581395; covered by AC-04-t2. Enforcement-off compatibility is preserved.",
+      "commits": [
+        "9581395"
+      ]
     },
     {
       "id": "AC-04-t1",
@@ -236,13 +238,16 @@
       "kind": "test",
       "criterion": "AC-04",
       "title": "Reject principal-type and subject substitution in API/worker tests",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-04-c1",
         "AC-04-c2"
       ],
-      "files": [],
-      "note": ""
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_organization_binding.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_current_identity.py"
+      ],
+      "note": "API/worker substitution and monitor credential assertions passed; 93 isolation tests and four adjacent credential-type tests passed."
     },
     {
       "id": "AC-04-t3",
@@ -255,7 +260,7 @@
         "AC-04-c2"
       ],
       "files": [],
-      "note": ""
+      "note": "Broader protected integration evidence remains."
     },
     {
       "id": "AC-04-t4",
@@ -266,10 +271,8 @@
       "covers": [
         "AC-04-c1"
       ],
-      "files": [
-        "modules/gateway/tests/internal/test_domain_current_identity.py"
-      ],
-      "note": "Added because AC-04-t1 also covers unfinished AC-04-c2. Focused Gateway suite: 11 passed, 10 PostgreSQL tests skipped locally."
+      "files": [],
+      "note": "Gateway focused suite passed 11 tests; 10 PostgreSQL tests skipped locally."
     },
     {
       "id": "AC-05-c1",
@@ -341,7 +344,7 @@
         "AC-05-c-wire"
       ],
       "files": [],
-      "note": "deployed-target: supervisor/live-acceptance owner; source-only assignment prohibits deployment and paid execution."
+      "note": "deployed-target: supervisor/live-acceptance owner; this source-only assignment prohibits deployment and paid execution."
     }
   ]
 }
