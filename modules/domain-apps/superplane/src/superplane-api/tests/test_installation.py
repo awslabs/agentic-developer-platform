@@ -79,7 +79,8 @@ def test_skypilot_proxy_requires_credential_and_strips_it(monkeypatch):
         assert "authorization" not in calls[0].headers
 
 
-def test_image_contract_is_offline_without_database_or_shared_credentials():
+@pytest.mark.parametrize("configured", [False, True])
+def test_image_contract_is_offline_without_database_or_shared_credentials(configured):
     import os
     import subprocess
     import sys
@@ -98,12 +99,22 @@ def test_image_contract_is_offline_without_database_or_shared_credentials():
         and not k.startswith("AWS_")
     }
     environment["AWS_EC2_METADATA_DISABLED"] = "true"
+    if configured:
+        environment.update(
+            DATABASE_URL="postgresql+asyncpg://test@127.0.0.1:1/offline",
+            SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS="true",
+            ADP_GATEWAY_INTERNAL_URL="https://127.0.0.1:1",
+            ADP_GATEWAY_INTERNAL_API_KEY="offline-test-not-secret",
+            SUPERPLANE_PAID_WORKER_MODE="native-controller",
+            SUPERPLANE_OPERATION_DISPATCH_ENABLED="false",
+        )
     result = subprocess.run(
         [sys.executable, "-m", "app.installation", "image-contract"],
         env=environment,
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert result.returncode == 0, result.stdout
     report = json.loads(result.stdout)
@@ -112,6 +123,51 @@ def test_image_contract_is_offline_without_database_or_shared_credentials():
     assert report["authority_verified"] is False
     assert report["production_ready"] is False
     assert "capabilities" not in report
+
+
+def test_packaged_capabilities_compose_native_configuration_without_live_binding():
+    import os
+    import subprocess
+    import sys
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "DATABASE_URL",
+            "ADP_GATEWAY_INTERNAL_URL",
+            "ADP_GATEWAY_INTERNAL_API_KEY",
+        }
+        and not key.startswith("AWS_")
+    }
+    environment.update(
+        AWS_EC2_METADATA_DISABLED="true",
+        DATABASE_URL="postgresql+asyncpg://test@127.0.0.1:1/offline",
+        SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS="true",
+        ADP_GATEWAY_INTERNAL_URL="https://127.0.0.1:1",
+        ADP_GATEWAY_INTERNAL_API_KEY="offline-test-not-secret",
+        SUPERPLANE_PAID_WORKER_MODE="native-controller",
+        SUPERPLANE_OPERATION_DISPATCH_ENABLED="false",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "app.installation", "capabilities"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    report = json.loads(result.stdout)
+    assert result.returncode == 2
+    assert report["capabilities"] == {
+        "allocation_inventory": True,
+        "credential_evidence": False,
+        "operation_facade": True,
+        "provider_authority": True,
+    }
+    assert all(probe["composition"]["installed"] for probe in report["probes"].values())
+    assert all(probe["conformant"] is False for probe in report["probes"].values())
 
 
 async def test_runtime_dependencies_read_empty_authority_and_lifecycle_tables(
