@@ -24,8 +24,16 @@
     "/workspaces/{workspace_id}/access/v1/me"
   ],
   [
+    "GET",
+    "/workspaces/{workspace_id}/access/v1/grants"
+  ],
+  [
     "POST",
     "/workspaces/{workspace_id}/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"
   ],
   [
     "DELETE",
@@ -126,6 +134,22 @@
   [
     "GET",
     "/orgs/current"
+  ],
+  [
+    "GET",
+    "/orgs/current/access/v1/me"
+  ],
+  [
+    "GET",
+    "/orgs/current/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/orgs/current/access/v1/grants"
+  ],
+  [
+    "POST",
+    "/orgs/current/access/v1/grants/{grant_id}/revoke"
   ],
   [
     "PATCH",

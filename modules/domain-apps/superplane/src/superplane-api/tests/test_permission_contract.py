@@ -113,12 +113,34 @@ def test_all_permission_implications_and_non_implications(granted, requested):
 
 
 
-def test_available_workspace_grants_and_absent_other_access_surfaces():
+@pytest.mark.parametrize("name,permission,surface,routes,requirements", [
+    (
+        "workspace.access.read", Permission.READ.value, "ui:getWorkspaceAccess",
+        ["GET /workspaces/{workspace_id}/access/v1/me"], {"explicit_live_grant"},
+    ),
+    (
+        "workspace.access.manage", Permission.ADMINISTER.value, "ui:grantWorkspaceAccess",
+        ["POST /workspaces/{workspace_id}/access/v1/grants"],
+        {"typed_target", "same_tenant", "explicit_live_grant", "current_membership", "assignable_ceiling"},
+    ),
+])
+def test_mounted_human_workspace_access_surfaces(name, permission, surface, routes, requirements):
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    action = actions[name]
+    assert action["scope"] == "workspace"
+    assert action["permission"] == permission
+    assert action["principal"] == "human"
+    assert action["surface"] == surface
+    assert action["routes"] == routes
+    assert requirements <= set(action["extra"])
+    assert "organization_grant" not in action
+
+
+def test_absent_generalized_effective_access_and_grant_administration_surfaces():
     actions = {action["id"]: action for action in MATRIX["actions"]}
     for name, scope, permission in (
         ("workspace.access.effective", "workspace", Permission.READ.value),
         ("org.access.effective", "organization", Permission.READ.value),
-        ("org.access.manage", "organization", Permission.ADMINISTER.value),
         ("workspace.share", "workspace", Permission.ADMINISTER.value),
         ("cluster.use", "cluster", "cluster:use"),
         ("cluster.administer", "cluster", "cluster:administer"),
@@ -137,12 +159,15 @@ def test_available_workspace_grants_and_absent_other_access_surfaces():
     assert actions["org.access.manage"]["organization_grant"] == ORGANIZATION_ADMINISTER
     assert actions["org.access.effective"]["organization_grant"] == ORGANIZATION_READ
     for name in ("org.access.effective", "workspace.access.effective"):
+        assert actions[name]["principal"] == "human_or_service"
         assert {"self_only", "current_typed_identity", "revocation_aware"} <= set(actions[name]["extra"])
-    assert {"assignment_ceiling_owner_decision", "last_admin_recovery_owner_decision"} <= set(actions["org.access.manage"]["extra"])
+    assert "no_grant_existence_leak" in actions["workspace.access.effective"]["extra"]
+    assert actions["org.access.manage"]["routes"] == ["POST /orgs/current/access/v1/grants", "POST /orgs/current/access/v1/grants/{grant_id}/revoke"]
+    assert {"assignable_ceiling", "self_mutation_pending_policy", "service_and_presets_pending_policy", "atomic_audit", "durable_replay"} <= set(actions["org.access.manage"]["extra"])
     assert "cluster_use_authority_separate" in actions["workspace.share"]["extra"]
     assert actions["org.users.manage"]["routes"]
     assert actions["org.users.manage"]["surface"] == "absent"
-    assert "grant administration actions are intentionally absent" in MATRIX["format"]
+    assert "Generalized human/service self-effective-access actions are intentionally absent" in MATRIX["format"]
 
 
 def test_fixed_permission_vocabulary_and_separate_cluster_scope():
@@ -165,6 +190,19 @@ def test_fixed_permission_vocabulary_and_separate_cluster_scope():
     assert "cli:cluster list" in actions["workspace.list"]["also_surfaces"]
     assert "first installation grant" in MATRIX["scope_gate"]["bootstrap"]
     assert "revocation denies fallback" in MATRIX["scope_gate"]["organization"]
+
+
+def test_cluster_discovery_requires_independent_current_cluster_use():
+    action = next(action for action in MATRIX["actions"] if action["id"] == "workspace.list")
+    assert action["organization_grant"] == ORGANIZATION_READ
+    assert action["conditional_authorities"] == [{
+        "query": {"view": "eligible-clusters"},
+        "scope": "cluster",
+        "permission": "cluster:use",
+        "evaluation": "filter_before_metadata",
+        "requires": ["current_typed_identity", "same_bound_organization", "live_parent_and_child"],
+        "not_authority_for": ["cluster:administer", "cluster:observe", "approval", "executor_admission"],
+    }]
 
 
 @pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case["name"])
@@ -232,6 +270,12 @@ def test_sensitive_actions_have_independent_requirements():
     assert actions["workspace.access.manage"]["routes"] == [
         "POST /workspaces/{workspace_id}/access/v1/grants"
     ]
+    assert actions["workspace.access.revoke"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"
+    ]
+    assert actions["workspace.access.revoke"]["permission"] == Permission.ADMINISTER.value
+    assert actions["workspace.access.revoke"]["principal"] == "human"
+    assert {"expected_revision", "atomic_audit", "durable_replay", "self_removal_pending_policy", "future_authority_only"} <= set(actions["workspace.access.revoke"]["extra"])
     assert actions["cluster.use"]["scope"] != actions["workspace.read"]["scope"]
     # Do not turn first-install bootstrap or machine transport restrictions into
     # blanket action permissions for subsequent workspaces or cluster observers.

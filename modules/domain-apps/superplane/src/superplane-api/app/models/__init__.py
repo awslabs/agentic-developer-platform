@@ -63,6 +63,7 @@ from app.models.controller_network import (  # noqa: F401
 )
 
 from app.models.cluster_grant_scope import OrganizationGrantClusterScope  # noqa: F401
+from app.models.organization_grant_change import OrganizationGrantChange as OrganizationGrantChange
 from app.models.controller_workload_submission import ControllerWorkloadSubmission  # noqa: F401
 from app.models.controller_node_command import ControllerNodeCommand  # noqa: F401
 from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot  # noqa: F401

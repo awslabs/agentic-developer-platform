@@ -13,7 +13,8 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["043_workspace_grant_changes"]
+    assert scripts.get_heads() == ["044_organization_grant_changes"]
+    assert scripts.get_revision("044_organization_grant_changes").down_revision == "043_workspace_grant_changes"
     assert (
         scripts.get_revision("043_workspace_grant_changes").down_revision
         == "042_controller_cleanup_snapshots"

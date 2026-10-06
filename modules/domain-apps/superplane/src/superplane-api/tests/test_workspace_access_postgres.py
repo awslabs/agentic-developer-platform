@@ -298,3 +298,144 @@ async def test_current_viewer_service_target_and_sole_admin_self_change_denied_p
     assert (await client.post(url, json=request(target_subject="owner", expected_revision=1), headers=token())).status_code == 403
     async with sessions() as session:
         assert (await session.scalars(select(WorkspaceGrantChange))).all() == []
+
+
+async def test_assignment_listing_is_scoped_paginated_and_sanitized_postgres(postgres_access):
+    client, sessions, workspace_id, members, token = postgres_access
+    url = f"/workspaces/{workspace_id}/access/v1/grants"
+    body = request()
+    assigned = await client.post(url, json=body, headers=token())
+    assert assigned.status_code == 200, assigned.text
+    foreign_org_id, foreign_workspace_id, sibling_workspace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with sessions() as session:
+        org_id = (await session.get(Workspace, workspace_id)).org_id
+        session.add(Organization(id=foreign_org_id, name=f"foreign-{foreign_org_id}", adp_org_id="foreign-adp-org"))
+        await session.flush()
+        session.add_all([
+            Workspace(id=foreign_workspace_id, org_id=foreign_org_id, name="foreign", isolation_mode="research"),
+            Workspace(id=sibling_workspace_id, org_id=org_id, name="sibling", isolation_mode="research"),
+        ])
+        await session.flush()
+        session.add_all([
+            WorkspaceGrantRecord(workspace_id=workspace_id, org_id=org_id, principal="revoked-human",
+                                 principal_type="human", permissions="workspace:spend", revoked_at=datetime.now(UTC)),
+            WorkspaceGrantRecord(workspace_id=workspace_id, org_id=org_id, principal="service-record",
+                                 principal_type="service", permissions="workspace:read unknown-permission"),
+            WorkspaceGrantRecord(workspace_id=foreign_workspace_id, org_id=foreign_org_id, principal="foreign-human",
+                                 principal_type="human", permissions="workspace:read"),
+            WorkspaceGrantRecord(workspace_id=sibling_workspace_id, org_id=org_id, principal="sibling-human",
+                                 principal_type="human", permissions="workspace:read"),
+            WorkspaceGrantRecord(workspace_id=workspace_id, org_id=foreign_org_id, principal="wrong-org-row",
+                                 principal_type="human", permissions="workspace:read"),
+        ])
+        audit = await session.scalar(select(Event).where(Event.event_type == "workspace_access"))
+        audit.details_json = json.dumps({**json.loads(audit.details_json), "private_note": "synthetic-private-audit-value"})
+        owner = await session.scalar(select(WorkspaceGrantRecord).where(
+            WorkspaceGrantRecord.workspace_id == workspace_id, WorkspaceGrantRecord.principal == "owner",
+        ))
+        foreign_audit = Event(
+            org_id=foreign_org_id, principal="foreign-actor", outcome="allowed", action="assigned",
+            resource_type="workspace_grant", resource_id=owner.id, event_type="workspace_access",
+        )
+        session.add(foreign_audit)
+        await session.flush()
+        session.add(WorkspaceGrantChange(
+            workspace_id=workspace_id, request_id=uuid.uuid4(), grant_id=owner.id,
+            event_id=foreign_audit.id, fingerprint="synthetic-foreign-evidence", revision=owner.revision,
+        ))
+        await session.commit()
+    members.active.remove("approver")
+    response = await client.get(url, headers=token())
+    assert response.status_code == 200, response.text
+    assert response.json()["workspace_id"] == str(workspace_id)
+    rows = response.json()["assignments"]
+    by_subject = {row["subject"]: row for row in rows}
+    assert set(by_subject) == {"owner", "approver", "revoked-human", "service-record"}
+    assert by_subject["approver"] == {
+        "workspace_id": str(workspace_id), "grant_id": assigned.json()["grant_id"], "revision": 1,
+        "principal_type": "human", "subject": "approver", "assigned_permissions": ["workspace:read"],
+        "revoked_at": None, "source": "explicit_assignment", "changed_by": "owner",
+        "reason": "approver_setup", "request_id": body["request_id"],
+    }
+    assert by_subject["owner"]["assigned_permissions"] == ["workspace:administer"]
+    assert by_subject["owner"]["source"] == "preexisting_grant"
+    assert by_subject["owner"]["changed_by"] is None
+    assert by_subject["revoked-human"]["revoked_at"] is not None
+    assert by_subject["service-record"]["principal_type"] == "service"
+    assert by_subject["service-record"]["assigned_permissions"] == ["workspace:read"]
+    assert all("effective_permissions" not in row for row in rows)
+    assert "synthetic-private-audit-value" not in response.text
+    assert response.json()["next_after"] is None
+    collected, after = [], None
+    for _ in rows:
+        params = {"limit": 1, **({"after": after} if after else {})}
+        page = await client.get(url, params=params, headers=token())
+        assert page.status_code == 200, page.text
+        collected.extend(page.json()["assignments"])
+        after = page.json()["next_after"]
+    assert collected == rows
+    assert after is None
+    exhausted = await client.get(url, params={"after": rows[-1]["grant_id"]}, headers=token())
+    assert exhausted.status_code == 200, exhausted.text
+    assert exhausted.json()["assignments"] == []
+    assert exhausted.json()["next_after"] is None
+    for inaccessible in (foreign_workspace_id, sibling_workspace_id):
+        denied = await client.get(f"/workspaces/{inaccessible}/access/v1/grants", headers=token())
+        assert denied.status_code == 403
+        assert "assignments" not in denied.json()
+    for params in ({"limit": 0}, {"limit": 101}, {"after": "invalid"}):
+        assert (await client.get(url, params=params, headers=token())).status_code == 422
+
+
+@pytest.mark.parametrize("denial", ["viewer", "unknown_permission", "revoked", "removed_member", "service_substitution"])
+async def test_assignment_listing_denies_ineligible_administrators_postgres(postgres_access, denial):
+    client, sessions, workspace_id, members, token = postgres_access
+    if denial == "removed_member":
+        members.active.remove("owner")
+    else:
+        async with sessions() as session:
+            owner = await session.scalar(select(WorkspaceGrantRecord).where(
+                WorkspaceGrantRecord.workspace_id == workspace_id, WorkspaceGrantRecord.principal == "owner",
+            ))
+            if denial == "viewer":
+                owner.permissions = "workspace:read"
+            elif denial == "unknown_permission":
+                owner.permissions = "unknown-permission"
+            elif denial == "revoked":
+                owner.revoked_at = datetime.now(UTC)
+            else:
+                owner.principal_type = "service"
+            await session.commit()
+    response = await client.get(f"/workspaces/{workspace_id}/access/v1/grants", headers=token())
+    assert response.status_code == 403, response.text
+    assert "assignments" not in response.json()
+
+
+async def test_assignment_listing_rechecks_admin_after_middleware_postgres(postgres_access, monkeypatch):
+    from app.services import workspace_access
+
+    client, sessions, workspace_id, _, token = postgres_access
+    identity_read, continue_read = asyncio.Event(), asyncio.Event()
+    original = workspace_access.require_current_identity
+
+    async def delayed_identity(*args, **kwargs):
+        identity = await original(*args, **kwargs)
+        identity_read.set()
+        await continue_read.wait()
+        return identity
+
+    monkeypatch.setattr(workspace_access, "require_current_identity", delayed_identity)
+    pending = asyncio.create_task(client.get(f"/workspaces/{workspace_id}/access/v1/grants", headers=token()))
+    try:
+        await asyncio.wait_for(identity_read.wait(), timeout=5)
+        async with sessions() as session:
+            owner = await session.scalar(select(WorkspaceGrantRecord).where(
+                WorkspaceGrantRecord.workspace_id == workspace_id, WorkspaceGrantRecord.principal == "owner",
+            ))
+            owner.revoked_at = datetime.now(UTC)
+            await session.commit()
+    finally:
+        continue_read.set()
+    response = await asyncio.wait_for(pending, timeout=10)
+    assert response.status_code == 403, response.text
+    assert "assignments" not in response.json()
