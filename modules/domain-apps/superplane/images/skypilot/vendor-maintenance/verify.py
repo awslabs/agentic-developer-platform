@@ -81,7 +81,6 @@ with tempfile.TemporaryDirectory(prefix="adp-vendor-check-") as temporary:
             "--no-periodic-update",
             "--app-data",
             str(base / "app-data"),
-            "--no-seed",
             str(base / "venv"),
         ],
         check=True,
@@ -93,6 +92,9 @@ with tempfile.TemporaryDirectory(prefix="adp-vendor-check-") as temporary:
             "import sys; assert sys.prefix != sys.base_prefix",
         ],
         check=True,
+    )
+    subprocess.run(
+        [str(base / "venv/bin/python"), "-m", "pip", "--version"], check=True
     )
     subprocess.run(
         [
