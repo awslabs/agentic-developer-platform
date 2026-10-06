@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "issue": 7058,
+  "updated_at": "2026-10-06T00:02:52.587Z",
+  "tasks": [
+    {
+      "id": "PREP01-c1",
+      "kind": "code",
+      "criterion": "PREP01",
+      "title": "Define closed reviewed preparation inputs and owned-only plan",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Reject unknown inputs, name collisions, mismatched account/cluster and unsupported authority."
+    },
+    {
+      "id": "PREP01-t1",
+      "kind": "test",
+      "criterion": "PREP01",
+      "title": "Run unit fixtures for closed input, collision and identity rejection",
+      "status": "open",
+      "covers": [
+        "PREP01-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP02-c1",
+      "kind": "code",
+      "criterion": "PREP02",
+      "title": "Define dedicated standard queue and scoped worker/observer roles in isolated Terraform root",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/infra/domain-runtime"
+      ],
+      "note": "No existing control-plane Terraform ownership files will change."
+    },
+    {
+      "id": "PREP02-t1",
+      "kind": "test",
+      "criterion": "PREP02",
+      "title": "Run Terraform validation and unit fixtures for resource and IAM scope",
+      "status": "open",
+      "covers": [
+        "PREP02-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP03-c1",
+      "kind": "code",
+      "criterion": "PREP03",
+      "title": "Connect preparation outputs to maintained shared-authority contracts without mutating authorities",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Inspect registry, schema/bootstrap, producer and Gateway mechanisms first; stop at an explicit proposal where no maintained operator route exists."
+    },
+    {
+      "id": "PREP03-c-wire",
+      "kind": "code",
+      "criterion": "PREP03",
+      "title": "Wire exact runtime prerequisites into existing paid-worker consumer contract",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Staged readiness remains disabled; activation requires independent real proof."
+    },
+    {
+      "id": "PREP03-t1",
+      "kind": "test",
+      "criterion": "PREP03",
+      "title": "Run unit producer/consumer contract fixtures",
+      "status": "open",
+      "covers": [
+        "PREP03-c1",
+        "PREP03-c-wire"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP03-t2",
+      "kind": "test",
+      "criterion": "PREP03",
+      "title": "Run unit refusal fixtures for missing vault, approver and shared services",
+      "status": "open",
+      "covers": [
+        "PREP03-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP04-c1",
+      "kind": "code",
+      "criterion": "PREP04",
+      "title": "Save exact identity and resource receipt with same-input reconciliation",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/runtime_preparation.py"
+      ],
+      "note": "Refuse changed identity, destructive changes, ambiguous replay and fabricated attestation."
+    },
+    {
+      "id": "PREP04-t1",
+      "kind": "test",
+      "criterion": "PREP04",
+      "title": "Run unit replay and lost-response recovery fixtures",
+      "status": "open",
+      "covers": [
+        "PREP04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP04-t2",
+      "kind": "test",
+      "criterion": "PREP04",
+      "title": "Run unit immutable-identity and secret-safe output refusal fixtures",
+      "status": "open",
+      "covers": [
+        "PREP04-c1"
+      ],
+      "files": [
+        "modules/domain-apps/superplane/tests/installer_checks/test_runtime_preparation.py"
+      ],
+      "note": ""
+    },
+    {
+      "id": "PREP05-c1",
+      "kind": "code",
+      "criterion": "PREP05",
+      "title": "Document exact foreground entry point, owner gaps and safe installation handoff",
+      "status": "open",
+      "covers": [],
+      "files": [
+        "modules/domain-apps/superplane/installation/RUNTIME-PREPARATION.md"
+      ],
+      "note": "Describe private inputs, disabled readiness and independent proof; never imply live readiness."
+    },
+    {
+      "id": "PREP05-t1",
+      "kind": "test",
+      "criterion": "PREP05",
+      "title": "Run public-docs check and full relevant local suites",
+      "status": "open",
+      "covers": [
+        "PREP05-c1"
+      ],
+      "files": [
+        "scripts/check-public-docs.py"
+      ],
+      "note": "Only local tests; no cloud, database or registry mutation."
+    }
+  ]
+}
