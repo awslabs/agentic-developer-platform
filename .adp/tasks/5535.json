@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-05T23:55:33.357Z",
+  "updated_at": "2026-10-06T00:02:50.088Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously committed; covered by AC-01-t4.",
+      "note": "Covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously committed; covered by AC-01-t5.",
+      "note": "Covered by AC-01-t5.",
       "commits": [
         "931919f"
       ]
@@ -1878,14 +1878,11 @@
       "id": "AC-01-c3",
       "kind": "code",
       "criterion": "AC-01",
-      "title": "Compose governed API lifecycle admission with actual authority and execution dependencies",
+      "title": "Compose governed API lifecycle admission with authority and execution dependencies",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
-      ],
-      "note": "Committed and remote-verified at f6cf57672; covered by AC-01-t6.",
+      "files": [],
+      "note": "Covered by AC-01-t6.",
       "commits": [
         "f6cf576"
       ]
@@ -1895,10 +1892,17 @@
       "kind": "code",
       "criterion": "AC-01",
       "title": "Wire admitted operation through durable outbox and registered lifecycle worker",
-      "status": "open",
+      "status": "done",
       "covers": [],
-      "files": [],
-      "note": "Next task; public entrypoints must check live binding before domain writes."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/operation_activation.py",
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/workspaces.py"
+      ],
+      "note": "Committed as cce8e6c5b; focused transport-double coverage is AC-01-t7. PostgreSQL end-to-end evidence remains AC-01-t1.",
+      "commits": [
+        "cce8e6c"
+      ]
     },
     {
       "id": "AC-01-t4",
@@ -1910,7 +1914,7 @@
         "AC-01-c1"
       ],
       "files": [],
-      "note": "114 focused tests previously passed.",
+      "note": "114 worker tests passed locally.",
       "commits": [
         "105f0f8",
         "3cede13",
@@ -3768,7 +3772,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "113 tests previously passed."
+      "note": "113 tests passed at the prior checkpoint."
     },
     {
       "id": "AC-01-t6",
@@ -3779,11 +3783,23 @@
       "covers": [
         "AC-01-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_composition.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py"
+      "files": [],
+      "note": "Previously passed; included in the current focused API run."
+    },
+    {
+      "id": "AC-01-t7",
+      "kind": "test",
+      "criterion": "AC-01",
+      "title": "Run focused pre-write and registered-dispatch tests with transport doubles",
+      "status": "done",
+      "covers": [
+        "AC-01-c-wire"
       ],
-      "note": "Added as focused coverage while cross-component AC-01-t1 remains open; 121 tests passed at f6cf57672."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_activation.py",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_dispatch.py"
+      ],
+      "note": "Added to cover this bounded wiring slice; 130 focused API tests passed locally."
     },
     {
       "id": "AC-01-t1",
@@ -3798,7 +3814,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": ""
+      "note": "Next task; PostgreSQL-backed tests skipped without a disposable server."
     },
     {
       "id": "AC-01-t2",
@@ -3812,7 +3828,7 @@
         "AC-01-c3"
       ],
       "files": [],
-      "note": "Focused binding negatives passed; cross-component cases remain."
+      "note": "Cross-component cases remain."
     },
     {
       "id": "AC-01-t3",
@@ -3835,7 +3851,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": ""
+      "note": "Must avoid first-workspace verification requiring an existing workspace or invented grant."
     },
     {
       "id": "AC-02-c2",
@@ -3845,7 +3861,7 @@
       "status": "open",
       "covers": [],
       "files": [],
-      "note": "Requires scoped Gateway reads and reviewed-release comparison."
+      "note": "Distinguish prepared proof while paused from executable proof after activation; coordinate IAM route allowlists and reviewed-release checks."
     },
     {
       "id": "AC-02-t1",
@@ -3893,7 +3909,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Full suites and CI have not run on the final head."
+      "note": "Full suites and CI remain pending; broader API run had 14 legacy-workspace expectation failures."
     },
     {
       "id": "AC-04-c1",
@@ -3915,7 +3931,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at f6cf57672; no checks reported yet."
+      "note": "Remote SHA verified at cce8e6c5b; required checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
