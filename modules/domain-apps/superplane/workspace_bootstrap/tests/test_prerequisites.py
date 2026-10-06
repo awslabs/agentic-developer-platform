@@ -123,6 +123,64 @@ def test_retained_sts_rule_uses_exact_reviewed_identity_without_claiming_tags(ta
     assert not retained.removable
 
 
+@pytest.mark.parametrize(
+    "fault", [None, "tls", "source", "allowlist", "identity", "delete"]
+)
+def test_public_api_has_its_own_nonremovable_prerequisite(target, fault):
+    from superplane_bootstrap.prerequisites import (
+        PUBLIC_ENDPOINT,
+        verify_network_prerequisites,
+    )
+
+    class Public(FakePrerequisiteAccess):
+        def security_group_rule(self, group_id, source, port, protocol):
+            assert group_id != CLUSTER_SG_ID, (
+                "public mode must not invent cross-VPC SG evidence"
+            )
+            return super().security_group_rule(group_id, source, port, protocol)
+
+        def public_endpoint(self, selected):
+            assert selected == target
+            value = {
+                "cluster_arn": target.cluster_arn,
+                "endpoint": target.endpoint,
+                "public_access_cidrs": ["52.22.137.37/32"],
+                "source_address": "52.22.137.37",
+                "tls_verified": True,
+                "created": False,
+                "management_vpc_id": "vpc-0123456789abcdef0",
+                "nat_gateway_ids": ["nat-0123456789abcdef0"],
+            }
+            if fault == "tls":
+                value["tls_verified"] = False
+            elif fault == "source":
+                value["source_address"] = "8.8.8.8"
+            elif fault == "allowlist":
+                value["public_access_cidrs"] = ["0.0.0.0/0"]
+            elif fault == "identity":
+                value["cluster_arn"] = "another"
+            elif fault == "delete":
+                value["created"] = True
+            return value
+
+    def verify():
+        return verify_network_prerequisites(
+            access=Public(),
+            target=target,
+            expected=_expected(public_access_cidrs=("52.22.137.37/32",)),
+            provider_account_id=ACCOUNT_ID,
+        )
+
+    if fault:
+        with pytest.raises(BootstrapRefused):
+            verify()
+    else:
+        items = verify()
+        endpoint = next(item for item in items if item.kind == PUBLIC_ENDPOINT)
+        assert endpoint.identifier == target.cluster_arn and not endpoint.removable
+        assert {item.kind for item in items} == {PUBLIC_ENDPOINT, MANAGEMENT_RULE}
+
+
 @pytest.mark.parametrize("fault", ["identity", "ownership", "api-tags"])
 def test_retained_sts_exception_cannot_adopt_another_rule_or_hide_api_attribution(
     target, fault

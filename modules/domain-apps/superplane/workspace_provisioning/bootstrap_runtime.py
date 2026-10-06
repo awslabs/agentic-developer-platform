@@ -314,6 +314,20 @@ def bootstrap(
         resolve_observation=observation,
         original_allocation_id=original_allocation_id,
     )
+
+    def public_reader():
+        from .public_network import observe_public_api
+
+        def read(service, method, **arguments):
+            verify()
+            result = getattr(
+                session.client(service, region_name=request.region), method
+            )(**arguments)
+            verify()
+            return result
+
+        return observe_public_api(config, outputs, read, verify)
+
     try:
         verify()
         result = bootstrap_workspace(
@@ -321,7 +335,11 @@ def bootstrap(
             provider=observer.provider_identity(),
             access=installer,
             prerequisite_access=OwnedNetworkObservations(
-                AwsPrerequisiteAccess(process, request.region), network
+                AwsPrerequisiteAccess(process, request.region),
+                network,
+                public_reader=public_reader
+                if config.get("management_public_access")
+                else None,
             ),
             store=store,
             authority_factory=factory,

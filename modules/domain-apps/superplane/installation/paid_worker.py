@@ -167,12 +167,19 @@ def validate(env, lock):
             type(config[key]) is int and 1 <= config[key] <= maximum,
             "paid_worker concurrency and deadline must be bounded",
         )
-    closed(
-        config["egress"],
-        {"gateway", "sts", "database", "skypilot", "workspace", "management"},
-        "paid_worker.egress",
-    )
-    for endpoint in config["egress"].values():
+    from . import native_egress
+
+    if native_egress.enabled(env):
+        native_egress.validate(env)
+        endpoints = ()
+    else:
+        closed(
+            config["egress"],
+            {"gateway", "sts", "database", "skypilot", "workspace", "management"},
+            "paid_worker.egress",
+        )
+        endpoints = config["egress"].values()
+    for endpoint in endpoints:
         closed(endpoint, {"cidr", "port"}, "paid_worker egress endpoint")
         try:
             network = ipaddress.ip_network(endpoint["cidr"], strict=True)
@@ -366,6 +373,14 @@ def project(env, lock, docs):
             "egress": [],
         },
     )
+    from . import native_egress
+
+    if native_egress.enabled(env):
+        import json
+
+        policy["metadata"].setdefault("annotations", {})[
+            "adp.aws-e.io/activation-egress"
+        ] = json.dumps(native_egress.rules(env), sort_keys=True, separators=(",", ":"))
     policy["apiVersion"] = "networking.k8s.io/v1"
     docs.extend([service_account, configmap, authentication, policy, scaled])
     from .lifecycle_worker import project_api

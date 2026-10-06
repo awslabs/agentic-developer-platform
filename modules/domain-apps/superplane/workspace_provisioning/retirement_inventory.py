@@ -21,7 +21,7 @@ from superplane_bootstrap.component_journal import (
 )
 from superplane_bootstrap.errors import BootstrapRefused
 from superplane_bootstrap.inventory import OwnedPrerequisite, inventory_from_mapping
-from superplane_bootstrap.prerequisites import REQUIRED_PREREQUISITE_KINDS
+from superplane_bootstrap.prerequisites import PUBLIC_ENDPOINT, valid_prerequisite_kinds
 from superplane_bootstrap.registry import registration_lock
 from superplane_contracts.provisioning import (
     REQUIRED_PERMISSION,
@@ -284,13 +284,19 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
                     raise BootstrapRefused(
                         "prerequisite inventory describes another workspace"
                     )
-                if {item.kind for item in inventory.prerequisites} != set(
-                    REQUIRED_PREREQUISITE_KINDS
+                if not valid_prerequisite_kinds(
+                    item.kind for item in inventory.prerequisites
                 ):
                     raise BootstrapRefused(
                         "prerequisite ownership inventory is incomplete"
                     )
                 for item in inventory.prerequisites:
+                    if item.kind == PUBLIC_ENDPOINT and (
+                        item.removable or item.identifier != target.cluster_arn
+                    ):
+                        raise BootstrapRefused(
+                            "public endpoint inventory cannot grant deletion authority"
+                        )
                     key = item.kind, item.identifier
                     if key in prerequisites and prerequisites[key] != item:
                         raise BootstrapRefused("prerequisite ownership is ambiguous")

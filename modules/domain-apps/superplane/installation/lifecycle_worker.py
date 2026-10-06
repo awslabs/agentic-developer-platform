@@ -151,6 +151,11 @@ def worker_documents(installer, *, active=False):
                     "max_replica_count"
                 ]
             elif doc["kind"] == "NetworkPolicy":
+                from . import native_egress
+
+                if native_egress.enabled(installer.env):
+                    doc["spec"]["egress"] = native_egress.rules(installer.env)
+                    continue
                 doc["spec"]["egress"] = [
                     {
                         "to": [{"ipBlock": {"cidr": endpoint["cidr"]}}],
@@ -363,11 +368,14 @@ def validate_proof(installer, value, state):
 def prepare(installer):
     before = installed_snapshot(installer)
     report = proof(installer, "prepared")
+    from .native_egress_probe import verify_network
+
+    network = verify_network(installer)
     require(
         installed_snapshot(installer) == before,
         "native preparation changed during verification",
     )
-    return {"snapshot": before, "proof": report}
+    return {"snapshot": before, "proof": report, "network": network}
 
 
 def activate(installer):
@@ -381,6 +389,9 @@ def activate(installer):
         current["binding_sha256"] == prepared["proof"]["binding_sha256"],
         "shared binding changed since preparation",
     )
+    from .native_egress_probe import verify_network
+
+    verify_network(installer)
     installer.apply(worker_documents(installer, active=True))
     installed_snapshot(installer, active=True)
     executable = proof(installer, "executable")
@@ -451,6 +462,7 @@ def quiescence_job(installer):
                     ],
                 }
                 for key in ("gateway", "sts")
+                if key in env["paid_worker"]["egress"]
             ]
             + [
                 {
@@ -472,6 +484,10 @@ def quiescence_job(installer):
             ],
         },
     }
+    from . import native_egress
+
+    if native_egress.enabled(env):
+        policy["spec"]["egress"] = native_egress.rules(env, database=False)
     dispatcher = env["api_adapters"]["dispatcher"]
     name = "superplane-binding-check-" + uuid4().hex[:12]
     program = PROOF_PROGRAM.replace(

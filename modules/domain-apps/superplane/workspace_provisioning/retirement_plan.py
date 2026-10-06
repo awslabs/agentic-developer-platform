@@ -295,6 +295,19 @@ def _prerequisite_steps(
     steps: list[ExecutionStep] = []
     preserved: list[str] = []
     for index, prerequisite in enumerate(inventory.prerequisites):
+        if prerequisite.kind == "EksPublicEndpoint":
+            if (
+                prerequisite.removable
+                or prerequisite.identifier != inventory.cluster_arn
+            ):
+                raise BootstrapRefused(
+                    "public endpoint cannot grant separate deletion authority"
+                )
+            preserved.append(
+                f"{prerequisite.kind}/{prerequisite.identifier} (no separate bootstrap deletion; "
+                "the reviewed cluster lifecycle controls this endpoint)"
+            )
+            continue
         if not prerequisite.removable:
             preserved.append(
                 f"{prerequisite.kind}/{prerequisite.identifier} (adopted; owned by a "

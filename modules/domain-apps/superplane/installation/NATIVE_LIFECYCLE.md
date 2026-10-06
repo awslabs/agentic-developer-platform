@@ -113,3 +113,33 @@ inputs or image digests. It does not create a StorageClass or authorize a provid
 connection. Those reviewed owner inputs must exist before execution. Omitting
 `lifecycle_foundations` preserves the existing externally provisioned dependency
 path and does not assert that such dependencies exist.
+
+### Explicit public HTTPS transport
+
+Native lifecycle may opt into `paid_worker.egress` with exactly:
+
+```yaml
+mode: public-https
+database:
+  cidr: <observed-private-RDS-address>/32
+  port: 5432
+```
+
+This grants public IPv4 TCP443, including AWS APIs and Terraform provider download
+hosts. It does not claim isolation by destination domain. RFC1918, shared-address,
+loopback, link-local, metadata, multicast and reserved address ranges are excluded;
+no IPv6 egress is added. The existing verified Gateway Service namespace/pod
+selectors and service/target ports, exact private database /32 on TCP5432, and
+cluster DNS selectors are the only additional peers. The controller mode cannot
+select this recipe. Existing fixed-peer mode remains unchanged.
+
+The exact activation egress rules are rendered in the paused NetworkPolicy's
+`adp.aws-e.io/activation-egress` annotation, covered by the saved environment and
+source review. Preparation and activation both run an authority-free, bounded
+network Job using the paid worker image, node selector and exact rule set. The Job
+mounts no Secret, AWS identity or Kubernetes token. It verifies public service TLS,
+actual RDS DNS correspondence to the reviewed private peer, Gateway reachability,
+and database TCP reachability. A changed RDS address or a private DNS override of
+a public service refuses; it requires an updated reviewed recipe. This transport
+probe does not replace the existing live network-policy enforcement, worker
+identity, database, current human grant or protected binding checks.
