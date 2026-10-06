@@ -406,6 +406,7 @@ async def run_retirement(operation, context):
         )
 
         async def settle_related(current, _target):
+            from .retirement_bootstrap_settlement import settle_bootstrap_allocation
             from .retirement_control_settlement import settle_control_allocation
 
             return [
@@ -418,7 +419,17 @@ async def run_retirement(operation, context):
                     authorize=authorize,
                     authenticate=authenticate,
                     token=token,
-                )
+                ),
+                await settle_bootstrap_allocation(
+                    current,
+                    context,
+                    inventory,
+                    observations=observations,
+                    cluster_absent=cluster_absent,
+                    authorize=authorize,
+                    authenticate=authenticate,
+                    token=token,
+                ),
             ]
 
         finalizer = RetirementFinalizer(

@@ -141,13 +141,15 @@ def transport(case, monkeypatch):
         state["process_calls"].append(tuple(arguments))
         assert "--plan-file" in arguments and "--authorization" in arguments
         state["destroyed"] = True
-        if state.get("uncertain_control"):
+        if state.get("uncertain_control") or state.get("uncertain_bootstrap"):
 
             async def uncertain():
                 async with case.harness.connect() as connection:
                     await connection.execute(
                         "UPDATE harness_provider_call_intent SET stage='unresolved',outcome='unknown: source confirmation lost' WHERE operation_id=$1",
-                        case.control.operation_id,
+                        case.control.operation_id
+                        if state.get("uncertain_control")
+                        else case.bootstrap.operation_id,
                     )
 
             case.runtime.store.store._loop.run(uncertain())

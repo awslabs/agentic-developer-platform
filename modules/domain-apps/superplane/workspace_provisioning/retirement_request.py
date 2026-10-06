@@ -22,6 +22,14 @@ def retirement_request(inventory, access_plan, access_row, source, policy):
     reference = destroy_reference(metadata["reviewed_destroy"])
     original = source.admitted_request()
     previous = original.parameters
+    bootstrap_allocation = previous.get("allocation_id")
+    if not bootstrap_allocation or bootstrap_allocation in {
+        access_plan.allocation_id,
+        access_plan.original_allocation_id,
+    }:
+        raise LifecycleRefused(
+            "retirement requires distinct original bootstrap allocation"
+        )
     account, region = (
         inventory.cluster_arn.split(":")[4],
         inventory.cluster_arn.split(":")[3],
@@ -76,7 +84,7 @@ def retirement_request(inventory, access_plan, access_row, source, policy):
         "retirement_access_artifact_id": access_row["artifact_id"],
         "control_allocation_id": access_plan.allocation_id,
         "cleanup_allocation_ids": canonical(
-            [access_plan.allocation_id, previous["allocation_id"]]
+            [access_plan.allocation_id, bootstrap_allocation]
         ),
         "allocation_id": access_plan.original_allocation_id,
         "original_allocation_id": access_plan.original_allocation_id,

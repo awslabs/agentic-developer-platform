@@ -42,7 +42,9 @@ async def durable_result(case):
         return operation, workspace, json.loads(accounting), calls, reports
 
 
-@pytest.mark.parametrize("remaining", [None, "retain_vpc", "uncertain_control"])
+@pytest.mark.parametrize(
+    "remaining", [None, "retain_vpc", "uncertain_control", "uncertain_bootstrap"]
+)
 def test_native_retirement_source_chain(
     runtime, server, tmp_path, monkeypatch, remaining
 ):
@@ -95,7 +97,12 @@ def test_native_retirement_source_chain(
             assert operation != "succeeded"
             assert workspace != "Deleted"
             assert accounting["may_mark_released"] is False
-            assert reports == (1 if remaining == "uncertain_control" else 0)
+            assert (
+                reports
+                == {"uncertain_control": 1, "uncertain_bootstrap": 2, "retain_vpc": 0}[
+                    remaining
+                ]
+            )
         else:
             assert operation == "succeeded"
             assert workspace == "Deleted"
@@ -104,14 +111,19 @@ def test_native_retirement_source_chain(
             assert accounting["exposure"] == "none"
             assert len(accounting["resource_dispositions"]) == 2
             assert not accounting["unresolved_resources"]
-            assert reports == 2
+            assert reports == 3
             related = accounting["related_allocations"]
-            assert len(related) == 1
+            assert len(related) == 2
             assert related[0]["allocation_id"] == case.plan.allocation_id
             assert related[0]["inventory_complete"] is True
             assert related[0]["may_mark_released"] is True
             assert related[0]["exposure"] == "none"
             assert len(related[0]["resource_dispositions"]) == 1
+            assert related[1]["allocation_id"] == "bootstrap-allocation"
+            assert related[1]["inventory_complete"] is True
+            assert related[1]["may_mark_released"] is True
+            assert related[1]["exposure"] == "none"
+            assert len(related[1]["resource_dispositions"]) > 1
     finally:
         if hasattr(runtime, "retirement_pool"):
             loop.run(runtime.retirement_pool.close())
