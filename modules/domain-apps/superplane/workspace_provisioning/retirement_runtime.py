@@ -284,6 +284,18 @@ class RetirementRuntime:
                         access_artifact=access[1],
                         paid_operation_id=access[2],
                     )
+                # Source verification performs asynchronous database reads. The
+                # execution lease may be cancelled, fenced or expire during
+                # those reads; recheck it immediately before provider revocation.
+                async with self.connect() as connection, connection.transaction():
+                    if not await lock_lease(connection, lease):
+                        raise OperationRefused("retirement lease expired")
+                    cancelled = await connection.fetchval(
+                        "SELECT cancel_requested_at IS NOT NULL FROM harness_operations WHERE operation_id=$1",
+                        lease.operation_id,
+                    )
+                    if cancelled is not False:
+                        raise OperationRefused("retirement cancellation requested")
 
             await authorize_control()
             async with self.connect() as connection, connection.transaction():
