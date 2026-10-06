@@ -7,7 +7,7 @@ and that a refused script is never executed.
 import hashlib
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -184,15 +184,25 @@ class TestImagePathContract:
         return self.DOCKERFILE.read_text().splitlines()
 
     def test_validator_default_matches_dockerfile_destination(self):
-        workdir = next(
-            line.split()[1] for line in self._lines() if line.startswith("WORKDIR")
-        )
-        copy = next(
-            line for line in self._lines()
-            if line.startswith("COPY") and "validate_script.py" in line
-        )
-        dest = copy.split()[2].removeprefix("./")
-        resolved = f"{workdir.rstrip('/')}/{dest}"
+        stages = {}
+        stage = None
+        workdir = PurePosixPath("/")
+        resolved = None
+        for line in self._lines():
+            words = line.split()
+            if not words or words[0].startswith("#"):
+                continue
+            if words[0] == "FROM":
+                workdir = stages.get(words[1], PurePosixPath("/"))
+                stage = words[-1] if len(words) >= 4 and words[-2].upper() == "AS" else None
+            elif words[0] == "WORKDIR":
+                workdir = workdir / words[1]
+                if stage:
+                    stages[stage] = workdir
+            elif words[0] == "COPY" and "validate_script.py" in line:
+                resolved = str(workdir / words[-1])
+                break
+        assert resolved is not None, "validator must be copied into the image"
         assert resolved == sg.DEFAULT_VALIDATOR_PATH, (
             f"image puts the validator at {resolved} but the guard looks in "
             f"{sg.DEFAULT_VALIDATOR_PATH}"
