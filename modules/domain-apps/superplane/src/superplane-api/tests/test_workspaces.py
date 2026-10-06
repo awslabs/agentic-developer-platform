@@ -45,12 +45,23 @@ def route_preview(monkeypatch):
 
     The legacy JWT fixtures carry only an org, so these mock-facade tests explicitly
     supply a named test principal. Strict domain callers retain their verified
-    context. No production default or authorization check is weakened.
+    context. Installed-binding and mode fences are covered separately; this fixture
+    isolates route behavior behind those prerequisites.
     """
     from app.adapters import operation_authority_source as authority
+    from app import operation_activation
     from app.services import onboarding
     from app.schemas.workspace import CreateWorkspaceRequest
 
+    async def installed_binding(_org_id):
+        return None
+
+    monkeypatch.setattr(
+        operation_activation, "require_installed_lifecycle_binding", installed_binding
+    )
+    monkeypatch.setattr(
+        operation_activation, "require_admission_enabled", lambda **_: None
+    )
     actual = authority.acting_principal
     scope = {"caller": None}
     monkeypatch.setattr(
