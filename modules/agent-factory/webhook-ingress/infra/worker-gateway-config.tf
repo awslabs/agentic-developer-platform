@@ -52,7 +52,7 @@ resource "kubernetes_config_map" "worker_gateway" {
     namespace = var.gateway_namespace
   }
   data       = local.worker_gateway_config
-  depends_on = [terraform_data.domain_operation_registration, aws_iam_role_policy.gateway_domain_operations, aws_iam_role_policy_attachment.gateway_domain_operations, kubernetes_role_binding.gateway_domain_operation_read]
+  depends_on = [module.superplane_operation_authority]
   lifecycle {
     precondition {
       condition     = !var.shared_worker_continuation_enabled || (var.shared_run_reporting_enabled && !var.agent_authority_enabled)
@@ -88,10 +88,7 @@ resource "terraform_data" "worker_gateway_rollout" {
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,
-    terraform_data.domain_operation_registration,
-    aws_iam_role_policy.gateway_domain_operations,
-    aws_iam_role_policy_attachment.gateway_domain_operations,
-    kubernetes_role_binding.gateway_domain_operation_read,
+    module.superplane_operation_authority,
   ]
 }
 
