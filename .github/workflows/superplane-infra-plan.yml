@@ -46,6 +46,7 @@ on:
       # see the matrix comment there.
       - 'modules/domain-apps/superplane/infra/workspaces/**'
       - 'modules/domain-apps/superplane/infra/domain-runtime/**'
+      - 'modules/domain-apps/superplane/infra/lifecycle-foundations/**'
       - 'environments/dev/modules/superplane.tfvars'
       - 'environments/dev/modules/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
@@ -105,6 +106,8 @@ jobs:
             dir: modules/domain-apps/superplane/infra/workspaces
           - name: domain-runtime
             dir: modules/domain-apps/superplane/infra/domain-runtime
+          - name: lifecycle-foundations
+            dir: modules/domain-apps/superplane/infra/lifecycle-foundations
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
     env:

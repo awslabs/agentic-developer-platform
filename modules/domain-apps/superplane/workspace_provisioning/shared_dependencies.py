@@ -114,7 +114,18 @@ def validate_descriptor(value, authority):
         r"vpce-[a-f0-9]+", network["sts_endpoint_id"]
     ):
         raise BootstrapRefused("shared network requires an exact STS endpoint ID")
-    _fields(network["expected"], " ".join(ExpectedPrerequisites.__dataclass_fields__))
+    # The v1 private descriptor predates public endpoint support. Preserve its
+    # wire shape, and permit only an empty extension on this private topology.
+    expected_fields = set(ExpectedPrerequisites.__dataclass_fields__) - {
+        "public_access_cidrs"
+    }
+    if not isinstance(network["expected"], dict):
+        raise BootstrapRefused("shared dependency descriptor fields differ")
+    if "public_access_cidrs" in network["expected"]:
+        expected_fields.add("public_access_cidrs")
+        if network["expected"]["public_access_cidrs"] != []:
+            raise BootstrapRefused("shared private network cannot use public access")
+    _fields(network["expected"], " ".join(expected_fields))
     expected = ExpectedPrerequisites(**network["expected"])
     if (
         expected.account_id != authority["target"]["account_id"]
