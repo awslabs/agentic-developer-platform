@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+import json
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -50,6 +51,10 @@ from src.agentauth.chat_history_write import AssistantAppend, ChatHistoryConflic
 from src.agentauth.chat_memory import ChatMemoryConflictError, ChatMemoryStore, MemoryId, MemorySearch, MemoryWrite
 from src.agentauth.chat_session_acl import AclWrite, ChatSessionAclConflictError, ChatSessionAclWriter
 from src.agentauth.external_roots import root_bindings, root_store
+from src.agentauth.installation_failure import read_installation_failure as load_installation_failure
+from src.agentauth.installation_reader import authorize_installation_reader
+from src.agentauth.installation_status import read_installation_status as load_installation_status
+from src.agentauth.installation_status import unavailable_installation_status
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.work_routes import PROOF_HEADER, verify_producer
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError, WorkloadUnavailableError
@@ -196,6 +201,13 @@ class AclWriteRequest(HistoryRequest, AclWrite):
     pass
 
 
+class InstallationReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run_id: Identifier
+    installation_id: int = Field(gt=0, lt=10**20)
+
+
 class ActivityWorkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -260,6 +272,50 @@ def bearer(request: Request) -> str:
 
 
 Capability = Annotated[str, Depends(bearer)]
+
+
+async def _read_installation(request: Request, token: str, services, db: AsyncSession, operation: str):
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 2048:
+            raise HTTPException(422, detail={"error": "installation_request_invalid"}, headers={"Cache-Control": "no-store"})
+        raw.extend(chunk)
+    try:
+        body = InstallationReadRequest.model_validate(json.loads(raw))
+    except (ValueError, TypeError, ValidationError):
+        raise HTTPException(422, detail={"error": "installation_request_invalid"}, headers={"Cache-Control": "no-store"}) from None
+    _, capabilities = services
+    launch = await run_in_threadpool(capabilities.verify_run, token, run_id=body.run_id, operation=operation, now=clock())
+    scope = await authorize_installation_reader(db, tenant_id=launch.tenant_id, user_id=launch.user_id, installation_id=body.installation_id)
+    if operation == "installation.status":
+        status = await load_installation_status(db, scope)
+        failure = await load_installation_failure(db, scope)
+        if failure["status"] == "partial":
+            if status["status"] == "unavailable":
+                status = unavailable_installation_status(scope.installation_id)
+                status["status"] = "partial"
+                status.pop("reason")
+                status["components"] = []
+            status["failure"] = failure["failure"]
+        return JSONResponse(status, headers={"Cache-Control": "no-store"})
+    if operation == "installation.failure":
+        return JSONResponse(await load_installation_failure(db, scope), headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {"status": "unavailable", "installation_id": scope.installation_id, "reason": "diagnostic_record_unavailable"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/v1/chat/data/installation/status", dependencies=[Depends(enabled)])
+@contract_errors
+async def read_installation_status(request: Request, token: Capability, services=Depends(runtime), db: AsyncSession = Depends(get_db)):
+    return await _read_installation(request, token, services, db, "installation.status")
+
+
+@router.post("/v1/chat/data/installation/failure", dependencies=[Depends(enabled)])
+@contract_errors
+async def read_installation_failure(request: Request, token: Capability, services=Depends(runtime), db: AsyncSession = Depends(get_db)):
+    return await _read_installation(request, token, services, db, "installation.failure")
 
 
 @router.post("/v1/chat/data/activity/work", dependencies=[Depends(enabled)])

@@ -28,6 +28,8 @@ const sessionOperations = {
 } satisfies Record<string, string[]>;
 type SessionOperation = keyof typeof sessionOperations;
 const runOperations = {
+  'installation/status': ['installation_id'],
+  'installation/failure': ['installation_id'],
   'activity/work': ['from', 'to', 'timezone', 'page_size', 'last_key'],
   'memory/read': ['memory_id'],
   'memory/search': ['query', 'kinds', 'limit', 'cursor', 'labels'],

@@ -26,6 +26,8 @@ OPERATIONS = frozenset(
         "draft.read",
         "draft.write",
         "session.share",
+        "installation.status",
+        "installation.failure",
     }
 )
 SESSION_TTL_SECONDS = 90 * 24 * 60 * 60

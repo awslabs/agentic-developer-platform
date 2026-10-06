@@ -69,6 +69,33 @@ describe('chat data transport', () => {
     ]);
   });
 
+  it('shares a run capability across work and diagnostics without sharing their allowed fields', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding)).mockImplementation(async () => json({}));
+    const window = { from: '2026-10-01T00:00:00Z', to: '2026-10-04T00:00:00Z', timezone: 'UTC' };
+    const operations = [
+      ['activity/work', window],
+      ['installation/status', { installation_id: 1234 }],
+      ['installation/failure', { installation_id: 1234 }],
+    ] as const;
+    for (const [operation, input] of operations) {
+      await client.runRequest(operation, input);
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        `https://gateway.example.test/v1/chat/data/${operation}`, expect.objectContaining({
+          body: JSON.stringify({ ...input, run_id: 'run-a' }),
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer synthetic.scoped.capability' },
+        }),
+      );
+    }
+    await expect(client.runRequest('activity/work', { ...window, installation_id: 1234 }))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    for (const operation of ['installation/status', 'installation/failure'] as const) {
+      await expect(client.runRequest(operation, { installation_id: 1234, ...window }))
+        .rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(workloadToken).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects a guessed session before sending a storage request', async () => {
     fetchMock.mockResolvedValueOnce(json(binding));
     await expect(client.sessionRequest('draft/read', 'session-other')).rejects.toMatchObject({ code: 'scope_mismatch' });

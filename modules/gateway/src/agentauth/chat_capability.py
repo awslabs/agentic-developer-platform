@@ -33,6 +33,8 @@ Operation = Literal[
     "draft.read",
     "draft.write",
     "session.share",
+    "installation.status",
+    "installation.failure",
 ]
 
 

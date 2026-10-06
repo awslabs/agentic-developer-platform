@@ -30,6 +30,7 @@ import { buildToolSanitizers } from './tool-sanitizers';
 import { draftToolsForTurn } from './draft/tools';
 import { buildDraftStore } from './draft/factory';
 import { ChatDataClient } from './gateway/chat-data-client';
+import { installationToolsForTurn } from './gateway/installation-tools';
 import { activityTools } from './activity/tools';
 import { AGENT_WORK_PROMPT } from './activity/answer';
 import { BedrockSummarizer } from './context/summarize/bedrock-summarizer';
@@ -78,6 +79,7 @@ function estimateTokens(text: string): number {
 }
 
 export interface ChatStores {
+  diagnostics?: ChatDataClient;
   context: ReturnType<typeof buildContextManager>;
   memory: ReturnType<typeof buildMemoryProvider>;
   artifacts: ReturnType<typeof buildArtifactStore>;
@@ -162,7 +164,7 @@ export async function buildChatStores(
   const memory = buildMemoryProvider(env, { client });
   const artifacts = buildArtifactStore(env, { client, sessionId, workspaceRoot });
   const draftStore = buildDraftStore(env, { client, sessionId });
-  return { context, memory, artifacts, draftStore, activityTools: activityTools(client) };
+  return { context, memory, artifacts, draftStore, diagnostics: client, activityTools: activityTools(client) };
 }
 
 async function main(): Promise<void> {
@@ -495,6 +497,7 @@ async function processOne(
       ...artifactTools,
       ...vaultTools,
       ...draftTools,
+      ...(deps.diagnostics ? installationToolsForTurn(deps.diagnostics) : []),
       ...(deps.activityTools ?? []),
     ];
 
