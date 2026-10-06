@@ -191,7 +191,7 @@ _VERIFICATION_TTL_SECONDS = 60
 # keyed by tenant/org id → (expires_at_monotonic, exists|None)
 _tenant_secret_cache: dict[str, tuple[float, bool | None]] = {}
 # keyed by (kind, key) → (expires_at_monotonic, present|None)
-_identity_row_cache: dict[tuple[str, str], tuple[float, bool | None]] = {}
+_identity_row_cache: dict[tuple[str, ...], tuple[float, bool | None]] = {}
 # platform-wide singleton checks → (expires_at_monotonic, PlatformVerification)
 _platform_verification_cache: tuple[float, Any] | None = None
 

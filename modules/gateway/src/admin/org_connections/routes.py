@@ -195,7 +195,15 @@ async def reconcile_github_routing(
             }
             if exc.status_code == 409:
                 operation.effects_started = False
-        raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
+        recovery = {
+            "github_app_credentials_unavailable": "configure the platform GitHub App credentials before retrying",
+            "github_attestation_unavailable": "verify GitHub App access to this installation before retrying",
+            "ownership_unattestable": "verify GitHub App access and the connection's stored numeric account ID",
+            "ownership_ambiguous": "resolve conflicting canonical claims or GitHub account-ID mismatch first",
+            "projection_unavailable": "verify identity-index access and transaction availability before retrying",
+        }.get(exc.reason)
+        detail = f"{exc.reason}: {recovery}" if recovery else exc.reason
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
     await write_admin_audit(
         db,
         actor=current_user,

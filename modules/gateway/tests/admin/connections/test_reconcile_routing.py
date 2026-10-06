@@ -13,11 +13,44 @@ from src.admin.identity_index import IdentityIndexClient
 from src.admin.installations.resolver import OwnerState
 from src.admin.org_connections import routes, service
 from src.admin.org_connections.schemas import ReconcileRoutingRequest
+from src.shared.models.organization import Organization
+from src.shared.models.vault import ChannelTenantMap
 
 
 def test_repair_request_refuses_caller_selected_destination():
     with pytest.raises(ValidationError):
         ReconcileRoutingRequest(expected_projection_org_id="historical", desired_org_id="attacker")
+
+
+@pytest.mark.asyncio
+async def test_attested_canonical_binding_repairs_only_forward_projection(db_session, monkeypatch):
+    db_session.add(Organization(
+        id="canonical", name="Canonical", aws_accounts=[], role_mappings={}, settings={},
+        github_installation_ids=["42"], github_org_id="98765",
+    ))
+    db_session.add(ChannelTenantMap(
+        provider="github", provider_scope_id="98765", installation_id="42",
+        org_id="canonical", install_metadata={"account_id": "98765"},
+    ))
+    await db_session.commit()
+
+    github = MagicMock()
+    github.get_installation = AsyncMock(return_value={"account": {"id": 98765}})
+    github.aclose = AsyncMock()
+    monkeypatch.setattr("src.admin.connections.service._get_github_app_credentials", lambda: ("1", "key"))
+    monkeypatch.setattr("src.admin.connections.github_client.GitHubAppClient", lambda *args: github)
+    projection = Projection(extra={"trigger_policy": {"S": "deny"}})
+    monkeypatch.setattr("src.admin.identity_index.IdentityIndexClient", lambda: IdentityIndexClient(
+        table_name="test-only", dynamodb_client=projection
+    ))
+
+    assert await service.reconcile_routing("canonical", 42, "historical", db_session) == ("repaired", "historical")
+    github.get_installation.assert_awaited_once_with(42)
+    assert projection.item["org_id"] == {"S": "canonical"}
+    assert projection.item["trigger_policy"] == {"S": "deny"}
+    binding = await db_session.get(Organization, "canonical")
+    assert binding.github_installation_ids == ["42"]
+    assert binding.github_org_id == "98765"
 
 
 class Projection:
@@ -174,5 +207,31 @@ async def test_route_audits_repair_and_refusal(monkeypatch):
         assert operation.refusal["observed_projection_org_id"] == "other"
         assert operation.refusal["authoritative_org_id"] == "canonical"
         assert audit.await_count == 1
+    finally:
+        current_operation.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_route_stages_durable_audit_receipt_for_replay(monkeypatch):
+    monkeypatch.setattr(routes, "_require_platform_admin", MagicMock())
+    monkeypatch.setattr(routes, "reconcile_routing", AsyncMock(return_value=("already_consistent", "canonical")))
+    actor = SimpleNamespace(user_id="admin", org_id="platform")
+    operation = Operation("reconcile_github_routing", "/admin/organizations/{org_id}/connections/github/{installation_id}/reconcile-routing")
+    operation.actor = actor
+    operation.target_org = "canonical"
+    token = current_operation.set(operation)
+    try:
+        response = await routes.reconcile_github_routing(
+            "canonical", 42, ReconcileRoutingRequest(expected_projection_org_id="historical"), MagicMock(), actor
+        )
+        assert response.outcome == "already_consistent"
+        assert operation.terminal["outcome"] == "already_consistent"
+        assert operation.terminal["target_id"] == "42"
+        assert operation.terminal["org_id"] == "canonical"
+        assert operation.terminal["extra"] == {
+            "expected_projection_org_id": "historical",
+            "observed_projection_org_id": "canonical",
+            "authoritative_org_id": "canonical",
+        }
     finally:
         current_operation.reset(token)
