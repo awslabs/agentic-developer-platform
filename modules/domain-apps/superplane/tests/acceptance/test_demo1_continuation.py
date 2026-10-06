@@ -26,7 +26,12 @@ producer_imports = ownership_fixtures.producer_imports
 
 @pytest.fixture(params=["apply-infrastructure", "bootstrap-workspace"])
 def continuation(driver, monkeypatch, request):
-    from harness_jobs.identity import OperationRequest, encode_payload, payload_digest
+    from harness_jobs.identity import (
+        OperationRequest,
+        decode_payload,
+        encode_payload,
+        payload_digest,
+    )
 
     driver.run()
     driver.page.service.approved = True
@@ -35,13 +40,13 @@ def continuation(driver, monkeypatch, request):
     phase = request.param
     source = identifier(12 if phase == "apply-infrastructure" else 64)
     operation = identifier(64 if phase == "apply-infrastructure" else 68)
-    if phase == "bootstrap-workspace":
-        producer = LineageProducer(Records(browser=True))
-        monkeypatch.setattr(
-            demo1_journey,
-            "RuntimeReader",
-            lambda selected, target: RuntimeReader(selected, target, runner=producer),
-        )
+    records = Records(browser=True, bootstrap=phase == "bootstrap-workspace")
+    producer = LineageProducer(records)
+    monkeypatch.setattr(
+        demo1_journey,
+        "RuntimeReader",
+        lambda selected, target: RuntimeReader(selected, target, runner=producer),
+    )
     selected = driver.selected
     target = {
         "org_id": selected.org_id,
@@ -85,6 +90,7 @@ def continuation(driver, monkeypatch, request):
     state = SimpleNamespace(
         approved=False,
         source=source,
+        workspace_operation=source,
         phase=phase,
         operation=operation,
         proposal=proposal,
@@ -93,6 +99,7 @@ def continuation(driver, monkeypatch, request):
         request_id=None,
         calls=[],
         lost=False,
+        registration_lost=False,
         issued_lost=False,
         denied_recovery=False,
         unavailable=False,
@@ -113,6 +120,13 @@ def continuation(driver, monkeypatch, request):
                 "workspace_id": identifier(10),
                 "provisioning_operation_id": state.source,
                 "state": "succeeded",
+            }
+        if path.endswith("/operations/" + operation):
+            return 200, {
+                "request_id": state.request_id,
+                "workspace_id": identifier(10),
+                "provisioning_operation_id": operation,
+                "state": "pending",
             }
         if path.endswith("/lifecycle-proposals"):
             return 200, {
@@ -171,6 +185,9 @@ def continuation(driver, monkeypatch, request):
             }
             return 200, state.ticket_change(ticket)
         if path.endswith("/continue"):
+            assert path.endswith(
+                f"/lifecycle-proposals/{state.proposal['artifact_id']}/continue"
+            )
             assert body == {
                 "operation_id": state.request_id,
                 "approval_id": identifier(80),
@@ -181,7 +198,23 @@ def continuation(driver, monkeypatch, request):
                 durable["submitted"] is True
                 and durable["request_id"] == state.request_id
             )
-            state.admitted += 1
+            if not state.admitted:
+                state.admitted += 1
+                current = records.operations[operation]
+                admitted_request = decode_payload(current["request_payload"])
+                admitted_request = OperationRequest(
+                    "provision", state.request_id, admitted_request.parameters
+                )
+                current.update(
+                    idempotency_key=state.request_id,
+                    request_payload=encode_payload(admitted_request),
+                    plan_digest=payload_digest(admitted_request),
+                )
+            if state.registration_lost:
+                raise RuntimeError("private lost workspace commit")
+            if state.workspace_operation == source:
+                state.workspace_operation = operation
+                records.workspace_current = operation
             if state.lost:
                 raise RuntimeError("private lost continuation response")
             return 200, {
@@ -207,7 +240,8 @@ def continuation(driver, monkeypatch, request):
             return 503, {}
         status, response = base_request(method, path, body)
         if path.endswith("/workspaces/" + identifier(10)) and method == "GET":
-            response["provisioning_operation_id"] = state.source
+            response["provisioning_operation_id"] = state.workspace_operation
+            records.workspace_current = state.workspace_operation
         return status, response
 
     monkeypatch.setattr(driver.page.service, "request", request_api)
@@ -271,6 +305,177 @@ def test_approved_phase_submits_once_and_recovers_without_preview_or_approval(
         "/decision" in path or "/retirement/" in path for _, path, _ in state.calls
     )
     assert state.request_id not in json.dumps(report)
+
+
+def test_admitted_continuation_repairs_lost_registration_with_original_identity(
+    continuation,
+):
+    state = continuation
+    state.run()
+    state.approved, state.registration_lost = True, True
+    state.run()
+    assert state.admitted == 1 and state.workspace_operation == state.source
+    saved = state.path.read_bytes()
+    state.registration_lost = False
+    state.ticket_change = lambda ticket: {
+        **ticket,
+        "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+    }
+    state.missing = True
+    before = len(state.calls)
+    report = state.run()
+    assert state.workspace_operation == state.operation
+    assert state.admitted == 1 and state.path.read_bytes() == saved
+    assert report["browser"]["continuation"]["submission_observed"]
+    posts = [
+        (path, body) for method, path, body in state.calls[before:] if method == "POST"
+    ]
+    assert posts == [
+        (
+            (
+                f"/api/superplane/v1/workspaces/{identifier(10)}"
+                f"/lifecycle-proposals/{state.proposal['artifact_id']}/continue"
+            ),
+            {"operation_id": state.request_id, "approval_id": identifier(80)},
+        )
+    ]
+    before = len(state.calls)
+    assert state.run()["browser"]["continuation"]["submission_observed"]
+    assert all(method == "GET" for method, _, _ in state.calls[before:])
+    assert state.admitted == 1 and state.path.read_bytes() == saved
+
+
+@pytest.fixture
+def unregistered_continuation(continuation):
+    state = continuation
+    state.run()
+    state.approved, state.registration_lost = True, True
+    state.run()
+    assert state.admitted == 1 and state.workspace_operation == state.source
+    state.registration_lost = False
+    return state
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing-admission",
+        "request",
+        "admission-workspace",
+        "source-operation",
+        "invalid-operation",
+        "workspace",
+        "organization",
+        "name",
+        "foreign-pointer",
+        "pointer-race",
+    ],
+)
+def test_unverified_registration_recovery_never_posts(
+    unregistered_continuation, monkeypatch, failure
+):
+    state = unregistered_continuation
+    request = state.driver.page.service.request
+    saved, before = state.path.read_bytes(), len(state.calls)
+    admission_seen = False
+
+    def intercept(method, path, body=None):
+        nonlocal admission_seen
+        status, response = request(method, path, body)
+        if path.endswith("/operations/by-idempotency/" + state.request_id):
+            admission_seen = True
+            if failure == "missing-admission":
+                return 404, {}
+            changes = {
+                "request": {"request_id": identifier(90)},
+                "admission-workspace": {"workspace_id": identifier(90)},
+                "source-operation": {"provisioning_operation_id": state.source},
+                "invalid-operation": {"provisioning_operation_id": "invalid"},
+            }
+            response = {**response, **changes.get(failure, {})}
+        elif admission_seen and path.endswith("/workspaces/" + identifier(10)):
+            changes = {
+                "workspace": {"id": identifier(90)},
+                "organization": {"org_id": identifier(90)},
+                "name": {"name": "different-workspace"},
+                "foreign-pointer": {"provisioning_operation_id": identifier(90)},
+                "pointer-race": {"provisioning_operation_id": state.operation},
+            }
+            response = {**response, **changes.get(failure, {})}
+        return status, response
+
+    monkeypatch.setattr(state.driver.page.service, "request", intercept)
+    report = state.run()
+    assert (
+        not report.get("browser", {}).get("continuation", {}).get("submission_observed")
+    )
+    assert state.admitted == 1 and state.path.read_bytes() == saved
+    assert state.workspace_operation == state.source
+    assert all(method == "GET" for method, _, _ in state.calls[before:])
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "lost-before-commit",
+        "lost-after-commit",
+        "denied",
+        "wrong-request",
+        "wrong-workspace",
+        "wrong-operation",
+        "wrong-phase",
+        "unchanged-registration",
+        "foreign-registration",
+        "foreign-organization",
+    ],
+)
+def test_uncertain_reconciliation_retains_original_checkpoint_and_recovers(
+    unregistered_continuation, monkeypatch, failure
+):
+    state = unregistered_continuation
+    request = state.driver.page.service.request
+    saved = state.path.read_bytes()
+    reconciled = False
+
+    def intercept(method, path, body=None):
+        nonlocal reconciled
+        if path.endswith("/continue"):
+            reconciled = True
+            if failure == "lost-before-commit":
+                raise RuntimeError("private lost reconciliation before commit")
+            if failure == "denied":
+                return 403, {}
+            status, response = request(method, path, body)
+            if failure == "lost-after-commit":
+                raise RuntimeError("private lost reconciliation after commit")
+            changes = {
+                "wrong-request": {"request_id": identifier(90)},
+                "wrong-workspace": {"workspace_id": identifier(90)},
+                "wrong-operation": {"provisioning_operation_id": identifier(90)},
+                "wrong-phase": {"phase": "retire"},
+            }
+            return status, {**response, **changes.get(failure, {})}
+        status, response = request(method, path, body)
+        if reconciled and path.endswith("/workspaces/" + identifier(10)):
+            changes = {
+                "unchanged-registration": {"provisioning_operation_id": state.source},
+                "foreign-registration": {"provisioning_operation_id": identifier(90)},
+                "foreign-organization": {"org_id": identifier(90)},
+            }
+            response = {**response, **changes.get(failure, {})}
+        return status, response
+
+    monkeypatch.setattr(state.driver.page.service, "request", intercept)
+    report = state.run()
+    assert (
+        not report.get("browser", {}).get("continuation", {}).get("submission_observed")
+    )
+    assert state.admitted == 1 and state.path.read_bytes() == saved
+    assert not report["live_acceptance"] and report["status"] == "BLOCKED"
+    monkeypatch.setattr(state.driver.page.service, "request", request)
+    assert state.run()["browser"]["continuation"]["submission_observed"]
+    assert state.workspace_operation == state.operation
+    assert state.admitted == 1 and state.path.read_bytes() == saved
 
 
 @pytest.mark.parametrize(

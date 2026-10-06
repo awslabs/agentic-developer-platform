@@ -22,6 +22,7 @@ from superplane_acceptance._demo1_lineage_probe import collect
 from superplane_acceptance.demo1_browser import CreationCheckpoint
 from superplane_acceptance.demo1_evidence import DemoInput, EvidenceError
 from superplane_acceptance.demo1_lineage import lineage_report, observe_lineage
+from superplane_acceptance.demo1_report import LIFECYCLE_PHASES, reference
 from superplane_acceptance.demo1_runtime import RuntimeReader, RuntimeTarget
 from workspace_provisioning.artifacts import continuation_parameters
 from workspace_provisioning.runtime_config import LifecycleRefused
@@ -128,6 +129,17 @@ def test_admitted_continuation_traces_to_original_without_requiring_new_approval
         [records.applied, records.prepared] if bootstrap else [records.prepared]
     )
     assert "Ready" in lineage_report(observed)["scope"]
+    assert [item["phase"] for item in observed["operations"]] == list(
+        LIFECYCLE_PHASES[: 3 if bootstrap else 2]
+    )
+    assert observed["operations"][0]["operation_id"] == identifier(62)
+    assert observed["operations"][-1] == {
+        "phase": "bootstrap-workspace" if bootstrap else "apply-infrastructure",
+        "operation_id": identifier(68 if bootstrap else 64),
+        "request_id": identifier(69 if bootstrap else 63),
+        "state": state,
+    }
+    assert all(item["state"] == "succeeded" for item in observed["operations"][:-1])
     assert all(sql.startswith("SELECT ") for sql, _ in records.calls)
 
 
@@ -319,21 +331,73 @@ def test_probe_errors_do_not_expose_private_database_details(monkeypatch, capsys
     assert "private-password" not in output
 
 
-@pytest.mark.parametrize("bootstrap", [False, True])
 @pytest.mark.parametrize(
     "failure",
     [
-        None,
+        "missing",
+        "incomplete",
+        "reordered",
+        "root-request",
+        "root-operation",
         "current-request",
         "current-operation",
-        "current-workspace",
-        "workspace-race",
-        "details",
-        "probe-refusal",
+        "duplicate-request",
+        "duplicate-operation",
+        "unknown-state",
+        "parent-pending",
+        "extra-field",
+    ],
+)
+def test_runtime_lineage_rejects_unbound_or_invalid_operation_snapshots(failure):
+    records = Records(bootstrap=True)
+    reader, checkpoint, producer = reader_checkpoint(records)
+    producer.result = records.lineage()
+    operations = producer.result["operations"]
+    if failure == "missing":
+        del producer.result["operations"]
+    elif failure == "incomplete":
+        operations.pop()
+    elif failure == "reordered":
+        operations.reverse()
+    else:
+        index, key, value = {
+            "root-request": (0, "request_id", identifier(90)),
+            "root-operation": (0, "operation_id", identifier(90)),
+            "current-request": (-1, "request_id", identifier(90)),
+            "current-operation": (-1, "operation_id", identifier(90)),
+            "duplicate-request": (-1, "request_id", operations[0]["request_id"]),
+            "duplicate-operation": (-1, "operation_id", operations[0]["operation_id"]),
+            "unknown-state": (-1, "state", "Ready"),
+            "parent-pending": (1, "state", "pending"),
+            "extra-field": (-1, "private-data", "private-value"),
+        }[failure]
+        operations[index][key] = value
+    with pytest.raises(EvidenceError):
+        observe_lineage(
+            reader, checkpoint, identifier(62), identifier(68), 30, now=records.now
+        )
+
+
+@pytest.mark.parametrize("bootstrap", [False, True])
+@pytest.mark.parametrize(
+    ("failure", "state"),
+    [
+        (None, "pending"),
+        (None, "running"),
+        (None, "succeeded"),
+        (None, "failed"),
+        (None, "cancelled"),
+        (None, "unknown"),
+        ("current-request", "pending"),
+        ("current-operation", "pending"),
+        ("current-workspace", "pending"),
+        ("workspace-race", "pending"),
+        ("details", "pending"),
+        ("probe-refusal", "pending"),
     ],
 )
 def test_cli_reentry_preserves_original_checkpoint_across_continuations(
-    driver, monkeypatch, bootstrap, failure
+    driver, monkeypatch, bootstrap, failure, state
 ):
     driver.run()
     driver.page.service.approved = True
@@ -350,6 +414,7 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
     )
     request = driver.page.service.request
     current_id = records.scope["current_operation_id"]
+    records.operations[current_id]["state"] = state
     current_request = records.operations[current_id]["idempotency_key"]
     workspace_reads = 0
     before = len(driver.page.service.calls)
@@ -417,3 +482,24 @@ def test_cli_reentry_preserves_original_checkpoint_across_continuations(
         )
         assert result["browser"]["retirement"] == "BLOCKED"
         assert result["status"] == "BLOCKED"
+        progress = result["browser"]["lifecycle"]
+        assert progress["workspace_ref"] == reference(identifier(10))
+        assert progress["original_request_ref"] == reference(driver.selected.request_id)
+        current = progress["phases"][LIFECYCLE_PHASES[2 if bootstrap else 1]]
+        assert current == {
+            "status": "OBSERVED",
+            "state": state,
+            "operation_ref": reference(current_id),
+            "request_ref": reference(current_request),
+        }
+        assert progress["phases"][LIFECYCLE_PHASES[0]]["state"] == "succeeded"
+        assert progress["status"] == (
+            "FAIL" if state in ("failed", "cancelled") else "BLOCKED"
+        )
+        assert all(
+            check["status"] == "BLOCKED" for check in progress["checks"].values()
+        )
+        if not bootstrap:
+            assert progress["phases"][LIFECYCLE_PHASES[2]]["state"] == "unobserved"
+        for private in (current_id, current_request, identifier(10), records.prepared):
+            assert private not in json.dumps(progress)

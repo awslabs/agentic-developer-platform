@@ -97,6 +97,72 @@ class Page:
         self.closed += 1
 
 
+@pytest.mark.parametrize(
+    "state",
+    ["pending", "running", "succeeded", "failed", "cancelled", "unknown", "Ready"],
+)
+def test_cli_reports_preparation_state_without_claiming_later_phases(
+    driver, monkeypatch, state
+):
+    driver.run()
+    driver.page.service.approved = True
+    assert driver.run()["browser"]["creation_observed"]
+    saved = (driver.path / "checkpoint.json").read_bytes()
+    before = len(driver.page.service.calls)
+    request = driver.page.service.request
+
+    def changed_state(method, path, body=None):
+        status, response = request(method, path, body)
+        if "/operations/by-idempotency/" in path:
+            response["state"] = state
+        return status, response
+
+    monkeypatch.setattr(driver.page.service, "request", changed_state)
+    report = driver.run()
+    assert not report["live_acceptance"] and report["status"] == "BLOCKED"
+    assert (driver.path / "checkpoint.json").read_bytes() == saved
+    if state == "Ready":
+        assert "operation state unverified" in report["reason"]
+        assert all(
+            method == "GET" for method, _, _ in driver.page.service.calls[before:]
+        )
+        return
+    progress = report["browser"]["lifecycle"]
+    assert progress["phases"]["prepare-infrastructure"]["state"] == state
+    for phase in ("apply-infrastructure", "bootstrap-workspace"):
+        assert progress["phases"][phase] == {"status": "NOT RUN", "state": "unobserved"}
+    assert all(check["status"] == "BLOCKED" for check in progress["checks"].values())
+    assert progress["status"] == (
+        "FAIL" if state in ("failed", "cancelled") else "BLOCKED"
+    )
+
+
+def test_replaced_checkpoint_lock_refuses_before_creation_submission(
+    driver, monkeypatch
+):
+    driver.run()
+    driver.page.service.approved = True
+    checkpoint = driver.path / "checkpoint.json"
+    original = checkpoint.read_bytes()
+    save = PrivateCheckpoint.save
+    before = len(driver.page.service.calls)
+
+    def replace_lock(store, state):
+        if state.submitted:
+            lock = checkpoint.with_name(checkpoint.name + ".lock")
+            lock.unlink()
+            lock.touch(mode=0o600)
+        save(store, state)
+
+    monkeypatch.setattr(PrivateCheckpoint, "save", replace_lock)
+    assert driver.run() is None
+    assert checkpoint.read_bytes() == original
+    assert not any(
+        method == "POST" and path.endswith("/workspaces")
+        for method, path, _ in driver.page.service.calls[before:]
+    )
+
+
 class Playwright:
     def __init__(self, page, producer):
         self.page, self.producer = page, producer

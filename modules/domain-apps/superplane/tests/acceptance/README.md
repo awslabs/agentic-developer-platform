@@ -135,6 +135,13 @@ request, workspace and approval. Once request evaluation may have begun, errors
 remain uncertain; neither an error nor a recovery 404 resets the submitted flag.
 If checkpoint persistence fails, no creation request is sent; preserve the file
 and original identities for reconciliation rather than editing its state.
+Private inputs must belong to the invoking operating-system user. Keep each
+checkpoint directory and its `.lock` file in place throughout an invocation:
+checkpoint reads and atomic writes are bound to the opened directory, and a
+changed directory, lock or private permission stops further progression. If a
+directory is moved during persistence, retain its original checkpoint for
+reconciliation; a blocked result does not prove that no earlier effects occurred.
+Do not remove lock files to bypass a running process.
 If the creation reply is lost, reruns
 read the original operation rather than submit another creation. Pending
 registration, unknown readiness and unavailable retirement stay BLOCKED. The
@@ -204,15 +211,37 @@ target, original plan, source operation, request parameters, distinct approver,
 expiry and resource/runtime/cost envelope. Runtime must fit the invocation limit
 and remaining authorization window; cost must fit the selected budget. It saves
 submitted state immediately before the authenticated request. An uncertain
-submission is only read back by its original request ID, never re-submitted;
-missing recovery evidence remains blocked. A definite pre-send refusal remains
-retryable. Checkpoint-write uncertainty requires reconciliation using the saved
-file, not a fresh request. Submitted recovery does not renew an expired approval.
+submission is first read back by its original request ID; missing or mismatched
+admission evidence remains blocked and never authorizes another submission. If
+the admitted operation exists but the workspace still points to its original
+source operation, the driver calls the maintained continuation endpoint with the
+saved artifact, request and approval IDs to repair registration. It then verifies
+that the workspace points to that same admitted operation. Already registered
+operations need only reads; a foreign pointer or uncertain repair remains blocked.
+No new request or approval is minted, and recovery does not renew an expired
+admission approval. The invocation's current authorization window still applies.
+A definite pre-send refusal remains retryable. Checkpoint-write uncertainty
+requires reconciliation using the saved file, not a fresh request.
 
 This command always exits 2: a submission receipt is not completed execution,
 Ready, cleanup or zero-cost evidence. Read `browser.continuation` in the private
 report. Provider observation is a separate invocation; complete inventory,
 retirement admission and whole-lifecycle reporting remain unfinished.
+
+After verified browser re-entry, `browser.lifecycle` contains a versioned
+execution-state snapshot for preparation, apply and bootstrap. Each observed
+phase has hashed request/operation references and its recorded state; a phase
+without evidence stays `NOT RUN`/`unobserved`, not successful. Continuation
+ancestry and its operation states are read together from the selected runtime's
+read-only database snapshot. Failed or cancelled execution is reported as `FAIL`;
+pending, running and unknown outcomes are preserved. Even all three operations
+succeeding leaves independent readiness, removal, cleanup and cost checks blocked.
+The observation timestamp identifies this snapshot, which precedes any new
+continuation submission in that invocation. Read `browser.continuation` separately
+for admission or registration-recovery results, then rerun the same command with
+the same checkpoints to obtain another observation. Reports are not replayable
+authority and cannot authorize cleanup. Full retirement and provider cleanup
+integration still require the producer contracts described below.
 
 Provider integration requires authenticated **observed ownership**
 for the original managed workspace. The existing lifecycle-proposals API

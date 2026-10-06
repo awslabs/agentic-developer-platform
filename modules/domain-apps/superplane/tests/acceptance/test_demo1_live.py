@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -253,6 +254,134 @@ def test_checkpoint_is_private_durable_and_rejects_replay_and_swapped_scope(tmp_
         pytest.raises(EvidenceError, match="selection differs"),
     ):
         foreign.load()
+
+
+@pytest.mark.parametrize("changed", ["directory", "lock"])
+@pytest.mark.parametrize("action", ["load", "save"])
+def test_checkpoint_refuses_replaced_directory_or_lock(tmp_path, changed, action):
+    selected, authority, _ = inputs()
+    parsed = DemoInput.parse(selected)
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    path = parent / "checkpoint.json"
+    state = CreationCheckpoint(
+        parsed.request_id,
+        identifier(6),
+        parsed.plan_revision,
+        identifier(8),
+        identifier(9),
+    )
+    with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
+        store.save(state)
+        original = path.read_bytes()
+        retained = path
+        if changed == "directory":
+            parent.rename(tmp_path / "retained")
+            parent.mkdir(mode=0o700)
+            retained = tmp_path / "retained" / path.name
+        else:
+            path.with_name(path.name + ".lock").unlink()
+        with (
+            PrivateCheckpoint(str(path), parsed, authority["origin"]),
+            pytest.raises(EvidenceError),
+        ):
+            if action == "load":
+                store.load()
+            else:
+                store.save(replace(state, submitted=True))
+        assert retained.read_bytes() == original
+        if changed == "directory":
+            assert not path.exists()
+
+
+def test_checkpoint_directory_swap_during_replace_cannot_redirect_saved_state(
+    tmp_path, monkeypatch
+):
+    selected, authority, _ = inputs()
+    parsed = DemoInput.parse(selected)
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    path = parent / "checkpoint.json"
+    state = CreationCheckpoint(
+        parsed.request_id,
+        identifier(6),
+        parsed.plan_revision,
+        identifier(8),
+        identifier(9),
+    )
+    retained = tmp_path / "retained"
+    original_replace = os.replace
+
+    def relocate(source, destination, **options):
+        parent.rename(retained)
+        parent.mkdir(mode=0o700)
+        path.write_text("replacement directory sentinel")
+        original_replace(source, destination, **options)
+
+    with PrivateCheckpoint(str(path), parsed, authority["origin"]) as store:
+        store.save(state)
+        monkeypatch.setattr(os, "replace", relocate)
+        with pytest.raises(EvidenceError):
+            store.save(replace(state, submitted=True))
+        assert path.read_text() == "replacement directory sentinel"
+        assert (
+            json.loads((retained / path.name).read_text())["checkpoint"]["submitted"]
+            is True
+        )
+        assert not list(retained.glob(".demo1-checkpoint-*"))
+        assert not list(parent.glob(".demo1-checkpoint-*"))
+    assert store.directory_fd is None and store.lock_fd is None
+
+
+def test_checkpoint_directory_changed_before_enter_creates_no_lock(tmp_path):
+    selected, authority, _ = inputs()
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    store = PrivateCheckpoint(
+        str(parent / "checkpoint.json"), DemoInput.parse(selected), authority["origin"]
+    )
+    parent.rename(tmp_path / "retained")
+    parent.mkdir(mode=0o700)
+    with pytest.raises(EvidenceError):
+        store.__enter__()
+    assert not list(parent.iterdir())
+    assert store.directory_fd is None and store.lock_fd is None
+
+
+@pytest.mark.parametrize("changed", ["directory", "lock"])
+def test_checkpoint_rejects_permissions_changed_while_locked(tmp_path, changed):
+    selected, authority, _ = inputs()
+    path = tmp_path / "checkpoint.json"
+    with PrivateCheckpoint(
+        str(path), DemoInput.parse(selected), authority["origin"]
+    ) as store:
+        target = (
+            tmp_path if changed == "directory" else path.with_name(path.name + ".lock")
+        )
+        target.chmod(0o755 if changed == "directory" else 0o644)
+        with pytest.raises(EvidenceError):
+            store.load()
+
+
+def test_private_reader_rejects_foreign_owner_and_relative_escape(
+    tmp_path, monkeypatch
+):
+    from superplane_acceptance.demo1_cli import _read_private
+
+    path = tmp_path / "input.json"
+    write_private(path, {"private": "fixture"})
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for entry in ("../input.json", str(path), ""):
+            with pytest.raises(EvidenceError):
+                _read_private(entry, directory_fd=descriptor)
+        monkeypatch.setattr(os, "geteuid", lambda: path.stat().st_uid + 1)
+        with pytest.raises(EvidenceError):
+            _read_private(str(path))
+        with pytest.raises(EvidenceError):
+            _read_private(path.name, directory_fd=descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @pytest.mark.parametrize(

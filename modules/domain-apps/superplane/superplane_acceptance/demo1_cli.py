@@ -28,16 +28,21 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def _read_private(filename: str) -> object:
+def _read_private(filename: str, *, directory_fd: int | None = None) -> object:
     path = Path(filename)
-    if not path.is_absolute():
+    if directory_fd is None and not path.is_absolute():
         raise EvidenceError("input: absolute private file required")
+    if directory_fd is not None and (not filename or filename != path.name):
+        raise EvidenceError("input: private directory entry required")
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+        )
         with os.fdopen(descriptor, "rb") as stream:
             metadata = os.fstat(stream.fileno())
             if (
                 not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
                 or metadata.st_mode & 0o077
                 or metadata.st_nlink != 1
                 or not 0 < metadata.st_size <= MAX_PRIVATE_BYTES

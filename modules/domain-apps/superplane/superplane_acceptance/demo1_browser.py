@@ -12,7 +12,7 @@ from uuid import uuid4
 from .demo1_c1 import inspect_original_details, inspect_reentry, retirement_preview
 from .demo1_evidence import DemoInput, EvidenceError, digest, identifier, instant
 from .demo1_lineage import lineage_report
-from .demo1_report import reference
+from .demo1_report import lifecycle_report, reference
 
 PREFIX = "/api/superplane/v1"
 
@@ -493,12 +493,28 @@ def advance_creation(
                 "browser: workspace changed during continuation re-entry"
             )
         workspace = refreshed
+    progress = lifecycle_report(
+        checkpoint.workspace_id,
+        selected.request_id,
+        lineage["operations"]
+        if lineage is not None
+        else [
+            {
+                "phase": "prepare-infrastructure",
+                "request_id": selected.request_id,
+                "operation_id": operation_id,
+                "state": operation.get("state"),
+            }
+        ],
+        lineage["observed_at"] if lineage is not None else now.isoformat(),
+    )
     if not preview_retirement:
         return checkpoint, {
             "status": "BLOCKED",
             "reason": "creation re-entry verified; continuation requires separate approval",
             "creation_observed": True,
             "operation_ref": reference(current_id),
+            "lifecycle": progress,
             **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
         }
     retirement_id = checkpoint.retirement_request_id
@@ -527,5 +543,6 @@ def advance_creation(
         "creation_observed": True,
         "readiness": readiness,
         "retirement": review["status"],
+        "lifecycle": progress,
         **({"lineage": lineage_report(lineage)} if lineage is not None else {}),
     }

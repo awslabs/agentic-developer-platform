@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from .demo1_evidence import EvidenceError, digest, identifier
-from .demo1_report import reference
+from .demo1_report import reference, validate_operations
 
 
 def observe_lineage(
@@ -45,7 +45,13 @@ def observe_lineage(
         not isinstance(observed, dict)
         or set(observed)
         != set(scope)
-        | {"status", "current_request_id", "current_phase", "artifact_ids"}
+        | {
+            "status",
+            "current_request_id",
+            "current_phase",
+            "artifact_ids",
+            "operations",
+        }
         or observed["status"] != "OBSERVED"
         or any(observed[key] != value for key, value in scope.items())
         or observed["current_phase"]
@@ -62,6 +68,19 @@ def observe_lineage(
         raise EvidenceError("lineage: incomplete continuation ancestry")
     for artifact in artifacts:
         digest(artifact, "lineage artifact")
+    operations = observed["operations"]
+    validate_operations(operations)
+    if (
+        len(operations) != depth + 1
+        or operations[0]["request_id"] != selected.request_id
+        or operations[0]["operation_id"] != original_operation
+        or operations[-1]["request_id"] != observed["current_request_id"]
+        or operations[-1]["operation_id"] != current_operation
+        or operations[-1]["phase"] != observed["current_phase"]
+    ):
+        raise EvidenceError(
+            "lineage: operation snapshot differs from admitted ancestry"
+        )
     return observed
 
 

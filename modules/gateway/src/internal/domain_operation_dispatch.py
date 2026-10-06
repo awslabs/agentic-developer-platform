@@ -53,6 +53,10 @@ async def paid_operation(binding, operation_id, *, connection=None, require_curr
         if operation["budget_state"] != "confirmed" or operation["reservation_state"] != "confirmed":
             raise HTTPException(403, "current domain budget refused")
         operation["approval_expires_at"] = await current_approval(connection, operation, request)
+        if binding.current_identity_enforced:
+            from src.internal.domain_current_identity import revalidate_original_humans
+
+            await revalidate_original_humans(operation, adp_org_id=binding.adp_org_id)
     return operation
 
 
@@ -65,6 +69,10 @@ async def dispatch(binding, body, store, *, authorize=None):
                 "SELECT operation_id FROM harness_operations WHERE operation_id=$1 AND org_id=$2 FOR UPDATE", body.operation_id, binding.org_id
             )
             operation = await paid_operation(binding, body.operation_id, connection=connection, require_current=body.mode == "execution")
+            if body.mode == "recovery" and binding.current_identity_enforced:
+                from src.internal.domain_current_identity import revalidate_original_humans
+
+                await revalidate_original_humans(operation, adp_org_id=binding.adp_org_id)
             for key in ("operation_id", "job_id", "attempt_id", "org_id", "workspace_id"):
                 if operation[key] != getattr(body, key):
                     raise HTTPException(403, "paid operation dispatch refused")

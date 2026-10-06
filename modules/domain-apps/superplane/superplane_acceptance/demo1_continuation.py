@@ -207,9 +207,43 @@ def advance_continuation(
             result.get("provisioning_operation_id"), "continuation operation"
         )
         require(operation != saved.source_operation_id)
+        workspace = _response(transport, "GET", prefix)
+        require(
+            workspace.get("id") == original.workspace_id
+            and workspace.get("org_id") == selected.org_id
+            and workspace.get("name") == selected.workspace_name
+        )
+        current = workspace.get("provisioning_operation_id")
+        require(
+            current in (saved.source_operation_id, operation)
+            and reference(current) == verified_source
+        )
+        if current == saved.source_operation_id:
+            reconciled = _response(
+                transport,
+                "POST",
+                prefix + f"/lifecycle-proposals/{saved.artifact_id}/continue",
+                {
+                    "operation_id": saved.request_id,
+                    "approval_id": saved.approval_id,
+                },
+            )
+            require(
+                reconciled.get("request_id") == saved.request_id
+                and reconciled.get("workspace_id") == original.workspace_id
+                and reconciled.get("provisioning_operation_id") == operation
+                and reconciled.get("phase") == phase
+            )
+            registered = _response(transport, "GET", prefix)
+            require(
+                registered.get("id") == original.workspace_id
+                and registered.get("org_id") == selected.org_id
+                and registered.get("name") == selected.workspace_name
+                and registered.get("provisioning_operation_id") == operation
+            )
         return {
             "status": "BLOCKED",
-            "reason": "continuation recovered; readiness and cleanup remain separate",
+            "reason": "continuation registration verified; readiness and cleanup remain separate",
             "submission_observed": True,
             "request_ref": reference(saved.request_id),
             "operation_ref": reference(operation),

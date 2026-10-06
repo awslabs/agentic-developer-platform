@@ -4,12 +4,88 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from .demo1_evidence import DemoInput, EvidenceError, PhaseEvidence, link_phases
+from .demo1_evidence import (
+    DemoInput,
+    EvidenceError,
+    PhaseEvidence,
+    identifier,
+    instant,
+    link_phases,
+)
 from .demo1_provider import ProviderReader, observe_provider
 
 
 def reference(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+LIFECYCLE_PHASES = (
+    "prepare-infrastructure",
+    "apply-infrastructure",
+    "bootstrap-workspace",
+)
+
+
+def validate_operations(operations):
+    if not isinstance(operations, list) or not 1 <= len(operations) <= 3:
+        raise EvidenceError("lifecycle: complete ordered operation snapshot required")
+    requests, identities = set(), set()
+    for index, operation in enumerate(operations):
+        if (
+            not isinstance(operation, dict)
+            or set(operation) != {"phase", "request_id", "operation_id", "state"}
+            or operation["phase"] != LIFECYCLE_PHASES[index]
+            or operation["state"]
+            not in ("pending", "running", "succeeded", "failed", "cancelled", "unknown")
+            or (index < len(operations) - 1 and operation["state"] != "succeeded")
+        ):
+            raise EvidenceError("lifecycle: phase or operation state unverified")
+        request = identifier(operation["request_id"], "lifecycle request")
+        identity = identifier(operation["operation_id"], "lifecycle operation")
+        if request in requests or identity in identities:
+            raise EvidenceError("lifecycle: repeated request or operation")
+        requests.add(request)
+        identities.add(identity)
+
+
+def lifecycle_report(workspace_id, original_request_id, operations, observed_at):
+    validate_operations(operations)
+    if operations[0]["request_id"] != original_request_id:
+        raise EvidenceError("lifecycle: original request differs")
+    phases = {
+        phase: {"status": "NOT RUN", "state": "unobserved"}
+        for phase in LIFECYCLE_PHASES
+    }
+    for operation in operations:
+        phases[operation["phase"]] = {
+            "status": "OBSERVED",
+            "state": operation["state"],
+            "request_ref": reference(operation["request_id"]),
+            "operation_ref": reference(operation["operation_id"]),
+        }
+    return {
+        "version": "demo1-lifecycle-progress-v1",
+        "status": "FAIL"
+        if operations[-1]["state"] in ("failed", "cancelled")
+        else "BLOCKED",
+        "workspace_ref": reference(identifier(workspace_id, "lifecycle workspace")),
+        "original_request_ref": reference(original_request_id),
+        "observed_at": instant(observed_at, "lifecycle observation").isoformat(),
+        "phases": phases,
+        "checks": {
+            "readiness": _check(
+                "BLOCKED", "operation success alone is not independent Ready evidence"
+            ),
+            "removal": _check(
+                "BLOCKED", "positive dedicated retirement admission unavailable"
+            ),
+            "cleanup": _check(
+                "BLOCKED", "complete durable ownership and cleanup evidence unavailable"
+            ),
+            "cost": _check("BLOCKED", "cost unknown; not zero"),
+        },
+        "scope": "execution-state snapshot only; no live acceptance or cleanup authority",
+    }
 
 
 def _phase_record(phase: PhaseEvidence) -> dict:

@@ -78,6 +78,16 @@ async def collect(connect, scope):
             current_request = current["idempotency_key"]
             current_phase = parameters.get("lifecycle_phase")
             require(current_phase in ("apply-infrastructure", "bootstrap-workspace"))
+
+            def observed_operation(row, phase):
+                return {
+                    "phase": phase,
+                    "request_id": row["idempotency_key"],
+                    "operation_id": row["operation_id"],
+                    "state": row["state"],
+                }
+
+            operations = [observed_operation(current, current_phase)]
             phases = (
                 ("bootstrap-workspace", "apply-infrastructure")
                 if current_phase == "bootstrap-workspace"
@@ -123,6 +133,12 @@ async def collect(connect, scope):
                 )
                 requests.add(current["idempotency_key"])
                 artifacts.append(parent["artifact_id"])
+                operations.append(
+                    observed_operation(
+                        current,
+                        parameters.get("lifecycle_phase", "prepare-infrastructure"),
+                    )
+                )
                 latest = parent["created_at"]
             require(
                 current == root
@@ -136,6 +152,7 @@ async def collect(connect, scope):
                 "current_request_id": current_request,
                 "current_phase": current_phase,
                 "artifact_ids": artifacts,
+                "operations": list(reversed(operations)),
             }
 
 
