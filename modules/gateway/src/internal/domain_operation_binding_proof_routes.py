@@ -76,6 +76,7 @@ def installed_worker(binding, runtime):
             or worker.get("args")
             or environment.get("ADP_AGENT_AUTHORITY_ENABLED") != "true"
             or environment.get("SUPERPLANE_PAID_WORKER_MODE") != "native-lifecycle"
+            or environment.get("SUPERPLANE_OPERATION_SCHEMA", binding.database_schema) != binding.database_schema
             or source != {"configMapRef": {"name": name + "-config"}}
             or configuration["metadata"]["namespace"] != namespace
             or configuration["metadata"]["name"] != name + "-config"

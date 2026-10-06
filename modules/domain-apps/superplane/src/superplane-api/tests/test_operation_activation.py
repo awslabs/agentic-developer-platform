@@ -3,9 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 from app.adapters.harness_operation_facade import HarnessOperationFacade
-from app.adapters.operation_dispatch import OperationDispatcher
+from app.adapters.operation_dispatch import OperationDispatcher, ProducerTransport
 from app.composition import Composition
 from app.config import Settings, settings
 from app.services.provisioning import ProvisioningUnavailable
@@ -303,6 +304,7 @@ async def test_native_lifecycle_rechecks_exact_installed_binding_before_shared_a
 
     for change in (
         {"worker_role_arn": "arn:aws:iam::123456789012:role/replaced"},
+        {"operation_schema": "wrong_schema"},
         {"adp_org_id": "another-tenant"},
         {"checked_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat()},
         {"installed": False},
@@ -311,6 +313,23 @@ async def test_native_lifecycle_rechecks_exact_installed_binding_before_shared_a
         with pytest.raises(ProvisioningUnavailable, match="binding verification"):
             await facade.open_operation(**request)
         service.open_operation.assert_not_called()
+
+    refused_binding = Mock(
+        return_value=httpx.Response(
+            503, json={"detail": "paid worker installation differs from binding"}
+        )
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(refused_binding)) as client:
+        dispatcher.transport = ProducerTransport(
+            "https://gateway.example", "us-east-1", session=Mock(), client=client
+        )
+        monkeypatch.setattr(dispatcher.transport, "_headers", lambda *_: {})
+        with pytest.raises(ProvisioningUnavailable, match="binding verification"):
+            await facade.open_operation(**request)
+        service.open_operation.assert_not_called()
+        refused_binding.assert_called_once()
+        assert refused_binding.call_args.args[0].url.path.endswith("/binding-proof")
+    dispatcher.transport = transport
 
     transport.post.side_effect = OSError("gateway unreachable")
     with pytest.raises(ProvisioningUnavailable, match="binding verification"):

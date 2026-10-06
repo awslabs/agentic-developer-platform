@@ -142,6 +142,15 @@ async def test_binding_proof_checks_installed_resources_registry_and_queue(insta
     )
     registry._iam.get_role.assert_called_once_with(RoleName="paid-worker")
 
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", "value": "wrong_schema"})
+    with pytest.raises(HTTPException) as mismatched_schema:
+        await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
+    assert mismatched_schema.value.status_code == 503
+    assert mismatched_schema.value.detail == "paid worker installation differs from binding"
+    registry._iam.get_role.assert_called_once_with(RoleName="paid-worker")
+    environment.pop()
+
     registry._iam.get_role.return_value["Role"]["RoleId"] = "AROA22222222222222222"
     with pytest.raises(HTTPException) as replaced_role:
         await proof.binding_proof(DomainScope(domain="superplane", org_id=binding.org_id), Mock())
@@ -212,6 +221,38 @@ def test_binding_proof_refuses_missing_gateway_kubernetes_token(installed):
         proof.installed_worker(binding, runtime)
     assert refusal.value.status_code == 503
     assert not calls
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"value": "wrong_schema"},
+        {"value": ""},
+        {"value": "$(SCHEMA)"},
+        {"valueFrom": {"configMapKeyRef": {"name": "other-config", "key": "schema"}}},
+        {"valueFrom": {"secretKeyRef": {"name": "other-secret", "key": "schema"}}},
+        {"valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
+    ],
+    ids=["different", "empty", "substitution", "config-map", "secret", "field"],
+)
+def test_binding_proof_refuses_incompatible_container_schema_override(installed, override):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", **override})
+
+    with pytest.raises(HTTPException) as refusal:
+        proof.installed_worker(binding, runtime)
+    assert refusal.value.status_code == 503
+    assert refusal.value.detail == "paid worker installation differs from binding"
+
+
+def test_binding_proof_accepts_matching_container_schema_override(installed):
+    binding, responses, _, runtime = installed
+    environment = responses["scaledjobs"]["spec"]["jobTargetRef"]["template"]["spec"]["containers"][0]["env"]
+    environment.append({"name": "SUPERPLANE_OPERATION_SCHEMA", "value": binding.database_schema})
+
+    digest, _, _ = proof.installed_worker(binding, runtime)
+    assert digest == binding.worker_image_digests[0]
 
 
 @pytest.mark.asyncio

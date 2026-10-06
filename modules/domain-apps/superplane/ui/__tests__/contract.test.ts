@@ -235,10 +235,8 @@ describe('unavailability reporting', () => {
     expect(unavailable.detail).toContain('/workspaces/preview');
   });
 
-  it('marks every mapped onboarding route served after API composition', () => {
-    // The independent allowlist checks above verify these flags against the
-    // actual gateway boundary; capability advertisement is checked separately.
-    expect(unservedEndpoints()).toEqual([]);
+  it('keeps dormant cleanup-access routes unavailable without hiding composed onboarding', () => {
+    expect(unservedEndpoints()).toEqual(['previewRetirementAccess', 'admitRetirementAccess']);
   });
 });
 
