@@ -240,7 +240,9 @@ async def lifecycle(ledger, installation_postgres_url, monkeypatch, tmp_path):  
         await session.commit()
 
     class Context:
-        composition = SimpleNamespace(operation_connect=connections.connect)
+        composition = SimpleNamespace(
+            operation_connect=connections.connect, domain_connect=connections.connect
+        )
 
         @contextmanager
         def actor(self, subject="requester", workspace_id=""):

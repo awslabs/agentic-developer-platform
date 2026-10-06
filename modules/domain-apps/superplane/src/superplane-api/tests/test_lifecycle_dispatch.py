@@ -25,9 +25,24 @@ class RegisteredConnection:
     async def fetchrow(self, query, *_):
         if query.startswith("SELECT * FROM workspace_lifecycle_control_operations"):
             return self.registration
-        if "JOIN workspaces" in query:
+        if "FROM harness_operations" in query:
             return self.row
+        if "FROM workspaces" in query:
+            return {
+                **self.row,
+                "status": "Active",
+                "is_default": False,
+                "provisioning_operation_id": "bootstrap",
+                "teardown_operation_id": None,
+            }
         raise AssertionError("unexpected operation read")
+
+    async def fetchval(self, query, *_):
+        if "controller_deployment_operations" in query:
+            return False
+        if "workspace_lifecycle_control_operations" in query:
+            return self.registration is not None
+        raise AssertionError("unexpected domain registration read")
 
 
 @pytest.mark.asyncio
@@ -117,6 +132,7 @@ async def test_registered_control_rechecks_binding_before_protected_dispatch(
     dispatcher = OperationDispatcher(
         lambda: connection,
         transport,
+        domain_connect=lambda: connection,
         policy_for=lambda _: SimpleNamespace(adp_org_id="tenant"),
     )
     envelope = SimpleNamespace(**identity)
@@ -140,15 +156,6 @@ async def test_registered_control_rechecks_binding_before_protected_dispatch(
     connection.registration = {**registration, "plan_digest": "wrong"}
     assert await dispatcher.deliver(envelope) is False
     transport.post.assert_not_called()
-
-
-def test_outbox_and_recovery_require_durable_control_registration():
-    for statement in (operation_dispatch._REGISTERED, operation_dispatch._RECOVERABLE):
-        assert "workspace_lifecycle_control_operations" in statement
-        assert (
-            "control.source_bootstrap_operation_id=w.provisioning_operation_id"
-            in statement
-        )
 
 
 @pytest.mark.asyncio

@@ -31,8 +31,8 @@ Both halves are enforced by the database, not by this code:
 
 ## Why this adapter does not use SQLAlchemy
 
-It writes over the harness's asyncpg connection, through the same `connect`
-callable the facade uses. Three reasons, in order of how badly each would break:
+It writes through an independent domain asyncpg pool. Shared operation admission
+and domain budget transactions have separate owners. Three reasons, in order of how badly each would break:
 
 1. **The ledger is called from inside admission.** `admit_operation` invokes
    `reserve` while holding its advisory lock, and `release`/`retain` as
@@ -43,10 +43,9 @@ callable the facade uses. Three reasons, in order of how badly each would break:
    stay held forever with nothing recording why.
 2. **A request session is not always available.** Admission also runs from
    recovery paths that have no HTTP request and therefore no session dependency.
-3. **The harness's connection is guaranteed idle and exclusively owned** for the
-   length of its context, which is what `_admission_ownership` requires. Reaching
-   for a second, session-bound connection inside that window would be a second
-   lock scope nobody can see.
+3. **The ledger's connection is idle and exclusively owned** for its own
+   transaction. It never borrows the shared admission connection or expands its
+   schema access.
 
 Each public method therefore opens its own connection and its own transaction.
 That is deliberate: a compensation that commits independently of the thing it
@@ -108,12 +107,11 @@ class WorkspaceBudgetLimits:
 
 
 class OperationBudgetLedger:
-    """A durable, attempt-keyed budget ledger over the harness's connection.
+    """A durable, attempt-keyed budget ledger over an independent domain pool.
 
-    Constructed with the same ``connect`` callable the facade is composed with, so
-    the ledger and the operation store are always the same database. A ledger
-    pointed at a different database than the operations it reserves for would
-    produce reservations nothing could reconcile.
+    Shared admission records the exact returned reservation identity and limits.
+    Producer dispatch revalidates that tuple against this domain-owned ledger;
+    neither store needs permission to query the other owner's tables.
 
     ``limits_for`` is injected rather than implemented here: resolving a
     workspace's configured caps is domain policy that reads the `workspaces` row,

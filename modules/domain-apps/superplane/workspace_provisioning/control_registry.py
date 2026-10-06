@@ -20,6 +20,7 @@ from .runtime_config import LifecycleRefused
 async def registration_values(
     connection,
     *,
+    domain_connection,
     operation_id,
     org_id,
     workspace_id,
@@ -113,7 +114,7 @@ async def registration_values(
         workspace_id,
         source.plan_digest,
     )
-    registered = await connection.fetchval(
+    registered = await domain_connection.fetchval(
         "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id::text=$1 AND org_id::text=$2 "
         "AND provisioning_operation_id=$3 AND status IN ('Active','active') AND is_default=false)",
         workspace_id,
@@ -137,14 +138,17 @@ async def registration_values(
     }
 
 
-async def register_control_operation(connection, **identity):
+async def register_control_operation(connection, *, domain_connection, **identity):
     """Call after shared admission commits, while the API holds its workspace lock.
 
     request_id is the original retirement UUID, not the derived admitted request.
-    The caller owns this connection's transaction and the domain workspace lock.
+    The caller owns the domain connection transaction and workspace lock;
+    connection reads only the committed shared admission.
     """
-    values = await registration_values(connection, **identity)
-    await connection.execute(
+    values = await registration_values(
+        connection, domain_connection=domain_connection, **identity
+    )
+    await domain_connection.execute(
         "INSERT INTO workspace_lifecycle_control_operations ("
         + ",".join(values)
         + ") VALUES ("
@@ -152,7 +156,7 @@ async def register_control_operation(connection, **identity):
         + ") ON CONFLICT DO NOTHING",
         *values.values(),
     )
-    row = await connection.fetchrow(
+    row = await domain_connection.fetchrow(
         "SELECT * FROM workspace_lifecycle_control_operations WHERE operation_id=$1",
         identity["operation_id"],
     )
@@ -163,11 +167,11 @@ async def register_control_operation(connection, **identity):
     return dict(row)
 
 
-async def validate_control_operation(connection, operation):
+async def validate_control_operation(connection, operation, *, domain_connection):
     """A registered control must still match its paid source, scope and allocation."""
     lease = operation.grant.lease
     parameters = operation.request.parameters
-    row = await connection.fetchrow(
+    row = await domain_connection.fetchrow(
         "SELECT * FROM workspace_lifecycle_control_operations WHERE operation_id=$1 AND org_id=$2 AND workspace_id=$3",
         lease.operation_id,
         lease.org_id,
@@ -177,6 +181,7 @@ async def validate_control_operation(connection, operation):
         raise LifecycleRefused("cleanup control operation is not registered")
     values = await registration_values(
         connection,
+        domain_connection=domain_connection,
         operation_id=lease.operation_id,
         org_id=lease.org_id,
         workspace_id=lease.workspace_id,

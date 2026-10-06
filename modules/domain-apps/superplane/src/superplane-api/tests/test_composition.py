@@ -61,6 +61,11 @@ class _WithOperationStore(_Configured):
     """
 
     database_url = "postgresql+asyncpg://composition-test@127.0.0.1:1/superplane"
+    superplane_db_schema = "domain"
+    superplane_operation_database_url = (
+        "postgresql+asyncpg://shared-test@127.0.0.1:1/superplane"
+    )
+    superplane_operation_db_schema = "operations"
 
 
 @pytest.fixture(autouse=True)
@@ -580,3 +585,27 @@ async def test_current_identity_composition_shares_registered_producer_transport
         assert result.identity_reader.transport is result.dispatcher.transport
     finally:
         await result.aclose()
+
+
+def test_shared_database_configuration_cannot_fall_back_to_domain_credentials():
+    from types import SimpleNamespace
+    from app.adapters.harness_connection import (
+        HarnessDatabaseUnavailable,
+        build_harness_connections,
+    )
+
+    domain = "postgresql://domain@127.0.0.1:1/database"
+    values = dict(database_url=domain, superplane_db_schema="domain")
+    assert build_harness_connections(SimpleNamespace(**values)) is None
+    for url, schema in (
+        (domain, "operations"),
+        ("postgresql://shared@127.0.0.1:1/database", "domain"),
+    ):
+        with pytest.raises(HarnessDatabaseUnavailable):
+            build_harness_connections(
+                SimpleNamespace(
+                    **values,
+                    superplane_operation_database_url=url,
+                    superplane_operation_db_schema=schema,
+                )
+            )

@@ -242,16 +242,48 @@ def build_harness_connections(settings: Any) -> HarnessConnections | None:
     configuration gap as a per-request denial, and a stub that accepted anything
     would be a bypass.
     """
-    database_url = getattr(settings, "database_url", "") or ""
+    database_url = getattr(settings, "superplane_operation_database_url", "") or ""
     if not database_url.strip():
         return None
 
     from app.schema_boundary import connect_args
 
-    schema = getattr(settings, "superplane_db_schema", "") or ""
+    schema = getattr(settings, "superplane_operation_db_schema", "") or ""
+    if (
+        not schema
+        or schema == getattr(settings, "superplane_db_schema", "")
+        or database_url == getattr(settings, "database_url", "")
+    ):
+        raise HarnessDatabaseUnavailable(
+            "shared and domain database bindings must be separate"
+        )
     return HarnessConnections(
         _asyncpg_dsn(database_url), connect_args(schema, database_url)
     )
+
+
+class DomainConnections(HarnessConnections):
+    """Independent idle domain sessions for durable budget/registration work."""
+
+    async def ensure_ready(self) -> None:
+        async with self.connect() as connection:
+            # Domain migrations remain with the domain installer. No shared
+            # schema check or privilege grant belongs on this connection.
+            await connection.fetch("SELECT id, adp_org_id FROM organizations LIMIT 0")
+            await connection.fetch("SELECT id, org_id FROM workspaces LIMIT 0")
+            await connection.fetch(
+                "SELECT reservation_id FROM operation_budget_reservations LIMIT 0"
+            )
+
+
+def build_domain_connections(settings: Any) -> DomainConnections:
+    from app.schema_boundary import connect_args
+
+    url = getattr(settings, "database_url", "") or ""
+    schema = getattr(settings, "superplane_db_schema", "") or ""
+    if not url or not schema:
+        raise HarnessDatabaseUnavailable("domain database binding is unavailable")
+    return DomainConnections(_asyncpg_dsn(url), connect_args(schema, url))
 
 
 ConnectCallable = Callable[[], AbstractAsyncContextManager[Any]]

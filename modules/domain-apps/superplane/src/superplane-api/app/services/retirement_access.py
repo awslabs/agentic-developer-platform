@@ -76,9 +76,14 @@ async def _register(composition, db, workspace, record, request):
         != request.parameters["retirement_source_operation_id"]
     ):
         raise ProvisioningRefused("cleanup source is no longer the active bootstrap")
-    async with composition.operation_connect() as connection, connection.transaction():
+    async with (
+        composition.operation_connect() as connection,
+        composition.domain_connect() as domain_connection,
+        domain_connection.transaction(),
+    ):
         await register_control_operation(
             connection,
+            domain_connection=domain_connection,
             operation_id=record["operation_id"],
             org_id=str(workspace.org_id),
             workspace_id=str(workspace.id),

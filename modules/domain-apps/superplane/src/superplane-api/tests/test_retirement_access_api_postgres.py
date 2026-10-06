@@ -273,6 +273,7 @@ async def test_approved_cleanup_control_dispatches_after_registration(cleanup):
     dispatcher = OperationDispatcher(
         cleanup.fixture.connections.connect,
         transport,
+        domain_connect=cleanup.fixture.connections.connect,
         policy_for=lambda _: SimpleNamespace(adp_org_id="adp-test"),
     )
     async with cleanup.fixture.connections.connect() as connection:
