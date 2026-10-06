@@ -68,6 +68,36 @@ async function fixture(t: test.TestContext, trackedLearning = false) {
   return { directory, workspace, remote, git, sha, pr, envelope, runtime, github };
 }
 
+test("PR mention presents explicit deferred work to the engine without blocking a bounded approval", async t => {
+  const state = await fixture(t);
+  const instruction = "@agent-codex-reviewer Review this bounded PR.\n\nDefer broad policy work to another issue.\nKeep CI required.";
+  let merges = 0;
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url, triggering_comment: instruction } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => ({ ready: true, total: 1, failing: [], pending: [],
+        observations: [{ name: "unit", status: "completed", conclusion: "success" }] }),
+      commentOnce: async () => true,
+      merge: async (_number, head) => { assert.equal(head, state.sha); merges++; return "b".repeat(40); },
+    },
+    review: async prompt => {
+      const data = prompt.match(/<story-data>(.*?)<\/story-data>/s)?.[1];
+      assert.ok(data, "engine prompt contains story data");
+      const story = JSON.parse(data) as { issue: { body: string }; acceptedScope?: string };
+      assert.equal(story.issue.body, "Valid input succeeds");
+      assert.match(story.acceptedScope ?? "", /^Human PR review request \(context only/);
+      assert.ok(story.acceptedScope?.endsWith(instruction), "scope preserves the exact multiline comment");
+      assert.match(prompt, /not design approval or permission to bypass/);
+      assert.match(prompt, /human triggering comment in acceptedScope is/);
+      return approved;
+    },
+    fix: async () => assert.fail("Deferred work alone must not start repair"),
+  });
+  assert.equal(result.status, "merged");
+  assert.equal(merges, 1);
+});
+
 test("engine envelope selects its bound PR without a webhook payload or agent branch", () => {
   const raw = { version: "1.0", persona: "agent-codex-reviewer", message_id: "run", arrived_at: "now", tenant_id: "tenant",
     source_ref: { repo: "org/repo", issue: 42, installation_id: 1 }, intent: { trigger: "engine_review_cycle" },
@@ -485,7 +515,7 @@ test("PR mention carries named CI evidence through publication, waiting and merg
   const comments: string[] = [];
   const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
     pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
-      expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+      expected_head_sha: state.sha, html_url: state.pr.html_url, triggering_comment: "Keep final-head CI required." } }, state.runtime, {
     github: { ...state.github,
       checks: async () => {
         polls++;
@@ -501,6 +531,7 @@ test("PR mention carries named CI evidence through publication, waiting and merg
       },
     },
     review: async prompt => {
+      assert.match(prompt, /Keep final-head CI required/);
       if (++reviews <= 2) return { ...approved, validationGaps: ["Browser evidence for published head"] };
       assert.match(prompt, /controller-ci-evidence/);
       assert.match(prompt, /"name":"browser"/);
@@ -864,7 +895,8 @@ for (const failure of ["semantic", "ci", "validation"] as const) {
     const comments: string[] = [];
     const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
       pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
-        expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+        expected_head_sha: state.sha, html_url: state.pr.html_url,
+        triggering_comment: "Defer broad policy work outside this PR; still repair real code and CI failures." } }, state.runtime, {
       github: { ...state.github,
         checks: async () => ({ ready: repairs > 0, total: failure === "semantic" ? 0 : 1,
           failing: failure === "ci" && repairs === 0 ? ["tests: valid input rejected"] : [], pending: [] }),
@@ -877,7 +909,8 @@ for (const failure of ["semantic", "ci", "validation"] as const) {
           return "b".repeat(40);
         },
       },
-      review: async () => {
+      review: async prompt => {
+        assert.match(prompt, /Defer broad policy work outside this PR/);
         reviews++;
         if (repairs) return approved;
         if (failure === "semantic") return blocked;
@@ -915,6 +948,27 @@ test("PR mention reports a genuine no-progress blocker without merging", async t
   assert.equal(result.status, "changes_requested");
   assert.equal(comments.length, 1);
   assert.ok(repairs <= 2);
+});
+
+test("PR mention refuses failing CI without a successful repair despite deferred scope", async t => {
+  const state = await fixture(t);
+  let repairs = 0;
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url,
+      triggering_comment: "Defer unrelated policy work; keep required CI." } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => ({ ready: false, total: 1, failing: ["unit: failed"], pending: [],
+        observations: [{ name: "unit", status: "completed", conclusion: "failure" }] }),
+      commentOnce: async () => true,
+      merge: async () => assert.fail("Failing CI must not merge"),
+    },
+    review: async prompt => { assert.match(prompt, /Defer unrelated policy work/); return approved; },
+    fix: async () => { repairs++; },
+  });
+  assert.equal(result.status, "changes_requested");
+  assert.ok(repairs > 0, "failed CI reaches the repair loop");
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
 
