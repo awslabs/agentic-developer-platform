@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5730,
-  "updated_at": "2026-10-05T23:59:33.345Z",
+  "updated_at": "2026-10-06T00:10:36.643Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -123,10 +123,7 @@
       "title": "Consume mounted cleanup-access and positive retirement contracts without enabling unsupported admission",
       "status": "blocked",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/contract.ts",
-        "modules/domain-apps/superplane/ui/client.ts"
-      ],
+      "files": [],
       "note": "Guarded preview exists at b94733b; positive producer contract remains unavailable.",
       "commits": [
         "b94733b"
@@ -141,9 +138,7 @@
       "covers": [
         "AC-02-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/__tests__/retirement-access.test.ts"
-      ],
+      "files": [],
       "note": "Current refusal and malformed-response checks pass; positive contract requires revalidation."
     },
     {
@@ -153,9 +148,7 @@
       "title": "Wire separate human approval, exact-plan admission and durable retirement re-entry",
       "status": "blocked",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
-      ],
+      "files": [],
       "note": "Read-only original-ID re-entry exists; dedicated-managed admission awaits backend producer.",
       "commits": [
         "0116fc0"
@@ -170,9 +163,7 @@
       "covers": [
         "AC-02-c4"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
-      ],
+      "files": [],
       "note": "Recovery negatives pass; positive admission requires the producer contract."
     },
     {
@@ -263,11 +254,7 @@
       "title": "Preserve scoped retirement and access identities across refresh, scope changes and uncertain replies",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/operations.ts",
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
-        "modules/domain-apps/superplane/ui/OnboardingView.tsx"
-      ],
+      "files": [],
       "note": "7343120 adds principal-scoped receipts and immutable operation lineage.",
       "commits": [
         "7343120"
@@ -282,11 +269,8 @@
       "covers": [
         "AC-03-c4"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/__tests__/operations.test.ts",
-        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
-      ],
-      "note": "116 focused tests pass, including A→B→A, uncertain response and conflicting identities."
+      "files": [],
+      "note": "116 focused tests pass, including scope changes and conflicting identities."
     },
     {
       "id": "AC-04-c1",
@@ -332,10 +316,8 @@
       "title": "Distinguish retirement acceptance and progress from verified removal and residual costs",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/RetirementPanel.tsx"
-      ],
-      "note": "6851867 separates all operation states from unverified removal and unknown residual cost.",
+      "files": [],
+      "note": "6851867 separates operation states from unverified removal and unknown residual cost.",
       "commits": [
         "6851867"
       ]
@@ -349,10 +331,8 @@
       "covers": [
         "AC-04-c2"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/__tests__/RetirementPanel.test.tsx"
-      ],
-      "note": "72 focused tests pass, including six operation states, failed recovery and no admission."
+      "files": [],
+      "note": "72 focused tests pass, including six operation states and no admission."
     },
     {
       "id": "AC-05-c1",
@@ -362,7 +342,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Prior implementation retained.",
+      "note": "Prior component implementation retained.",
       "commits": [
         "1b3b104"
       ]
@@ -390,11 +370,16 @@
         "AC-05-c2"
       ],
       "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
+        "modules/domain-apps/superplane/ui/RetirementPanel.tsx",
+        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py",
+        ".adp/tasks/5730.json"
       ],
-      "note": "Fixture browser workflow 37392225344 passed on 6e17714; inspected retained 360px screenshot and verified review-level overflow bounds. No live acceptance claimed.",
+      "note": "Fixture browser workflow 37392225344 passed on 6e17714; retained 360px screenshot inspected. Board update c277efb. Not live acceptance.",
       "commits": [
-        "194af4a"
+        "194af4a",
+        "c277efb",
+        "6e17714",
+        "7793cfb"
       ]
     },
     {
@@ -417,7 +402,7 @@
         "AC-05-c2"
       ],
       "files": [],
-      "note": "Prior fixture evidence; not a browser run."
+      "note": "Prior fixture evidence retained."
     },
     {
       "id": "AC-05-c3",
@@ -426,10 +411,8 @@
       "title": "Expose stable accessible retirement approval, recovery and outcome controls in browser fixture",
       "status": "open",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/onboarding-entry.tsx"
-      ],
-      "note": "Pending."
+      "files": [],
+      "note": "Next source task; approval must remain capability-gated."
     },
     {
       "id": "AC-05-t4",
@@ -440,9 +423,7 @@
       "covers": [
         "AC-05-c3"
       ],
-      "files": [
-        "modules/domain-apps/superplane/ui/browser-tests/verify_onboarding_browser.py"
-      ],
+      "files": [],
       "note": "Pending."
     },
     {
@@ -465,7 +446,7 @@
         "AC-06-c1"
       ],
       "files": [],
-      "note": "Final-head local and remote checks pending."
+      "note": "Full final-head local and remote checks pending."
     },
     {
       "id": "AC-06-t2",
