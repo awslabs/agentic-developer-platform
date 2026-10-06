@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5534,
-  "updated_at": "2026-10-06T00:59:54.160Z",
+  "updated_at": "2026-10-06T01:02:33.371Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,11 +11,9 @@
       "status": "open",
       "covers": [],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_managed_access.py",
-        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_context.py",
-        "modules/domain-apps/superplane/src/superplane-api/app/services/retirement_access.py"
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_artifact.py"
       ],
-      "note": "fab15ef requires paid approval as well as the original seal. Production grant activation and exact revocation remain unwired.",
+      "note": "70801fd fixes control artifact target binding; production activation and exact revocation remain.",
       "commits": [
         "c83f065",
         "5a65001",
@@ -25,7 +23,8 @@
         "46ba891",
         "bc6d025",
         "73430b4",
-        "fab15ef"
+        "fab15ef",
+        "70801fd"
       ]
     },
     {
@@ -38,9 +37,9 @@
         "AC-01-c1"
       ],
       "files": [
-        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_managed_access_postgres.py"
+        "modules/domain-apps/superplane/workspace_provisioning/tests/test_retirement_access_artifact.py"
       ],
-      "note": "b92e027 adds real PostgreSQL control admission and forged-paid-source denial; activation and revocation remain untested.",
+      "note": "48 local domain tests passed with zero skips, including PostgreSQL paid-control admission; managed grant activation and revocation are not proved.",
       "commits": [
         "b92e027"
       ]
@@ -95,7 +94,7 @@
         "AC-01-c2"
       ],
       "files": [],
-      "note": "Paid-source denial passes; admitted deletion denial remains."
+      "note": "Paid-source and artifact-target denial pass; admitted deletion denial remains."
     },
     {
       "id": "AC-02-c1",
@@ -155,7 +154,7 @@
         "AC-02-c-wire"
       ],
       "files": [],
-      "note": "Seven API cleanup tests pass; no admitted managed API-to-retirement-producer test."
+      "note": "Earlier API cleanup tests passed; no admitted managed API-to-retirement-producer test."
     },
     {
       "id": "AC-02-t2",
@@ -190,7 +189,7 @@
         "AC-03-c1"
       ],
       "files": [],
-      "note": "Focused suites pass separately; full relevant suites and required CI remain."
+      "note": "Focused tests passed; full relevant suites and required CI remain."
     },
     {
       "id": "AC-04-c1",
