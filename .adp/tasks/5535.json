@@ -1,7 +1,7 @@
 {
   "version": 1,
   "issue": 5535,
-  "updated_at": "2026-10-06T00:09:36.048Z",
+  "updated_at": "2026-10-06T00:13:09.728Z",
   "tasks": [
     {
       "id": "AC-01-c1",
@@ -11,7 +11,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously covered by AC-01-t4.",
+      "note": "Covered by AC-01-t4.",
       "commits": [
         "6d8a26e",
         "59fc1e7",
@@ -1869,7 +1869,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously covered by AC-01-t5.",
+      "note": "Covered by AC-01-t5.",
       "commits": [
         "931919f"
       ]
@@ -1882,7 +1882,7 @@
       "status": "done",
       "covers": [],
       "files": [],
-      "note": "Previously covered by AC-01-t6.",
+      "note": "Covered by AC-01-t6.",
       "commits": [
         "f6cf576"
       ]
@@ -1894,10 +1894,8 @@
       "title": "Wire admitted operation through durable outbox and registered lifecycle worker",
       "status": "done",
       "covers": [],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py"
-      ],
-      "note": "Covered by AC-01-t7 and the PostgreSQL path in AC-01-t1.",
+      "files": [],
+      "note": "Covered by AC-01-t7 and AC-01-t1.",
       "commits": [
         "cce8e6c"
       ]
@@ -3808,12 +3806,8 @@
         "AC-01-c3",
         "AC-01-c-wire"
       ],
-      "files": [
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_retirement_access_api_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py",
-        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py"
-      ],
-      "note": "33 API/PostgreSQL and 23 native-worker tests passed at 14f7ccfc0. Go restart test requires an unavailable test binary.",
+      "files": [],
+      "note": "PostgreSQL and native-worker suites passed at the prior checkpoint.",
       "commits": [
         "14f7ccf"
       ]
@@ -3823,14 +3817,21 @@
       "kind": "test",
       "criterion": "AC-01",
       "title": "Test expired and misbound authority, credential, and worker identities",
-      "status": "open",
+      "status": "done",
       "covers": [
         "AC-01-c1",
         "AC-01-c2",
         "AC-01-c3"
       ],
-      "files": [],
-      "note": "Cross-component negative cases remain."
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_lifecycle_api_postgres.py:447",
+        "modules/domain-apps/superplane/src/superplane-api/tests/test_operation_dispatch_postgres.py:177",
+        "modules/domain-apps/superplane/executor/tests/test_lifecycle_postgres.py:629"
+      ],
+      "note": "44 API/PostgreSQL and 25 native-worker tests passed; committed and pushed as 9b03cb472.",
+      "commits": [
+        "9b03cb4"
+      ]
     },
     {
       "id": "AC-01-t3",
@@ -3843,7 +3844,7 @@
         "AC-01-c-wire"
       ],
       "files": [],
-      "note": ""
+      "note": "Next task."
     },
     {
       "id": "AC-02-c1",
@@ -3933,7 +3934,7 @@
         "AC-04-c1"
       ],
       "files": [],
-      "note": "PR head verified at 14f7ccfc0; required checks and handoff remain."
+      "note": "PR head verified at 9b03cb472; checks and handoff remain."
     },
     {
       "id": "AC-04-c2",
