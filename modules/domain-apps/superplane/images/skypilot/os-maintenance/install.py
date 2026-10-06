@@ -31,13 +31,24 @@ def inventory():
     return {line.split("\t")[0]: line.split("\t")[1:] for line in output.splitlines()}
 
 
+before_commands = {
+    str(path)
+    for directory in ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin")
+    for path in Path(directory).iterdir()
+    if path.is_file() and os.access(path, os.X_OK)
+}
 before = inventory()
 python_before = {
     d.metadata["Name"].lower(): d.version for d in importlib.metadata.distributions()
 }
 selected = []
 for item in lock["packages"]:
-    if before.get(item["package"]) != [item["installed_version"], "installed"]:
+    expected_before = (
+        [item["installed_version"], "installed"]
+        if item["installed_version"] is not None
+        else None
+    )
+    if before.get(item["package"]) != expected_before:
         raise SystemExit(f"Unexpected installed package: {item['package']}")
     artifact = root / "artifacts" / item["file"]
     if hashlib.sha256(artifact.read_bytes()).hexdigest() != item["sha256"]:
@@ -75,6 +86,22 @@ with tempfile.TemporaryDirectory(prefix="adp-offline-apt-") as temporary:
         check=True,
         env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
     )
+# Debian moved these commands between packages and from sbin to bin.
+# Retain their existing absolute paths using explicit aliases to fixed payloads.
+for name, target in lock["compatibility_aliases"].items():
+    alias = Path(name)
+    if name not in before_commands or alias.exists() or alias.is_symlink():
+        raise SystemExit(f"Unexpected compatibility path: {name}")
+    if not (alias.parent / target).is_file():
+        raise SystemExit(f"Missing fixed command target: {target}")
+    alias.symlink_to(target)
+missing_commands = sorted(
+    name
+    for name in before_commands
+    if not Path(name).is_file() or not os.access(name, os.X_OK)
+)
+if missing_commands:
+    raise SystemExit(f"Original executable paths removed: {missing_commands}")
 after = inventory()
 expected_after = dict(before)
 for item in lock["packages"]:
@@ -98,6 +125,10 @@ print(
         {
             "updated_packages": [x["package"] for x in lock["packages"]],
             "no_other_distribution_changes": True,
+            "original_executable_paths_preserved": len(before_commands),
+            "added_packages": [
+                x["package"] for x in lock["packages"] if x["installed_version"] is None
+            ],
         }
     )
 )

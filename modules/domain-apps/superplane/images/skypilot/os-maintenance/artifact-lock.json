@@ -131,6 +131,33 @@
       "architecture": "amd64",
       "source": "glibc",
       "installed_version": "2.41-12+deb13u4"
+    },
+    {
+      "file": "util-linux-extra_2.42.4-1+adp131_amd64.deb",
+      "sha256": "2aaaa68584ebde90a432a08b9f80143bc2509fb083b17e8a67025291addddb4c",
+      "package": "util-linux-extra",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": null
+    },
+    {
+      "file": "bsdextrautils_2.42.4-1+adp131_amd64.deb",
+      "sha256": "e03188fdcf97df207b50ea82099c5017d2d4f1469ce40926797630281f5d6b2c",
+      "package": "bsdextrautils",
+      "version": "2.42.4-1+adp131",
+      "architecture": "amd64",
+      "source": "util-linux",
+      "installed_version": null
     }
-  ]
+  ],
+  "compatibility_aliases": {
+    "/usr/sbin/blkzone": "../bin/blkzone",
+    "/usr/sbin/chcpu": "../bin/chcpu",
+    "/usr/sbin/chmem": "../bin/chmem",
+    "/usr/sbin/isosize": "../bin/isosize",
+    "/usr/sbin/ldattach": "../bin/ldattach",
+    "/usr/sbin/pivot_root": "../bin/pivot_root",
+    "/usr/sbin/switch_root": "../bin/switch_root"
+  }
 }
