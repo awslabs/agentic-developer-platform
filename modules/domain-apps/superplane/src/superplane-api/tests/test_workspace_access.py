@@ -49,6 +49,21 @@ async def access(enforcing, client, monkeypatch):
     return client, workspace_id, membership, token
 
 
+def test_workspace_access_inventory_matches_mounted_routes():
+    from superplane_auth.policy import Permission
+
+    from app.endpoint_inventory import DOMAIN_ROUTES, Scope, mounted_operations
+
+    mounted = mounted_operations(app)
+    expected = {
+        ("GET", "/workspaces/{workspace_id}/access/v1/me"): Permission.READ,
+        ("POST", "/workspaces/{workspace_id}/access/v1/grants"): Permission.ADMINISTER,
+    }
+    for operation, permission in expected.items():
+        assert operation in mounted
+        assert DOMAIN_ROUTES[operation] == (Scope.WORKSPACE, permission)
+
+
 @pytest.mark.asyncio
 async def test_mounted_grant_and_effective_access(access):
     client, workspace_id, _, token = access
