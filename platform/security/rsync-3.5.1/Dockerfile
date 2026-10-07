@@ -1,3 +1,4 @@
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -63,4 +64,8 @@ except KeyError:
         subprocess.run(['groupadd', '--gid', '1000', 'sky'], check=True)
     subprocess.run(['useradd', '--uid', '1000', '--gid', '1000', '--create-home', '--home-dir', '/home/sky', '--shell', '/bin/sh', 'sky'], check=True)
 PYTHON
+# Apply the same offline, checksum-locked maintenance to every SkyPilot variant.
+# The installer rejects unreviewed inputs and checks the full provider environment.
+RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
+    python3 /maintenance-input/maintenance/install.py /maintenance-input
 USER 1000:1000
