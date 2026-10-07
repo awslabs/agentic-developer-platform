@@ -31,6 +31,47 @@ describe('chat data transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('reads mode from the current server-issued binding without an extra exchange', async () => {
+    fetchMock.mockResolvedValueOnce(json(binding));
+    await expect(client.sessionScope()).resolves.toEqual({ run_id: 'run-a', session_id: 'session-a' });
+    await expect(client.sessionMode()).resolves.toBe('ephemeral');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('forces a fresh workload exchange for each session lease renewal', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent', expires_at: NOW / 1000 + 280 }));
+    await expect(client.renewSession()).resolves.toEqual({ run_id: 'run-a', session_id: 'session-a', session_mode: 'persistent' });
+    await expect(client.renewSession()).resolves.toEqual({ run_id: 'run-a', session_id: 'session-a', session_mode: 'persistent' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a mode or owner change during lease renewal', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ ...binding, session_mode: 'ephemeral' }));
+    await client.renewSession();
+    await expect(client.renewSession()).rejects.toMatchObject({ code: 'scope_mismatch' });
+  });
+
+  it('reads server-owned session state only through its bound workload', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ mode: 'persistent', sequence: 2, health: 'active' }));
+    await expect(client.sessionState()).resolves.toEqual({ mode: 'persistent', sequence: 2, health: 'active' });
+    expect(fetchMock.mock.calls[1]).toEqual([
+      'https://gateway.example.test/v1/chat/data/session/state', expect.objectContaining({
+        body: JSON.stringify({ run_id: 'run-a', session_id: 'session-a' }),
+        headers: expect.objectContaining({ Authorization: 'Bearer synthetic.scoped.capability',
+          'X-Adp-Workload-Token': 'synthetic.workload.token' }),
+      }),
+    ]);
+  });
+
+  it('rejects server state that changes mode without ending the bound lease', async () => {
+    fetchMock.mockResolvedValueOnce(json({ ...binding, session_mode: 'persistent' }))
+      .mockResolvedValueOnce(json({ mode: 'ephemeral', sequence: 2, health: 'active' }));
+    await expect(client.sessionState()).rejects.toMatchObject({ code: 'scope_mismatch' });
+  });
+
   it('derives scope through workload exchange and binds storage calls to the same live pod', async () => {
     fetchMock.mockResolvedValueOnce(json(binding)).mockResolvedValueOnce(json({ status: 'empty' }));
     await expect(client.sessionRequest('draft/read', 'session-a')).resolves.toEqual({ status: 'empty' });

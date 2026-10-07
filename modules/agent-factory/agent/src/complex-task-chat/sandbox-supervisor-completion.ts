@@ -1,15 +1,18 @@
 import { createHash } from 'node:crypto';
 import { fromTokenFile } from '@aws-sdk/credential-provider-web-identity';
 import { canonicalJson } from '../invocability-probe/canonical-json';
-import type { SandboxPodApi, SandboxPodIdentity } from './sandbox-launcher';
+import { withSandboxPod, type SandboxPodApi, type SandboxPodIdentity } from './sandbox-launcher';
 import { sandboxCreationName } from './sandbox-pod';
 import {
-  COMPLETE_PATH, RESUME_PATH, RESERVE_PATH, SupervisorResponseError, reconcileAdmittedSandbox, supervisorRequest, waitForSandboxRemoval,
+  COMPLETE_PATH, RESUME_PATH, RESERVE_PATH, SESSION_COMMIT_PATH, SupervisorResponseError, reconcileAdmittedSandbox, supervisorRequest, waitForSandboxRemoval,
+  admitSandboxPod, sandboxPodExited, validateSandboxTerminal,
   type Admission, type RegisteredAssignment, type SandboxTerminalReceipt, type SupervisorIdentity, type SupervisorTiming,
 } from './sandbox-supervisor-admission';
 
-type Restored = ({ pod: SandboxPodIdentity; attempt: number } &
-  ({ state: 'admitted'; admission: Admission } | { state: 'pre_admission_cleanup' })) | { state: 'queued_completed' };
+type Restored = ({ pod: SandboxPodIdentity; attempt: number; sessionRunId?: string } &
+  ({ state: 'admitted'; admission: Admission; recoveryRequired?: boolean } | { state: 'pre_admission_cleanup' })) |
+  { state: 'queued_completed' } | { state: 'creation_reserved'; attempt: number; pod?: SandboxPodIdentity } |
+  { state: 'session_recovery'; assignment: RegisteredAssignment };
 
 async function retrySupervisorRequest(
   request: () => Promise<unknown>,
@@ -39,18 +42,51 @@ export async function restoreSupervisorTurn(
   load: typeof fromTokenFile,
   timing: SupervisorTiming,
 ): Promise<Restored | undefined> {
-  const value = await retrySupervisorRequest(() => supervisorRequest(assignment, null, identity, RESUME_PATH, send, load), false, timing);
+  const value = await retrySupervisorRequest(async () => {
+    const value = await supervisorRequest(assignment, null, identity, RESUME_PATH, send, load) as Record<string, unknown> | null;
+    if (value?.state === 'session_pending') throw new SupervisorResponseError(409);
+    return value;
+  }, true, timing);
   const receipt = value as Record<string, unknown> | null;
   if (!receipt || receipt.run_id !== assignment.runId || receipt.session_id !== assignment.sessionId ||
       receipt.task_id !== assignment.taskId || receipt.session_generation !== assignment.sessionGeneration) {
     throw new Error('Chat supervisor recovery scope invalid');
   }
   if (receipt.state === 'unstarted') return;
+  if (receipt.state === 'session_recovery') {
+    const previous = receipt.recovery as Record<string, unknown> | null;
+    if (!previous || previous.run_id === assignment.runId || previous.session_id !== assignment.sessionId ||
+        previous.session_generation !== assignment.sessionGeneration || previous.image_digest !== assignment.image.split('@')[1] ||
+        typeof previous.run_id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(previous.run_id) ||
+        typeof previous.task_id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(previous.task_id) ||
+        typeof previous.envelope_digest !== 'string' || !/^[a-f0-9]{64}$/.test(previous.envelope_digest)) {
+      throw new Error('Chat predecessor recovery scope invalid');
+    }
+    return { state: 'session_recovery', assignment: { ...assignment, runId: previous.run_id,
+      taskId: previous.task_id, envelopeDigest: previous.envelope_digest, sessionMode: 'persistent' } };
+  }
+  if (receipt.state === 'creation_reserved') {
+    if (receipt.session_mode !== 'persistent' || receipt.pod_name !== sandboxCreationName(assignment.runId) ||
+        receipt.image_digest !== assignment.image.split('@')[1] || typeof receipt.attempt !== 'number' ||
+        !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1 || 'lease_generation' in receipt ||
+        (receipt.sandbox_uid !== undefined && (typeof receipt.sandbox_uid !== 'string' || !/^[a-z0-9-]{8,128}$/.test(receipt.sandbox_uid)))) {
+      throw new Error('Chat reserved creation recovery invalid');
+    }
+    return { state: 'creation_reserved', attempt: receipt.attempt,
+      ...(receipt.sandbox_uid ? { pod: { name: receipt.pod_name as string, uid: receipt.sandbox_uid as string } } : {}) };
+  }
   if (receipt.state === 'queued_completed') {
     verifyQueuedCompletion(assignment, receipt.completion);
     return { state: 'queued_completed' };
   }
-  const prefix = `chat-turn-${createHash('sha256').update(assignment.runId).digest('hex').slice(0, 12)}-`;
+  if (receipt.session_mode !== undefined && receipt.session_mode !== 'persistent' && receipt.session_mode !== 'ephemeral') {
+    throw new Error('Chat supervisor recovery mode invalid');
+  }
+  if (receipt.session_mode === 'persistent' && (typeof receipt.session_run_id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(receipt.session_run_id))) {
+    throw new Error('Chat supervisor recovery session binding invalid');
+  }
+  const sessionRunId = receipt.session_mode === 'persistent' ? receipt.session_run_id as string : undefined;
+  const prefix = `chat-turn-${createHash('sha256').update(sessionRunId ?? assignment.runId).digest('hex').slice(0, 12)}-`;
   if ((receipt.state !== 'admitted' && receipt.state !== 'pre_admission_cleanup') || typeof receipt.pod_name !== 'string' ||
       !receipt.pod_name.startsWith(prefix) || !/^chat-turn-[0-9a-f]{12}-[a-z0-9]{1,20}$/.test(receipt.pod_name) ||
       typeof receipt.sandbox_uid !== 'string' || !/^[a-z0-9-]{8,128}$/.test(receipt.sandbox_uid) ||
@@ -58,7 +94,7 @@ export async function restoreSupervisorTurn(
       typeof receipt.attempt !== 'number' || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1) {
     throw new Error('Chat supervisor recovery binding invalid');
   }
-  const binding = { pod: { name: receipt.pod_name, uid: receipt.sandbox_uid }, attempt: receipt.attempt };
+  const binding = { pod: { name: receipt.pod_name, uid: receipt.sandbox_uid }, attempt: receipt.attempt, ...(sessionRunId ? { sessionRunId } : {}) };
   if (receipt.state === 'pre_admission_cleanup') {
     if (typeof receipt.removed !== 'boolean' || 'lease_generation' in receipt) throw new Error('Chat supervisor cleanup receipt invalid');
     return { ...binding, state: 'pre_admission_cleanup' };
@@ -66,8 +102,13 @@ export async function restoreSupervisorTurn(
   if (typeof receipt.lease_generation !== 'number' || !Number.isSafeInteger(receipt.lease_generation) || receipt.lease_generation < 1) {
     throw new Error('Chat supervisor recovery binding invalid');
   }
+  if (receipt.recovery_required !== undefined && (receipt.recovery_required !== true || !sessionRunId)) {
+    throw new Error('Chat recovery fence invalid');
+  }
   return { ...binding, state: 'admitted',
-    admission: { run_id: assignment.runId, session_id: assignment.sessionId, lease_generation: receipt.lease_generation } };
+    ...(receipt.recovery_required ? { recoveryRequired: true } : {}),
+    admission: { run_id: assignment.runId, session_id: assignment.sessionId, lease_generation: receipt.lease_generation,
+      ...(sessionRunId ? { session_mode: 'persistent' as const } : {}) } };
 }
 
 export async function waitForTurnCompletion(
@@ -81,6 +122,11 @@ export async function waitForTurnCompletion(
 ): Promise<void> {
   const value = await retrySupervisorRequest(() => supervisorRequest(assignment, pod, identity, COMPLETE_PATH, send, load), true, timing);
   const receipt = value as Record<string, unknown> | null;
+  verifyTurnCompletion(assignment, pod, terminal, receipt);
+}
+
+function verifyTurnCompletion(assignment: RegisteredAssignment, pod: SandboxPodIdentity, terminal: SandboxTerminalReceipt,
+  receipt: Record<string, unknown> | null): void {
   const deliveryId = `chat-terminal-${createHash('sha256').update(canonicalJson(terminal)).digest('hex')}`;
   if (!receipt || receipt.run_id !== assignment.runId || receipt.session_id !== assignment.sessionId ||
       receipt.task_id !== assignment.taskId || receipt.session_generation !== assignment.sessionGeneration ||
@@ -99,8 +145,15 @@ export async function reconcileSupervisorDelivery(
   send: typeof fetch,
   load: typeof fromTokenFile,
   timing: SupervisorTiming,
+  recoveringPredecessor = false,
 ): Promise<void> {
-  const resume = await restoreSupervisorTurn(assignment, identity, send, load, timing);
+  let resume = await restoreSupervisorTurn(assignment, identity, send, load, timing);
+  if (resume?.state === 'session_recovery') {
+    if (recoveringPredecessor) throw new Error('Chat predecessor recovery cycle refused');
+    await reconcileSupervisorDelivery(resume.assignment, api, identity, send, load, timing, true);
+    resume = await restoreSupervisorTurn(assignment, identity, send, load, timing);
+    if (resume?.state === 'session_recovery') throw new Error('Chat predecessor cleanup not committed');
+  }
   if (resume?.state === 'queued_completed') return;
   if (resume?.state === 'pre_admission_cleanup') {
     try { await api.remove(resume.pod.name, resume.pod.uid); } catch {}
@@ -108,16 +161,67 @@ export async function reconcileSupervisorDelivery(
     await waitForCleanedTurnCompletion(assignment, resume.pod, resume.attempt, identity, send, load, timing);
     return;
   }
-  let launchAssignment = assignment;
-  if (!resume) {
+  let launchAssignment = resume?.state === 'admitted' && resume.sessionRunId ?
+    { ...assignment, sessionMode: 'persistent' as const, sessionRunId: resume.sessionRunId } : assignment;
+  if (resume?.state === 'creation_reserved') {
+    launchAssignment = { ...assignment, sessionMode: 'persistent', podName: sandboxCreationName(assignment.runId) };
+    resume = resume.pod ? { state: 'admitted', pod: resume.pod, attempt: resume.attempt,
+      admission: await admitSandboxPod(launchAssignment, resume.pod, identity, send, load) } : undefined;
+  } else if (!resume) {
     const receipt = await supervisorRequest(assignment, null, identity, RESERVE_PATH, send, load) as Record<string, unknown> | null;
     if (!receipt || receipt.state !== 'create' || receipt.run_id !== assignment.runId || receipt.session_id !== assignment.sessionId ||
         receipt.task_id !== assignment.taskId || receipt.session_generation !== assignment.sessionGeneration ||
         receipt.pod_name !== sandboxCreationName(assignment.runId) || receipt.image_digest !== assignment.image.split('@')[1] ||
+        (receipt.session_mode !== undefined && receipt.session_mode !== 'ephemeral' && receipt.session_mode !== 'persistent') ||
+        (assignment.sessionMode !== undefined && receipt.session_mode !== assignment.sessionMode) ||
         typeof receipt.attempt !== 'number' || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1) {
       throw new Error('Chat supervisor creation reservation invalid');
     }
-    launchAssignment = { ...assignment, podName: sandboxCreationName(assignment.runId) };
+    launchAssignment = { ...assignment, podName: sandboxCreationName(assignment.runId),
+      ...(receipt.session_mode === 'persistent' ? { sessionMode: 'persistent' as const } : {}) };
+  }
+  if (resume?.state === 'admitted' && resume.recoveryRequired) {
+    try { await api.remove(resume.pod.name, resume.pod.uid); } catch {}
+    await reconcileAdmittedSandbox(launchAssignment, api, identity, send, load, timing, {
+      resume, onTerminal: async (pod, terminal) => {
+        await waitForTurnCompletion(launchAssignment, pod, terminal, identity, send, load, timing);
+      },
+    });
+    return;
+  }
+  if (launchAssignment.sessionMode === 'persistent') {
+    const observe = async (pod: SandboxPodIdentity, admission: Admission) => {
+      const now = timing.now ?? (() => performance.now());
+      const sleep = timing.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+      const deadline = now() + 900_000;
+      while (now() < deadline) {
+        try {
+          const receipt = await supervisorRequest(launchAssignment, pod, identity, SESSION_COMMIT_PATH, send, load) as {
+            terminal: SandboxTerminalReceipt; completion: Record<string, unknown>;
+          };
+          const terminal = validateSandboxTerminal(launchAssignment, pod, admission, receipt?.terminal);
+          verifyTurnCompletion(assignment, pod, terminal, receipt.completion);
+          return;
+        } catch (error) {
+          if (!(error instanceof SupervisorResponseError) || error.status !== 409) throw error;
+        }
+        if (await sandboxPodExited(launchAssignment, pod, identity, send, load)) {
+          await reconcileAdmittedSandbox(launchAssignment, api, identity, send, load, timing, {
+            resume: { pod, admission }, onTerminal: async (ended, terminal) => {
+              await waitForTurnCompletion(launchAssignment, ended, terminal, identity, send, load, timing);
+            },
+          });
+          return;
+        }
+        await sleep(Math.min(1000, deadline - now()));
+      }
+      throw new Error('Chat persistent turn reconciliation deadline exceeded');
+    };
+    if (resume) await observe(resume.pod, resume.admission);
+    else await withSandboxPod(launchAssignment, api, async pod => {
+      await observe(pod, await admitSandboxPod(launchAssignment, pod, identity, send, load));
+    }, () => false);
+    return;
   }
   await reconcileAdmittedSandbox(launchAssignment, api, identity, send, load, timing, {
     resume,

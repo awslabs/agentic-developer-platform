@@ -96,7 +96,7 @@ def test_strict_owner_delivery_uses_only_top_level_binding(mocked_aws_services, 
         "task_id": "task-a", "thread_id": "thread-a", "session_id": "session-a", "channel": "webchat",
         "owner_principal": "owner-a", "session_generation": 123, "strict_delivery": True,
         "status": "progress", "text": "hello", "ag_ui_event": ag_ui,
-        "event": {"event_type": "TEXT_MESSAGE_CONTENT", "delta": "hello"},
+        "event": {"event_type": "TEXT_MESSAGE_CONTENT", "delta": "hello", "event_cursor": f"{'a' * 32}:7"},
         "channel_metadata": {"task_id": "forged", "thread_id": "forged", "session_generation": 456,
                              "owner_principal": "forged", "strict_delivery": False},
     }
@@ -107,6 +107,8 @@ def test_strict_owner_delivery_uses_only_top_level_binding(mocked_aws_services, 
         "owner_principal": "owner-a", "session_generation": 123, "strict_delivery": True,
     }.items()
     assert "forged" not in json.dumps(metadata)
+    if ag_ui:
+        assert metadata["ag_ui_payload"]["event_cursor"] == f"{'a' * 32}:7"
     response.pop("strict_delivery")
     response["channel_metadata"]["strict_delivery"] = True
     handler._process_response(response)

@@ -233,8 +233,47 @@ async def admit_root(
             envelope["actor"] = {**envelope.get("actor", {}), "user_id": human_id, "org_id": binding.tenant_id, "is_bot": False}
         # A root cannot claim to inherit somebody else's snapshot or authority.
         envelope.pop("parent_principal", None)
+        if body.source == "chat":
+            envelope.pop("session_mode", None)
+        mailbox = None
+        owner = None
+        selected_mode = "ephemeral"
+        if body.source == "chat" and os.environ.get("ADP_CHAT_DATA_ENABLED") == "true":
+            from src.agentauth.chat_authority import current_chat_member
+            from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
+            from src.agentauth.chat_session_mailbox import AcceptedTurn, ChatSessionMailbox
+            from src.orchestration.intake_wiring import _get_context_table
+
+            table = _get_context_table()
+            if table is not None:
+                mailbox = ChatSessionMailbox(table)
+                owner = (binding.tenant_id, envelope.get("team_id", ""), human_id)
+                try:
+                    selected = await run_in_threadpool(mailbox.state, session_id=session_id, owner=owner, now=int(datetime.now(UTC).timestamp()))
+                    selected_mode = selected["mode"]
+                    if selected_mode == "persistent" and not await current_chat_member(session, binding.tenant_id, human_id, owner[1]):
+                        raise ChatAuthorizationRefusedError("chat membership refused")
+                except ChatAuthorizationRefusedError:
+                    raise HTTPException(403, "chat session refused") from None
+                except (ChatAuthorizationUnavailableError, BotoCoreError, ClientError):
+                    raise HTTPException(503, "chat mailbox unavailable") from None
+                envelope["session_mode"] = selected_mode
         await run_in_threadpool(provision_root, store, envelope, source=body.source, human_id=human_id, now=datetime.now(UTC))
         snapshot = await ensure_snapshot_report_only(session, store=store, invocation_id=invocation)
+        if mailbox is not None and selected_mode == "persistent":
+            try:
+                await run_in_threadpool(
+                    mailbox.accept,
+                    session_id=session_id,
+                    owner=owner,
+                    turn=AcceptedTurn(turn_id=invocation, message=envelope["message"]),
+                    now=int(datetime.now(UTC).timestamp()),
+                    expected_mode="persistent",
+                )
+            except ChatAuthorizationRefusedError:
+                raise HTTPException(403, "chat session refused") from None
+            except (ChatAuthorizationUnavailableError, BotoCoreError, ClientError):
+                raise HTTPException(503, "chat mailbox unavailable") from None
         # TS consumers hash these exact canonical bytes; reparsing arbitrary
         # metadata would lose distinctions such as Python's 1.0 spelling.
         from starlette.responses import JSONResponse

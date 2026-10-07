@@ -155,6 +155,9 @@ def finalize_queued_turn(authority, capabilities, delivery, pointer, execution, 
             {"Update": unchanged},
             {"Put": {"TableName": store.table, "Item": outbox, "ConditionExpression": "attribute_not_exists(pk)"}},
         ]
+        from src.agentauth.chat_event_journal import terminal_event_writes
+
+        transactions.extend(terminal_event_writes(authority, outbox, now=now))
     try:
         store.client.transact_write_items(TransactItems=[{"ConditionCheck": evidence._unchanged(pointer)}, *absent_launches, *transactions])
     except ClientError as error:

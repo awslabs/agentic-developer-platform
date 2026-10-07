@@ -7,9 +7,12 @@ from unittest.mock import Mock
 
 import boto3
 import pytest
+from botocore.exceptions import EndpointConnectionError
 
 from src.agentauth import chat_delivery
 from src.agentauth.chat_delivery import protected_delivery
+from src.agentauth.chat_event_journal import ChatEventJournal
+from src.agentauth.chat_stream_journal import append_stream_event
 from tests.agentauth import test_chat_model_execution as execution_fixtures
 
 client = execution_fixtures.client
@@ -190,6 +193,102 @@ async def test_ambiguous_queue_handoff_is_not_retried_or_accounted_as_zero(model
     assert (await invoke(model)).json() == receipt
     transport.client.send_message.assert_called_once()
     model.provider.assert_awaited_once()
+    replay = stream_replay(model)
+    assert [event["sequence"] for event in replay["events"]] == [1]
+    assert replay["events"][0]["payload"]["event"]["event_type"] == "RUN_STARTED"
+
+
+def stream_replay(model):
+    return ChatEventJournal(model.runtime[2]).replay(
+        session_id="session-a",
+        owner=("tenant", "team", "human"),
+        generation=GENERATION,
+        cursor=None,
+        limit=100,
+        now=int(time.time()),
+    )
+
+
+async def test_stream_commits_before_transport_and_survives_new_reader(model, transport):
+    streaming_provider(model)
+
+    def send(**kwargs):
+        payload = json.loads(kwargs["MessageBody"])
+        stored = stream_replay(model)["events"][-1]
+        assert payload["event"].pop("event_cursor") == stored["cursor"]
+        assert stored["payload"] == payload
+        return {"MessageId": "accepted"}
+
+    transport.client.send_message.side_effect = send
+    assert (await invoke(model)).status_code == 200
+    assert [event["sequence"] for event in stream_replay(model)["events"]] == [1, 2, 3]
+
+
+async def test_lost_stream_storage_reply_preserves_event_without_replaying_model(model, transport, monkeypatch):
+    streaming_provider(model)
+    store = model.runtime[1].store
+    transact = store.client.transact_write_items
+
+    def lose_response(**kwargs):
+        response = transact(**kwargs)
+        if any(item.get("Put", {}).get("Item", {}).get("SK") == {"S": "output-state"} for item in kwargs["TransactItems"]):
+            raise EndpointConnectionError(endpoint_url="https://storage.example.test")
+        return response
+
+    monkeypatch.setattr(store.client, "transact_write_items", lose_response)
+    response = await invoke(model)
+    assert response.json()["status"] == "unknown"
+    assert len(stream_replay(model)["events"]) == 1
+    assert (await invoke(model)).json() == response.json()
+    model.provider.assert_awaited_once()
+    transport.client.send_message.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["tenant_id", "team_id", "user_id", "session_id", "run_id"])
+async def test_foreign_stream_delivery_cannot_append_to_journal(model, field):
+    authority = model.runtime[1]
+    delivery = chat_delivery.load_delivery(authority, model.launch).model_copy(update={field: "other"})
+    with pytest.raises(chat_delivery.ChatAuthorizationRefusedError):
+        append_stream_event(authority, model.launch, delivery, "foreign", {}, now=int(time.time()))
+    assert stream_replay(model)["reason"] == "journal_unavailable"
+
+
+@pytest.mark.parametrize("race", ["lease", "abort_command_id", "chat_turn_sealed"])
+async def test_changed_authority_during_journal_commit_cannot_persist_or_send(model, transport, monkeypatch, race):
+    streaming_provider(model)
+    store = model.runtime[1].store
+    transact = store.client.transact_write_items
+    raced = False
+
+    def replace(**kwargs):
+        nonlocal raced
+        if not raced and any(item.get("Put", {}).get("Item", {}).get("SK") == {"S": "output-state"} for item in kwargs["TransactItems"]):
+            raced = True
+            if race == "lease":
+                model.runtime[2].update_item(
+                    Key={"PK": "session#session-a", "SK": "header"},
+                    UpdateExpression="SET chatLease.generation = :new",
+                    ExpressionAttributeValues={":new": 2},
+                )
+            else:
+                store.client.update_item(
+                    TableName=store.table,
+                    Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": "EXEC#run-user"}},
+                    UpdateExpression="SET #field = :value",
+                    ExpressionAttributeNames={"#field": race},
+                    ExpressionAttributeValues={":value": {"S": "changed"}},
+                )
+        return transact(**kwargs)
+
+    monkeypatch.setattr(store.client, "transact_write_items", replace)
+    response = await invoke(model)
+    assert raced
+    if race == "lease":
+        assert response.status_code == 404
+    else:
+        assert response.json()["status"] == "unknown"
+    assert stream_replay(model)["reason"] == "journal_unavailable"
+    transport.client.send_message.assert_not_called()
 
 
 async def test_ndjson_path_also_relays_before_returning_receipt(model, transport):

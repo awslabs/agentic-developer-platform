@@ -1,5 +1,6 @@
 """Trusted, atomic chat lease/launch admission; never called by sandbox tools."""
 
+import hashlib
 import os
 from datetime import UTC, datetime
 
@@ -41,6 +42,7 @@ OPERATIONS = frozenset(
 )
 SESSION_TTL_SECONDS = 90 * 24 * 60 * 60
 LEASE_SECONDS = 300
+PERSISTENT_LEASE_SECONDS = 90
 _serializer = TypeSerializer()
 
 
@@ -81,6 +83,13 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
     execution, grant, session_id = root_identity(authority, run_id, digest, now)
     if not pod.image_digest or grant.expires_at is None:
         raise ChatAuthorizationRefusedError("chat launch unavailable")
+    table = authority.context_table
+    key = {"PK": f"session#{session_id}", "SK": "header"}
+    selected = table.get_item(Key=key, ConsistentRead=True).get("Item")
+    selected_mode = selected.get("sessionMode", "ephemeral") if selected else "ephemeral"
+    expected_session_hash = hashlib.sha256(session_id.encode()).hexdigest() if selected_mode == "persistent" else None
+    if selected_mode not in {"ephemeral", "persistent"} or pod.session_hash != expected_session_hash:
+        raise ChatAuthorizationRefusedError("chat session sandbox mode changed")
     creation_check = admission_creation_check(authority, run_id, execution.tenant_id, pod)
     execution = store.bind(invocation_id=run_id, digest=digest, pod=pod, now=datetime.fromtimestamp(now, UTC))
     if store.authority.abort_intent(invocation_id=run_id, tenant_id=execution.tenant_id) is not None:
@@ -103,9 +112,9 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
         if user_turn is not None:
             verify_user_turn(authority.context_table, launch, user_turn)
         return launch
-    table = authority.context_table
-    key = {"PK": f"session#{session_id}", "SK": "header"}
     header = table.get_item(Key=key, ConsistentRead=True).get("Item")
+    if header and (header.get("sessionPendingMode") or header.get("sessionState") in {"ending", "recovering", "ended"}):
+        raise ChatAuthorizationRefusedError("chat session ending")
     owner = (execution.tenant_id, team_id, grant.authority.human_id)
     previous = None
     handoff_checks = []
@@ -150,6 +159,7 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
         user_id=grant.authority.human_id,
         team_id=team_id,
         session_id=session_id,
+        session_run_id=run_id if selected_mode == "persistent" else None,
         sandbox_uid=pod.uid,
         image_digest=pod.image_digest,
         attempt=execution.current_attempt,
@@ -160,7 +170,11 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
         operations=OPERATIONS,
         expires_at=expires_at,
     )
-    lease = ChatSessionLease(run_id=run_id, sandbox_uid=pod.uid, generation=launch.lease_generation, expires_at=min(now + LEASE_SECONDS, expires_at))
+    mode = header.get("sessionMode", "ephemeral") if header else "ephemeral"
+    if mode != selected_mode:
+        raise ChatAuthorizationRefusedError("chat session mode unavailable")
+    lease_seconds = PERSISTENT_LEASE_SECONDS if mode == "persistent" else LEASE_SECONDS
+    lease = ChatSessionLease(run_id=run_id, sandbox_uid=pod.uid, generation=launch.lease_generation, expires_at=min(now + lease_seconds, expires_at))
     if header is None:
         stamp = datetime.fromtimestamp(now, UTC).isoformat()
         retention = retention_seconds()
@@ -172,10 +186,12 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
                         **key,
                         **_owner_fields(owner),
                         "status": "active",
+                        "sessionMode": mode,
                         "ttl": now + retention,
                         "createdAt": stamp,
                         "lastActivityAt": stamp,
                         "chatLease": lease.model_dump(),
+                        "sessionState": "active" if mode == "persistent" else "idle",
                     }
                 ),
                 "ConditionExpression": "attribute_not_exists(PK)",
@@ -191,18 +207,25 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
             for field in fields
         ]
         conditions += ["#status = :active", "#ttl = :ttl", "#lease = :previous" if previous else "attribute_not_exists(#lease)"]
-        names.update({"#status": "status", "#ttl": "ttl", "#lease": "chatLease"})
+        conditions.append("#mode = :mode" if "sessionMode" in header else "attribute_not_exists(#mode)")
+        conditions.append("attribute_not_exists(sessionPendingMode)")
+        conditions.append("sessionState = :session_state" if "sessionState" in header else "attribute_not_exists(sessionState)")
+        names.update({"#status": "status", "#ttl": "ttl", "#lease": "chatLease", "#mode": "sessionMode"})
         values.update({":active": "active", ":ttl": header["ttl"], ":null": None, ":lease": lease.model_dump()})
+        if "sessionState" in header:
+            values[":session_state"] = header["sessionState"]
+        if "sessionMode" in header:
+            values[":mode"] = mode
         if previous:
             values[":previous"] = previous.model_dump()
         context_write = {
             "Update": {
                 "TableName": table.name,
                 "Key": _encoded(key),
-                "UpdateExpression": "SET #lease = :lease",
+                "UpdateExpression": "SET #lease = :lease, sessionState = :running",
                 "ConditionExpression": " AND ".join(conditions),
                 "ExpressionAttributeNames": names,
-                "ExpressionAttributeValues": _encoded(values),
+                "ExpressionAttributeValues": _encoded({**values, ":running": "active" if mode == "persistent" else "idle"}),
             }
         }
     user_writes = []
@@ -239,6 +262,29 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
     try:
         store.client.transact_write_items(
             TransactItems=[
+                *(
+                    [
+                        {
+                            "Put": {
+                                "TableName": table.name,
+                                "Item": _encoded(
+                                    {
+                                        "PK": "chat-notifications",
+                                        "SK": f"cleanup#{run_id}",
+                                        **_owner_fields(owner),
+                                        "sessionId": session_id,
+                                        "sandboxUid": pod.uid,
+                                        "leaseGeneration": launch.lease_generation,
+                                        "ttl": max(now + retention_seconds(), int(header["ttl"]) if header else 0),
+                                    }
+                                ),
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                            }
+                        }
+                    ]
+                    if mode == "persistent"
+                    else []
+                ),
                 context_write,
                 creation_check,
                 *user_writes,
@@ -285,25 +331,29 @@ def admit(authority: ChatRuntimeAuthority, *, run_id: str, digest: str, pod: Ver
 def renew_lease(authority: ChatRuntimeAuthority, launch: ChatLaunch, *, now: int) -> None:
     if not authority.current(launch, now):
         raise ChatAuthorizationRefusedError("chat lease unavailable")
-    lease = ChatSessionLease(
-        run_id=launch.run_id,
-        sandbox_uid=launch.sandbox_uid,
-        generation=launch.lease_generation,
-        expires_at=min(now + LEASE_SECONDS, launch.expires_at),
-    )
     try:
         header = authority.context_table.get_item(Key={"PK": f"session#{launch.session_id}", "SK": "header"}, ConsistentRead=True).get("Item")
         if not header:
             raise ChatAuthorizationRefusedError("chat session unavailable")
+        mode = header.get("sessionMode", "ephemeral")
+        if mode not in {"ephemeral", "persistent"}:
+            raise ChatAuthorizationRefusedError("chat session mode unavailable")
+        lease = ChatSessionLease(
+            run_id=launch.run_id,
+            sandbox_uid=launch.sandbox_uid,
+            generation=launch.lease_generation,
+            expires_at=min(now + (PERSISTENT_LEASE_SECONDS if mode == "persistent" else LEASE_SECONDS), launch.expires_at),
+        )
         authority.context_table.update_item(
             Key={"PK": f"session#{launch.session_id}", "SK": "header"},
             UpdateExpression="SET #lease.expires_at = :expiry, #ttl = :ttl",
             ConditionExpression=(
                 "#lease.run_id = :run AND #lease.sandbox_uid = :pod AND #lease.generation = :generation AND #lease.expires_at > :now "
                 "AND orgId = :tenant AND tenantId = :tenant AND ownerUserId = :user AND teamId = :team AND #status = :active "
-                "AND #ttl > :now AND #ttl = :previous_ttl"
+                "AND #ttl > :now AND #ttl = :previous_ttl AND "
+                + ("#mode = :mode" if mode == "persistent" else "(attribute_not_exists(#mode) OR #mode = :mode)")
             ),
-            ExpressionAttributeNames={"#lease": "chatLease", "#status": "status", "#ttl": "ttl"},
+            ExpressionAttributeNames={"#lease": "chatLease", "#status": "status", "#ttl": "ttl", "#mode": "sessionMode"},
             ExpressionAttributeValues={
                 ":expiry": lease.expires_at,
                 ":run": launch.run_id,
@@ -316,6 +366,7 @@ def renew_lease(authority: ChatRuntimeAuthority, launch: ChatLaunch, *, now: int
                 ":active": "active",
                 ":ttl": max(int(header["ttl"]), now + retention_seconds()),
                 ":previous_ttl": header["ttl"],
+                ":mode": mode,
             },
         )
     except ClientError as error:

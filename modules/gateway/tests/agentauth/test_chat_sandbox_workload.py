@@ -161,6 +161,41 @@ def verifier(tmp_path, monkeypatch):
     return runtime, state
 
 
+@pytest.mark.parametrize("changed", [None, "run", "session", "image", "account"])
+def test_reserved_discovery_revalidates_running_pod_scope(verifier, changed):
+    runtime, state = verifier
+    state["spec"].pop("activeDeadlineSeconds")
+    state["labels"]["adp.io/session-hash"] = "d" * 64
+    expected = {"name": NAME, "run_hash": state["labels"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
+    if changed in {"run", "session", "image"}:
+        field = {"run": "run_hash", "session": "session_hash", "image": "image_digest"}[changed]
+        expected[field] = "f" * 64 if changed != "image" else LEGACY_DIGEST
+    elif changed == "account":
+        state["pod_account"] = "adp-agent"
+    if changed is None:
+        assert runtime.find_reserved_sandbox(**expected).uid == "pod-uid"
+    else:
+        with pytest.raises(workload.WorkloadRefusedError):
+            runtime.find_reserved_sandbox(**expected)
+
+
+@pytest.mark.parametrize("status,valid", [(404, True), (404, False), (403, False), (503, False)])
+def test_reserved_discovery_creates_only_after_exact_absence(verifier, monkeypatch, status, valid):
+    runtime, state = verifier
+    response = httpx.Response(
+        status,
+        request=httpx.Request("GET", "https://kubernetes.test/pods/reserved"),
+        json={"kind": "Status", "reason": "NotFound", "details": {"name": NAME if valid else "different", "kind": "pods"}},
+    )
+    monkeypatch.setattr(runtime._client, "get", lambda *args, **kwargs: response)
+    expected = {"name": NAME, "run_hash": state["labels"]["adp.io/run-hash"], "image_digest": DIGEST, "session_hash": "d" * 64}
+    if valid:
+        assert runtime.find_reserved_sandbox(**expected) is None
+    else:
+        with pytest.raises(workload.WorkloadUnavailableError):
+            runtime.find_reserved_sandbox(**expected)
+
+
 def test_sandbox_requires_fixed_service_account_and_distinct_image(verifier):
     runtime, state = verifier
     pod = runtime.verify("sandbox-token")
@@ -185,6 +220,18 @@ def test_sandbox_requires_fixed_service_account_and_distinct_image(verifier):
     state["audience"] = "kubernetes.default.svc"
     with pytest.raises(workload.WorkloadRefusedError):
         runtime.verify("wrong-audience")
+
+
+def test_persistent_sandbox_requires_session_label_when_deadline_is_omitted(verifier):
+    runtime, state = verifier
+    state["spec"].pop("activeDeadlineSeconds")
+    with pytest.raises(workload.WorkloadRefusedError):
+        runtime.verify("unbound-pod")
+    state["labels"]["adp.io/session-hash"] = "a" * 64
+    assert runtime.verify("bound-pod").session_hash == "a" * 64
+    state["spec"]["activeDeadlineSeconds"] = 900
+    with pytest.raises(workload.WorkloadRefusedError):
+        runtime.verify("mismatched-mode")
 
 
 @pytest.mark.parametrize(

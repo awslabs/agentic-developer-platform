@@ -2,6 +2,7 @@ import { ChatDataClient, ChatDataError } from './gateway/chat-data-client';
 import { readIdentityToken } from '../lib/projectedWorkloadToken';
 import { SandboxDataRuntime } from './sandbox-data';
 import { executeSandboxTurn } from './sandbox-turn';
+import { withSessionHeartbeat } from './sandbox-session-heartbeat';
 
 const sensitiveEnvironment = [
   'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -63,7 +64,31 @@ export async function prepareSandboxTurn(
 }
 
 export async function startSandboxTurn(env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<void> {
-  await executeSandboxTurn(await prepareSandboxTurn(env, undefined, { signal }), signal);
+  let prepared = await prepareSandboxTurn(env, undefined, { signal });
+  let retained: Awaited<ReturnType<typeof executeSandboxTurn>> | undefined;
+  for (;;) {
+    let following: Awaited<ReturnType<ChatDataClient['nextMailboxTurn']>> = null;
+    await withSessionHeartbeat(prepared.client, async scopedSignal => {
+      retained = await executeSandboxTurn(prepared, scopedSignal, retained);
+      if (await prepared.client.sessionMode() !== 'persistent') return;
+      const sequence = prepared.turn.session_sequence;
+      if (!sequence) throw new ChatDataError('invalid_response');
+      while (!following) {
+        scopedSignal.throwIfAborted();
+        following = await prepared.client.nextMailboxTurn(sequence);
+      }
+    }, signal);
+    if (!following) return;
+    signal?.throwIfAborted();
+    const client = prepared.client;
+    await client.admitMailboxTurn(following);
+    const scope = await client.sessionScope();
+    const turn = await client.nextTurn();
+    const model = await client.modelDecision();
+    if (model.runId !== scope.run_id || !model.modelId || model.generation < 1) throw new ChatDataError('scope_mismatch');
+    const data = new SandboxDataRuntime(client, scope, turn);
+    prepared = { client, turn, data, context: await data.prepare() };
+  }
 }
 
 if (require.main === module) {

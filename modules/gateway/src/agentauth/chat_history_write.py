@@ -245,7 +245,8 @@ class ChatHistoryWriter:
                         "Key": _encoded({"pk": f"TENANT#{launch.tenant_id}", "sk": f"EXEC#{launch.run_id}"}),
                         "ConditionExpression": (
                             "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
-                            "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id)"
+                            "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
+                            "AND attribute_not_exists(chat_turn_sealed)"
                         )
                         + (" AND chat_user_turn = :user_turn" if user_turn is not None else ""),
                         "ExpressionAttributeNames": {"#status": "status"},

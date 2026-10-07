@@ -13,6 +13,7 @@ from httpx import AsyncClient
 
 from src.agentauth import external_roots
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.external_roots import RootAdmission
 from src.agentauth.model_policy import _resolve_principal
 from src.orchestration import intake_wiring
@@ -166,6 +167,7 @@ async def test_chat_input_staging_requires_explicit_enablement(root_client, stor
     if admitted:
         assert store._read("INVOCATION#root-a", "DISPATCH") is not None
         assert ("chat_user_turn" in execution) == staging_enabled
+        assert response.json()["envelope"].get("session_mode") == ("ephemeral" if staging_enabled else None)
         assert (await post(root_client, document)).json()["envelope"] == response.json()["envelope"]
     else:
         assert execution is None
@@ -182,6 +184,70 @@ async def test_chat_input_staging_requires_explicit_enablement(root_client, stor
         assert "chat_user_turn" not in (execution or {})
         if not staging_enabled:
             assert context_writes == []
+
+
+async def test_persistent_ingest_root_accepts_ordered_mailbox_turns_before_publication(root_client, monkeypatch):
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    mailbox = ChatSessionMailbox(intake_wiring._context_table)
+    now = int(datetime.now(UTC).timestamp())
+    mailbox.select_mode(session_id="session-a", owner=("tenant", "", "human"), mode="persistent", now=now)
+    first = body()
+    first["envelope"]["session_mode"] = "ephemeral"
+    accepted = await post(root_client, first)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["envelope"]["session_mode"] == "persistent"
+    second = body(envelope={**first["envelope"], "message_id": "root-b", "message": "second turn"})
+    accepted_second = await post(root_client, second)
+    assert accepted_second.status_code == 200, accepted_second.text
+    assert (await post(root_client, first)).status_code == 200
+    assert mailbox.state(session_id="session-a", owner=("tenant", "", "human"), now=now)["sequence"] == 2
+    assert mailbox.table.get_item(Key={"PK": "session#session-a", "SK": "mailbox#00000001"})["Item"]["message"] == "Authenticated user input"
+    assert mailbox.table.get_item(Key={"PK": "session#session-a", "SK": "mailbox#00000002"})["Item"]["message"] == "second turn"
+
+
+async def test_persistent_ingest_root_cannot_append_to_another_owner_or_reuse_turn_id(root_client, store, monkeypatch):
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    mailbox = ChatSessionMailbox(intake_wiring._context_table)
+    now = int(datetime.now(UTC).timestamp())
+    mailbox.select_mode(session_id="session-a", owner=("tenant", "", "someone-else"), mode="persistent", now=now)
+    assert (await post(root_client, body())).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None
+    assert mailbox.state(session_id="session-a", owner=("tenant", "", "someone-else"), now=now)["sequence"] == 0
+    mailbox.select_mode(session_id="session-b", owner=("tenant", "", "human"), mode="persistent", now=now)
+    accepted = body(envelope={**body()["envelope"], "session_id": "session-b", "message_id": "root-b"})
+    assert (await post(root_client, accepted)).status_code == 200
+    changed = body(envelope={**accepted["envelope"], "message": "different"})
+    assert (await post(root_client, changed)).status_code == 403
+    assert mailbox.state(session_id="session-b", owner=("tenant", "", "human"), now=now)["sequence"] == 1
+
+
+async def test_persistent_ingest_recovers_mailbox_failure_after_root_registration(root_client, store, monkeypatch):
+    monkeypatch.setenv("ADP_CHAT_DATA_ENABLED", "true")
+    mailbox = ChatSessionMailbox(intake_wiring._context_table)
+    now = int(datetime.now(UTC).timestamp())
+    owner = ("tenant", "", "human")
+    mailbox.select_mode(session_id="session-a", owner=owner, mode="persistent", now=now)
+    write = mailbox.table.meta.client.transact_write_items
+    failed = False
+
+    def once(**kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise ClientError({"Error": {"Code": "InternalServerError", "Message": "temporary write failure"}}, "TransactWriteItems")
+        return write(**kwargs)
+
+    monkeypatch.setattr(mailbox.table.meta.client, "transact_write_items", once)
+    document = body()
+    first = await post(root_client, document)
+    assert first.status_code == 503
+    assert store._read("INVOCATION#root-a", "DISPATCH") is not None
+    assert mailbox.state(session_id="session-a", owner=owner, now=now)["sequence"] == 0
+    retry = await post(root_client, document)
+    assert retry.status_code == 200, retry.text
+    assert mailbox.state(session_id="session-a", owner=owner, now=now)["sequence"] == 1
+    assert (await post(root_client, document)).status_code == 200
+    assert mailbox.state(session_id="session-a", owner=owner, now=now)["sequence"] == 1
 
 
 @pytest.mark.parametrize("subject", ["other-sub", "bot-sub", "unknown"])

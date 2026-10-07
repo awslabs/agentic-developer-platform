@@ -21,7 +21,7 @@ from src.agentauth.chat_turn_finalization import ChatTurnFinalizer
 from src.orchestration.chat_data_migration import _owns_context_row
 
 
-def complete_delivered_turn(authority, capabilities, body, *, now):
+def complete_delivered_turn(authority, capabilities, body, *, now, persistent=False):
     store = authority.store
     if store._read(f"CHAT-LAUNCH#{body.run_id}", "LAUNCH") is None:
         from src.agentauth.chat_pre_admission_completion import complete_cleaned_turn
@@ -32,7 +32,7 @@ def complete_delivered_turn(authority, capabilities, body, *, now):
     if "chat_terminal" not in execution:
         raise ChatHistoryConflictError("chat terminal outcome required")
     writer = ChatTurnFinalizer(authority, ChatHistoryStore(authority.context_table, capabilities))
-    terminal = writer.finalize(body, now=now)
+    terminal = writer.finalize(body, now=now, persistent=persistent)
     item = verify_terminal_delivery(store, execution, launch, terminal)
 
     def first_completion_checks():
@@ -44,9 +44,11 @@ def complete_delivered_turn(authority, capabilities, body, *, now):
             launch.run_id,
             launch.sandbox_uid,
             launch.lease_generation,
-            1,
+            lease.expires_at if persistent else 1,
         ):
             raise ChatAuthorizationRefusedError("chat completion lease changed")
+        if persistent and lease.expires_at <= now:
+            raise ChatAuthorizationRefusedError("chat completion lease expired")
         evidence = ChatTeardown(authority, capabilities.launches)
         return [
             {"ConditionCheck": evidence._unchanged(execution)},

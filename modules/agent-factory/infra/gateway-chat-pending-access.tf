@@ -7,6 +7,14 @@ resource "aws_iam_policy" "gateway_chat_pending_publish" {
       Effect   = "Allow"
       Action   = ["sqs:SendMessage"]
       Resource = [aws_sqs_queue.chat_agent_tasks_fifo.arn]
+      }, {
+      Sid      = "ScopedChatNotificationRecovery"
+      Effect   = "Allow"
+      Action   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+      Resource = [aws_dynamodb_table.chat_context.arn]
+      Condition = {
+        "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["chat-notifications"] }
+      }
     }]
   })
 }

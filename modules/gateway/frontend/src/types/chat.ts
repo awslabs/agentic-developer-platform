@@ -119,6 +119,7 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  replayCursor?: string;
 }
 
 // ---------------------------------------------------------------------------

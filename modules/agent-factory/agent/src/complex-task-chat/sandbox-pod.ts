@@ -10,6 +10,8 @@ export interface SandboxPodInput {
   image: string;
   gatewayUrl: string;
   podName?: string;
+  sessionId?: string;
+  sessionMode?: 'ephemeral' | 'persistent';
 }
 
 export function sandboxCreationName(runId: string): string {
@@ -18,7 +20,9 @@ export function sandboxCreationName(runId: string): string {
 }
 
 export function validateSandboxAssignment(input: SandboxPodInput): void {
-  if (!RUN_ID.test(input.runId) || !IMAGE.test(input.image) || (input.podName !== undefined && input.podName !== sandboxCreationName(input.runId))) {
+  if (!RUN_ID.test(input.runId) || !IMAGE.test(input.image) || (input.podName !== undefined && input.podName !== sandboxCreationName(input.runId)) ||
+      (input.sessionMode !== undefined && !['ephemeral', 'persistent'].includes(input.sessionMode)) ||
+      (input.sessionMode === 'persistent' && (typeof input.sessionId !== 'string' || !RUN_ID.test(input.sessionId)))) {
     throw new Error('Trusted chat sandbox assignment requires a run and pinned image');
   }
   const gateway = new URL(input.gatewayUrl);
@@ -43,6 +47,7 @@ export function buildSandboxPod(input: SandboxPodInput, binding: SandboxGatewayB
         'app.kubernetes.io/name': 'chat-turn-sandbox',
         'adp.io/chat-sandbox': 'true',
         'adp.io/run-hash': runHash,
+        ...(input.sessionMode === 'persistent' ? { 'adp.io/session-hash': createHash('sha256').update(input.sessionId!).digest('hex') } : {}),
       },
     },
     spec: {
@@ -55,7 +60,7 @@ export function buildSandboxPod(input: SandboxPodInput, binding: SandboxGatewayB
       hostIPC: false,
       hostAliases: [{ ip: binding.clusterIP, hostnames: [SANDBOX_GATEWAY_HOST] }],
       restartPolicy: 'Never',
-      activeDeadlineSeconds: 900,
+      ...(input.sessionMode === 'persistent' ? {} : { activeDeadlineSeconds: 900 }),
       terminationGracePeriodSeconds: 10,
       securityContext: {
         runAsNonRoot: true,

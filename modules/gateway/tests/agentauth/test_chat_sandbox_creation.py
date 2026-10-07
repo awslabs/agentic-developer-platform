@@ -13,6 +13,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError, envelope_digest
 from src.agentauth.chat_admission import admit
 from src.agentauth.chat_cancellation import CancelTurn, ChatCancellation
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError
+from src.agentauth.chat_session_mailbox import AcceptedTurn, ChatSessionMailbox
 from src.agentauth.workload import VerifiedPod
 from tests.agentauth import test_chat_pre_admission_cleanup as cleanup
 from tests.agentauth.test_external_roots import proof
@@ -95,6 +96,7 @@ async def test_creation_permission_is_issued_once_then_only_the_original_pod_can
         "session_id": "session-a",
         "task_id": "task-a",
         "session_generation": fixtures.GENERATION,
+        "session_mode": "ephemeral",
         "state": "create",
         "attempt": 1,
         "pod_name": unbound[0].name,
@@ -138,6 +140,41 @@ async def test_legitimate_reserved_creation_still_admits_without_waiting_for_exi
     assert (await recovery.resume(client, runtime)).json()["state"] == "admitted"
     assert (await reserve(client, unbound)).status_code == 409
     assert not unbound[1]["observations"]
+
+
+@pytest.mark.parametrize("created", [False, True])
+async def test_persistent_launch_intent_can_resume_only_its_original_creation(client, runtime, unbound, monkeypatch, created):
+    monkeypatch.setattr(runtime[1].workloads, "find_reserved_sandbox", lambda **_: unbound[0] if created else None)
+    mailbox = ChatSessionMailbox(runtime[2])
+    owner = ("tenant", "team", "human")
+    mailbox.select_mode(session_id="session-a", owner=owner, mode="persistent", now=runtime[-1])
+    mailbox.accept(session_id="session-a", owner=owner, turn=AcceptedTurn(turn_id="run-write", message=unbound[2]["message"]), now=runtime[-1])
+    assert (await reserve(client, unbound)).status_code == 200
+    saved = creation(runtime)
+    for _restart in range(2):
+        resumed = await recovery.resume(client, runtime)
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["state"] == "creation_reserved"
+        assert resumed.json()["pod_name"] == unbound[0].name
+        assert resumed.json()["session_mode"] == "persistent"
+        assert resumed.json().get("sandbox_uid") == (unbound[0].uid if created else None)
+        assert creation(runtime) == saved
+        assert "workload_binding" not in execution(runtime)
+
+    original = runtime[1].store.client.transact_write_items
+
+    def cancelled(**request):
+        runtime[1].store.client.update_item(
+            TableName=runtime[1].store.table,
+            Key={"pk": {"S": "TENANT#tenant"}, "sk": {"S": "EXEC#run-write"}},
+            UpdateExpression="SET abort_command_id = :cancel",
+            ExpressionAttributeValues={":cancel": {"S": "cancel-race"}},
+        )
+        return original(**request)
+
+    monkeypatch.setattr(runtime[1].store.client, "transact_write_items", cancelled)
+    assert (await recovery.resume(client, runtime)).status_code == 409
+    assert creation(runtime) == saved
 
 
 @pytest.mark.parametrize(

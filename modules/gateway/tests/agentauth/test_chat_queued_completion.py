@@ -68,7 +68,8 @@ async def test_unreserved_completion_requires_owner_delivery_and_replays_without
         },
     }
     assert handoff.thread(transport)["processing_task_id"] == ""
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == before
+    assert fixtures.replay(runtime)["events"][0]["payload"]["status"] == terminal["outcome"]
     for sort_key in ("CREATION", "LAUNCH", "TEARDOWN", "PRE-ADMISSION-TEARDOWN"):
         assert runtime[1].store._read("CHAT-LAUNCH#run-write", sort_key) is None
     row = recovery.completion.publication.session(transport)

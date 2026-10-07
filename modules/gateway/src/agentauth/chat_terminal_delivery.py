@@ -1,6 +1,7 @@
 """Immutable owner delivery intents, committed atomically with terminal outcomes."""
 
 import json
+from decimal import Decimal
 
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
@@ -75,6 +76,14 @@ def terminal_delivery_payload(document):
 
 
 def verify_terminal_delivery(store, execution, launch, terminal):
+    terminal = dict(terminal)
+    for field in ("attempt", "lease_generation", "credential_epoch", "finalized_at"):
+        if field not in terminal:
+            continue
+        value = terminal[field]
+        if isinstance(value, bool) or not isinstance(value, int | Decimal) or int(value) != value or value < 1:
+            raise ChatAuthorizationUnavailableError("chat terminal delivery receipt invalid")
+        terminal[field] = int(value)
     if "chat_delivery" not in execution:
         return prepare_terminal_delivery(execution, launch, terminal, None)
     item = store._read(f"CHAT-DELIVERY#{launch.run_id}", "TERMINAL")

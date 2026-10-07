@@ -50,6 +50,7 @@ export interface AgUiBaseEvent {
   timestamp?: string;
   stream_id?: string;
   stream_sequence?: number;
+  event_cursor?: string;
 }
 
 export interface RunStartedEvent extends AgUiBaseEvent {

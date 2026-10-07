@@ -29,6 +29,8 @@ describe('fixed-template sandbox executable', () => {
 
   beforeEach(() => {
     jest.spyOn(ChatDataClient.prototype, 'submitTurnResult').mockResolvedValue();
+    jest.spyOn(ChatDataClient.prototype, 'renewSession').mockResolvedValue({ run_id: 'run-a', session_id: 'session-a', session_mode: 'ephemeral' });
+    jest.spyOn(ChatDataClient.prototype, 'sessionMode').mockResolvedValue('ephemeral');
     nextTurn = jest.spyOn(ChatDataClient.prototype, 'nextTurn').mockResolvedValue(accepted as Awaited<ReturnType<ChatDataClient['nextTurn']>>);
     modelDecision = jest.spyOn(ChatDataClient.prototype, 'modelDecision').mockResolvedValue({
       modelId: 'approved-model', runId: 'run-a', tenantId: 'tenant-a', generation: 1,
@@ -78,6 +80,7 @@ describe('fixed-template sandbox executable', () => {
       'src/complex-task-chat/memory/tools.ts',
       'src/complex-task-chat/sandbox-data.ts',
       'src/complex-task-chat/sandbox-entrypoint.ts',
+      'src/complex-task-chat/sandbox-session-heartbeat.ts',
       'src/complex-task-chat/sandbox-turn.ts',
       'src/control-envelope.ts',
       'src/invocability-probe/canonical-json.ts',

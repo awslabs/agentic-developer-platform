@@ -64,7 +64,8 @@ async def test_queued_cancel_is_atomic_visible_and_retryable_without_claiming_cl
     assert "chat_terminal" not in execution(runtime)
     assert runtime[1].store._read("CHAT-LAUNCH#run-write", "LAUNCH") is None
     assert runtime[1].store._read("CHAT-LAUNCH#run-write", "TEARDOWN") is None
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == before
+    assert fixtures.replay(runtime)["events"][0]["payload"]["status"] == "cancelled"
     payload = recovery.completion.publication.payload(transport)
     assert payload["status"] == "cancelled" and payload["text"] == "This turn was cancelled."
     consumer._process_response(payload)

@@ -44,12 +44,15 @@ from src.agentauth.chat_capability import (
     Identifier,
 )
 from src.agentauth.chat_draft import ChatDraftConflictError, ChatDraftStore, DraftWrite
+from src.agentauth.chat_followup_activation import activate_followup
+from src.agentauth.chat_followup_admission import claim_followup, pending_mailbox_root, previous_delivery_complete
 from src.agentauth.chat_history_compaction import ChatHistoryCompactor, HistoryCompaction
 from src.agentauth.chat_history_store import ChatHistoryExpiredError, ChatHistoryStore
 from src.agentauth.chat_history_summary import ChatSummaryWriter, SummaryAppend
 from src.agentauth.chat_history_write import AssistantAppend, ChatHistoryConflictError, ChatHistoryWriter
 from src.agentauth.chat_memory import ChatMemoryConflictError, ChatMemoryStore, MemoryId, MemorySearch, MemoryWrite
 from src.agentauth.chat_session_acl import AclWrite, ChatSessionAclConflictError, ChatSessionAclWriter
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.chat_supervisor_resume import resume_supervisor_turn
 from src.agentauth.chat_teardown import ChatTeardown
 from src.agentauth.chat_terminal_publication import publish_terminal_delivery
@@ -164,6 +167,14 @@ class HistoryRequest(BaseModel):
 
     run_id: Identifier
     session_id: Identifier
+
+
+class SessionStateRequest(HistoryRequest):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class SessionNextRequest(SessionStateRequest):
+    after: int = Field(strict=True, ge=0, le=99_999_999)
 
 
 class HistoryPageRequest(HistoryRequest):
@@ -378,6 +389,67 @@ async def read_history(body: HistoryPageRequest, token: Capability, services=Dep
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/v1/chat/data/session/state", dependencies=[Depends(enabled)])
+@contract_errors
+async def read_session_state(body: SessionStateRequest, token: Capability, services=Depends(runtime)):
+    authority, capabilities = services
+    launch = await run_in_threadpool(capabilities.verify, token, run_id=body.run_id, session_id=body.session_id, operation="turn.next", now=clock())
+    state = await run_in_threadpool(
+        ChatSessionMailbox(authority.context_table).state,
+        session_id=launch.session_id,
+        owner=(launch.tenant_id, launch.team_id, launch.user_id),
+        now=clock(),
+    )
+    await run_in_threadpool(capabilities.verify, token, run_id=body.run_id, session_id=body.session_id, operation="turn.next", now=clock())
+    return JSONResponse(state, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/v1/chat/data/session/next", dependencies=[Depends(enabled)])
+@contract_errors
+async def next_session_turn(body: SessionNextRequest, token: Capability, services=Depends(runtime)):
+    authority, capabilities = services
+    deadline = time.monotonic() + 20
+    mailbox = ChatSessionMailbox(authority.context_table)
+    while True:
+        now = clock()
+        launch = await run_in_threadpool(capabilities.verify, token, run_id=body.run_id, session_id=body.session_id, operation="turn.next", now=now)
+        turn = await run_in_threadpool(
+            mailbox.next_turn,
+            session_id=launch.session_id,
+            owner=(launch.tenant_id, launch.team_id, launch.user_id),
+            run_id=launch.run_id,
+            sandbox_uid=launch.sandbox_uid,
+            generation=launch.lease_generation,
+            after=body.after,
+            now=now,
+        )
+        if turn is not None and not await run_in_threadpool(previous_delivery_complete, authority, launch):
+            turn = None
+        if turn is not None:
+            await run_in_threadpool(pending_mailbox_root, authority, launch, turn, now)
+        if turn is not None or time.monotonic() >= deadline:
+            await run_in_threadpool(capabilities.verify, token, run_id=body.run_id, session_id=body.session_id, operation="turn.next", now=clock())
+            if turn is not None:
+                current = await run_in_threadpool(
+                    mailbox.next_turn,
+                    session_id=launch.session_id,
+                    owner=(launch.tenant_id, launch.team_id, launch.user_id),
+                    run_id=launch.run_id,
+                    sandbox_uid=launch.sandbox_uid,
+                    generation=launch.lease_generation,
+                    after=body.after,
+                    now=clock(),
+                )
+                if current != turn:
+                    raise ChatAuthorizationRefusedError("chat follow-up mailbox changed")
+                await run_in_threadpool(claim_followup, authority, launch, turn, body.after, clock())
+            return JSONResponse(
+                {"turn": turn, "run_id": launch.run_id, "session_id": launch.session_id, "lease_generation": launch.lease_generation},
+                headers={"Cache-Control": "no-store"},
+            )
+        await asyncio.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+
 @router.post("/v1/chat/data/history/messages", dependencies=[Depends(enabled)])
 @contract_errors
 async def read_messages(body: HistoryMessagesRequest, token: Capability, services=Depends(runtime)):
@@ -385,6 +457,29 @@ async def read_messages(body: HistoryMessagesRequest, token: Capability, service
     history = ChatHistoryStore(authority.context_table, capabilities)
     result = await run_in_threadpool(history.get_messages, token, **body.model_dump(), now=clock())
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/v1/chat/data/session/admit", dependencies=[Depends(enabled)])
+@contract_errors
+async def admit_session_turn(body: SessionNextRequest, request: Request, token: Capability, services=Depends(runtime)):
+    authority, capabilities = services
+    now = clock()
+    launch = await run_in_threadpool(capabilities.verify, token, run_id=body.run_id, session_id=body.session_id, operation="turn.next", now=now)
+    pod = await run_in_threadpool(authority.workloads.verify, request.headers.get(WORKLOAD_HEADER, ""))
+    following = await run_in_threadpool(activate_followup, authority, capabilities, launch, after=body.after, now=now)
+    capability = await run_in_threadpool(capabilities.issue, following.run_id, pod, now=clock())
+    return JSONResponse(
+        {
+            "capability": capability,
+            "run_id": following.run_id,
+            "session_id": following.session_id,
+            "attempt": following.attempt,
+            "lease_generation": following.lease_generation,
+            "session_mode": "persistent",
+            "expires_at": min(clock() + 300, following.expires_at),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/v1/chat/data/history/summary", dependencies=[Depends(enabled)])
@@ -647,6 +742,19 @@ async def resume_chat(body: ResumeRequest, request: Request, services=Depends(ru
     return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/internal/v1/agent/chat/data/session/commit", dependencies=[Depends(enabled)])
+@contract_errors
+async def commit_persistent_turn(body: AdmissionRequest, request: Request, services=Depends(runtime)):
+    if await observe_teardown(body, request, services, removed=False):
+        raise ChatHistoryConflictError("chat sandbox exited; reconcile teardown")
+    authority, capabilities = services
+    writer = ChatTurnFinalizer(authority, ChatHistoryStore(authority.context_table, capabilities))
+    terminal = await run_in_threadpool(writer.finalize, body, now=clock(), persistent=True)
+    await run_in_threadpool(publish_terminal_delivery, authority, capabilities.launches, terminal)
+    completion = await run_in_threadpool(complete_delivered_turn, authority, capabilities, body, now=clock(), persistent=True)
+    return JSONResponse({"terminal": terminal, "completion": completion}, headers={"Cache-Control": "no-store"})
+
+
 @router.post("/internal/v1/agent/chat/data/reserve", dependencies=[Depends(enabled)])
 @contract_errors
 async def reserve_chat(body: CreationRequest, request: Request, services=Depends(runtime)):
@@ -710,9 +818,32 @@ async def exchange_chat(body: ExchangeRequest, request: Request, services=Depend
         or binding.get("attempt") != {"N": str(launch.attempt)}
     ):
         raise ChatAuthorizationRefusedError("chat workload mismatch")
+    if launch.session_run_id:
+        header = await run_in_threadpool(
+            authority.context_table.get_item, Key={"PK": f"session#{launch.session_id}", "SK": "header"}, ConsistentRead=True
+        )
+        current_run = header.get("Item", {}).get("chatLease", {}).get("run_id")
+        current = await run_in_threadpool(capabilities.launches.load, current_run or "")
+        if (
+            current.session_run_id != launch.session_run_id
+            or current.session_id != launch.session_id
+            or current.tenant_id != launch.tenant_id
+            or current.user_id != launch.user_id
+            or current.team_id != launch.team_id
+            or current.sandbox_uid != pod.uid
+            or current.image_digest != pod.image_digest
+        ):
+            raise ChatAuthorizationRefusedError("chat session binding changed")
+        launch = current
     now = clock()
     await run_in_threadpool(capabilities.issue, launch.run_id, pod, now=now)
     await run_in_threadpool(renew_lease, authority, launch, now=now)
+    session = await run_in_threadpool(
+        ChatSessionMailbox(authority.context_table).state,
+        session_id=launch.session_id,
+        owner=(launch.tenant_id, launch.team_id, launch.user_id),
+        now=now,
+    )
     token = await run_in_threadpool(capabilities.issue, launch.run_id, pod, now=now)
     return JSONResponse(
         {
@@ -721,6 +852,7 @@ async def exchange_chat(body: ExchangeRequest, request: Request, services=Depend
             "session_id": launch.session_id,
             "attempt": launch.attempt,
             "lease_generation": launch.lease_generation,
+            "session_mode": session["mode"],
             "expires_at": min(now + 300, launch.expires_at),
         },
         headers={"Cache-Control": "no-store"},

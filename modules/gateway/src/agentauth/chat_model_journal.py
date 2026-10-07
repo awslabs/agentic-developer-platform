@@ -26,6 +26,23 @@ class ChatModelJournal:
     def __init__(self, authority):
         self.authority = authority
 
+    def _open_turn(self, launch):
+        return {
+            "ConditionCheck": {
+                "TableName": self.authority.store.table,
+                "Key": _encoded({"pk": f"TENANT#{launch.tenant_id}", "sk": f"EXEC#{launch.run_id}"}),
+                "ConditionExpression": (
+                    "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
+                    "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
+                    "AND attribute_not_exists(chat_turn_sealed)"
+                ),
+                "ExpressionAttributeNames": {"#status": "status"},
+                "ExpressionAttributeValues": _encoded(
+                    {":active": "active", ":pod": launch.sandbox_uid, ":attempt": launch.attempt, ":epoch": launch.credential_epoch}
+                ),
+            }
+        }
+
     def _read(self, run_id: str, operation_id: str) -> dict | None:
         try:
             item = self.authority.store._read(f"CHAT-MODEL#{run_id}", f"OP#{operation_id}")
@@ -198,6 +215,7 @@ class ChatModelJournal:
                     }
                 },
             ]
+            transactions.append(self._open_turn(launch))
             self.authority.store.client.transact_write_items(TransactItems=transactions)
             return operation
         except ChatAuthorizationRefusedError:
@@ -260,6 +278,7 @@ class ChatModelJournal:
         ]
         try:
             if authorize:
+                transactions.append(self._open_turn(launch))
                 if now >= launch.expires_at or not self.authority.current(launch, now):
                     raise ChatAuthorizationRefusedError("chat model lease unavailable")
                 transactions.extend(

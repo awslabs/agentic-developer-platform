@@ -9,6 +9,8 @@ from src.agentauth.chat_pre_admission_cleanup import recover_bound_cleanup
 from src.agentauth.chat_queued_completion import complete_queued_turn
 from src.agentauth.chat_queued_terminal import finalize_queued_turn, queued_input_expired
 from src.agentauth.chat_sandbox_creation import load_creation, reserve_creation
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
+from src.agentauth.chat_session_recovery import fence_expired_session, resume_persistent_creation
 from src.agentauth.chat_teardown import ChatTeardown
 from src.agentauth.chat_terminal_publication import publish_pre_admission_terminal_delivery, publish_queued_terminal_delivery
 
@@ -32,12 +34,51 @@ def resume_supervisor_turn(authority, capabilities, body, role, bindings, *, now
     evidence = ChatTeardown(authority, capabilities.launches)
     checks = [{"ConditionCheck": evidence._unchanged(item)} for item in (pointer, execution)]
     existing = store._read(f"CHAT-LAUNCH#{body.run_id}", "LAUNCH")
+    if existing is None and "workload_binding" not in execution and "abort_command_id" not in execution and not queued_input_expired(execution, now):
+        mailbox = ChatSessionMailbox(authority.context_table)
+        session = mailbox.state(session_id=delivery.session_id, owner=(delivery.tenant_id, delivery.team_id, delivery.user_id), now=now)
+        header = mailbox._header(delivery.session_id, (delivery.tenant_id, delivery.team_id, delivery.user_id), now)
+        lease = (header or {}).get("chatLease", {})
+        if session["mode"] == "persistent" and lease.get("run_id") and lease["run_id"] != body.run_id:
+            owner = capabilities.launches.load(lease["run_id"])
+            if owner.session_run_id:
+                if (owner.tenant_id, owner.team_id, owner.user_id, owner.session_id) != (
+                    delivery.tenant_id,
+                    delivery.team_id,
+                    delivery.user_id,
+                    delivery.session_id,
+                ):
+                    raise ChatAuthorizationRefusedError("chat predecessor owner changed")
+                if not fence_expired_session(authority, capabilities, owner, now=now):
+                    return {**response, "state": "session_pending", "session_mode": "persistent"}
+                previous_delivery = load_registered_delivery(authority, owner.run_id, owner.tenant_id)
+                previous = store._read(f"TENANT#{owner.tenant_id}", f"EXEC#{owner.run_id}") or {}
+                teardown = store._read(f"CHAT-LAUNCH#{owner.run_id}", "TEARDOWN") or {}
+                outbox = store._read(f"CHAT-DELIVERY#{owner.run_id}", "TERMINAL") or {}
+                if "removed_at" not in teardown or "completion_receipt" not in outbox:
+                    return {
+                        **response,
+                        "state": "session_recovery",
+                        "recovery": {
+                            **{field: getattr(previous_delivery, field) for field in ("run_id", "session_id", "task_id", "session_generation")},
+                            "envelope_digest": previous["envelope_digest"]["S"],
+                            "image_digest": owner.image_digest,
+                        },
+                    }
     if creation_image is not None:
         if existing is not None:
             raise ChatHistoryConflictError("chat already admitted")
-        return {**response, **reserve_creation(authority, delivery, pointer, execution, creation_image, now=now)}
+        reserved = reserve_creation(authority, delivery, pointer, execution, creation_image, now=now)
+        session = ChatSessionMailbox(authority.context_table).state(
+            session_id=delivery.session_id, owner=(delivery.tenant_id, delivery.team_id, delivery.user_id), now=now
+        )
+        return {**response, **reserved, "session_mode": session["mode"]}
     if existing is None:
         creation = load_creation(authority, delivery, pointer, execution)
+        if creation is not None and not removed:
+            resumed = resume_persistent_creation(authority, capabilities, delivery, pointer, execution, creation, now=now)
+            if resumed is not None:
+                return {**response, **resumed}
         if "workload_binding" in execution or creation is not None:
             if removed and (execution.get("pod_name") != {"S": body.pod_name} or execution.get("workload_binding") != {"S": body.pod_uid}):
                 raise ChatAuthorizationRefusedError("chat cleanup pod refused")
@@ -86,6 +127,12 @@ def resume_supervisor_turn(authority, capabilities, body, role, bindings, *, now
             pod_name=execution["pod_name"]["S"],
             **{field: getattr(launch, field) for field in ("sandbox_uid", "attempt", "lease_generation", "image_digest")},
         )
+        if launch.session_run_id:
+            response.update(session_mode="persistent", session_run_id=launch.session_run_id)
+            if fence_expired_session(authority, capabilities, launch, now=now):
+                response["recovery_required"] = True
+                execution = store._read(f"TENANT#{tenant}", f"EXEC#{body.run_id}")
+                checks[1] = {"ConditionCheck": evidence._unchanged(execution)}
         checks.append({"ConditionCheck": evidence._unchanged(ChatLaunchStore.item(launch))})
     try:
         store.client.transact_write_items(TransactItems=checks)

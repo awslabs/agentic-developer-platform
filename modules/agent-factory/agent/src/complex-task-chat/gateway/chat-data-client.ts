@@ -15,11 +15,30 @@ const bootstrapSchema = z.object({
   attempt: z.number().int().positive().optional(),
   lease_generation: z.number().int().positive().optional(),
   expires_at: z.number().int().positive(),
+  session_mode: z.enum(['ephemeral', 'persistent']).default('ephemeral'),
+}).strict();
+const sessionStateSchema = z.object({
+  mode: z.enum(['ephemeral', 'persistent']),
+  sequence: z.number().int().nonnegative(),
+  health: z.enum(['idle', 'active', 'ending', 'ended', 'recovering', 'cleanup_delayed']),
+  pending_mode: z.enum(['ephemeral', 'persistent']).optional(),
+  cleanup_elapsed_seconds: z.number().int().nonnegative().optional(),
+}).strict();
+const sessionNextSchema = z.object({
+  run_id: identifier,
+  session_id: identifier,
+  lease_generation: z.number().int().positive(),
+  turn: z.object({
+    sequence: z.number().int().positive(),
+    turn_id: identifier,
+    message: z.string().min(1).max(65_536),
+  }).strict().nullable(),
 }).strict();
 const acceptedTurnSchema = z.object({
   run_id: identifier,
   session_id: identifier,
   lease_generation: z.number().int().positive(),
+  session_sequence: z.number().int().positive().optional(),
   turn: z.object({
     ref: z.string().regex(/^user_[a-f0-9]{64}$/),
     message: z.object({
@@ -252,7 +271,8 @@ export class ChatDataClient {
     modelStream?: { binding: ModelStreamBinding; onText?: ModelTextListener }): Promise<unknown> {
     const controller = new AbortController();
     const signal = this.#signal ? AbortSignal.any([controller.signal, this.#signal]) : controller.signal;
-    const timer = setTimeout(() => controller.abort(), channel === 'model' && path === 'invoke' ? 150_000 : this.#timeoutMs);
+    const timer = setTimeout(() => controller.abort(), channel === 'model' && path === 'invoke' ? 150_000 :
+      path === 'session/next' ? Math.max(this.#timeoutMs, 25_000) : this.#timeoutMs);
     try {
       signal.throwIfAborted();
       const boundHeaders = channel === 'data' && path !== 'bootstrap'
@@ -343,7 +363,8 @@ export class ChatDataClient {
     const binding = parsed.data;
     if (this.#binding && (this.#binding.run_id !== binding.run_id || this.#binding.session_id !== binding.session_id ||
         (this.#binding.lease_generation !== undefined && this.#binding.lease_generation !== binding.lease_generation) ||
-        (this.#binding.attempt !== undefined && this.#binding.attempt !== binding.attempt))) {
+        (this.#binding.attempt !== undefined && this.#binding.attempt !== binding.attempt) ||
+        this.#binding.session_mode !== binding.session_mode)) {
       throw new ChatDataError('scope_mismatch');
     }
     this.#binding = binding;
@@ -407,7 +428,7 @@ export class ChatDataClient {
     ));
   }
 
-  async nextTurn(): Promise<z.infer<typeof acceptedTurnSchema>['turn']> {
+  async nextTurn(): Promise<z.infer<typeof acceptedTurnSchema>['turn'] & { session_sequence?: number }> {
     return this.#withBinding(async binding => {
       if (!binding.lease_generation || !binding.attempt) throw new ChatDataError('invalid_response');
       const raw = await this.#request('next', JSON.stringify({
@@ -420,10 +441,13 @@ export class ChatDataClient {
       if (!parsed.success || parsed.data.run_id !== binding.run_id ||
         parsed.data.session_id !== binding.session_id ||
         parsed.data.lease_generation !== binding.lease_generation ||
-        parsed.data.turn.ref !== `user_${createHash('sha256').update(binding.run_id).digest('hex')}`) {
+        parsed.data.turn.ref !== `user_${createHash('sha256').update(binding.run_id).digest('hex')}` ||
+        (binding.session_mode === 'persistent') !== (parsed.data.session_sequence !== undefined) ||
+        (parsed.data.session_sequence !== undefined && parsed.data.session_sequence > 99_999_999)) {
         throw new ChatDataError('invalid_response');
       }
-      return parsed.data.turn;
+      return { ...parsed.data.turn, ...(parsed.data.session_sequence !== undefined
+        ? { session_sequence: parsed.data.session_sequence } : {}) };
     });
   }
 
@@ -487,6 +511,59 @@ export class ChatDataClient {
 
   async sessionScope(): Promise<{ run_id: string; session_id: string }> {
     return this.#withBinding(binding => Promise.resolve({ run_id: binding.run_id, session_id: binding.session_id }));
+  }
+
+  async sessionState(): Promise<z.infer<typeof sessionStateSchema>> {
+    return this.#withBinding(async binding => {
+      const raw = await this.#request('session/state', JSON.stringify({ run_id: binding.run_id, session_id: binding.session_id }),
+        { Authorization: `Bearer ${binding.capability}` });
+      const parsed = sessionStateSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.mode !== binding.session_mode) throw new ChatDataError('scope_mismatch');
+      return parsed.data;
+    });
+  }
+
+  async nextMailboxTurn(after: number): Promise<z.infer<typeof sessionNextSchema>['turn']> {
+    if (!Number.isSafeInteger(after) || after < 0 || after > 99_999_999) throw new ChatDataError('invalid_request');
+    return this.#withBinding(async binding => {
+      if (!binding.lease_generation || binding.session_mode !== 'persistent') throw new ChatDataError('scope_mismatch');
+      const raw = await this.#request('session/next', JSON.stringify({
+        run_id: binding.run_id, session_id: binding.session_id, after,
+      }), { Authorization: `Bearer ${binding.capability}` });
+      const parsed = sessionNextSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.run_id !== binding.run_id || parsed.data.session_id !== binding.session_id ||
+        parsed.data.lease_generation !== binding.lease_generation ||
+        (parsed.data.turn !== null && parsed.data.turn.sequence !== after + 1)) throw new ChatDataError('invalid_response');
+      return parsed.data.turn;
+    });
+  }
+
+  async sessionMode(): Promise<'ephemeral' | 'persistent'> {
+    return (await this.#authorize()).session_mode;
+  }
+
+  async admitMailboxTurn(turn: NonNullable<z.infer<typeof sessionNextSchema>['turn']>): Promise<void> {
+    if (this.#exchange) await this.#exchange;
+    const previous = await this.#authorize();
+    if (previous.session_mode !== 'persistent' || !previous.lease_generation ||
+        !Number.isSafeInteger(turn.sequence) || turn.sequence < 2 || !identifier.safeParse(turn.turn_id).success) {
+      throw new ChatDataError('invalid_request');
+    }
+    const raw = await this.#request('session/admit', JSON.stringify({
+      run_id: previous.run_id, session_id: previous.session_id, after: turn.sequence - 1,
+    }), { Authorization: `Bearer ${previous.capability}` });
+    const parsed = bootstrapSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.run_id !== turn.turn_id || parsed.data.session_id !== previous.session_id ||
+        parsed.data.run_id === previous.run_id || parsed.data.session_mode !== 'persistent' || !parsed.data.attempt ||
+        parsed.data.lease_generation !== previous.lease_generation + 1 || parsed.data.expires_at <= Date.now() / 1000 ||
+        parsed.data.expires_at > Date.now() / 1000 + 300) throw new ChatDataError('scope_mismatch');
+    this.#binding = parsed.data;
+  }
+
+  async renewSession(): Promise<{ run_id: string; session_id: string; session_mode: 'ephemeral' | 'persistent' }> {
+    if (!this.#exchange) this.#exchange = this.#bootstrap().finally(() => { this.#exchange = undefined; });
+    const binding = await this.#exchange;
+    return { run_id: binding.run_id, session_id: binding.session_id, session_mode: binding.session_mode };
   }
 
   async invokeTextModel(operationId: string, input: TextModelRequest) {

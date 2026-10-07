@@ -81,6 +81,7 @@ REVIEWED_EXCEPTIONS: frozenset[tuple[frozenset[str], str]] = frozenset(
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/teardown"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/finalize"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/complete"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/session/commit"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/resume"),
         (frozenset({"POST"}), "/internal/v1/agent/chat/data/reserve"),
         # persona_model_selection.py: STS SigV4 proof via require_agent_transport
@@ -227,14 +228,19 @@ class TestReviewedExceptionsAreStable:
         the original launch binding without model authority. Creation reservation
         verifies a body-bound STS supervisor proof, the registered tenant/persona
         and owner session, and live root authority before atomically reserving the
-        approved image and original pod name, for a total of 22.
+        approved image and original pod name. Persistent turn completion uses
+        the same body-bound STS supervisor proof and registered tenant/persona
+        checks, verifies the original run/attempt/pod binding, and requires a
+        sealed result and owner delivery without removing the live pod, for a
+        total of 23.
         Negative authentication cases live in test_chat_sandbox_exit.py,
         test_chat_teardown.py, test_chat_turn_finalization.py, test_chat_turn_completion.py,
-        test_chat_supervisor_resume.py and test_chat_sandbox_creation.py.
+        test_chat_supervisor_resume.py, test_chat_sandbox_creation.py and
+        test_chat_persistent_completion.py.
         Updating this count requires reviewing the
         new route's authentication mechanism."""
-        assert len(REVIEWED_EXCEPTIONS) == 22, (
-            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 22. If a new exception was reviewed and added, update this count."
+        assert len(REVIEWED_EXCEPTIONS) == 23, (
+            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 23. If a new exception was reviewed and added, update this count."
         )
 
     def test_every_exception_exists_in_the_app(self, internal_routes):

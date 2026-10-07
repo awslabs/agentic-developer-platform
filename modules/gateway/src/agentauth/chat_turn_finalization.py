@@ -11,13 +11,14 @@ from src.agentauth.chat_authority import ChatSessionLease
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, ChatLaunchStore
 from src.agentauth.chat_history_store import history_version
 from src.agentauth.chat_history_write import ChatHistoryConflictError, ChatHistoryWriter
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.chat_teardown import ChatTeardown
 from src.agentauth.chat_terminal_delivery import prepare_terminal_delivery, terminal_delivery_digest, verify_terminal_delivery
 from src.orchestration.chat_data_migration import _owns_context_row
 
 
 class ChatTurnFinalizer(ChatHistoryWriter):
-    def finalize(self, body, *, now):
+    def finalize(self, body, *, now, persistent=False):
         launch = self.history.capabilities.launches.load(body.run_id)
         evidence = ChatTeardown(self.authority, self.history.capabilities.launches)
         store = self.authority.store
@@ -46,13 +47,20 @@ class ChatTurnFinalizer(ChatHistoryWriter):
             or execution.get("workload_binding") != {"S": launch.sandbox_uid}
             or execution.get("pod_name") != {"S": body.pod_name}
             or body.pod_uid != launch.sandbox_uid
-            or teardown.get("binding") != {"M": _encoded(binding)}
-            or any("N" not in teardown.get(field, {}) for field in ("exited_at", "removed_at"))
+            or (not persistent and teardown.get("binding") != {"M": _encoded(binding)})
+            or (not persistent and any("N" not in teardown.get(field, {}) for field in ("exited_at", "removed_at")))
         ):
             raise ChatAuthorizationRefusedError("chat finalization scope refused")
+        if persistent:
+            if not launch.session_run_id or execution.get("chat_turn_sealed") != {"BOOL": True}:
+                raise ChatHistoryConflictError("chat persistent result not sealed")
+            if "chat_terminal" not in execution:
+                self.history.capabilities._live(launch, now)
         _, accepted = self._accepted(launch)
         message, turn = accepted
-        checks = [{"ConditionCheck": evidence._unchanged(record)} for record in (dispatch, teardown, ChatLaunchStore.item(launch))]
+        checks = [{"ConditionCheck": evidence._unchanged(record)} for record in (dispatch, ChatLaunchStore.item(launch))]
+        if not persistent:
+            checks.append({"ConditionCheck": evidence._unchanged(teardown)})
         if "chat_terminal" in execution:
             terminal = TypeDeserializer().deserialize(execution["chat_terminal"])
             if (
@@ -64,7 +72,8 @@ class ChatTurnFinalizer(ChatHistoryWriter):
                 or any(
                     terminal.get(field) != getattr(launch, field) for field in ("run_id", "session_id", "attempt", "lease_generation", "sandbox_uid")
                 )
-                or execution.get("status") != {"S": "cancelled" if terminal.get("outcome") == "cancelled" else "completed"}
+                or execution.get("status", {}).get("S")
+                not in ({"active", "completed"} if persistent else {"cancelled" if terminal.get("outcome") == "cancelled" else "completed"})
             ):
                 raise ChatAuthorizationUnavailableError("chat terminal receipt inconsistent")
             for field in ("attempt", "lease_generation", "finalized_at"):
@@ -72,6 +81,23 @@ class ChatTurnFinalizer(ChatHistoryWriter):
                 if isinstance(value, bool) or not isinstance(value, int | Decimal) or int(value) != value or value < 1:
                     raise ChatAuthorizationUnavailableError("chat terminal receipt invalid")
                 terminal[field] = int(value)
+            header = self.history._get(launch.session_id, "header")
+            owner = (launch.tenant_id, launch.team_id, launch.user_id)
+            if header is not None and not _owns_context_row(header, owner):
+                raise ChatAuthorizationRefusedError("chat finalization owner changed")
+            mailbox_receipt = self.history._get(launch.session_id, f"mailbox-id#{launch.run_id}")
+            if mailbox_receipt is not None or (header and header.get("sessionMode") == "persistent"):
+                receipt, entry = ChatSessionMailbox(self.table).finalized_entry(
+                    session_id=launch.session_id,
+                    owner=owner,
+                    run_id=launch.run_id,
+                    message=message["content"],
+                    outcome=terminal["outcome"],
+                    finalized_at=terminal["finalized_at"],
+                )
+                checks.extend([self._unchanged(receipt), self._unchanged(entry)])
+            if header is not None:
+                checks.append(self._unchanged(header))
             delivery = verify_terminal_delivery(store, execution, launch, terminal)
             if delivery is not None:
                 checks.append({"ConditionCheck": evidence._unchanged(delivery)})
@@ -85,7 +111,22 @@ class ChatTurnFinalizer(ChatHistoryWriter):
         lease = ChatSessionLease.model_validate(header.get("chatLease"))
         if (lease.run_id, lease.sandbox_uid, lease.generation) != (launch.run_id, launch.sandbox_uid, launch.lease_generation):
             raise ChatAuthorizationRefusedError("chat finalization lease changed")
-        if lease.expires_at != 1:
+        mailbox_entry = None
+        if header.get("sessionMode", "ephemeral") == "persistent":
+            sequence = ChatSessionMailbox(self.table).initial_cursor(
+                session_id=launch.session_id,
+                owner=(launch.tenant_id, launch.team_id, launch.user_id),
+                run_id=launch.run_id,
+                sandbox_uid=launch.sandbox_uid,
+                generation=launch.lease_generation,
+                message=message["content"],
+                now=now,
+                allow_expired=True,
+            )
+            mailbox_entry = self.history._get(launch.session_id, f"mailbox#{sequence:08d}")
+        if persistent and (header.get("sessionMode") != "persistent" or lease.expires_at <= now):
+            raise ChatAuthorizationRefusedError("chat persistent lease changed")
+        if not persistent and lease.expires_at != 1:
             seal = self._unchanged(header)["ConditionCheck"]
             seal["UpdateExpression"] = "SET chatLease.expires_at = :fenced"
             seal["ExpressionAttributeValues"][":fenced"] = {"N": "1"}
@@ -93,6 +134,8 @@ class ChatTurnFinalizer(ChatHistoryWriter):
             header = {**header, "chatLease": {**header["chatLease"], "expires_at": 1}}
         accounting = self._accounting(launch)
         candidate = turn.get("result_candidate")
+        if persistent and (candidate is None or accounting == "unresolved"):
+            raise ChatHistoryConflictError("chat persistent result not settled")
         outcome, reply = "interrupted", None
         if "abort_command_id" in execution:
             if execution.get("abort_requested_attempt") != {"N": str(launch.attempt)}:
@@ -161,10 +204,22 @@ class ChatTurnFinalizer(ChatHistoryWriter):
         update_execution["UpdateExpression"] = "SET #outcome = :outcome, chat_terminal = :terminal"
         update_execution["ExpressionAttributeNames"]["#outcome"] = "status"
         update_execution["ExpressionAttributeValues"].update(
-            _encoded({":outcome": "cancelled" if outcome == "cancelled" else "completed", ":terminal": terminal})
+            _encoded({":outcome": "active" if persistent else "cancelled" if outcome == "cancelled" else "completed", ":terminal": terminal})
         )
+        if mailbox_entry is not None:
+            expected = "result_recorded" if candidate is not None else "queued"
+            if mailbox_entry.get("status") != expected:
+                raise ChatAuthorizationRefusedError("chat terminal mailbox changed")
+            mailbox_update = self._unchanged(mailbox_entry)["ConditionCheck"]
+            mailbox_update["UpdateExpression"] = "SET #status = :outcome, finalizedAt = :now"
+            mailbox_update["ExpressionAttributeNames"]["#status"] = "status"
+            mailbox_update["ExpressionAttributeValues"].update(_encoded({":outcome": outcome, ":now": now}))
+            checks.append({"Update": mailbox_update})
         delivery = prepare_terminal_delivery(execution, launch, terminal, reply)
         if delivery is not None:
+            from src.agentauth.chat_event_journal import terminal_event_writes
+
+            checks.extend(terminal_event_writes(self.authority, delivery, now=now))
             update_execution["ConditionExpression"] += " AND attribute_not_exists(chat_terminal_delivery_digest)"
             update_execution["UpdateExpression"] += ", chat_terminal_delivery_digest = :delivery_digest"
             update_execution["ExpressionAttributeValues"][":delivery_digest"] = terminal_delivery_digest(delivery)

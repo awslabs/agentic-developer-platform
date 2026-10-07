@@ -17,6 +17,7 @@ import {
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 import { requestServerSessionId } from '@/services/chatSession';
+import { readChatMode, selectChatMode, endChatSession, type ChatSessionMode, type ChatSessionState } from '@/services/chatMode';
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
@@ -82,6 +83,10 @@ export default function AgentChat() {
   });
 
   const activeConversation = conversations.find((c) => c.id === activeConvId) ?? null;
+  const [modeState, setModeState] = useState<{ sessionId: string; state: ChatSessionState } | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+  const currentMode = modeState?.sessionId === activeConvId ? modeState.state : null;
 
   // Sidebar collapsed state for responsive
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -105,7 +110,7 @@ export default function AgentChat() {
   // ------------------------------------------------------------------
 
   const handleMessagesChange = useCallback(
-    (sessionId: string, messages: ChatMessage[]) => {
+    (sessionId: string, messages: ChatMessage[], cursor?: string) => {
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== sessionId) return c;
@@ -117,7 +122,7 @@ export default function AgentChat() {
               title = firstUser.content.slice(0, 50) + (firstUser.content.length > 50 ? '...' : '');
             }
           }
-          return { ...c, messages, title, updatedAt: Date.now() };
+          return { ...c, messages, title, updatedAt: Date.now(), ...(cursor ? { replayCursor: cursor } : {}) };
         }),
       );
     },
@@ -188,10 +193,62 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, sessionMeta, sendMessage, cancelTurn, canCancel, cancelState, activeToolCalls, wsRef } = useAgUiEvents({
+  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, replayWarning, sessionMeta, sendMessage, cancelTurn, canCancel, cancelState, activeToolCalls, wsRef } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
+
+  useEffect(() => {
+    if (!activeConvId) return;
+    let active = true;
+    setModeState(null);
+    setModeError(null);
+    const refresh = () => {
+      void readChatMode(activeConvId).then((state) => {
+        if (active) {
+          setModeState({ sessionId: activeConvId, state });
+          setModeError(null);
+        }
+      }).catch(() => {
+        if (active) {
+          setModeState(null);
+          setModeError('Session mode unavailable');
+        }
+      });
+    };
+    refresh();
+    const interval = setInterval(refresh, 20_000);
+    return () => { active = false; clearInterval(interval); };
+  }, [activeConvId, isAwaitingReply]);
+
+  const changeMode = useCallback(async (mode: ChatSessionMode) => {
+    if (!activeConvId || !currentMode || modeBusy) return;
+    setModeBusy(true);
+    setModeError(null);
+    try {
+      const state = await selectChatMode(activeConvId, mode);
+      setModeState({ sessionId: activeConvId, state });
+    } catch {
+      setModeError('Could not change session mode. Please try again.');
+    } finally {
+      setModeBusy(false);
+    }
+  }, [activeConvId, currentMode, modeBusy]);
+
+  const endSession = useCallback(async () => {
+    if (!activeConvId || !currentMode || modeBusy) return;
+    setModeBusy(true);
+    setModeError(null);
+    try {
+      const state = await endChatSession(activeConvId);
+      setModeState({ sessionId: activeConvId, state });
+      setInputValue('');
+    } catch {
+      setModeError('Could not end session. Please try again.');
+    } finally {
+      setModeBusy(false);
+    }
+  }, [activeConvId, currentMode, modeBusy]);
 
   // Stage C (#186): pending file attachments for the next message
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -218,7 +275,11 @@ export default function AgentChat() {
 
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
-    if (!text || isAwaitingReply) return;
+    if (!text || isAwaitingReply || currentMode?.pending_mode || currentMode?.health === 'ending' || currentMode?.health === 'recovering' || currentMode?.health === 'cleanup_delayed') return;
+    if (text === '/exit' && activeConvId && currentMode?.mode === 'persistent') {
+      void endSession();
+      return;
+    }
 
     // If no conversation, ask the server to start one first (#5615). The typed
     // text stays in the box; the effect below sends it once the socket for the
@@ -239,7 +300,7 @@ export default function AgentChat() {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, startConversation, pendingUploads]);
+  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, startConversation, pendingUploads, currentMode, endSession]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -335,9 +396,33 @@ export default function AgentChat() {
             {activeConversation?.title || 'Agent Chat'}
           </h1>
 
+          {activeConvId && (
+            <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+              {currentMode?.health === 'cleanup_delayed' && <span role="alert">Sandbox cleanup delayed; removal not confirmed ({currentMode.cleanup_elapsed_seconds}s)</span>}
+              {currentMode?.pending_mode && <span role="status">Switching to {currentMode.pending_mode}; waiting for sandbox cleanup</span>}
+              {currentMode?.mode === 'persistent' && (
+                <span role="status" aria-label={`Persistent session ${currentMode.health}`} className="flex items-center gap-1">
+                  {currentMode.health === 'active' && <span aria-hidden="true" className="h-2 w-2 rounded-full bg-green-500" />}
+                  {currentMode.health}
+                </span>
+              )}
+              <select aria-label="Session mode" value={currentMode?.mode ?? 'ephemeral'}
+                disabled={!currentMode || modeBusy || !!currentMode.pending_mode || currentMode.health === 'ending' || currentMode.health === 'recovering' || currentMode.health === 'cleanup_delayed'} onChange={(event) => { void changeMode(event.target.value as ChatSessionMode); }}>
+                <option value="ephemeral">Ephemeral</option>
+                <option value="persistent">Persistent</option>
+              </select>
+              {currentMode?.mode === 'persistent' && currentMode.health === 'active' && !currentMode.pending_mode && (
+                <button type="button" disabled={modeBusy} onClick={() => void endSession()} aria-label="End session">End session</button>
+              )}
+              {modeError && <span role="alert">{modeError}</span>}
+            </div>
+          )}
+
           {/* Connection indicator */}
           <ConnectionBadge status={connectionStatus} reconnectAttempt={reconnectAttempt} />
         </div>
+
+        {replayWarning && <div role="alert" className="px-4 py-2 text-sm text-amber-900 bg-amber-100 dark:text-amber-100 dark:bg-amber-900">{replayWarning}</div>}
 
         {/* Messages area */}
         <div
@@ -485,6 +570,9 @@ export default function AgentChat() {
                 }
                 disabled={
                   isAwaitingReply ||
+                  !!currentMode?.pending_mode ||
+                  currentMode?.health === 'ending' ||
+                  currentMode?.health === 'recovering' || currentMode?.health === 'cleanup_delayed' ||
                   // #5615: no point typing into an id the server has refused, or
                   // while the id for a brand-new conversation is still in flight.
                   sessionExpired ||
@@ -521,6 +609,9 @@ export default function AgentChat() {
               disabled={
                 !inputValue.trim() ||
                 isAwaitingReply ||
+                !!currentMode?.pending_mode ||
+                currentMode?.health === 'ending' ||
+                currentMode?.health === 'recovering' || currentMode?.health === 'cleanup_delayed' ||
                 sessionExpired ||
                 isStartingConversation ||
                 (connectionStatus !== 'connected' && !!activeConvId)

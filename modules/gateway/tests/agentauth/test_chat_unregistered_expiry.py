@@ -100,7 +100,15 @@ async def test_expired_unregistered_input_delivers_once_before_healthy_successor
     assert completed.status_code == 200, completed.text
     assert completed.json()["completion"]["terminal"] == terminal
     assert completed.json()["completion"]["input_acknowledgement_ready"] is True
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == [
+        item for item in before if not item["SK"].startswith("output")
+    ]
+    events = completion.fixtures.replay(runtime)["events"]
+    assert len(events) == 2 and events[-1]["payload"]["task_id"] == "task-run-expired"
+    assert events[-1]["payload"]["status"] == "interrupted"
+    for item in before:
+        if item["SK"] != "output-state":
+            assert runtime[2].get_item(Key={"PK": item["PK"], "SK": item["SK"]})["Item"] == item
     successor = json.loads(queue.send_message.call_args.kwargs["MessageBody"])
     assert successor["message_id"] == "run-healthy"
     run_hash = hashlib.sha256(b"run-healthy").hexdigest()

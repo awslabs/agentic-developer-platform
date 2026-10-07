@@ -20,6 +20,7 @@ from src.agentauth.chat_delivery import ChatDeliveryRelay
 from src.agentauth.chat_history_store import ChatHistoryStore
 from src.agentauth.chat_model_execution import ChatModelExecution
 from src.agentauth.chat_model_stream import MEDIA_TYPE, model_stream_response
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.chat_user_turn import load_user_turn, verify_user_turn
 from src.agentauth.external_roots import root_store
 from src.agentauth.model_policy_keys import model_policy_keys as verification_keys
@@ -100,7 +101,7 @@ async def _sandbox_launch(request: Request, token: str, services, run_id: str, s
         raise WorkloadRefusedError("chat sandbox identity refused")
     now = int(datetime.now(UTC).timestamp())
     launch = await run_in_threadpool(capabilities.verify, token, run_id=run_id, session_id=session_id, operation=operation, now=now)
-    require_sandbox_run(pod, launch.run_id)
+    require_sandbox_run(pod, launch.session_run_id or launch.run_id)
     if pod.uid != launch.sandbox_uid or pod.image_digest != launch.image_digest:
         raise WorkloadRefusedError("chat sandbox binding refused")
     return authority, launch, now
@@ -310,10 +311,34 @@ async def sandbox_turn_next(
         or envelope_digest(result["entries"][0]["message"]) != protected["message_digest"]
     ):
         raise ChatAuthorizationUnavailableError("accepted chat turn history unavailable")
+    sequence = None
+    session = await run_in_threadpool(
+        ChatSessionMailbox(authority.context_table).state,
+        session_id=launch.session_id,
+        owner=(launch.tenant_id, launch.team_id, launch.user_id),
+        now=now,
+    )
+    if session["mode"] == "persistent":
+        sequence = await run_in_threadpool(
+            ChatSessionMailbox(authority.context_table).initial_cursor,
+            session_id=launch.session_id,
+            owner=(launch.tenant_id, launch.team_id, launch.user_id),
+            run_id=launch.run_id,
+            sandbox_uid=launch.sandbox_uid,
+            generation=launch.lease_generation,
+            message=result["entries"][0]["message"]["content"],
+            now=now,
+        )
     await run_in_threadpool(
         capabilities.verify, token, run_id=launch.run_id, session_id=launch.session_id, operation="turn.next", now=int(datetime.now(UTC).timestamp())
     )
     return JSONResponse(
-        {"run_id": launch.run_id, "session_id": launch.session_id, "lease_generation": launch.lease_generation, "turn": result["entries"][0]},
+        {
+            "run_id": launch.run_id,
+            "session_id": launch.session_id,
+            "lease_generation": launch.lease_generation,
+            "turn": result["entries"][0],
+            **({"session_sequence": sequence} if sequence is not None else {}),
+        },
         headers={"Cache-Control": "no-store"},
     )

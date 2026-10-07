@@ -13,6 +13,7 @@ import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 import type { Conversation, ChatMessage } from '@/types/chat';
 import { AgUiEventType } from '@/types/ag-ui-events';
 import { apiClient } from '@/services/api';
+import { readChatReplay } from '@/services/chatReplay';
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket
@@ -64,6 +65,8 @@ class MockWebSocket {
 // Mock auth
 // ---------------------------------------------------------------------------
 
+vi.mock('@/services/chatReplay', () => ({ readChatReplay: vi.fn() }));
+
 vi.mock('@/services/auth', () => ({
   getIdToken: vi.fn(() => 'mock-id-token'),
   isTokenExpired: vi.fn(() => false),
@@ -107,6 +110,9 @@ describe('useAgUiEvents', () => {
     vi.stubEnv('VITE_AGENT_WS_URL', 'wss://chat.example.test/v1');
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.mocked(readChatReplay).mockReset().mockResolvedValue({
+      status: 'history_refresh_required', reason: 'journal_unavailable', events: [], cursor: null, has_more: false,
+    });
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
@@ -820,6 +826,183 @@ describe('useAgUiEvents', () => {
     // Wait for backoff (1s)
     await vi.advanceTimersByTimeAsync(1100);
     expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+  });
+
+  it('replays missing events before buffered live output and persists the cursor with messages', async () => {
+    const onMsg = vi.fn();
+    const journalId = 'a'.repeat(32);
+    const streamId = 'b'.repeat(64);
+    const live = (sequence: number, event: Record<string, unknown>) => agUiFrame({
+      ...event, stream_id: streamId, stream_sequence: sequence - 1, event_cursor: `${journalId}:${sequence}`,
+    });
+    const content = (sequence: number, delta: string) => ({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'msg-replay', delta,
+      stream_id: streamId, stream_sequence: sequence - 1,
+    });
+    const conversation = makeConversation();
+    const { result } = renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    act(() => getLastWs().simulateOpen());
+    act(() => {
+      getLastWs().simulateMessage(live(1, { event_type: AgUiEventType.RUN_STARTED, threadId: 'test-session', runId: 'task-1' }));
+      getLastWs().simulateMessage(live(2, { event_type: AgUiEventType.TEXT_MESSAGE_START, messageId: 'msg-replay', role: 'assistant' }));
+      getLastWs().simulateMessage(live(3, content(3, 'One ')));
+    });
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${journalId}:3`);
+
+    let release!: (page: Awaited<ReturnType<typeof readChatReplay>>) => void;
+    vi.mocked(readChatReplay).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    act(() => getLastWs().simulateClose(1006));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+    const reopened = getLastWs();
+    act(() => reopened.simulateOpen());
+    expect(readChatReplay).toHaveBeenCalledWith('test-session', `${journalId}:3`);
+    act(() => reopened.simulateMessage(live(5, content(5, '!'))));
+    await act(async () => {
+      release({ status: 'ok', events: [4, 5].map(sequence => ({
+        sequence, cursor: `${journalId}:${sequence}`, event_id: `event-${sequence}`,
+        kind: 'ag_ui' as const, payload: { event: content(sequence, sequence === 4 ? 'two' : '!') },
+      })), cursor: `${journalId}:5`, has_more: false });
+      await Promise.resolve();
+    });
+    expect(onMsg.mock.lastCall?.[1]).toEqual(expect.arrayContaining([expect.objectContaining({ content: 'One two!' })]));
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${journalId}:5`);
+    expect(result.current.replayWarning).toBeNull();
+    const delivered = onMsg.mock.calls.length;
+    act(() => {
+      reopened.simulateMessage(live(4, content(4, 'two')));
+      reopened.simulateMessage(live(5, content(5, '!')));
+    });
+    expect(onMsg).toHaveBeenCalledTimes(delivered);
+  });
+
+  it('resumes from a persisted browser cursor without repeating saved text', async () => {
+    const journalId = 'a'.repeat(32);
+    const onMsg = vi.fn();
+    const conversation = { ...makeConversation('test-session', [{
+      id: 'saved', role: 'assistant' as const, content: 'Before', status: 'streaming' as const,
+      agUiMessageId: 'message-reload', timestamp: 1,
+    }]), replayCursor: `${journalId}:2` };
+    vi.mocked(readChatReplay).mockResolvedValueOnce({
+      status: 'ok', cursor: `${journalId}:5`, has_more: false,
+      events: [
+        { sequence: 3, cursor: `${journalId}:3`, event_id: 'text', kind: 'ag_ui', payload: { event: {
+          event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'message-reload', delta: 'After',
+        } } },
+        { sequence: 4, cursor: `${journalId}:4`, event_id: 'end', kind: 'ag_ui', payload: { event: {
+          event_type: AgUiEventType.TEXT_MESSAGE_END, messageId: 'message-reload',
+        } } },
+        { sequence: 5, cursor: `${journalId}:5`, event_id: 'finished', kind: 'ag_ui', payload: { event: {
+          event_type: AgUiEventType.RUN_FINISHED, threadId: 'test-session', runId: 'task-1',
+        } } },
+      ],
+    });
+    renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); getLastWs().simulateOpen(); await Promise.resolve(); });
+    expect(readChatReplay).toHaveBeenCalledWith('test-session', `${journalId}:2`);
+    expect(onMsg.mock.lastCall?.[1]).toEqual([expect.objectContaining({ content: 'BeforeAfter', status: 'complete' })]);
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${journalId}:5`);
+    const delivered = onMsg.mock.calls.length;
+    act(() => getLastWs().simulateMessage(agUiFrame({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'message-reload', delta: 'After', event_cursor: `${journalId}:3`,
+    })));
+    expect(onMsg).toHaveBeenCalledTimes(delivered);
+  });
+
+  it('retries unavailable replay storage without dropping buffered output', async () => {
+    const onMsg = vi.fn();
+    const journalId = 'a'.repeat(32);
+    const conversation = makeConversation();
+    vi.mocked(readChatReplay).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({
+      status: 'ok', cursor: `${journalId}:2`, has_more: false, events: [
+        { sequence: 1, cursor: `${journalId}:1`, event_id: 'start', kind: 'ag_ui', payload: { event: {
+          event_type: AgUiEventType.TEXT_MESSAGE_START, messageId: 'recover', role: 'assistant',
+        } } },
+        { sequence: 2, cursor: `${journalId}:2`, event_id: 'text', kind: 'ag_ui', payload: { event: {
+          event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'recover', delta: 'Recovered',
+        } } },
+      ],
+    });
+    const { result } = renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); getLastWs().simulateOpen(); });
+    await act(async () => {
+      getLastWs().simulateMessage(agUiFrame({
+        event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'recover', delta: 'Recovered', event_cursor: `${journalId}:2`,
+      }));
+      await Promise.resolve();
+    });
+    expect(result.current.replayWarning).toMatch(/temporarily unavailable/);
+    expect(onMsg).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(onMsg.mock.lastCall?.[1]).toEqual(expect.arrayContaining([expect.objectContaining({ content: 'Recovered' })]));
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${journalId}:2`);
+    expect(result.current.replayWarning).toBeNull();
+    expect(readChatReplay).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['retention_gap', 'cursor_changed'] as const)('reports a %s without replaying old output', async reason => {
+    const journalId = 'a'.repeat(32);
+    const onMsg = vi.fn();
+    const resumedJournalId = reason === 'cursor_changed' ? 'c'.repeat(32) : journalId;
+    const conversation = { ...makeConversation('test-session', [{
+      id: 'original', role: 'assistant' as const, content: 'Saved answer', status: 'complete' as const, timestamp: 1,
+    }]), replayCursor: `${journalId}:1` };
+    vi.mocked(readChatReplay).mockResolvedValueOnce({
+      status: 'history_refresh_required', reason, events: [], cursor: `${resumedJournalId}:4`, has_more: false,
+    });
+    const { result } = renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); getLastWs().simulateOpen(); await Promise.resolve(); });
+    expect(result.current.replayWarning).toMatch(/incomplete/);
+    expect(onMsg.mock.lastCall?.[1]).toEqual(conversation.messages);
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${resumedJournalId}:4`);
+    act(() => getLastWs().simulateMessage(agUiFrame({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'next', delta: 'New output',
+      event_cursor: `${resumedJournalId}:5`,
+    })));
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${resumedJournalId}:5`);
+    expect(result.current.replayWarning).toMatch(/incomplete/);
+  });
+
+  it('shows node-loss uncertainty when a durable interrupted terminal is replayed', async () => {
+    const journalId = 'a'.repeat(32);
+    const onMsg = vi.fn();
+    const conversation = { ...makeConversation('test-session', [{
+      id: 'user', role: 'user' as const, content: 'Run task', status: 'complete' as const, timestamp: 1,
+    }]), replayCursor: `${journalId}:1` };
+    vi.mocked(readChatReplay).mockResolvedValueOnce({ status: 'ok', cursor: `${journalId}:2`, has_more: false, events: [{
+      sequence: 2, event_id: 'terminal', kind: 'terminal', cursor: `${journalId}:2`,
+      payload: { task_id: 'task-1', delivery_id: `chat-terminal-${'b'.repeat(64)}`, status: 'interrupted',
+        retryable: true, accounting_status: 'unresolved', text: 'Work interrupted' },
+    }] });
+    const { result } = renderHook(() => useAgUiEvents({ conversation, onMessagesChange: onMsg }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); getLastWs().simulateOpen(); await Promise.resolve(); });
+    expect(result.current.replayWarning).toMatch(/effects may be uncertain/);
+    expect(onMsg.mock.lastCall?.[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ terminalOutcome: 'interrupted', status: 'error', retryable: true }),
+    ]));
+    expect(onMsg.mock.lastCall?.[2]).toBe(`${journalId}:2`);
+    expect(getLastWs().sent).toEqual([]);
+  });
+
+  it('does not apply an old session replay reply after switching conversations', async () => {
+    const journalId = 'a'.repeat(32);
+    const onMsg = vi.fn();
+    let release!: (page: Awaited<ReturnType<typeof readChatReplay>>) => void;
+    vi.mocked(readChatReplay).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const first = { ...makeConversation('first', [{ id: 'user', role: 'user' as const, content: 'Ask', status: 'complete' as const, timestamp: 1 }]), replayCursor: `${journalId}:1` };
+    const { result, rerender } = renderHook(({ conversation }) => useAgUiEvents({ conversation, onMessagesChange: onMsg }), { initialProps: { conversation: first } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); getLastWs().simulateOpen(); await Promise.resolve(); });
+    await act(async () => { rerender({ conversation: makeConversation('second') }); await vi.advanceTimersByTimeAsync(10); });
+    act(() => getLastWs().simulateOpen());
+    await act(async () => {
+      release({ status: 'ok', cursor: `${journalId}:2`, has_more: false, events: [{
+        sequence: 2, cursor: `${journalId}:2`, event_id: 'old', kind: 'ag_ui',
+        payload: { event: { event_type: AgUiEventType.TEXT_MESSAGE_CONTENT, messageId: 'old', delta: 'Private' } },
+      }] });
+      await Promise.resolve();
+    });
+    expect(result.current.replayWarning).toBeNull();
+    expect(onMsg.mock.calls.some(([sessionId, messages]) => sessionId === 'second' && messages.some((message: ChatMessage) => message.content === 'Private'))).toBe(false);
   });
 
   // ----- Mixed AG-UI and legacy -----

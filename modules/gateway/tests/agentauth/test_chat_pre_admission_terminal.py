@@ -73,7 +73,8 @@ async def test_cleaned_unadmitted_turn_has_atomic_owner_outcome_without_completi
     assert execution["status"] == {"S": "cancelled" if cancelled else "completed"}
     assert "chat_terminal" not in execution and "chat_queued_terminal" not in execution
     assert runtime[1].store._read("CHAT-LAUNCH#run-write", "LAUNCH") is None
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == before
+    assert fixtures.replay(runtime)["events"][0]["payload"]["status"] == result["outcome"]
     payload = recovery.completion.publication.payload(transport)
     assert payload["status"] == result["outcome"] and payload["retryable"] == result["retryable"]
     consumer._process_response(payload)

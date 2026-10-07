@@ -37,6 +37,13 @@ async def test_scoped_routes_keep_original_authentication(path):
     assert sent[0]["status"] == 401
 
 
+@pytest.mark.parametrize("operation", ["state", "next", "admit"])
+async def test_persistent_session_transport_reaches_original_authorization(operation):
+    reached, sent = await request(f"/v1/chat/data/session/{operation}")
+    assert len(reached) == 1
+    assert sent[0]["status"] == 401
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path,method,changes",
@@ -50,6 +57,7 @@ async def test_scoped_routes_keep_original_authentication(path):
         ("/internal/v1/agent/chat/data/complete", "POST", {}),
         ("/internal/v1/agent/chat/data/resume", "POST", {}),
         ("/internal/v1/agent/chat/data/reserve", "POST", {}),
+        ("/internal/v1/agent/chat/data/session/commit", "POST", {}),
         ("/v1/messages", "POST", {}),
         ("/openai/v1/responses", "POST", {}),
         ("/v1/chat/data/bootstrap/", "POST", {}),

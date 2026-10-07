@@ -16,9 +16,11 @@ function fitsModelRequest(request: ChatModelRequest): boolean {
   return parsed.success && Buffer.byteLength(canonicalJson(parsed.data)) <= 65_536;
 }
 
-export async function executeSandboxTurn(prepared: PreparedTurn, signal?: AbortSignal): Promise<void> {
+export async function executeSandboxTurn(
+  prepared: PreparedTurn, signal?: AbortSignal, retained?: ChatModelRequest['messages'],
+): Promise<ChatModelRequest['messages']> {
   try {
-    await executeTurn(prepared, signal);
+    return await executeTurn(prepared, signal, retained);
   } catch (error) {
     if (!signal?.aborted) {
       await prepared.client.submitTurnResult({ outcome: 'failed' }).catch(() => undefined);
@@ -27,11 +29,11 @@ export async function executeSandboxTurn(prepared: PreparedTurn, signal?: AbortS
   }
 }
 
-async function executeTurn(prepared: PreparedTurn, signal?: AbortSignal): Promise<void> {
+async function executeTurn(prepared: PreparedTurn, signal?: AbortSignal, retained?: ChatModelRequest['messages']): Promise<ChatModelRequest['messages']> {
   const { client, turn, data, context } = prepared;
   const tools = data.tools().map(tool => ({ name: tool.name, description: tool.description,
     input_schema: JSON.parse(JSON.stringify(z.toJSONSchema(z.object(tool.inputSchema).strict()))) }));
-  const history = structuredClone(context.messages);
+  const history: ChatModelRequest['messages'] = structuredClone(retained ?? context.messages);
   const protectedCount = context.protectedMessageCount;
   if (!Number.isSafeInteger(protectedCount) || protectedCount < 0 || protectedCount > history.length) {
     throw new ChatDataError('invalid_request');
@@ -62,7 +64,7 @@ async function executeTurn(prepared: PreparedTurn, signal?: AbortSignal): Promis
       const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
       if (!text.trim()) throw new ChatDataError('invalid_response');
       await data.record(text);
-      return;
+      return [...history, ...messages, { role: 'assistant', content: text }];
     }
     if (history.length + messages.length + 2 > 32) throw new ChatDataError('incomplete');
     if (calls.some(call => executed.has(call.id))) throw new ChatDataError('invalid_response');

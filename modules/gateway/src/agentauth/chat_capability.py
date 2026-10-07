@@ -67,6 +67,7 @@ class ChatLaunch(BaseModel):
     # member has no team. Resource access still checks its actual team below.
     team_id: Identifier | Literal[""]
     session_id: Identifier
+    session_run_id: Identifier | None = None
     sandbox_uid: Identifier
     image_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     attempt: int = Field(strict=True, ge=1)
@@ -79,7 +80,7 @@ class ChatLaunch(BaseModel):
 
 
 def _launch_json(launch: ChatLaunch) -> str:
-    document = launch.model_dump(mode="json")
+    document = launch.model_dump(mode="json", exclude_none=True)
     document["operations"] = sorted(launch.operations)
     return json.dumps(document, sort_keys=True, separators=(",", ":"))
 
@@ -200,8 +201,8 @@ class ChatCapabilityService:
         self._member(launch.tenant_id, launch.user_id, launch.team_id)
 
     def issue(self, run_id: str, pod: VerifiedPod, *, now: int) -> str:
-        require_sandbox_run(pod, run_id)
         launch = self.launches.load(run_id)
+        require_sandbox_run(pod, launch.session_run_id or run_id)
         if pod.uid != launch.sandbox_uid:
             raise ChatAuthorizationRefusedError("chat workload mismatch")
         self._live(launch, now)
@@ -225,7 +226,7 @@ class ChatCapabilityService:
         launch = self.verify_run(token, run_id=run_id, operation=None, now=now)
         if pod.uid != launch.sandbox_uid or pod.image_digest != launch.image_digest:
             raise ChatAuthorizationRefusedError("chat workload mismatch")
-        require_sandbox_run(pod, launch.run_id)
+        require_sandbox_run(pod, launch.session_run_id or launch.run_id)
         return launch
 
     def verify(self, token: str, *, run_id: str, session_id: str, operation: Operation, now: int) -> ChatLaunch:
@@ -259,6 +260,10 @@ class ChatCapabilityService:
         ):
             raise ChatAuthorizationRefusedError("chat capability scope refused")
         self._live(launch, now)
+        if launch.session_run_id and operation not in {None, "turn.next", "turn.result"}:
+            execution = self.launches.store._read(f"TENANT#{launch.tenant_id}", f"EXEC#{launch.run_id}") or {}
+            if "chat_turn_sealed" in execution:
+                raise ChatAuthorizationRefusedError("chat turn already sealed")
         return launch
 
     def authorize_resource(

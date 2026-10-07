@@ -106,7 +106,13 @@ resource "aws_iam_role_policy" "chat_supervisor" {
         Action = ["execute-api:Invoke"]
         Resource = [
           "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/admit",
-          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/exit"
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/exit",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/reserve",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/resume",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/teardown",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/finalize",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/complete",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/session/commit"
         ]
       },
       {

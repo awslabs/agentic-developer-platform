@@ -92,7 +92,7 @@ export async function withSandboxPod<Result>(
       (spec.hostNetwork ?? false) !== false || (spec.hostPID ?? false) !== false || (spec.hostIPC ?? false) !== false ||
       !isDeepStrictEqual(spec.hostAliases, expected.hostAliases) ||
       spec.shareProcessNamespace !== false || spec.enableServiceLinks !== false ||
-      spec.restartPolicy !== 'Never' || spec.activeDeadlineSeconds !== 900 ||
+      spec.restartPolicy !== 'Never' || spec.activeDeadlineSeconds !== expected.activeDeadlineSeconds ||
       spec.terminationGracePeriodSeconds !== expected.terminationGracePeriodSeconds ||
       !isDeepStrictEqual(spec.securityContext, expected.securityContext) ||
       (Array.isArray(spec.imagePullSecrets) && spec.imagePullSecrets.length > 0) ||

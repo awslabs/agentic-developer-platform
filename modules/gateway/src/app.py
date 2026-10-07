@@ -326,9 +326,15 @@ async def lifespan(app: FastAPI):
     from src.orchestration.work_admission import maintain_work_claims
 
     claims_task = asyncio.create_task(maintain_work_claims(), name="work_claim_cleanup")
+    from src.agentauth.chat_notifications import maintain_chat_notifications
+
+    notifications_task = asyncio.create_task(maintain_chat_notifications(), name="chat_notification_recovery")
     try:
         yield
     finally:
+        notifications_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await notifications_task
         pricing_task.cancel()
         with suppress(asyncio.CancelledError):
             await pricing_task

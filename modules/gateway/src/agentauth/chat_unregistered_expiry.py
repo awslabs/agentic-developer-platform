@@ -65,6 +65,9 @@ def prepare_unregistered_expiry(authority, previous, selected, envelope, thread,
         {"Put": {"TableName": authority.store.table, "Item": item, "ConditionExpression": "attribute_not_exists(pk)"}}
         for item in (execution, pointer, delivery_lookup_item(metadata, envelope, delivery.user_id), outbox)
     ]
+    from src.agentauth.chat_event_journal import terminal_event_writes
+
+    transactions.extend(terminal_event_writes(authority, outbox, now=now))
     transactions.append(
         {
             "ConditionCheck": {

@@ -63,9 +63,21 @@ class ChatTeardown:
             if removed
             else self.authority.workloads.has_exited(name=body.pod_name, uid=body.pod_uid, image_digest=launch.image_digest)
         )
+        fenced_absence = False
+        if (
+            not observed
+            and not removed
+            and launch.session_run_id
+            and metadata.get("chat_session_lost")
+            == {"M": _encoded({"run_id": launch.run_id, "sandbox_uid": launch.sandbox_uid, "lease_generation": launch.lease_generation})}
+        ):
+            fenced_absence = self.authority.workloads.is_absent(name=body.pod_name)
+            observed = fenced_absence
         if not observed:
             return False
         receipt = {**(previous or {**key, "binding": {"M": binding}}), field: {"N": str(now)}}
+        if fenced_absence:
+            receipt.update(exit_evidence={"S": "lease_fenced_absence"}, removed_at={"N": str(now)})
         self._persist(receipt, previous, pointer, metadata, launch)
         return True
 

@@ -8,8 +8,8 @@ import { withSandboxPod, type SandboxPodApi, type SandboxPodIdentity } from './s
 import { validateSandboxAssignment, type SandboxPodInput } from './sandbox-pod';
 
 type Credentials = { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-export type Admission = { run_id: string; session_id: string; lease_generation: number };
-export type Assignment = SandboxPodInput & { sessionId: string; envelopeDigest: string };
+export type Admission = { run_id: string; session_id: string; lease_generation: number; session_mode?: 'ephemeral' | 'persistent' };
+export type Assignment = SandboxPodInput & { sessionId: string; envelopeDigest: string; sessionRunId?: string };
 export type SupervisorIdentity = { roleArn: string; tokenFile: string; region: string; workerRoleArn?: string };
 export type RegisteredAssignment = Assignment & { taskId: string; sessionGeneration: number };
 export type SupervisorTiming = { now?: () => number; sleep?: (ms: number) => Promise<void> };
@@ -36,6 +36,7 @@ const FINALIZE_PATH = '/internal/v1/agent/chat/data/finalize';
 export const COMPLETE_PATH = '/internal/v1/agent/chat/data/complete';
 export const RESUME_PATH = '/internal/v1/agent/chat/data/resume';
 export const RESERVE_PATH = '/internal/v1/agent/chat/data/reserve';
+export const SESSION_COMMIT_PATH = '/internal/v1/agent/chat/data/session/commit';
 const ROLE = /^arn:aws(?:-us-gov|-cn)?:iam::[0-9]{12}:role\/[A-Za-z0-9/+=,.@_-]+$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const RUN = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -51,14 +52,21 @@ export function registeredSandboxAssignment(rawEnvelope: string, image: string, 
     throw new Error('Chat supervisor registered envelope unavailable');
   }
   const fields = envelope as Record<string, unknown>;
+  if (fields.notification_version !== undefined && (fields.notification_version !== 1 ||
+      fields.session_mode !== 'persistent' || typeof fields.envelope_digest !== 'string' || !DIGEST.test(fields.envelope_digest) ||
+      Object.keys(fields).sort().join(',') !== 'envelope_digest,message_id,notification_version,session_generation,session_id,session_mode,task_id')) {
+    throw new Error('Chat supervisor notification unavailable');
+  }
   if (typeof fields.message_id !== 'string' || !RUN.test(fields.message_id) ||
       typeof fields.session_id !== 'string' || !RUN.test(fields.session_id) ||
       typeof fields.task_id !== 'string' || !RUN.test(fields.task_id) ||
+      (fields.session_mode !== undefined && fields.session_mode !== 'ephemeral' && fields.session_mode !== 'persistent') ||
       typeof fields.session_generation !== 'number' || !Number.isSafeInteger(fields.session_generation) || fields.session_generation < 1) {
     throw new Error('Chat supervisor registered envelope unavailable');
   }
   const assignment = { runId: fields.message_id, sessionId: fields.session_id, taskId: fields.task_id, sessionGeneration: fields.session_generation,
-    envelopeDigest: createHash('sha256').update(rawEnvelope).digest('hex'), image, gatewayUrl };
+    envelopeDigest: fields.notification_version === 1 ? fields.envelope_digest as string : createHash('sha256').update(rawEnvelope).digest('hex'), image, gatewayUrl,
+    ...(fields.session_mode !== undefined ? { sessionMode: fields.session_mode as 'ephemeral' | 'persistent' } : {}) };
   validateSandboxAssignment(assignment);
   return assignment;
 }
@@ -71,7 +79,7 @@ export async function supervisorRequest(
   assignment: Assignment,
   pod: SandboxPodIdentity | null,
   identity: SupervisorIdentity,
-  path: typeof ADMIT_PATH | typeof EXIT_PATH | typeof TEARDOWN_PATH | typeof FINALIZE_PATH | typeof COMPLETE_PATH | typeof RESUME_PATH | typeof RESERVE_PATH,
+  path: typeof ADMIT_PATH | typeof EXIT_PATH | typeof TEARDOWN_PATH | typeof FINALIZE_PATH | typeof COMPLETE_PATH | typeof RESUME_PATH | typeof RESERVE_PATH | typeof SESSION_COMMIT_PATH,
   send: typeof fetch,
   load: typeof fromTokenFile,
 ): Promise<unknown> {
@@ -80,7 +88,7 @@ export async function supervisorRequest(
       !RUN.test(assignment.runId) || !RUN.test(assignment.sessionId) || !DIGEST.test(assignment.envelopeDigest) ||
       (pod === null ? path !== RESUME_PATH && path !== RESERVE_PATH :
         !/^chat-turn-[0-9a-f]{12}-[a-z0-9]{1,20}$/.test(pod.name) ||
-        !pod.name.startsWith(`chat-turn-${createHash('sha256').update(assignment.runId).digest('hex').slice(0, 12)}-`) || !/^[a-z0-9-]{8,128}$/.test(pod.uid)) ||
+        !pod.name.startsWith(`chat-turn-${createHash('sha256').update(assignment.sessionRunId ?? assignment.runId).digest('hex').slice(0, 12)}-`) || !/^[a-z0-9-]{8,128}$/.test(pod.uid)) ||
       !ROLE.test(identity.roleArn) || identity.roleArn === identity.workerRoleArn ||
       !identity.tokenFile.startsWith('/var/run/secrets/') || !/^[/][A-Za-z0-9_./-]+$/.test(identity.tokenFile) || identity.tokenFile.split('/').includes('..') || !/^[a-z0-9-]+$/.test(identity.region)) {
     throw new Error('Chat supervisor assignment or dedicated identity unavailable');
@@ -218,6 +226,12 @@ export async function finalizeSandboxTurn(
     throw new Error('Chat sandbox finalization requires matching admission');
   }
   const receipt = await supervisorRequest(assignment, pod, identity, FINALIZE_PATH, send, load) as Partial<SandboxTerminalReceipt>;
+  return validateSandboxTerminal(assignment, pod, admission, receipt);
+}
+
+export function validateSandboxTerminal(
+  assignment: Assignment, pod: SandboxPodIdentity, admission: Admission, receipt: Partial<SandboxTerminalReceipt> | null,
+): SandboxTerminalReceipt {
   if (!receipt || receipt.run_id !== assignment.runId || receipt.session_id !== assignment.sessionId ||
       receipt.lease_generation !== admission.lease_generation || receipt.sandbox_uid !== pod.uid ||
       !Number.isSafeInteger(receipt.attempt) || receipt.attempt! < 1 ||

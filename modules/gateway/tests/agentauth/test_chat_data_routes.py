@@ -14,6 +14,7 @@ from sqlalchemy import update
 
 from src.agentauth import chat_data_routes, chat_model
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.agentauth.workload import VerifiedPod
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantMembership
@@ -118,6 +119,19 @@ async def test_trusted_admission_exchange_refresh_and_retry(client, runtime, mon
     assert refreshed.json()["expires_at"] == runtime[-1] + 400
     assert refreshed.json()["capability"] != first.json()["capability"]
     assert runtime[2].get_item(Key={"PK": "session#session-a", "SK": "header"})["Item"]["chatLease"]["expires_at"] == runtime[-1] + 400
+
+
+async def test_switch_to_persistent_does_not_invalidate_finishing_ephemeral_admission(client, runtime):
+    first = await admit(client, runtime)
+    assert first.status_code == 200, first.text
+    mailbox = ChatSessionMailbox(runtime[2])
+    owner = ("tenant", "team", "human")
+    assert mailbox.select_mode(session_id="session-a", owner=owner, mode="persistent", now=runtime[-1]) == "ephemeral"
+    assert mailbox.state(session_id="session-a", owner=owner, now=runtime[-1])["pending_mode"] == "persistent"
+    retry = await admit(client, runtime)
+    assert retry.status_code == 200, retry.text
+    assert retry.json() == first.json()
+    assert (await exchange(client)).status_code == 200
 
 
 async def test_data_route_refuses_missing_or_substituted_workload_with_valid_capability(client, runtime):

@@ -30,6 +30,7 @@ const completion = { run_id: 'run-a', session_id: 'session-a', task_id: 'task-a'
 const load = jest.fn(() => async () => ({ accessKeyId: 'TESTKEY', secretAccessKey: 'TESTSECRET', sessionToken: 'TESTSESSION' })) as unknown as jest.Mock & typeof fromTokenFile;
 const send = jest.fn(async (url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(
   String(url).endsWith('/resume') ? unstarted : String(url).endsWith('/complete') ? completion :
+    String(url).endsWith('/session/commit') ? { terminal, completion } :
     String(url).endsWith('/reserve') ? reservation :
     String(url).endsWith('/exit') ? { run_id: 'run-a', pod_uid: pod.uid, terminated: true } :
     String(url).endsWith('/teardown') ? { run_id: 'run-a', pod_uid: pod.uid, removed: true } :
@@ -85,6 +86,40 @@ test('returns idle without creating a pod if there is no delivery', async () => 
   expect(api.create).not.toHaveBeenCalled();
 });
 
+test('recovers a durable wake-up through the original protected digest without relaunching completed work', async () => {
+  const digest = createHash('sha256').update(body).digest('hex');
+  const notice = JSON.stringify({ ...JSON.parse(body), notification_version: 1, session_mode: 'persistent', envelope_digest: digest });
+  const api = podApi();
+  const queue = { receive: async () => [{ Body: notice, ReceiptHandle: 'recovered' }], acknowledge: jest.fn() };
+  send.mockResolvedValueOnce(new Response(JSON.stringify({ ...unstarted, state: 'admitted', session_mode: 'persistent',
+    session_run_id: 'run-a', pod_name: pod.name, sandbox_uid: pod.uid, attempt: 1, lease_generation: 1,
+    image_digest: settings.image.split('@')[1] })));
+  await expect(runOneSupervisorDispatch(settings, queue, api, send, load)).resolves.toBe('completed');
+  expect(JSON.parse(send.mock.calls[0][1]!.body as string)).toEqual({ run_id: 'run-a', envelope_digest: digest });
+  expect(api.create).not.toHaveBeenCalled();
+  expect(queue.acknowledge).toHaveBeenCalledWith('recovered');
+});
+
+test.each([
+  { notification_version: 2 }, { envelope_digest: 'invalid' }, { session_mode: 'ephemeral' }, { message: 'untrusted input' },
+])('rejects malformed durable notification before contacting the gateway: %j', async change => {
+  const notice = JSON.stringify({ ...JSON.parse(body), notification_version: 1, session_mode: 'persistent', envelope_digest: 'a'.repeat(64), ...change });
+  const api = podApi();
+  await expect(runOneSupervisorDispatch(settings, { receive: async () => [{ Body: notice, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() }, api, send, load)).rejects.toThrow();
+  expect(send).not.toHaveBeenCalled();
+  expect(api.create).not.toHaveBeenCalled();
+});
+
+test('a recovery hint with a mismatched protected digest cannot create or acknowledge work', async () => {
+  const notice = JSON.stringify({ ...JSON.parse(body), notification_version: 1, session_mode: 'persistent', envelope_digest: 'b'.repeat(64) });
+  send.mockResolvedValueOnce(new Response('{}', { status: 404 }));
+  const api = podApi();
+  const queue = { receive: async () => [{ Body: notice, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
+  await expect(runOneSupervisorDispatch(settings, queue, api, send, load)).rejects.toThrow();
+  expect(api.create).not.toHaveBeenCalled();
+  expect(queue.acknowledge).not.toHaveBeenCalled();
+});
+
 test.each([
   { messages: [{ Body: '{}', ReceiptHandle: 'receipt' }] },
   { messages: [{ Body: body }] },
@@ -118,6 +153,53 @@ test('acknowledges only after matching completion follows exit, UID removal and 
     expect(request!.body).toBe(options!.body);
     expect(request!.headers).toEqual(expect.objectContaining({ 'X-Adp-Producer-Proof': expect.any(String) }));
   }
+});
+
+test('creates a session-bound persistent pod only from the gateway reservation', async () => {
+  const api: SandboxPodApi = {
+    resolveGateway: jest.fn(async () => gatewayBinding),
+    create: jest.fn(async created => ({ metadata: { ...created.metadata, ...pod }, spec: created.spec })),
+    remove: jest.fn(async () => {}),
+  };
+  send.mockResolvedValueOnce(new Response(JSON.stringify(unstarted)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...reservation, session_mode: 'persistent' })));
+  const queue = { receive: async () => [{ Body: body, ReceiptHandle: 'receipt' }], acknowledge: jest.fn() };
+  await runOneSupervisorDispatch(settings, queue, api, send, load);
+  const created = (api.create as jest.Mock).mock.calls[0][0];
+  expect(created.metadata.labels['adp.io/session-hash']).toMatch(/^[a-f0-9]{64}$/);
+  expect(created.spec).not.toHaveProperty('activeDeadlineSeconds');
+  expect(api.remove).not.toHaveBeenCalled();
+  expect(send.mock.calls.some(([url]) => String(url).endsWith('/session/commit'))).toBe(true);
+  expect(queue.acknowledge).toHaveBeenCalledWith('receipt');
+});
+
+test('continues an admitted follow-up on the original pod without creating or removing it', async () => {
+  const api = podApi();
+  const followupBody = '{"message_id":"run-b","session_id":"session-a","task_id":"task-b","session_generation":2}';
+  const nextTerminal = { ...terminal, run_id: 'run-b', lease_generation: 2 };
+  const nextCompletion = { ...completion, run_id: 'run-b', task_id: 'task-b', session_generation: 2, lease_generation: 2,
+    delivery_id: `chat-terminal-${createHash('sha256').update(canonicalJson(nextTerminal)).digest('hex')}` };
+  const transport = jest.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ terminal: nextTerminal, completion: nextCompletion })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...unstarted, run_id: 'run-b', task_id: 'task-b', session_generation: 2,
+      state: 'admitted', pod_name: pod.name, sandbox_uid: pod.uid, image_digest: settings.image.split('@')[1],
+      attempt: 1, lease_generation: 2, session_mode: 'persistent', session_run_id: 'run-a' }))) as jest.MockedFunction<typeof fetch>;
+  const queue = { receive: async () => [{ Body: followupBody, ReceiptHandle: 'followup-receipt' }], acknowledge: jest.fn() };
+  await runOneSupervisorDispatch(settings, queue, api, transport, load);
+  expect(api.create).not.toHaveBeenCalled();
+  expect(api.remove).not.toHaveBeenCalled();
+  expect(queue.acknowledge).toHaveBeenCalledWith('followup-receipt');
+  expect(JSON.parse(transport.mock.calls[1][1]!.body as string)).toMatchObject({ run_id: 'run-b', pod_name: pod.name, pod_uid: pod.uid });
+});
+
+test('refuses to create a pod when the reservation disagrees with signed session mode', async () => {
+  const api = podApi();
+  const queue = { receive: async () => [{ Body: JSON.stringify({ ...JSON.parse(body), session_mode: 'persistent' }), ReceiptHandle: 'receipt' }],
+    acknowledge: jest.fn() };
+  send.mockResolvedValueOnce(new Response(JSON.stringify(unstarted)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...reservation, session_mode: 'ephemeral' })));
+  await expect(runOneSupervisorDispatch(settings, queue, api, send, load)).rejects.toThrow('creation reservation invalid');
+  expect(api.create).not.toHaveBeenCalled();
+  expect(queue.acknowledge).not.toHaveBeenCalled();
 });
 
 test('rejects a swapped admission session without deleting a possibly admitted execution', async () => {

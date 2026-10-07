@@ -27,6 +27,15 @@ test('binds supervisor assignment to the exact gateway-registered queue bytes', 
   expect(parsed.envelopeDigest).not.toBe(createHash('sha256').update(JSON.stringify(JSON.parse(raw))).digest('hex'));
 });
 
+test('binds the selected session mode to gateway-registered envelope bytes', () => {
+  const raw = '{"message_id":"run-a","session_id":"session-a","task_id":"task-a","session_generation":1,"session_mode":"persistent"}';
+  const parsed = registeredSandboxAssignment(raw, assignment.image, assignment.gatewayUrl);
+  expect(parsed.sessionMode).toBe('persistent');
+  expect(parsed.envelopeDigest).toBe(createHash('sha256').update(raw).digest('hex'));
+  expect(() => registeredSandboxAssignment(raw.replace('"persistent"', '"unknown"'), assignment.image, assignment.gatewayUrl))
+    .toThrow('registered envelope');
+});
+
 test.each([
   '{}', '[]', 'not-json', JSON.stringify({ message_id: '../other', session_id: 'session-a', task_id: 'task-a' }),
   JSON.stringify({ message_id: 'run-a', session_id: 1, task_id: 'task-a' }),

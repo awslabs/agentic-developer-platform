@@ -1518,14 +1518,21 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
                                 now=now, register=_register_chat_dispatch)
         else:
             send_kwargs["MessageBody"] = _register_chat_dispatch(sqs_body)
-            sqs.send_message(**send_kwargs)
+            try:
+                sqs.send_message(**send_kwargs)
+            except Exception:
+                if json.loads(send_kwargs["MessageBody"]).get("session_mode") != "persistent":
+                    raise
+                logger.warning("Persistent chat notification deferred to durable recovery")
     except Exception:
-        if not pending_task:
+        uncertain = not pending_task and os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true"
+        if not pending_task and not uncertain:
             set_thread_processing(session_id, thread_id, None)
         logger.exception("Chat dispatch failed before acknowledgement")
+        error_text = ("Dispatch confirmation is unavailable. Your turn may already be accepted; do not resend while recovery checks it."
+                      if uncertain else "Could not start this persona. Please retry.")
         failure = {"type": "response", "status": "failed", "session_id": session_id,
-                   "error": "Could not start this persona. Please retry.",
-                   "content": "Could not start this persona. Please retry."}
+                   "error": error_text, "content": error_text}
         if connection_id:
             # WebSocket integrations discard HTTP response bodies. Show a
             # refused selection immediately instead of leaving the UI spinning.

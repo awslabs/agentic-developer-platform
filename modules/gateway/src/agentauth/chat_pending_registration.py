@@ -66,6 +66,11 @@ def retained_registration_matches(envelope, human_id, created, now):
             "correlation": {"correlation_id": request["message_id"], "root_human_id": human_id, "is_human_rooted": True},
         }
         normalized.pop("parent_principal", None)
+        normalized.pop("session_mode", None)
+        if "session_mode" in envelope:
+            if envelope["session_mode"] not in ("ephemeral", "persistent"):
+                return False
+            normalized["session_mode"] = envelope["session_mode"]
         return (
             canonical_json(normalized) == canonical_json(envelope)
             and row.get("owner_principal") == envelope["owner_principal"]

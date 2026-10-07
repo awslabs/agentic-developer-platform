@@ -22,6 +22,17 @@ def test_pending_handoff_uses_only_exact_chat_fifo_and_trusted_gateway_role():
         assert "ADP_CHAT_INPUT_QUEUE_URL" not in path.read_text()
 
 
+def test_notification_recovery_queries_only_its_marker_partition_without_scan_or_new_resources():
+    policy = (ROOT / "modules/agent-factory/infra/gateway-chat-pending-access.tf").read_text()
+    assert '"ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["chat-notifications"] }' in policy
+    assert 'Action   = ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]' in policy
+    assert "Resource = [aws_dynamodb_table.chat_context.arn]" in policy
+    assert "Scan" not in policy and "CreateTable" not in policy
+    source = (ROOT / "modules/gateway/src/app.py").read_text()
+    assert 'asyncio.create_task(maintain_chat_notifications(), name="chat_notification_recovery")' in source
+    assert "notifications_task.cancel()" in source and "await notifications_task" in source
+
+
 def test_response_fifo_honors_partial_batch_failures():
     source = (ROOT / "modules/agent-factory/infra/modules/lambda-gateway/main.tf").read_text()
     mapping = source.split('resource "aws_lambda_event_source_mapping" "response_sqs" {', 1)[1].split("\nresource ", 1)[0]

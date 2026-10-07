@@ -61,10 +61,23 @@ def prepare_pending_handoff(authority, evidence, delivery, thread, *, now):
             "correlation": {"correlation_id": run_id, "root_human_id": delivery.user_id, "is_human_rooted": True},
         }
         envelope.pop("parent_principal", None)
+        envelope.pop("session_mode", None)
+        pointer = authority.store._read(f"INVOCATION#{run_id}", "DISPATCH") or {}
+        if pointer and pointer.get("envelope_digest") != {"S": envelope_digest(envelope)}:
+            for mode in ("ephemeral", "persistent"):
+                candidate = {**envelope, "session_mode": mode}
+                if pointer.get("envelope_digest") == {"S": envelope_digest(candidate)}:
+                    envelope = candidate
+                    break
+        if envelope.get("session_mode") == "persistent":
+            accepted = authority.context_table.get_item(
+                Key={"PK": f"session#{delivery.session_id}", "SK": f"mailbox-id#{run_id}"}, ConsistentRead=True
+            ).get("Item")
+            if accepted is None:
+                retry_pending_registration(delivery, selected, request)
         encoded = canonical_json(envelope).decode()
         if record["status"] == "registered" and record.get("envelope_json") != encoded:
             raise ValueError
-        pointer = authority.store._read(f"INVOCATION#{run_id}", "DISPATCH") or {}
         expired = None
         if record["status"] == "registering" and not pointer:
             expired = prepare_unregistered_expiry(authority, delivery, selected, envelope, thread, now=now)

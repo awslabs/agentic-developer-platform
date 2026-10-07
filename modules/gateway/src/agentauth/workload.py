@@ -46,6 +46,7 @@ class VerifiedPod:
     deadline_at: str | None = field(default=None, compare=False)
     image_digest: str | None = field(default=None, compare=False)
     run_hash: str | None = field(default=None, compare=False)
+    session_hash: str | None = None
 
 
 def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_digest: str) -> bool:
@@ -96,7 +97,13 @@ def _approved_chat_sandbox(metadata: dict, spec: dict, worker: dict, image_diges
             and spec.get("hostPID", False) is False
             and spec.get("hostIPC", False) is False
             and spec.get("restartPolicy") == "Never"
-            and spec.get("activeDeadlineSeconds") == 900
+            and (
+                (metadata.get("labels", {}).get("adp.io/session-hash") is None and spec.get("activeDeadlineSeconds") == 900)
+                or (
+                    re.fullmatch(r"[a-f0-9]{64}", metadata.get("labels", {}).get("adp.io/session-hash", "")) is not None
+                    and "activeDeadlineSeconds" not in spec
+                )
+            )
             and not spec.get("initContainers")
             and not spec.get("ephemeralContainers")
             and not spec.get("imagePullSecrets")
@@ -342,6 +349,7 @@ class KubernetesWorkloadVerifier:
                 self._deadline(pod, headers),
                 containers[0]["imageID"].rsplit("@", 1)[-1],
                 metadata.get("labels", {}).get("adp.io/run-hash") if self._chat_sandbox else None,
+                metadata.get("labels", {}).get("adp.io/session-hash") if self._chat_sandbox else None,
             )
         except WorkloadRefusedError:
             raise
@@ -438,6 +446,37 @@ class KubernetesWorkloadVerifier:
             return None
         details = self._exit_details(name=name, uid=None)
         return details[2] if details is not None and details[:2] == (image_digest, run_hash) else None
+
+    def find_reserved_sandbox(self, *, name: str, run_hash: str, image_digest: str, session_hash: str) -> VerifiedPod | None:
+        if not _NAME.fullmatch(name) or not self.approved_sandbox_image(image_digest):
+            raise WorkloadRefusedError("chat reservation refused")
+        try:
+            response = self._client.get(
+                f"/api/v1/namespaces/{self._namespace}/pods/{name}",
+                headers={"Authorization": f"Bearer {self._gateway_token_path.read_text().strip()}"},
+            )
+            if response.status_code == 404:
+                status = response.json()
+                if (
+                    status.get("kind") == "Status"
+                    and status.get("reason") == "NotFound"
+                    and status.get("details", {}).get("name") == name
+                    and status.get("details", {}).get("kind") == "pods"
+                ):
+                    return None
+                raise WorkloadUnavailableError("chat reservation observation unavailable")
+            response.raise_for_status()
+            document = response.json()
+            if document.get("status", {}).get("phase") == "Pending":
+                raise WorkloadUnavailableError("chat reserved pod not running")
+            pod = self.verify_bound(name=name, uid=document["metadata"]["uid"])
+            if (pod.run_hash, pod.session_hash, pod.image_digest) != (run_hash, session_hash, image_digest):
+                raise WorkloadRefusedError("chat reserved pod binding changed")
+            return pod
+        except WorkloadRefusedError:
+            raise
+        except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            raise WorkloadUnavailableError("chat reservation observation unavailable") from None
 
     def _exit_details(self, *, name: str, uid: str | None) -> tuple[str, str | None, str] | None:
         if not _NAME.fullmatch(name) or (uid is not None and not uid):

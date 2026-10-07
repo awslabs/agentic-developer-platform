@@ -19,6 +19,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import AgentChat from '@/pages/AgentChat';
+import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -31,6 +32,8 @@ vi.mock('@/services/chatSession', async () => {
   return { ...actual, requestServerSessionId: vi.fn() };
 });
 
+vi.mock('@/services/chatMode', () => ({ readChatMode: vi.fn(), selectChatMode: vi.fn(), endChatSession: vi.fn() }));
+
 /**
  * The chat socket is stubbed out. These tests are about the CREATION handoff,
  * and `useAgUiEvents` has its own suite for the streaming/refusal behaviour.
@@ -38,6 +41,7 @@ vi.mock('@/services/chatSession', async () => {
 const mockSendMessage = vi.fn();
 let mockConnectionStatus = 'connected';
 let mockSessionExpired = false;
+let mockReplayWarning: string | null = null;
 let mockAwaitingReply = false;
 let mockCancelState = 'idle';
 const mockCancelTurn = vi.fn();
@@ -51,6 +55,7 @@ vi.mock('@/hooks/useAgUiEvents', () => ({
     cancelTurn: mockCancelTurn,
     reconnectAttempt: 0,
     sessionExpired: mockSessionExpired,
+    replayWarning: mockReplayWarning,
     sessionMeta: null,
     sendMessage: mockSendMessage,
     activeToolCalls: [],
@@ -59,8 +64,12 @@ vi.mock('@/hooks/useAgUiEvents', () => ({
 }));
 
 import { requestServerSessionId, ChatSessionError } from '@/services/chatSession';
+import { readChatMode, selectChatMode, endChatSession } from '@/services/chatMode';
 
 const mockRequestId = vi.mocked(requestServerSessionId);
+const mockReadChatMode = vi.mocked(readChatMode);
+const mockSelectChatMode = vi.mocked(selectChatMode);
+const mockEndChatSession = vi.mocked(endChatSession);
 
 const STORAGE_KEY = 'adp_chat_conversations';
 const ISSUED_ID = 'sess-4f2c8a1e9b7d3056fa1c2e4d6b8a0f93';
@@ -93,8 +102,12 @@ describe('AgentChat — server-issued session ids', () => {
     window.localStorage.clear();
     mockSendMessage.mockClear();
     mockRequestId.mockReset();
+    mockReadChatMode.mockReset().mockResolvedValue({ mode: 'ephemeral', health: 'idle', sequence: 0 });
+    mockSelectChatMode.mockReset().mockResolvedValue({ mode: 'persistent', health: 'idle', sequence: 0 });
+    mockEndChatSession.mockReset().mockResolvedValue({ mode: 'persistent', health: 'ending', sequence: 1 });
     mockConnectionStatus = 'connected';
     mockSessionExpired = false;
+    mockReplayWarning = null;
     mockAwaitingReply = false;
     mockCancelState = 'idle';
     mockCancelTurn.mockReset();
@@ -102,6 +115,126 @@ describe('AgentChat — server-issued session ids', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('selects server-owned mode and restores it on reload without a local mode flag', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    const page = renderPage();
+    const selector = await screen.findByRole('combobox', { name: 'Session mode' });
+    await waitFor(() => expect(selector).toBeEnabled());
+    await userEvent.setup().selectOptions(selector, 'persistent');
+    await waitFor(() => expect(mockSelectChatMode).toHaveBeenCalledWith(ISSUED_ID, 'persistent'));
+    await waitFor(() => expect(selector).toHaveValue('persistent'));
+    expect(storedConversations()[0]).not.toHaveProperty('sessionMode');
+    page.unmount();
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'active', sequence: 1 });
+    renderPage();
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Session mode' })).toHaveValue('persistent'));
+    expect(screen.getByRole('status', { name: 'Persistent session active' })).toBeInTheDocument();
+  });
+
+  it('ends a persistent session through the authenticated action and shows cleanup progress', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'active', sequence: 1 });
+    renderPage();
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'End session' }));
+    await waitFor(() => expect(mockEndChatSession).toHaveBeenCalledWith(ISSUED_ID));
+    expect(await screen.findByRole('status', { name: 'Persistent session ending' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'End session' })).not.toBeInTheDocument();
+  });
+
+  it('treats /exit as an end action without sending it as a model turn', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'active', sequence: 1 });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeEnabled());
+    await userEvent.setup().type(screen.getByTestId('chat-input'), '/exit{Enter}');
+    await waitFor(() => expect(mockEndChatSession).toHaveBeenCalledWith(ISSUED_ID));
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending mode switch visible until backend confirms cleanup', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'active', sequence: 1 });
+    mockSelectChatMode.mockResolvedValue({ mode: 'persistent', health: 'active', pending_mode: 'ephemeral', sequence: 1 });
+    renderPage();
+    const selector = await screen.findByRole('combobox', { name: 'Session mode' });
+    await waitFor(() => expect(selector).toBeEnabled());
+    await userEvent.setup().selectOptions(selector, 'ephemeral');
+    expect(await screen.findByText(/waiting for sandbox cleanup/)).toBeInTheDocument();
+    expect(selector).toHaveValue('persistent');
+    expect(selector).toBeDisabled();
+    expect(screen.getByTestId('chat-input')).toBeDisabled();
+  });
+
+  it('surfaces a cleanup delay and disables new turns until removal is confirmed', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'cleanup_delayed', sequence: 1, cleanup_elapsed_seconds: 123 });
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent('removal not confirmed (123s)');
+    expect(screen.getByTestId('chat-input')).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Session mode' })).toBeDisabled();
+  });
+
+  it('shows an explicit replay retention gap above the saved conversation', () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [], replayCursor: `${'a'.repeat(32)}:3` },
+    ]));
+    mockReplayWarning = 'Some output is unavailable. This transcript may be incomplete.';
+    renderPage();
+    expect(screen.getByRole('alert')).toHaveTextContent('This transcript may be incomplete.');
+  });
+
+  it('persists a replay cursor with its applied messages across browser reload', () => {
+    const originalScroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+        { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+      ]));
+      const page = renderPage();
+      const appliedMessages = [{ id: 'reply', role: 'assistant' as const, content: 'Recovered', status: 'complete' as const, timestamp: 2 }];
+      const cursor = `${'a'.repeat(32)}:9`;
+      act(() => { vi.mocked(useAgUiEvents).mock.lastCall?.[0].onMessagesChange(ISSUED_ID, appliedMessages, cursor); });
+      expect(storedConversations()[0]).toHaveProperty('replayCursor', cursor);
+      expect(window.localStorage.getItem(STORAGE_KEY)).toContain('Recovered');
+      page.unmount();
+      renderPage();
+      expect(vi.mocked(useAgUiEvents).mock.lastCall?.[0].conversation?.replayCursor).toBe(cursor);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScroll;
+    }
+  });
+
+  it('reports expired session health from the server rather than showing a live pod', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockResolvedValue({ mode: 'persistent', health: 'recovering', sequence: 2 });
+    renderPage();
+    expect(await screen.findByRole('status', { name: 'Persistent session recovering' })).toHaveTextContent('recovering');
+    expect(screen.queryByRole('status', { name: 'Persistent session active' })).not.toBeInTheDocument();
+  });
+
+  it('disables mode selection when backend state is unavailable', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([
+      { id: ISSUED_ID, title: 'Existing', createdAt: 1, updatedAt: 1, messages: [] },
+    ]));
+    mockReadChatMode.mockRejectedValue(new Error('gateway unavailable'));
+    renderPage();
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Session mode unavailable'));
+    expect(screen.getByRole('combobox', { name: 'Session mode' })).toBeDisabled();
+    expect(mockSelectChatMode).not.toHaveBeenCalled();
   });
 
   it('offers Stop for the active reply without enabling another send', async () => {

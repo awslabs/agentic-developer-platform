@@ -51,7 +51,7 @@ def queue(monkeypatch):
 
 @pytest.fixture
 def buffer(runtime, transport, delivered, ingest):
-    def retain(run_id="run-next", *, register_failure=None, **changes):
+    def retain(run_id="run-next", *, register_failure=None, server_mode=None, **changes):
         request = {
             **completion.fixtures.ROUTING,
             "message_id": run_id,
@@ -77,6 +77,8 @@ def buffer(runtime, transport, delivered, ingest):
                 "source_ref": {"repo": "chat/session-a"},
                 "correlation": {"correlation_id": run_id, "root_human_id": "human", "is_human_rooted": True},
             }
+            if server_mode is not None:
+                final["session_mode"] = server_mode
             provision_root(runtime[1].store, final, source="chat", human_id="human", now=datetime.fromtimestamp(runtime[-1], UTC))
             if register_failure == "after":
                 raise TimeoutError("root response lost")
@@ -90,6 +92,16 @@ def buffer(runtime, transport, delivered, ingest):
         return request
 
     return retain
+
+
+@pytest.mark.parametrize("lost_registration_response", [False, True])
+async def test_handoff_retains_protected_ephemeral_mode(client, runtime, transport, buffer, queue, lost_registration_response):
+    buffer(server_mode="ephemeral", register_failure="after" if lost_registration_response else None)
+    result = await completion.complete(client, runtime)
+    assert result.status_code == 200, result.text
+    published = json.loads(queue.send_message.call_args.kwargs["MessageBody"])
+    assert published["session_mode"] == "ephemeral"
+    assert runtime[1].store._read("INVOCATION#run-next", "DISPATCH")["envelope_digest"] == {"S": envelope_digest(published)}
 
 
 def thread(transport):

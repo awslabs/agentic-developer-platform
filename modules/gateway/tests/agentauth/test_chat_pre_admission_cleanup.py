@@ -119,7 +119,9 @@ async def test_partial_binding_cleanup_uses_positive_exit_and_original_identity_
     assert not state["observations"] and receipt(runtime) == stored
     assert runtime[1].store._read("CHAT-LAUNCH#run-write", "LAUNCH") is None
     assert runtime[1].store._read("CHAT-LAUNCH#run-write", "TEARDOWN") is None
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == before
+    payload = fixtures.replay(runtime)["events"][0]["payload"]
+    assert payload["status"] == "interrupted" and payload["automatic_replay_permitted"] is False
     assert (await recovery.completion.complete(client, runtime)).status_code == 404
     assert recovery.completion.publication.session(transport)["threads"]["thread-a"]["processing_task_id"] == "task-a"
     assert transport.client.send_message.call_count == 1

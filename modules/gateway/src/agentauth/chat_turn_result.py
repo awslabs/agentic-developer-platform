@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from src.agentauth.chat_admission import _encoded
 from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError, Identifier
 from src.agentauth.chat_history_write import ChatHistoryConflictError, ChatHistoryWriter
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 
 
 class TurnResult(BaseModel):
@@ -53,6 +54,37 @@ class ChatTurnResultWriter(ChatHistoryWriter):
                 raise ChatHistoryConflictError("chat result already recorded")
             return candidate
         checks = [self._unchanged(header), self._unchanged(accepted[0])]
+        mode = header.get("sessionMode", "ephemeral")
+        if mode not in ("ephemeral", "persistent"):
+            raise ChatAuthorizationUnavailableError("chat session mode unavailable")
+        if mode == "persistent":
+            user_message = self.history._get(session_id, f"msg#{receipt['ref']}")
+            if user_message is None:
+                raise ChatAuthorizationRefusedError("chat initial message unavailable")
+            self.history._check_row(user_message, header)
+            if (
+                user_message.get("role") != "user"
+                or user_message.get("runId") != run_id
+                or user_message.get("leaseGeneration") != launch.lease_generation
+            ):
+                raise ChatAuthorizationRefusedError("chat initial message changed")
+            sequence = ChatSessionMailbox(self.table).initial_cursor(
+                session_id=session_id,
+                owner=(launch.tenant_id, launch.team_id, launch.user_id),
+                run_id=run_id,
+                sandbox_uid=launch.sandbox_uid,
+                generation=launch.lease_generation,
+                message=user_message["content"],
+                now=now,
+            )
+            mailbox_entry = self.history._get(session_id, f"mailbox#{sequence:08d}")
+            if mailbox_entry is None or mailbox_entry.get("status") != "queued":
+                raise ChatAuthorizationRefusedError("chat initial mailbox turn unavailable")
+            mailbox_update = self._unchanged(mailbox_entry)["ConditionCheck"]
+            mailbox_update["UpdateExpression"] = "SET #status = :outcome, resultRecordedAt = :now"
+            mailbox_update["ExpressionAttributeNames"]["#status"] = "status"
+            mailbox_update["ExpressionAttributeValues"].update(_encoded({":outcome": "result_recorded", ":now": now}))
+            checks.append({"Update": mailbox_update})
         if result.message_id is not None:
             message = self.history._get(session_id, f"msg#{result.message_id}")
             if message is None:
@@ -102,6 +134,12 @@ class ChatTurnResultWriter(ChatHistoryWriter):
                 },
             ]
         )
+        if launch.session_run_id:
+            execution_update = checks[-1].pop("ConditionCheck")
+            execution_update["ConditionExpression"] += " AND attribute_not_exists(chat_turn_sealed)"
+            execution_update["UpdateExpression"] = "SET chat_turn_sealed = :sealed"
+            execution_update["ExpressionAttributeValues"][":sealed"] = {"BOOL": True}
+            checks[-1]["Update"] = execution_update
         try:
             store.client.transact_write_items(TransactItems=checks)
         except ClientError as error:

@@ -67,7 +67,8 @@ def authority_checks(authority, launch, now: int) -> list[dict]:
                 "Key": _encoded({"pk": f"TENANT#{launch.tenant_id}", "sk": f"EXEC#{launch.run_id}"}),
                 "ConditionExpression": (
                     "#status = :active AND workload_binding = :pod AND current_attempt = :attempt "
-                    "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id)"
+                    "AND current_credential_epoch = :epoch AND attribute_not_exists(abort_command_id) "
+                    "AND attribute_not_exists(chat_turn_sealed)"
                 ),
                 "ExpressionAttributeNames": {"#status": "status"},
                 "ExpressionAttributeValues": _encoded(

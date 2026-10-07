@@ -692,3 +692,29 @@ def test_saved_persona_model_is_selected_for_authenticated_chat_owner(mocked_aws
         assert result["statusCode"] == 200
         assert tasks[0]["model_resolved"] == "saved-model"
         assert tasks[0]["account_type"] == "human"
+
+
+@pytest.mark.parametrize("mode", ["persistent", "ephemeral"])
+def test_queue_failure_preserves_accepted_persistent_turn_for_recovery(mocked_aws_services, monkeypatch, mode):
+    handler = _import_handler(mock_bedrock=MagicMock())
+    monkeypatch.setattr(handler, "_register_chat_dispatch", lambda envelope: json.dumps({**envelope, "session_mode": mode}))
+    monkeypatch.setattr(handler.sqs, "send_message", MagicMock(side_effect=TimeoutError("queue unavailable")))
+    monkeypatch.setattr(handler, "send_notification", MagicMock())
+    monkeypatch.setattr(handler, "_send_ws_response", MagicMock())
+    clear = MagicMock(wraps=handler.set_thread_processing)
+    monkeypatch.setattr(handler, "set_thread_processing", clear)
+    result = _send(handler, persona="intent-refinement")
+    assert result["statusCode"] == (200 if mode == "persistent" else 503)
+    assert any(call.args[-1] is None for call in clear.call_args_list) == (mode == "ephemeral")
+
+
+def test_lost_root_acceptance_response_does_not_clear_the_recoverable_lock(mocked_aws_services, monkeypatch):
+    handler = _import_handler(mock_bedrock=MagicMock())
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "true")
+    monkeypatch.setattr(handler, "_register_chat_dispatch", MagicMock(side_effect=TimeoutError("lost response")))
+    monkeypatch.setattr(handler, "_send_ws_response", MagicMock())
+    clear = MagicMock(wraps=handler.set_thread_processing)
+    monkeypatch.setattr(handler, "set_thread_processing", clear)
+    assert _send(handler, persona="intent-refinement")["statusCode"] == 503
+    assert not any(call.args[-1] is None for call in clear.call_args_list)
+    assert _drain_queue(mocked_aws_services["sqs"]) == []

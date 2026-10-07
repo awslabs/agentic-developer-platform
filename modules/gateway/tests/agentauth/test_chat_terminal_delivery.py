@@ -1,11 +1,14 @@
 """Terminal delivery intent is committed with the protected outcome, not sent early."""
 
 import json
+import time
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
 
 from src.agentauth.bootstrap import envelope_digest
+from src.agentauth.chat_event_journal import ChatEventJournal
+from src.agentauth.chat_terminal_delivery import terminal_delivery_payload
 from tests.agentauth import test_chat_history_write as history
 from tests.agentauth import test_chat_turn_finalization as finalization
 from tests.agentauth import test_chat_turn_result as results
@@ -42,6 +45,17 @@ def outbox(runtime):
 def write_protected(runtime, item):
     protected = runtime[1].store
     protected.client.put_item(TableName=protected.table, Item=item)
+
+
+def replay(runtime):
+    return ChatEventJournal(runtime[2]).replay(
+        session_id="session-a",
+        owner=("tenant", "team", "human"),
+        generation=GENERATION,
+        cursor=None,
+        limit=100,
+        now=int(time.time()),
+    )
 
 
 async def save_reply(client, ready, content="Saved owner-only reply 😀"):
@@ -87,6 +101,10 @@ async def test_terminal_delivery_is_atomic_owner_bound_and_repeatable(client, ru
     assert finalization.execution(runtime)["chat_terminal_delivery_digest"] == {"S": envelope_digest(document)}
     assert (await finalization.request(client, runtime)).json() == response.json()
     assert outbox(runtime) == item
+    page = replay(runtime)
+    assert [event["sequence"] for event in page["events"]] == [1]
+    assert page["events"][0]["kind"] == "terminal"
+    assert page["events"][0]["payload"] == {**terminal_delivery_payload(document), "automatic_replay_permitted": False}
 
 
 async def test_no_delivery_before_confirmed_removal(client, runtime, capability, sts, monkeypatch):
@@ -94,6 +112,7 @@ async def test_no_delivery_before_confirmed_removal(client, runtime, capability,
     await save_reply(client, capability)
     assert (await finalization.request(client, runtime)).status_code == 404
     assert outbox(runtime) is None
+    assert replay(runtime)["reason"] == "journal_unavailable"
     assert "chat_terminal" not in finalization.execution(runtime)
 
 
@@ -117,6 +136,9 @@ async def test_unresolved_model_accounting_is_preserved_without_error_details(cl
     assert document["terminal"]["retryable"] is False
     assert "private provider" not in document["content"]
     assert "not replayed automatically" in document["content"]
+    payload = replay(runtime)["events"][0]["payload"]
+    assert payload["accounting_status"] == "unresolved" and payload["status"] == "interrupted"
+    assert payload["automatic_replay_permitted"] is False
 
 
 async def test_delivery_uses_scrubbed_saved_content(client, runtime, ready):
@@ -184,6 +206,7 @@ async def test_storage_outage_before_commit_leaves_no_partial_delivery(client, r
     assert "terminal_result" not in results.turn(runtime)
     assert "chat_terminal" not in finalization.execution(runtime)
     monkeypatch.setattr(protected.client, "transact_write_items", transact)
+    assert replay(runtime)["reason"] == "journal_unavailable"
     assert (await finalization.request(client, runtime)).status_code == 200
     assert outbox(runtime) is not None
 
@@ -203,6 +226,8 @@ async def test_lost_commit_response_recovers_exact_delivery_without_rebuilding_c
     assert (await finalization.request(client, runtime)).status_code == 503
     saved = outbox(runtime)
     assert saved is not None
+    events = replay(runtime)["events"]
+    assert len(events) == 1
     monkeypatch.setattr(protected.client, "transact_write_items", transact)
     runtime[2].update_item(
         Key={"PK": "session#session-a", "SK": "msg#" + message_id},
@@ -212,6 +237,18 @@ async def test_lost_commit_response_recovers_exact_delivery_without_rebuilding_c
     assert (await finalization.request(client, runtime)).status_code == 200
     assert outbox(runtime)["document"] == saved["document"]
     assert saved["status"] == {"S": "pending"} and outbox(runtime)["status"] == {"S": "queued"}
+    assert replay(runtime)["events"] == events
+
+
+async def test_lost_terminal_transport_keeps_one_replayable_outcome(client, runtime, ready, transport):
+    await save_reply(client, ready)
+    transport.client.send_message.side_effect = EndpointConnectionError(endpoint_url="https://queue.example.test")
+    assert (await finalization.request(client, runtime)).status_code == 503
+    events = replay(runtime)["events"]
+    assert len(events) == 1 and events[0]["payload"]["status"] == "completed"
+    transport.client.send_message.side_effect = None
+    assert (await finalization.request(client, runtime)).status_code == 200
+    assert replay(runtime)["events"] == events
 
 
 @pytest.mark.parametrize("change", ["missing", "malformed", "content", "delivery", "terminal", "digest"])

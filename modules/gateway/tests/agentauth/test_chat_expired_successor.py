@@ -96,7 +96,15 @@ async def test_expired_registered_successor_delivers_interruption_then_advances_
     assert completed.json()["completion"]["terminal"] == terminal
     assert completed.json()["completion"]["creation_fenced"] is True
     assert completed.json()["completion"]["input_acknowledgement_ready"] is True
-    assert runtime[2].scan()["Items"] == before
+    assert [item for item in runtime[2].scan()["Items"] if not item["SK"].startswith("output")] == [
+        item for item in before if not item["SK"].startswith("output")
+    ]
+    events = fixtures.replay(runtime)["events"]
+    assert len(events) == 2 and events[-1]["payload"]["task_id"] == "task-run-expired"
+    assert events[-1]["payload"]["status"] == "interrupted"
+    for item in before:
+        if item["SK"] != "output-state":
+            assert runtime[2].get_item(Key={"PK": item["PK"], "SK": item["SK"]})["Item"] == item
     assert runtime[1].store._read("TENANT#tenant", authority_key) == authority
     for sort_key in ("CREATION", "LAUNCH", "TEARDOWN", "PRE-ADMISSION-TEARDOWN"):
         assert runtime[1].store._read("CHAT-LAUNCH#run-expired", sort_key) is None

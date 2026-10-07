@@ -41,6 +41,12 @@ def test_supervisor_cannot_use_direct_owner_stores_or_dispatch_to_the_queue():
         in policy
     )
     assert '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/exit"' in policy
+    for path in ("reserve", "resume", "teardown", "finalize", "complete", "session/commit"):
+        assert (
+            '"arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/POST/agent/internal/v1/agent/chat/data/'
+            + path + '"'
+        ) in policy
+    assert "/chat/data/*" not in policy
     for action in (
         "bedrock:*",
         "dynamodb:*",

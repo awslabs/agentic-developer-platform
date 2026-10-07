@@ -111,10 +111,12 @@ def verify_delivery_session(delivery, sessions):
 
 
 class ChatDeliveryRelay:
-    def __init__(self, delivery, operation_id, transport, authorize):
+    def __init__(self, delivery, operation_id, transport, authorize, authority, launch):
         self.delivery = delivery
         self.client, self.queue, self.sessions = transport
         self.authorize = authorize
+        self.authority = authority
+        self.launch = launch
         self.stream_id = hashlib.sha256(f"{delivery.run_id}\0{operation_id}".encode()).hexdigest()
         self.sequence = 0
         self.started = False
@@ -124,7 +126,7 @@ class ChatDeliveryRelay:
     async def create(cls, authority, launch, operation_id, authorize):
         delivery = await run_in_threadpool(load_delivery, authority, launch)
         transport = await run_in_threadpool(response_transport)
-        relay = cls(delivery, operation_id, transport, authorize)
+        relay = cls(delivery, operation_id, transport, authorize, authority, launch)
         await authorize()
         try:
             await run_in_threadpool(relay._session)
@@ -138,25 +140,32 @@ class ChatDeliveryRelay:
         verify_delivery_session(self.delivery, self.sessions)
 
     def _send(self, event):
+        from src.agentauth.chat_stream_journal import append_stream_event
+
         self._session()
+        payload = {
+            "task_id": self.delivery.task_id,
+            "session_id": self.delivery.session_id,
+            "thread_id": self.delivery.thread_id,
+            "channel": "webchat",
+            "owner_principal": self.delivery.owner_principal,
+            "session_generation": self.delivery.session_generation,
+            "strict_delivery": True,
+            "status": "ag_ui",
+            "ag_ui_event": True,
+            "event": {**event, "stream_id": self.stream_id, "stream_sequence": self.sequence},
+        }
+        committed = append_stream_event(
+            self.authority, self.launch, self.delivery, f"{self.stream_id}:{self.sequence}", payload, now=int(time.time())
+        )
+        payload["event"]["event_cursor"] = committed["cursor"]
         owner = self.delivery
         result = self.client.send_message(
             QueueUrl=self.queue,
             MessageGroupId=owner.session_id,
             MessageDeduplicationId=hashlib.sha256(f"{self.stream_id}:{self.sequence}".encode()).hexdigest(),
             MessageBody=json.dumps(
-                {
-                    "task_id": owner.task_id,
-                    "session_id": owner.session_id,
-                    "thread_id": owner.thread_id,
-                    "channel": "webchat",
-                    "owner_principal": owner.owner_principal,
-                    "session_generation": owner.session_generation,
-                    "strict_delivery": True,
-                    "status": "ag_ui",
-                    "ag_ui_event": True,
-                    "event": {**event, "stream_id": self.stream_id, "stream_sequence": self.sequence},
-                },
+                payload,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),

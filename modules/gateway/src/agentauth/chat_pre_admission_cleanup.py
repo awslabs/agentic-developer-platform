@@ -133,6 +133,9 @@ def recover_bound_cleanup(authority, delivery, pointer, execution, *, removed, n
                 }
             )
             terminal_writes.append({"Put": {"TableName": store.table, "Item": outbox, "ConditionExpression": "attribute_not_exists(pk)"}})
+            from src.agentauth.chat_event_journal import terminal_event_writes
+
+            terminal_writes.extend(terminal_event_writes(authority, outbox, now=now))
     put = {"TableName": store.table, "Item": receipt, "ConditionExpression": "attribute_not_exists(pk)"}
     if previous is not None:
         put.update({field: value for field, value in evidence._unchanged(previous).items() if field != "Key"})

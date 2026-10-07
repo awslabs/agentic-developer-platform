@@ -16,6 +16,7 @@ import { deploymentSetting } from '@/config/runtime';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
 import { apiClient } from '@/services/api';
+import { readChatReplay } from '@/services/chatReplay';
 import type {
   AgentChatState,
   ChatMessage,
@@ -70,6 +71,11 @@ function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
   return -1;
 }
 
+function cursorParts(cursor: string | null | undefined): [string, number] | null {
+  const match = /^([a-f0-9]{32}):([0-9]{1,8})$/.exec(cursor ?? '');
+  return match ? [match[1], Number(match[2])] : null;
+}
+
 // ---------------------------------------------------------------------------
 // Hook types
 // ---------------------------------------------------------------------------
@@ -78,7 +84,7 @@ export interface UseAgUiEventsOptions {
   /** Active conversation (controls WS lifecycle). */
   conversation: Conversation | null;
   /** Called when messages change so the caller can persist to localStorage. */
-  onMessagesChange: (sessionId: string, messages: ChatMessage[]) => void;
+  onMessagesChange: (sessionId: string, messages: ChatMessage[], cursor?: string) => void;
 }
 
 export interface UseAgUiEventsReturn extends AgentChatState {
@@ -97,6 +103,7 @@ export interface UseAgUiEventsReturn extends AgentChatState {
    * retried the same dead identifier forever, showing a permanent spinner.
    */
   sessionExpired: boolean;
+  replayWarning: string | null;
   /**
    * Send a user message. `persona` (#4208) pins the agent persona for the turn,
    * bypassing the server-side classifier — used by the intent-intake flow. The
@@ -125,6 +132,7 @@ export function useAgUiEvents({
   const [isAwaitingReply, setIsAwaitingReply] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [replayWarning, setReplayWarning] = useState<string | null>(null);
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | undefined>();
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -140,6 +148,13 @@ export function useAgUiEvents({
   const chunkBufferRef = useRef<Map<string, string[]>>(new Map());
   const intentionalCloseRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
+  const replayCursorRef = useRef<string | null>(null);
+  const replayRunningRef = useRef(false);
+  const replayEpochRef = useRef(0);
+  const replayRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetSessionRef = useRef<string | null>(null);
+  const replayBufferRef = useRef<WsFrame[]>([]);
+  const replayApplyingRef = useRef(false);
   const toolCallsRef = useRef<Map<string, ToolCallInfo>>(new Map());
   // Buffer for TOOL_CALL_END events that arrive BEFORE their TOOL_CALL_START.
   // Observed in production: response Lambda + API Gateway can deliver AG-UI
@@ -172,12 +187,20 @@ export function useAgUiEvents({
   // starting a conversation clears it (#5615). Keyed on the id rather than the
   // object so an unrelated message update does not re-enable a dead send box.
   useEffect(() => {
+    if (resetSessionRef.current === (conversation?.id ?? null)) return;
+    resetSessionRef.current = conversation?.id ?? null;
     setSessionExpired(false);
+    const lastMessage = conversation?.messages[conversation.messages.length - 1];
+    setIsAwaitingReply(lastMessage?.role === 'user' || lastMessage?.status === 'streaming');
+    replayCursorRef.current = cursorParts(conversation?.replayCursor) ? conversation!.replayCursor! : null;
+    replayBufferRef.current = [];
+    replayRunningRef.current = false;
+    setReplayWarning(null);
     activeTaskRef.current = null;
     cancelRequestRef.current = null;
     setActiveTaskId(null);
     setCancelState('idle');
-  }, [conversation?.id]);
+  }, [conversation]);
 
   const trackActiveTask = useCallback((taskId?: string) => {
     if (taskId && taskId !== activeTaskRef.current) {
@@ -218,7 +241,7 @@ export function useAgUiEvents({
     (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
       const next = updater(messagesRef.current);
       messagesRef.current = next;
-      if (sessionIdRef.current) {
+      if (sessionIdRef.current && !replayApplyingRef.current) {
         onMessagesChange(sessionIdRef.current, next);
       }
     },
@@ -826,6 +849,145 @@ export function useAgUiEvents({
   );
 
   // ------------------------------------------------------------------
+  const applyReplayEvent = useCallback((sessionId: string, kind: 'ag_ui' | 'terminal', payload: Record<string, unknown>, cursor: string) => {
+    if (sessionIdRef.current !== sessionId || !cursorParts(cursor)) return;
+    replayApplyingRef.current = true;
+    try {
+      if (kind === 'ag_ui' && payload.event && typeof payload.event === 'object') {
+        dispatchAgUiEvent({ ...(payload.event as AgUiEvent), event_cursor: cursor });
+      } else if (kind === 'terminal' && typeof payload.task_id === 'string') {
+        handleLegacyResponse({
+          type: 'response', task_id: payload.task_id, session_id: sessionId,
+          terminal_delivery: true, delivery_id: payload.delivery_id as string,
+          status: payload.status as WsResponseFrame['status'],
+          retryable: payload.retryable as boolean,
+          accounting_status: payload.accounting_status as WsResponseFrame['accounting_status'],
+          content: payload.text as string,
+        });
+        if (payload.status === 'interrupted') {
+          setReplayWarning('This turn was interrupted. Its external effects may be uncertain; it will not run again automatically.');
+        }
+      } else {
+        throw new Error('Invalid replay event');
+      }
+      replayCursorRef.current = cursor;
+      onMessagesChange(sessionId, messagesRef.current, cursor);
+    } finally {
+      replayApplyingRef.current = false;
+    }
+  }, [dispatchAgUiEvent, handleLegacyResponse, onMessagesChange]);
+
+  const drainReplay = useCallback(async (sessionId: string) => {
+    if (replayRunningRef.current || sessionIdRef.current !== sessionId) return;
+    const epoch = replayEpochRef.current;
+    replayRunningRef.current = true;
+    let succeeded = false;
+    try {
+      for (let pageNumber = 0; pageNumber < 25; pageNumber++) {
+        const cursor = replayCursorRef.current;
+        const page = await readChatReplay(sessionId, cursor);
+        if (sessionIdRef.current !== sessionId || epoch !== replayEpochRef.current) return;
+        if (page.status === 'history_refresh_required') {
+          if (page.reason === 'journal_unavailable' && replayBufferRef.current.length) throw new Error('Journal not ready');
+          if (page.reason !== 'journal_unavailable' || cursor || messagesRef.current.some(message => message.role === 'assistant')) {
+            setReplayWarning('Some output is unavailable. This transcript may be incomplete; check conversation history before continuing.');
+          }
+          if (page.reason !== 'journal_unavailable' && cursorParts(page.cursor)) {
+            replayCursorRef.current = page.cursor;
+            onMessagesChange(sessionId, messagesRef.current, page.cursor!);
+          }
+          succeeded = true;
+          break;
+        }
+        if (page.status !== 'ok' || !cursorParts(page.cursor) || !Array.isArray(page.events)) throw new Error('Invalid replay page');
+        if (!cursor && messagesRef.current.some(message => message.role === 'assistant')) {
+          const parts = cursorParts(page.cursor);
+          if (!parts || !Number.isSafeInteger(page.latest_sequence)) throw new Error('Invalid replay watermark');
+          replayCursorRef.current = `${parts[0]}:${page.latest_sequence}`;
+          onMessagesChange(sessionId, messagesRef.current, replayCursorRef.current);
+          setReplayWarning('Older browser output has no replay cursor. Check conversation history for any missed output.');
+          succeeded = true;
+          break;
+        }
+        for (const event of page.events) {
+          const parts = cursorParts(event.cursor);
+          const previous = cursorParts(replayCursorRef.current);
+          if (!parts || (previous && (parts[0] !== previous[0] || parts[1] !== previous[1] + 1)) || (!previous && parts[1] !== 1)) {
+            throw new Error('Noncontiguous replay page');
+          }
+          applyReplayEvent(sessionId, event.kind, event.payload, event.cursor);
+        }
+        if (!page.has_more) {
+          succeeded = true;
+          break;
+        }
+        if (!page.events.length || pageNumber === 24) throw new Error('Replay page limit reached');
+      }
+    } catch {
+      if (sessionIdRef.current === sessionId && epoch === replayEpochRef.current) {
+        setReplayWarning('Replay is temporarily unavailable. Output may be missing; this turn will not run again automatically.');
+      }
+    } finally {
+      if (epoch !== replayEpochRef.current) return;
+      replayRunningRef.current = false;
+      if (!succeeded && (replayCursorRef.current || replayBufferRef.current.length)) {
+        if (!replayRetryRef.current) replayRetryRef.current = setTimeout(() => {
+          replayRetryRef.current = null;
+          if (epoch === replayEpochRef.current) void drainReplay(sessionId);
+        }, 2_000);
+        return;
+      }
+      if (succeeded && sessionIdRef.current === sessionId) {
+        setReplayWarning(previous => previous?.startsWith('Replay is temporarily unavailable') ? null : previous);
+        const buffered = replayBufferRef.current.splice(0);
+        for (const frame of buffered) {
+          if (frame.type === 'ag_ui' && cursorParts(frame.event.event_cursor)) {
+            const parts = cursorParts(frame.event.event_cursor)!;
+            const previous = cursorParts(replayCursorRef.current);
+            if (previous && parts[0] === previous[0] && parts[1] <= previous[1]) continue;
+            if (previous && parts[0] !== previous[0]) continue;
+            if ((previous && parts[0] === previous[0] && parts[1] === previous[1] + 1) || (!previous && parts[1] === 1)) {
+              applyReplayEvent(sessionId, 'ag_ui', { event: frame.event }, frame.event.event_cursor!);
+              continue;
+            }
+            replayBufferRef.current.push(frame);
+          } else if (frame.type === 'response' && frame.terminal_delivery) {
+            handleLegacyResponse(frame);
+          } else if (frame.type === 'ag_ui') {
+            dispatchAgUiEvent(frame.event);
+          }
+        }
+        if (replayBufferRef.current.length && !replayRetryRef.current) {
+          replayRetryRef.current = setTimeout(() => {
+            replayRetryRef.current = null;
+            if (epoch === replayEpochRef.current) void drainReplay(sessionId);
+          }, 250);
+        }
+      }
+    }
+  }, [applyReplayEvent, dispatchAgUiEvent, handleLegacyResponse, onMessagesChange]);
+
+  const handleJournalFrame = useCallback((sessionId: string, frame: AgUiWsFrame) => {
+    const parts = cursorParts(frame.event.event_cursor);
+    if (!parts) {
+      dispatchAgUiEvent(frame.event);
+      return;
+    }
+    const previous = cursorParts(replayCursorRef.current);
+    if (previous && parts[0] === previous[0] && parts[1] <= previous[1]) return;
+    if (replayRunningRef.current || (previous && (parts[0] !== previous[0] || parts[1] !== previous[1] + 1)) ||
+        (!previous && (parts[1] !== 1 || messagesRef.current.some(message => message.role === 'assistant')))) {
+      if (replayBufferRef.current.length >= 256) {
+        setReplayWarning('Replay is delayed. Output may be missing until the conversation is refreshed.');
+        return;
+      }
+      replayBufferRef.current.push(frame);
+      void drainReplay(sessionId);
+      return;
+    }
+    applyReplayEvent(sessionId, 'ag_ui', { event: frame.event }, frame.event.event_cursor!);
+  }, [applyReplayEvent, dispatchAgUiEvent, drainReplay]);
+
   // Token refresh
   // ------------------------------------------------------------------
 
@@ -847,7 +1009,8 @@ export function useAgUiEvents({
   // ------------------------------------------------------------------
 
   const connect = useCallback(async () => {
-    if (!sessionIdRef.current) return;
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
 
     // Gateway-only deployments have no chat endpoint. Never send their login
     // token to another deployment's historical default endpoint.
@@ -864,6 +1027,7 @@ export function useAgUiEvents({
     }
 
     const token = await getValidIdToken();
+    if (sessionIdRef.current !== sessionId) return;
     if (!token) {
       setConnectionStatus('disconnected');
       return;
@@ -877,12 +1041,15 @@ export function useAgUiEvents({
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (wsRef.current !== ws || sessionIdRef.current !== sessionId) return;
       setConnectionStatus('connected');
       setReconnectAttempt(0);
       reconnectAttemptRef.current = 0;
+      if (replayCursorRef.current || messagesRef.current.length) void drainReplay(sessionId);
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws || sessionIdRef.current !== sessionId) return;
       try {
         const frame = JSON.parse(event.data) as WsFrame;
 
@@ -917,7 +1084,13 @@ export function useAgUiEvents({
         // AG-UI event path
         if (frame.type === 'ag_ui') {
           const agUiFrame = frame as AgUiWsFrame;
-          dispatchAgUiEvent(agUiFrame.event);
+          handleJournalFrame(sessionId, agUiFrame);
+          return;
+        }
+
+        if (frame.type === 'response' && frame.terminal_delivery && (replayCursorRef.current || replayRunningRef.current)) {
+          replayBufferRef.current.push(frame);
+          void drainReplay(sessionId);
           return;
         }
 
@@ -943,6 +1116,7 @@ export function useAgUiEvents({
     };
 
     ws.onclose = (event) => {
+      if (wsRef.current !== ws) return;
       wsRef.current = null;
 
       if (intentionalCloseRef.current) {
@@ -960,7 +1134,7 @@ export function useAgUiEvents({
 
       scheduleReconnect();
     };
-  }, [getValidIdToken, dispatchAgUiEvent, handleLegacyNotification, handleLegacyProgress, handleLegacyResponse, updateMessages]);
+  }, [getValidIdToken, drainReplay, handleJournalFrame, handleLegacyNotification, handleLegacyProgress, handleLegacyResponse, updateMessages]);
 
   const scheduleReconnect = useCallback(() => {
     const attempt = reconnectAttemptRef.current;
@@ -982,6 +1156,13 @@ export function useAgUiEvents({
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
+    replayEpochRef.current += 1;
+    replayRunningRef.current = false;
+    replayBufferRef.current = [];
+    if (replayRetryRef.current) {
+      clearTimeout(replayRetryRef.current);
+      replayRetryRef.current = null;
+    }
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -1005,6 +1186,15 @@ export function useAgUiEvents({
     return () => disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation?.id]);
+
+  const replaySessionId = conversation?.id;
+  useEffect(() => {
+    if (!replaySessionId || !isAwaitingReply) return;
+    const interval = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) void drainReplay(replaySessionId);
+    }, 2_000);
+    return () => clearInterval(interval);
+  }, [replaySessionId, isAwaitingReply, drainReplay]);
 
   // ------------------------------------------------------------------
   // Send message
@@ -1063,6 +1253,7 @@ export function useAgUiEvents({
     isAwaitingReply,
     reconnectAttempt,
     sessionExpired,
+    replayWarning,
     sessionMeta,
     sendMessage,
     cancelTurn,
