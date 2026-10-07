@@ -153,8 +153,10 @@ function modelPicker(row: HTMLElement): HTMLSelectElement {
   return within(row).getByRole('combobox', { name: /Model for/ }) as HTMLSelectElement;
 }
 
-function chooseModel(row: HTMLElement): void {
-  fireEvent.change(modelPicker(row), { target: { value: 'model-certified' } });
+async function chooseModel(row: HTMLElement): Promise<void> {
+  const user = userEvent.setup();
+  await user.selectOptions(modelPicker(row), 'model-certified');
+  await waitFor(() => expect(within(row).getByRole('button', { name: 'Save model' })).toBeEnabled());
 }
 
 function accountPicker(): HTMLSelectElement {
@@ -251,7 +253,8 @@ describe('Agent Models page — issue #5422', () => {
   });
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // Discard unused one-shot responses as well as calls between tests.
+    vi.resetAllMocks();
     vi.mocked(selfApi.getManageableServicePrincipals).mockResolvedValue(noPrincipals);
     vi.mocked(selfApi.getPersonaCatalogue).mockResolvedValue(personas);
     vi.mocked(selfApi.getPreferences).mockResolvedValue(preferences);
@@ -631,7 +634,7 @@ describe('Agent Models page — issue #5422', () => {
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     const account = await screen.findByRole('combobox', { name: 'Settings for' });
-    chooseModel(row);
+    await chooseModel(row);
     fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
 
     await waitFor(() => expect(selfApi.setPreference).toHaveBeenCalledTimes(1));
@@ -728,7 +731,7 @@ describe('Agent Models page — issue #5422', () => {
     expect(await screen.findByText(/Changes below apply to Nightly triage in Acme/)).toBeInTheDocument();
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    chooseModel(row);
+    await chooseModel(row);
     fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
     await waitFor(() => expect(adminApi.setPreference).toHaveBeenCalledWith(
       'opaque/service:id',
@@ -752,7 +755,7 @@ describe('Agent Models page — issue #5422', () => {
 
     const selfRow = await screen.findByTestId('persona-row-brand-new-persona');
     const selfChoice = modelPicker(selfRow);
-    chooseModel(selfRow);
+    await chooseModel(selfRow);
     expect(selfChoice).toHaveValue('model-certified');
     expect(within(selfRow).getByRole('button', { name: 'Save model' })).toBeEnabled();
 
@@ -847,7 +850,7 @@ describe('Agent Models page — issue #5422', () => {
       });
     render(<AgentModels />);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    chooseModel(row);
+    await chooseModel(row);
     fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
     expect(await within(row).findByText(/This model is currently unavailable/)).toBeInTheDocument();
     expect(within(row).getByText('Default for this persona (not ready)')).toBeInTheDocument();
@@ -1008,11 +1011,11 @@ describe('Agent Models page — issue #5422', () => {
     const first = await screen.findByTestId('persona-row-brand-new-persona');
     const second = await screen.findByTestId('persona-row-reviewer');
 
-    chooseModel(first);
+    await chooseModel(first);
     fireEvent.click(within(first).getByRole('button', { name: 'Save model' }));
     expect(await within(first).findByText('Your choice')).toBeInTheDocument();
 
-    chooseModel(second);
+    await chooseModel(second);
     fireEvent.click(within(second).getByRole('button', { name: 'Save model' }));
     expect(await within(second).findByText(/Your organization does not allow this model/)).toBeInTheDocument();
     expect(within(first).getByText('Your choice')).toBeInTheDocument();
