@@ -1,11 +1,11 @@
 # Deployment evidence in S3
 
-Gateway deploy and migration workflows retain deployment context and release JSON
-in the target account's private `adp-<environment>-deployment-evidence-<account>`
-bucket. Container images remain in ECR and frontend assets retain their existing
-publication path. GitHub Actions artifact storage is not used by these two
-workflows for context or release evidence. Browser and other CI artifacts have
-separate storage contracts.
+Gateway deploy, standalone frontend and migration workflows retain deployment
+context and release JSON in the target account's private
+`adp-<environment>-deployment-evidence-<account>` bucket. Container images remain
+in ECR and frontend assets retain their existing publication path. These three
+deployment workflows use S3 for context or release evidence. Browser and other
+CI artifacts have separate storage contracts.
 
 The app-owned Terraform module is `modules/gateway/infra/deployment-evidence`,
 composed by `platform/automation-infra/deployment-evidence.tf` in the existing
