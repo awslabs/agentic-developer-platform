@@ -147,3 +147,74 @@ describe('startControlRuntime', () => {
     }
   });
 });
+
+import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { CodexControlAdapter } from './harnesses/codex-control';
+import { ENVELOPE_HEADER } from './control-listener';
+import { ENVELOPE_AUDIENCE, ENVELOPE_ISSUER, ENVELOPE_VERSION } from './control-envelope';
+import * as revalidation from './control-revalidation';
+
+it('delivers signed steering at a Codex hook while another tool remains admitted', async () => {
+  const keys = generateKeyPairSync('ed25519');
+  const env = await envFor({
+    ADP_POD_DEADLINE_AT: new Date(Date.now() + 300_000).toISOString(),
+    ADP_CONTROL_TOKEN_EXPIRES_AT: new Date(Date.now() + 300_000).toISOString(),
+    ADP_CONTROL_ENVELOPE_KEYS: JSON.stringify({ fixture: keys.publicKey.export({ type: 'spki', format: 'pem' }) }),
+  });
+  const authorization = jest.spyOn(revalidation, 'revalidateQueuedCommand').mockResolvedValue({ allowed: true });
+  const { runtime, listener, outcome } = await startControlRuntime({ env, log: () => {}, createAdapter: gate => new CodexControlAdapter(gate) });
+  if (!runtime || !listener || !outcome.started) throw new Error('listener did not start');
+  const adapter = runtime.adapter;
+  adapter.drainSteering = () => runtime.steerQueue.flush();
+  await adapter.start();
+  const hook = (event: string, id: string): Promise<any> => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: adapter.socket, path: '/', method: 'POST' }, res => {
+      let data = ''; res.on('data', chunk => { data += chunk; }); res.on('end', () => resolve(JSON.parse(data)));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ hook_event_name: event, tool_use_id: id, tool_name: 'Bash' }));
+  });
+  try {
+    await hook('PreToolUse', 'first');
+    const commandId = randomUUID();
+    const body = JSON.stringify({ command_id: commandId, instruction: 'Use the completed validation evidence.' });
+    const now = Date.now();
+    const payload = Buffer.from(JSON.stringify({
+      v: ENVELOPE_VERSION, iss: ENVELOPE_ISSUER, aud: ENVELOPE_AUDIENCE, alg: 'ed25519', kid: 'fixture',
+      tenant_id: 'fixture', principal: 'operator', authority_kind: 'human_session', target_run_id: env.ADP_CONTROL_RUN_ID,
+      target_generation: 1, action: 'steer', command_id: commandId, body_digest: createHash('sha256').update(body).digest('hex'),
+      iat: new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z'), nbf: new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z'), exp: new Date(now + 30000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    }));
+    const signature = sign(null, Buffer.concat([Buffer.from(`${ENVELOPE_VERSION}.`), payload]), keys.privateKey);
+    const envelope = `${ENVELOPE_VERSION}.${payload.toString('base64url')}.${signature.toString('base64url')}`;
+    const accepted: { status: number; body: string } = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: outcome.port, path: '/agent/steer', method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'x-adp-control-generation': '1', [ENVELOPE_HEADER]: envelope } }, res => {
+        let data = ''; res.on('data', chunk => { data += chunk; }); res.on('end', () => resolve({ status: res.statusCode!, body: data }));
+      });
+      req.on('error', reject); req.end(body);
+    });
+    expect(accepted.status).toBe(202);
+    expect(runtime.snapshot().commands.find(command => command.command_id === commandId)?.status).toBe('pending');
+    const delivered = await hook('PreToolUse', 'second');
+    expect(delivered.hookSpecificOutput?.additionalContext).toContain('Use the completed validation evidence.');
+    expect(runtime.snapshot().commands.find(command => command.command_id === commandId)?.status).toBe('applied');
+    expect(authorization).toHaveBeenCalled();
+    expect(adapter.activeWorkCount()).toBe(2);
+    const pausing = adapter.requestPause({ timeoutMs: 1000 });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(adapter.gate.currentPhase()).toBe('pause_requested');
+    expect(adapter.activeWorkCount()).toBe(2);
+    const completing = Promise.all([hook('PostToolUse', 'first'), hook('PostToolUse', 'second')]);
+    expect((await pausing).outcome).toBe('confirmed');
+    await adapter.resumeFromPause();
+    await completing;
+    expect(adapter.activeWorkCount()).toBe(0);
+  } finally {
+    authorization.mockRestore();
+    runtime.steerQueue.dispose('test complete');
+    adapter.cancel('test cleanup');
+    await adapter.dispose();
+    await listener.stop();
+  }
+});

@@ -15,6 +15,9 @@ import {
 import { PauseGate, type AdmissionTicket } from "../pause-gate";
 
 export class CodexControlAdapter {
+  // canAcceptInput still requires a real serialized hook boundary; steering
+  // does not claim that concurrent tools have paused or completed.
+  readonly acceptsInputDuringTools = true;
   private registry = new CurrentAttemptRegistry();
   private tickets = new Map<string, AdmissionTicket>();
   private hooked = false;
