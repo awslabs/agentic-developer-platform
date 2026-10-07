@@ -246,8 +246,8 @@ class DeploymentServices(WorkflowServices):
             )
             require(
                 run is not None
-                and (run.run_id, run.run_attempt, run.artifact_id, run.artifact_digest)
-                == (workflow.run_id, workflow.run_attempt, workflow.artifact_id, workflow.artifact_digest),
+                and (run.run_id, run.run_attempt, run.artifact_id, run.artifact_digest, getattr(run, "artifact_ref", None))
+                == (workflow.run_id, workflow.run_attempt, workflow.artifact_id, workflow.artifact_digest, workflow.artifact_ref),
                 "deployment_workflow_attempt_changed",
             )
         else:

@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - 'modules/gateway/src/**'
+      - 'modules/gateway/deployment_evidence/**'
       - 'modules/gateway/cli/**'
       - 'modules/gateway/Dockerfile'
       # The operation decoder is staged into the Gateway image from its source.
@@ -95,6 +96,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway
@@ -153,7 +155,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine)\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/deployment_evidence/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine)\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
@@ -269,6 +271,19 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
+      - name: Load deployment evidence publisher from workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py scripts/deployment-workflow-context.py scripts/deployment-release-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+
       - name: Record deployment workflow context
         env:
           CONTEXT_WORKFLOW: .github/workflows/gateway-deploy.yml
@@ -281,14 +296,11 @@ jobs:
           INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
-        run: python3 modules/gateway/scripts/deployment-workflow-context.py
-      - name: Upload deployment workflow context
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
-          if-no-files-found: error
-          retention-days: 30
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
+      - name: Publish deployment workflow context to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context gateway-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       - name: Deploy budget tracker and pricing code
         if: needs.changes.outputs.budget_lambdas == 'true'
@@ -999,14 +1011,11 @@ jobs:
           ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
-        run: python3 "$RUNNER_TEMP/adp-gateway-control/release-evidence.py" gateway-backend
-      - name: Upload gateway-backend build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-release-gateway-backend-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-release-gateway-backend/release.json
-          if-no-files-found: error
-          retention-days: 30
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-release-evidence.py" gateway-backend
+      - name: Publish gateway-backend build evidence to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release gateway-backend "$RUNNER_TEMP/adp-release-gateway-backend/release.json"
 
       - name: Publish successful Gateway source receipt
         env:
@@ -1073,6 +1082,19 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
+      - name: Load deployment evidence publisher from workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py scripts/deployment-workflow-context.py scripts/deployment-release-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+
       - name: Record deployment workflow context
         if: needs.deploy-backend.result == 'skipped'
         env:
@@ -1086,15 +1108,12 @@ jobs:
           INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
-        run: python3 modules/gateway/scripts/deployment-workflow-context.py
-      - name: Upload deployment workflow context
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
+      - name: Publish deployment workflow context to S3
         if: needs.deploy-backend.result == 'skipped'
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
-          if-no-files-found: error
-          retention-days: 30
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context gateway-deploy.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -1169,14 +1188,11 @@ jobs:
           ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
-        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
-      - name: Upload gateway-frontend build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-release-gateway-frontend-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-release-gateway-frontend/release.json
-          if-no-files-found: error
-          retention-days: 30
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-release-evidence.py" gateway-frontend
+      - name: Publish gateway-frontend build evidence to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release gateway-frontend "$RUNNER_TEMP/adp-release-gateway-frontend/release.json"
 
   run-migrations:
     name: Run Pending Migrations

@@ -100,17 +100,16 @@ def test_actual_workflows_publish_bound_release_evidence(workflow, job, componen
     records = [s for s in steps if "ADP_RELEASE_SOURCE" in s.get("env", {})]
     assert len(records) == 1
     record = records[0]
-    expected_script = (
-        '"$RUNNER_TEMP/adp-gateway-control/release-evidence.py"'
-        if job == "deploy-backend"
-        else "modules/gateway/scripts/deployment-release-evidence.py"
-    )
+    expected_script = '"$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-release-evidence.py"'
     assert record["run"] == f"python3 {expected_script} {component}"
     assert record["env"]["GITHUB_REPOSITORY_ID"] == "${{ github.repository_id }}"
     assert record["env"]["ADP_RELEASE_SOURCE"] == "${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}"
     upload = steps[steps.index(record) + 1]
-    assert upload["with"]["name"] == f"adp-release-{component}-${{{{ github.run_attempt }}}}"
-    assert upload["with"]["path"].endswith("/release.json")
+    assert "publish-deployment-evidence.py" in upload["run"]
+    assert f" release {component} " in upload["run"]
+    assert upload["run"].endswith('/release.json"')
+    assert not any("upload-artifact" in step.get("uses", "") for step in steps)
+    assert document["env"]["ADP_DEPLOYMENT_EVIDENCE_STORE"] == "s3-oidc-v1"
 
 
 @pytest.fixture
@@ -202,3 +201,24 @@ async def test_newer_release_requires_provider_ancestry(status, base, permitted)
     else:
         with pytest.raises(CycleBlockedError):
             await provider.contains(binding, SHA, "c" * 40)
+
+
+async def test_s3_release_is_bound_to_context_and_retains_actual_version(release_provider):
+    ctx = release_provider
+    ctx.run.artifact_ref = "s3://bucket/context?versionId=context-version"
+    reference = "s3://bucket/release?versionId=release-version"
+    reads = []
+
+    def read(**expected):
+        reads.append(expected)
+        payload = json.dumps(ctx.document).encode()
+        return payload, hashlib.sha256(payload).hexdigest(), reference
+
+    ctx.provider.evidence_store = SimpleNamespace(read=read)
+    release, digest, ref = await ctx.provider.release(ctx.binding, ctx.run, "gateway-backend")
+    assert release.image_digest == DIGEST and ref == reference and len(digest) == 64
+    assert reads[0]["name"] == "gateway-backend" and reads[0]["workflow_revision"] == ctx.run.context.workflow_revision
+    assert not ctx.calls
+    ctx.document["source_revision"] = "c" * 40
+    with pytest.raises(CycleBlockedError, match="identity_mismatch"):
+        await ctx.provider.release(ctx.binding, ctx.run, "gateway-backend")
