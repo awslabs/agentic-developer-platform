@@ -1,0 +1,13 @@
+{
+  "version": "0.12.19",
+  "url": "https://files.pythonhosted.org/packages/76/71/b47cec536d8ee7b09017c1d9db211dfc2e7ce5c87d0482918d8b3411ec48/uv-0.12.19-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+  "wheel_sha256": "a63d18a0aa38ee9f21a5406afbbaeb41303bcd954be9d6b7c1b95ac275e53958",
+  "binary_sha256": {
+    "uv": "242e462a63f5a3c0421d68557006193ecbfb61321cba0fe8542213ac62d92563",
+    "uvx": "34a435129d938dca2f22300764aca33e69e038485ee3e27ab62d321fc71e0a6c"
+  },
+  "superseded_binary_sha256": {
+    "uv": "d6043db2718aeda96b74ea30ff171f0d9bbd8460de6d63899ed3193c3ba93623",
+    "uvx": "cb5a9f7b3a0e70832c34fcd1d92fdaf913d5e6ba49a4f22503fe75f124f95e30"
+  }
+}
