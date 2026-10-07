@@ -49,6 +49,12 @@ def test_all_action_jobs_run_on_arc():
     for path in paths:
         workflow = yaml.safe_load(path.read_text())
         for name, job in workflow["jobs"].items():
+            if path.name == "automation-trust-ci.yml" and name == "public-workflow-contracts":
+                assert job["runs-on"] == "ubuntu-latest"
+                assert job["permissions"] == {"contents": "read"}
+                assert "environment" not in job
+                assert "secrets." not in yaml.safe_dump(job)
+                continue
             if "uses" in job:  # Reusable workflows select their own ARC jobs.
                 assert "runs-on" not in job
                 continue
@@ -250,7 +256,7 @@ def test_scan_jobs_keep_scoped_identity_and_no_schedule():
         for job in workflow["jobs"].values():
             if str(job.get("environment", "")).startswith("adp-scan-"):
                 assert job["permissions"]["id-token"] == "write"
-                assert any(s.get("uses") == "aws-e/adp/.github/actions/trusted-scan@main" for s in job["steps"])
+                assert any(s.get("uses") == "awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918" for s in job["steps"])
         if name == "security-scan.yml":
             assert "adp-dev-agent-runner-role" not in raw
 
@@ -272,7 +278,7 @@ def test_untrusted_rule_compilation_has_only_rules_identity_off_deployment_nodes
     assert job["if"] == "github.ref == 'refs/heads/main'"
     assert not isinstance(job["runs-on"], dict)
     actions = [s.get("uses", "") for s in job["steps"]]
-    assert "aws-e/adp/.github/actions/trusted-rules@main" in actions
+    assert "awslabs/agentic-developer-platform/.github/actions/trusted-rules@1c750b906b46b7806a2363a5e47dcfed92fac918" in actions
     assert not any("trusted-deployment" in a or "trusted-build" in a for a in actions)
 
 
@@ -339,7 +345,7 @@ def test_every_security_ledger_job_assumes_scan_identity_before_aws():
         job = workflow['jobs'][name]
         assert job['environment'].startswith('adp-scan-')
         assert job['permissions']['id-token'] == 'write'
-        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'aws-e/adp/.github/actions/trusted-scan@main')
+        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918')
         assert not any(re.search(r'\baws\s', s.get('run', '')) for s in job['steps'][:index])
 
 
@@ -348,7 +354,7 @@ def test_post_deploy_and_scheduled_checks_have_independent_credentials():
         job = yaml.safe_load((ROOT / '.github/workflows' / filename).read_text())['jobs'][name]
         assert job['if'] == "github.ref == 'refs/heads/main'"
         assert job['environment'].startswith('adp-checks-')
-        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'aws-e/adp/.github/actions/trusted-checks@main')
+        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918')
         assert job['permissions']['id-token'] == 'write'
         assert not any(re.search(r'\baws\s', s.get('run', '')) for s in job['steps'][:index])
     callers = yaml.safe_load((ROOT / '.github/workflows/gateway-deploy.yml').read_text())['jobs']

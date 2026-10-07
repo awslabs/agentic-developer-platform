@@ -576,4 +576,4 @@ def test_the_scan_identity_can_make_both_calls():
     import yaml
     job = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())["jobs"]["code-review"]
     assert str(job["environment"]).startswith("adp-scan-")
-    assert any(step.get("uses") == "aws-e/adp/.github/actions/trusted-scan@main" for step in job["steps"])
+    assert any(step.get("uses") == "awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918" for step in job["steps"])

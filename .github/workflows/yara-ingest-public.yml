@@ -36,7 +36,7 @@ jobs:
         yara --version
         aws --version
     - name: Establish public rules identity
-      uses: aws-e/adp/.github/actions/trusted-rules@main
+      uses: awslabs/agentic-developer-platform/.github/actions/trusted-rules@1c750b906b46b7806a2363a5e47dcfed92fac918
       with:
         role_arn: ${{ vars.ADP_RULES_ROLE_ARN }}
         region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
