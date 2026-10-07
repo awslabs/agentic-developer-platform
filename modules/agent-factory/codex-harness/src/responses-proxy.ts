@@ -1,3 +1,5 @@
+import { ModelStreamError, type ModelStreamErrorCode } from "./model-response.js";
+import { ModelHttpError } from "./model-http.js";
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -6,18 +8,20 @@ import type { HostTool } from "./tool-server.js";
 const textPart = z.strictObject({ type: z.enum(["input_text", "output_text"]), text: z.string(), annotations: z.array(z.never()).optional() });
 const message = z.strictObject({
   type: z.literal("message").optional(), role: z.enum(["system", "developer", "user", "assistant"]),
-  content: z.union([z.string(), z.array(textPart).max(64)]),
+  content: z.union([z.string(), z.array(textPart)]),
   phase: z.enum(["commentary", "final_answer"]).optional(),
   id: z.string().max(200).optional(), status: z.literal("completed").optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(),
 }).transform(({ internal_chat_message_metadata_passthrough: _discarded, id: _discardedId, ...item }) => item);
 const reasoningFields = {
   type: z.literal("reasoning"),
-  encrypted_content: z.string().min(1).max(32768),
-  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string().max(32000) })).max(16),
+  encrypted_content: z.string().min(1),
+  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string() })),
   status: z.literal("completed").optional(),
 };
-const reasoningInput = z.strictObject({ ...reasoningFields, id: z.string().max(200).optional(),
+const reasoningInput = z.strictObject({ ...reasoningFields,
+  encrypted_content: z.string().min(1),
+  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string() })), id: z.string().max(200).optional(),
   content: z.null().optional(), internal_chat_message_metadata_passthrough: z.unknown().optional(),
 }).transform(({ id: _discardedId, content: _emptyContent, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 const reasoningOutput = z.strictObject({ ...reasoningFields, id: z.string().min(1).max(200) });
@@ -26,13 +30,13 @@ const functionFields = {
   namespace: z.literal("mcp__adp"), name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
   arguments: z.string().min(2).max(32768), status: z.literal("completed").optional(),
 };
-const functionInput = z.strictObject({ ...functionFields, id: z.string().max(200).optional(),
+const functionInput = z.strictObject({ ...functionFields, arguments: z.string().min(2), id: z.string().max(200).optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional() })
   .transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 const functionOutput = z.strictObject({ ...functionFields, id: z.string().min(1).max(200) });
 const functionResult = z.strictObject({ id: z.string().max(200).optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(), type: z.literal("function_call_output"), call_id: z.string().min(1).max(200),
-  output: z.union([z.string().max(32768), z.array(z.strictObject({ type: z.literal("input_text"), text: z.string().max(32768) })).max(16)]),
+  output: z.union([z.string(), z.array(z.strictObject({ type: z.literal("input_text"), text: z.string() }))]),
 }).transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 export type ToolHistory = z.infer<typeof functionInput> | z.infer<typeof functionResult>;
 export interface ResponsesTools {
@@ -45,7 +49,7 @@ export interface ResponsesTools {
   acceptResponse?(response: TextResponsesResult): true;
 }
 const sdkRequest = z.strictObject({
-  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1).max(64)]),
+  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1)]),
   instructions: z.string().optional(), stream: z.literal(true), store: z.literal(false),
   reasoning: z.strictObject({ effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]), summary: z.enum(["auto", "concise", "detailed", "none"]).optional() }),
   // These are SDK-owned transport hints, never authority or cross-run cache IDs.
@@ -59,10 +63,11 @@ const sdkRequest = z.strictObject({
 export interface TextResponsesPolicy {
   model: string;
   effort: "minimal" | "low" | "medium" | "high" | "xhigh";
-  maxOutputTokens: number;
-  maxRequestBytes: number;
-  maxResponseBytes: number;
-  maxOperations: number;
+  maxOutputTokens?: number;
+  /** Only set for hosts with a bounded IPC transport. Direct HTTP has no local size gate. */
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  maxOperations?: number;
   timeoutMs: number;
   tools?: ResponsesTools;
 }
@@ -70,7 +75,7 @@ export interface TextResponsesRequest {
   input: z.infer<typeof sdkRequest>["input"];
   instructions?: string;
   reasoning: { effort: TextResponsesPolicy["effort"] };
-  max_output_tokens: number;
+  max_output_tokens?: number;
   tools?: object[];
   parallel_tool_calls?: false;
 }
@@ -84,8 +89,8 @@ const responseSchema = z.strictObject({
   output: z.array(z.union([reasoningOutput, functionOutput, z.strictObject({
     id: z.string().min(1).max(200), type: z.literal("message"), role: z.literal("assistant"), status: z.literal("completed"),
     phase: z.enum(["commentary", "final_answer"]).optional(),
-    content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1).max(64),
-  })])).min(1).max(16), usage: usageSchema,
+    content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1),
+  })])).min(1), usage: usageSchema,
 });
 export type TextResponsesResult = z.infer<typeof responseSchema>;
 export interface ConfirmedTextOperation {
@@ -158,11 +163,11 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
     ...(policy.tools ? { tools: [{ type: "namespace", name: "mcp__adp", description: "Authorized ADP tools.",
       tools: policy.tools.definitions.map(tool => ({ type: "function", name: tool.name, description: tool.description,
         parameters: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
-    input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
+    input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item && policy.maxRequestBytes !== undefined ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
-    max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
+    ...(policy.maxOutputTokens === undefined ? {} : { max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens) }),
   };
-  if (Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
+  if (policy.maxRequestBytes !== undefined && Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
   return normalized;
 }
 
@@ -198,10 +203,10 @@ function normalizeProviderResult(value: unknown): unknown {
 }
 
 export function textResponseEvents(value: unknown, policy: TextResponsesPolicy): string {
-  if (Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
+  if (policy.maxResponseBytes !== undefined && Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
   const response = responseSchema.parse(normalizeProviderResult(value));
   if (!Number.isSafeInteger(response.usage.input_tokens + response.usage.output_tokens)
-    || response.usage.output_tokens > policy.maxOutputTokens
+    || (policy.maxOutputTokens !== undefined && response.usage.output_tokens > policy.maxOutputTokens)
     || ((response.usage.input_tokens_details?.cached_tokens ?? 0) + (response.usage.input_tokens_details?.cache_write_tokens ?? 0)) > response.usage.input_tokens
     || (response.usage.output_tokens_details?.reasoning_tokens ?? 0) > response.usage.output_tokens) throw new Error("Invalid Responses usage");
   const calls = response.output.filter(item => item.type === "function_call");
@@ -239,8 +244,8 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
 }
 
 export class ResponsesBridgeError extends Error {
-  constructor(readonly code: "request_bound_exceeded" | "sdk_envelope_bound_exceeded" | "request_contract_invalid" | "handoff_or_response_failed") {
-    super(`Codex Responses bridge: ${code}`);
+  constructor(readonly code: "request_bound_exceeded" | "sdk_envelope_bound_exceeded" | "request_contract_invalid" | "handoff_or_response_failed" | "model_http_failed" | ModelStreamErrorCode | "operation_claim_failed" | "operation_settlement_failed" | "model_authority_failed", readonly httpStatus?: number) {
+    super(`Codex Responses bridge: ${code}${httpStatus === undefined ? "" : ` (HTTP ${httpStatus})`}`);
   }
 }
 
@@ -250,7 +255,7 @@ export class ResponsesBridgeError extends Error {
  */
 export async function startTextResponsesProxy(host: TextResponsesHost, policy: TextResponsesPolicy) {
   if (!policy.model.trim() || !["minimal", "low", "medium", "high", "xhigh"].includes(policy.effort)) throw new Error("Invalid Responses policy");
-  for (const value of [policy.maxOutputTokens, policy.maxRequestBytes, policy.maxResponseBytes, policy.maxOperations, policy.timeoutMs]) {
+  for (const value of [...(policy.maxOutputTokens === undefined ? [] : [policy.maxOutputTokens]), ...(policy.maxRequestBytes === undefined ? [] : [policy.maxRequestBytes]), ...(policy.maxResponseBytes === undefined ? [] : [policy.maxResponseBytes]), ...(policy.maxOperations === undefined ? [] : [policy.maxOperations]), policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Responses limit");
   }
   // A fresh immutable host snapshot prevents caller mutation during a request.
@@ -273,7 +278,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       res.writeHead(426, { "content-type": "application/json", "content-length": "2" }).end("{}"); return;
     }
     if (req.method !== "POST" || req.url !== "/v1/responses") { res.writeHead(404).end(); return; }
-    if (failed || busy || operations >= policy.maxOperations) { res.writeHead(409).end(); return; }
+    if (failed || busy || (policy.maxOperations !== undefined && operations >= policy.maxOperations)) { res.writeHead(409).end(); return; }
     busy = true;
     let dispatched = false;
     const controller = new AbortController();
@@ -293,7 +298,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       for await (const chunk of req) {
         bytes += chunk.length;
         // SDK metadata is removed before the unchanged gateway/IPC request bound.
-        if (bytes > Math.min(256 * 1024, policy.maxRequestBytes * 4)) throw new Error("Responses HTTP body exceeds bound");
+        if (policy.maxRequestBytes !== undefined && bytes > Math.min(256 * 1024, policy.maxRequestBytes * 4)) throw new Error("Responses HTTP body exceeds bound");
         chunks.push(chunk);
       }
       controller.signal.throwIfAborted();
@@ -313,7 +318,10 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       res.writeHead(200, { "content-type": "text/event-stream" }).end(output);
     } catch (error) {
       const bound = error instanceof Error && ["Responses HTTP body exceeds bound", "Responses request exceeds bound"].includes(error.message);
-      failure = new ResponsesBridgeError(dispatched ? "handoff_or_response_failed" : error instanceof Error && error.message === "Responses HTTP body exceeds bound" ? "sdk_envelope_bound_exceeded" : bound ? "request_bound_exceeded" : "request_contract_invalid");
+      failure = error instanceof ResponsesBridgeError ? error : error instanceof ModelHttpError
+        ? new ResponsesBridgeError("model_http_failed", error.status)
+        : error instanceof ModelStreamError ? new ResponsesBridgeError(error.code)
+        : new ResponsesBridgeError(dispatched ? "handoff_or_response_failed" : error instanceof Error && error.message === "Responses HTTP body exceeds bound" ? "sdk_envelope_bound_exceeded" : bound ? "request_bound_exceeded" : "request_contract_invalid");
       // No automatic replay after possible handoff or malformed input. Arbitrary
       // provider/host errors never reach SDK messages, logs or telemetry.
       failed = true;

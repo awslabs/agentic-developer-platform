@@ -4,7 +4,10 @@ This directory contains configuration and baseline files for the ADP security sc
 
 ## How It Works
 
-The security scan workflow runs **8 tools** in parallel on every PR and push to `main`:
+The authenticated Security Scan workflow runs the complete scanner set on explicit dispatch.
+ADP CI also runs the source scanners through `_regression-security.yml` during
+regression-infrastructure PR checks and the full daily/weekly sweep. That source
+scan does not replace image/SBOM or authenticated deployment evidence:
 
 | Tool | Purpose | Runner |
 |------|---------|--------|
@@ -23,12 +26,10 @@ Baseline files store the "known state" of findings. PRs only report **new** find
 
 ### How baselines are updated
 
-Baselines are updated via **nightly bot PR**:
-1. The scheduled run (2 AM UTC daily) scans `main`
-2. If findings differ from the current baseline, a PR is opened: `chore(security): refresh baselines YYYY-MM-DD`
-3. A human reviews and merges (or rejects) the baseline update
-
-**PR-time scans never update baselines.** They only read them.
+Baseline changes require a reviewed repository change. Neither the scheduled
+regression nor a PR scan refreshes baselines automatically. New rated high/critical
+findings fail the source security gate; missing or invalid scanner output fails
+independently of the finding count.
 
 ### Baseline files
 

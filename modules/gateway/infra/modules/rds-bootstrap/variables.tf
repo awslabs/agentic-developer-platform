@@ -60,3 +60,8 @@ variable "rds_instance_id" {
   type        = string
   description = "RDS instance ID — used as a trigger so the Job re-runs when the DB is replaced"
 }
+
+variable "db_connect_arn" {
+  type        = string
+  description = "Exact rds-db user ARN for verifying IAM login to this physical database"
+}

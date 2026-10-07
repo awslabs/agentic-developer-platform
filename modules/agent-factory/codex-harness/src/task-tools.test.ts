@@ -29,7 +29,9 @@ test("Task tool dispatch uses canonical turn and preserves receipts across repai
   let response: TextResponsesResult = { id: "response", status: "completed", output: [call], usage: { input_tokens: 10, output_tokens: 10 } };
   const requests: TextResponsesRequest[] = [];
   let effects = 0;
+  const progress: string[] = [];
   const adapter = new TaskTools([tool], {
+    progress: message => { progress.push(message); },
     responses: async request => { requests.push(request); return { operationStatus: "confirmed", turnId, response }; },
     tool: async (name, args, binding) => {
       assert.equal(name, tool.permission); assert.deepEqual(args, { count: 2 });
@@ -51,4 +53,5 @@ test("Task tool dispatch uses canonical turn and preserves receipts across repai
   assert.equal(history[0]!.type, "function_call"); assert.equal(history[1]!.type, "function_call_output");
   assert.equal(JSON.stringify(history).includes("verified"), true);
   assert.equal(effects, 1);
+  assert.deepEqual(progress, ["Running tool: validation.run", "Tool completed: validation.run"]);
 });

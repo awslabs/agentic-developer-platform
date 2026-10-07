@@ -1,11 +1,14 @@
 #!/usr/bin/env node
+import { ResponsesBridgeError } from './responses-proxy.js';
+import { readModelResponse } from './model-response.js';
 /** GitHub invocation adapter for the shared, isolated official Codex SDK. */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
-import { planningPersona, planningContract, parsePlanning, planningSchemas, planningIssueContext, planningCorrection } from './planning.js';
+import { planningPersona, planningContract, parsePlanning, directPlanningSchemas, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider } from './planning-provider.js';
+import { retryModelHttp } from './model-http.js';
 import { runAdmittedSession } from './session.js';
 import { githubTools, hostCommand } from './github-tools.js';
 import { verifySnapshot, personaSchema } from './persona.js';
@@ -35,7 +38,8 @@ async function main() {
   const { createCodexPersonaReporter } = await shared('codex-persona-reporting');
   const tokenLifecycle = await import(new URL('../../codex-reviewer/dist/token-lifecycle.js', import.meta.url));
   await tokenLifecycle.withGitHubTokenRenewal(async () => {
-    const initial = await admitCodexPersonaModel(persona, AbortSignal.timeout(10000));
+    const lifetime = AbortSignal.timeout(2700000);
+    const initial = await admitCodexPersonaModel(persona, lifetime);
     const context = contextSchema.parse(initial.context);
     const snapshot = verifySnapshot(context.snapshot);
     const definition = personaSchema.parse(JSON.parse(snapshot.definition));
@@ -45,49 +49,50 @@ async function main() {
     }
     const remaining = context.deadlineMs - Date.now();
     if (remaining <= 0) throw new Error('GitHub persona expired');
-    const deadline = AbortSignal.timeout(Math.min(remaining, 2700000));
+    const deadline = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
     const reporter = await createCodexPersonaReporter({ ...context, model: initial.model });
     let controls;
     try {
       controls = await startCodexPersonaControls(reporter.log, deadline);
       const signal = AbortSignal.any([deadline, controls.signal]);
       const issue = await execute('gh', ['issue', 'view', String(context.issue), '--repo', context.repository,
-        '--json', 'number,title,body,comments,url,state'], { signal, timeout: 15000, maxBuffer: 32768 });
+        '--json', 'number,title,body,comments,url,state'], { signal, timeout: 15000, maxBuffer: Infinity });
       const input = JSON.parse(issue.stdout);
       const repositoryIdentity = JSON.parse(await hostCommand('gh', ['api', `repos/${context.repository}`], signal));
       if (String(repositoryIdentity.id) !== context.repositoryId) throw new Error('Repository identity changed');
       const revision = (await hostCommand('git', ['rev-parse', 'HEAD'], signal)).trim();
       if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Repository revision unavailable');
       const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, context.capabilities]));
-      let operations = 0;
       const journal = async (kind, request, execute, active, effectKey) => {
         const binding = { operation_id: randomUUID(), request_digest: createHash('sha256').update(JSON.stringify(request)).digest('hex'), kind, ...(effectKey ? { effect_key: effectKey } : {}) };
-        const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active);
+        const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active).catch(() => { throw new ResponsesBridgeError('operation_claim_failed'); });
         if (admission.status === 'confirmed') return JSON.parse(admission.result);
         if (admission.status !== 'admitted') throw new Error('Operation requires reconciliation');
         const result = await execute();
         const serialized = JSON.stringify(result);
-        const receipt = await codexPersonaOperation({ ...binding, action: 'settle', result: serialized }, active);
+        const receipt = await codexPersonaOperation({ ...binding, action: 'settle', result: serialized }, active).catch(() => { throw new ResponsesBridgeError('operation_settlement_failed'); });
         if (receipt.status !== 'confirmed' || receipt.result !== serialized) throw new Error('Operation settlement was not confirmed');
         return result;
       };
       const current = async (active, checkpoint = true) => {
         active.throwIfAborted();
         if (checkpoint) await controls.checkpoint();
-        const fresh = await admitCodexPersonaModel(persona, active);
+        const fresh = await admitCodexPersonaModel(persona, active).catch(() => { throw new ResponsesBridgeError('model_authority_failed'); });
         if (fresh.model !== initial.model || fresh.snapshotDigest !== initial.snapshotDigest ||
             fresh.generation !== initial.generation || JSON.stringify(fresh.context) !== JSON.stringify(initial.context)) {
           throw new Error('GitHub persona authority changed');
         }
         return fresh;
       };
+      const reportProgress = (text, detail) => { reporter.progress(text, detail); controls.explain(text, detail); };
+      let analysisStarted = false;
       const tools = githubTools({ persona, repository: context.repository, revision, capabilities: context.capabilities },
         (name, args, work, active) => controls.operation(async () => {
           // PreToolUse already owns the active effect ticket. A nested pause
           // checkpoint here could park the effect that pause is waiting to drain.
           await current(active, false);
           return journal('tool', { name, args, revision }, work, active);
-        }));
+        }), reportProgress);
       const planner = planningPersona(persona);
       if (!planner) throw new Error('Unsupported planning persona');
       const refs = new Set(['issue', ...input.comments.map(comment => `follow_up_input.${comment.id}`)]);
@@ -98,7 +103,7 @@ async function main() {
         try {
           const document = JSON.parse(match[1]);
           if (document.planning_persona === planner) {
-            previousArtifact = planningSchemas[planner].parse(document.artifact);
+            previousArtifact = directPlanningSchemas[planner].parse(document.artifact);
             artifactComment = comment.id; artifactBlock = match[0];
           }
         } catch { /* Other issue comments are not planning documents. */ }
@@ -116,13 +121,13 @@ async function main() {
           capabilityLayers: layers, limits: { ...definition.limits, maxTurns: context.maxTurns }, deadlineMs: context.deadlineMs },
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
         source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: planningIssueContext(input, artifactComment, artifactBlock),
-          source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
-        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, maxRequestBytes: 192 * 1024, signal,
+          source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner, true) }),
+        signal,
       }, {
         assertCurrent: current,
         planningCapabilities: context.capabilities.filter(capability => capability === "story.create" || capability === "agents.delegate"),
         ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions,
-          repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: async (name, args, active) => {
+          repositoryCapabilities: ['repository.read'], execute: async (name, args, active) => {
             const result = await tools.execute(name, args, active);
             if (!result.isError) {
               const ref = `repository.${createHash('sha256').update(JSON.stringify({revision, name, args})).digest('hex')}`;
@@ -135,14 +140,16 @@ async function main() {
           const ref = `follow_up_input.control.${createHash('sha256').update(text).digest('hex')}`;
           refs.add(ref); return `Source ref: ${ref}\n${text}`;
         }),
-        async progress() {
-          const text = 'Working through the admitted task and its evidence.';
-          reporter.progress(text);
-          controls.explain(text);
+        async progress(event) {
+          // Repository tools report actual paths and outcomes at their execution
+          // boundary. SDK start/finish notifications are not new model explanations.
+          if (event.type === 'turn.started' && !analysisStarted) {
+            analysisStarted = true;
+            reportProgress('Starting the repository assessment.');
+          }
         },
         async model(request, active) {
-          return controls.operation(async () => {
-            if (++operations > context.maxTurns) throw new Error('GitHub model budget exhausted');
+          return controls.operation(() => retryModelHttp(async () => {
             const fresh = await current(active, false);
             const port = Number(process.env.SIGV4_PROXY_PORT ?? '9090');
             if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid model proxy');
@@ -150,28 +157,23 @@ async function main() {
             const response = await fetch(`http://127.0.0.1:${port}/openai/v1/responses`, {
               method: 'POST', redirect: 'error', signal: active,
               headers: { 'content-type': 'application/json', 'X-Adp-Model-Evidence': fresh.evidenceId },
-              body: JSON.stringify({ ...request, model: initial.model, stream: false, store: false }),
+              body: JSON.stringify({ ...request, model: initial.model, stream: true, store: false }),
             });
-            if (!response.ok || !response.body) throw new Error('GitHub model request failed; no automatic replay');
-            const reader = response.body.getReader();
-            const chunks = []; let bytes = 0;
-            try {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                if ((bytes += value.length) > 48000) throw new Error('Model response exceeds bound');
-                chunks.push(value);
-              }
-            } finally { await reader.cancel(); }
-            return { operationStatus: 'confirmed', response: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+            if (!response.ok) {
+              // Settle each observed rejection before retrying with a new claim.
+              // Do not retain provider bodies (which can contain sensitive data).
+              await response.body?.cancel();
+              return { httpStatus: response.status };
+            }
+            return { operationStatus: 'confirmed', response: await readModelResponse(response, active) };
             }, active);
-          });
+          }, active));
         },
       });
       let result, planned, correction;
       for (let attempt = 0; attempt < 2; attempt++) {
         result = await invoke(correction);
-        try { planned = parsePlanning(result.response, planner, refs, previousArtifact); break; }
+        try { planned = parsePlanning(result.response, planner, refs, previousArtifact, true); break; }
         catch (error) { if (attempt === 1) throw error; correction = planningCorrection(error); reporter.progress('Correcting planning structure and citations.'); }
       }
       await current(signal);

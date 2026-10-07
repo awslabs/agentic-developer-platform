@@ -125,6 +125,48 @@ def verify_cluster_dns(env: dict, cluster: dict) -> str | None:
     return str(address)
 
 
+def deployment_identity(env: dict, *, required: bool = False) -> dict | None:
+    """Reviewed connection metadata; never derive authority from the current caller."""
+    selected = env.get("deployment_identity")
+    if selected is None:
+        require(
+            not required,
+            "Live installation requires deployment_identity from the authorized connection",
+        )
+        return None
+    require(
+        isinstance(selected, dict)
+        and set(selected)
+        == {"service", "connection_label", "expected_role_arn", "expected_role_id"},
+        "deployment_identity requires exact connection and role metadata",
+    )
+    require(selected["service"] == "aws", "deployment_identity.service must be aws")
+    require(
+        isinstance(selected["connection_label"], str)
+        and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", selected["connection_label"]
+        ),
+        "deployment_identity requires the selected connection label",
+    )
+    role = selected["expected_role_arn"]
+    require(
+        isinstance(role, str)
+        and re.fullmatch(
+            r"arn:aws:iam::"
+            + re.escape(str(env.get("account_id", "")))
+            + r":role/(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}",
+            role,
+        ),
+        "deployment_identity role must belong to the selected account",
+    )
+    require(
+        isinstance(selected["expected_role_id"], str)
+        and re.fullmatch(r"AROA[A-Z0-9]{17}", selected["expected_role_id"]),
+        "deployment_identity requires the independently resolved immutable IAM RoleId",
+    )
+    return selected
+
+
 def validate(
     env: dict,
     lock: dict | None,
@@ -146,8 +188,12 @@ def validate(
     """
     control_plane_only = control_plane_mode(env, control_plane_only) or preparation
     require(env.get("version") == 1, "environment.version must be 1")
+    from .image_build_ownership import preserve_domain_builds
+
+    preserve_domain_builds(env)
     allowed = {
         "version",
+        "deployment_identity",
         "environment",
         "account_id",
         "region",
@@ -169,6 +215,7 @@ def validate(
         "controller_ownership",
         "control_plane_only",
         "image_execution",
+        "image_build_ownership",
         "gateway_namespace",
         "cluster_dns_ip",
         "execution",
@@ -176,12 +223,18 @@ def validate(
         "credential_controller",
         "api_adapters",
         "paid_worker",
+        "lifecycle_foundations",
         "api_producer_role",
+        "deployment_image_recovery",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
+    from .deployment_recovery import validate as validate_deployment_recovery
+
+    validate_deployment_recovery(env)
+    deployment_identity(env)
     cluster_dns_address(env)
     from .api_adapters import validate as validate_api_adapters
 
@@ -189,6 +242,9 @@ def validate(
     from .paid_worker import validate as validate_paid_worker
 
     validate_paid_worker(env, lock)
+    from .lifecycle_foundations import validate as validate_lifecycle_foundations
+
+    validate_lifecycle_foundations(env)
     from .producer_role import validate as validate_producer_role
 
     validate_producer_role(env)
@@ -381,8 +437,9 @@ def validate(
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         # #6048 advances it to 038 for explicit cluster grant scopes.
+        # #6127 advances it to 043 for current workspace grant-change evidence.
         require(
-            head == "042_controller_cleanup_snapshots",
+            head == "044_organization_grant_changes",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
@@ -417,10 +474,9 @@ def validate(
                     source.get("repository") == f"adp-{component}",
                     f"Wrong ECR repository: {component}",
                 )
-                require(
-                    SHA.fullmatch(str(source.get("source_revision", ""))),
-                    f"Image provenance needs an exact source revision: {component}",
-                )
+                from .image_provenance import ImageProvenance
+
+                ImageProvenance.from_source(component, source)
     require(
         preparation or env.get("network_policy_enforced") is True,
         "The selected cluster must enforce Kubernetes NetworkPolicy",

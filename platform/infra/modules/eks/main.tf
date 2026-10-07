@@ -147,7 +147,14 @@ resource "aws_eks_cluster" "main" {
   bootstrap_self_managed_addons = false
 
   access_config {
-    authentication_mode = "API_AND_CONFIG_MAP"
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = var.bootstrap_cluster_creator_admin_permissions
+  }
+
+  # This is a creation-only setting. Preserve both true and false on older
+  # clusters; hardcoding either value can replace installations using the other.
+  lifecycle {
+    ignore_changes = [access_config[0].bootstrap_cluster_creator_admin_permissions]
   }
 
   vpc_config {

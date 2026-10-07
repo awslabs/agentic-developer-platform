@@ -172,6 +172,7 @@ async def test_review_repair_credentials_obey_current_policy(session, assignment
     assert result.permitted is repair_allowed
     if repair_allowed:
         assert result.permissions["contents"] == "write"
+        assert result.permissions["workflows"] == "write"
 
 
 @pytest.mark.parametrize("field,value", [("repo", "other/repo"), ("tenant_id", "other-tenant"), ("orchestration_node_id", "other-node")])
@@ -370,7 +371,14 @@ async def test_endpoint_mints_only_policy_permissions(session, assignment, broke
     assert response.json()["token"] == "scoped-token"
     assert broker_client.mint.await_args.kwargs == {
         "repositories": ["adp"],
-        "permissions": {"contents": contents, "pull_requests": pull_requests, "issues": pull_requests, "checks": "read", "metadata": "read"},
+        "permissions": {
+            "contents": contents,
+            "pull_requests": pull_requests,
+            "issues": pull_requests,
+            "checks": "read",
+            "metadata": "read",
+            **({"workflows": "write"} if contents == "write" else {}),
+        },
     }
     # No request asked for the reviewer identity, so none of these mints may use it —
     # including the reviewer run's. This is the bootstrap mint every run makes first,
@@ -740,6 +748,7 @@ async def test_repair_enabled_reviewer_can_mint_both_identities(session, assignm
     response = await broker_client.client.post(GITHUB, json=broker_client.body)
     assert response.status_code == 200, response.text
     assert broker_client.mint.await_args.kwargs["permissions"]["contents"] == "write"
+    assert broker_client.mint.await_args.kwargs["permissions"]["workflows"] == "write"
     broker_client.reviewer.assert_not_awaited()
     response = await broker_client.client.post(GITHUB, json={**broker_client.body, "identity": "review"})
     assert response.status_code == 200, response.text

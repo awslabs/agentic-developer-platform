@@ -1,0 +1,19 @@
+{
+  "review_date": "2026-10-06",
+  "issue": 7009,
+  "workflow_variable": "ADP_SECURITY_EXECUTOR_PYTHON_IMAGE",
+  "python_base_digest": "sha256:8954ab43f809efb77bdd15e000775f282c473d19c1e906db3c8d82f64f377492",
+  "base_scope": "independently reviewed build input; not deployment approval",
+  "executor_candidate_digest": "sha256:888bffd5afd3a830017b708cf56ef0bbdf2c37eadc23f003b65b9e6a6d8b5d8c",
+  "candidate_counts_each": {
+    "critical": 0,
+    "high": 63
+  },
+  "detached_fixture_digest": "sha256:b2aae0b0a1cbbcdbf4b8c39f8126f966c09e334b595ebccf7bd8e6697dad84d6",
+  "runtime_checks": [
+    "executor nonroot/read-only pip check, imports, SQLite, SSL, AWS CLI skeleton, kubectl, Terraform",
+    "detached immutable acceptance: valid input passes, changed input fails"
+  ],
+  "retention": "tagged build inputs retained; untagged cleanup after 14 days",
+  "closure_scope": "exact candidate artifacts only; high findings and production rollout remain open"
+}

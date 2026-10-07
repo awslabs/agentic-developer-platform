@@ -1,0 +1,10 @@
+**
+!agent/
+!agent/package*.json
+!agent/src/
+!agent/src/**
+!agent/chat-sandbox-entrypoint
+!agent/scripts/
+!agent/scripts/chat-sandbox-probe.sh
+agent/node_modules/
+agent/dist/

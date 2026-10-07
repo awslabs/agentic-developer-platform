@@ -88,6 +88,11 @@ async def shared(cycle, monkeypatch):  # noqa: F811
     monkeypatch.setattr(
         "src.orchestration.shared_policy.read_flow_meter", AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(total_usd=ctx.spend))
     )
+    # Delivery protocol tests supply spend; receipt recovery has real Redis/SQL
+    # coverage in test_story_budget_recovery. Admission now uses this entry point.
+    monkeypatch.setattr(
+        "src.orchestration.shared_policy.reconcile_flow_meter", AsyncMock(side_effect=lambda session, **kwargs: SimpleNamespace(total_usd=ctx.spend))
+    )
     monkeypatch.setattr("src.orchestration.flow_budget.reserve_flow_admission", AsyncMock(return_value=SimpleNamespace(admitted=True)))
     monkeypatch.setattr("src.shared.identity.resolver.resolve_user_entity_id", AsyncMock(return_value="sub"))
     monkeypatch.setattr("src.orchestration.shared_cycle.EngineRunStore.from_env", lambda: SimpleNamespace(register=lambda envelope: None))

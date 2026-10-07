@@ -5,9 +5,9 @@ supplies the exact approved recipe and dispatches its explicit SDK methods. The
 shared executor still owns the one outer provider intent, lease and budget.
 """
 
+import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
-import json
 
 from .artifacts import canonical, digest
 from .runtime_config import LifecycleRefused
@@ -192,14 +192,19 @@ class LifecycleEffects:
             await self.append(connection, key, "confirmed", result)
         await self.authority()
 
-    async def complete(self):
+    async def complete(self, *, keys=None):
         """Read all evidence afresh; no unresolved or unapproved effect can disappear."""
         async with self.fenced() as connection:
             grouped = self.verify_rows(await self.rows(connection))
-        if set(grouped) != set(self.recipe):
+        selected = set(self.recipe) if keys is None else set(keys)
+        if not selected or not selected <= set(self.recipe):
+            raise LifecycleRefused("lifecycle evidence selection is outside its recipe")
+        if (keys is None and set(grouped) != selected) or not selected <= set(grouped):
             raise LifecycleRefused("lifecycle phase is missing required recipe effects")
         if any(events[0]["event"] != "confirmed" for events in grouped.values()):
             raise LifecycleRefused("lifecycle phase has unresolved provider effects")
         return {
-            key: json.loads(events[0]["result_json"]) for key, events in grouped.items()
+            key: json.loads(events[0]["result_json"])
+            for key, events in grouped.items()
+            if key in selected
         }

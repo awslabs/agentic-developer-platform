@@ -1,4 +1,5 @@
 import type { ThreadEvent } from '@openai/codex-sdk';
+import type { ClosureReport } from './closure-report.js';
 import { publishDeveloperEvent, scopedProgress, type DeveloperReporter } from './developer-stream.js';
 
 export interface ReviewObserver extends Pick<DeveloperReporter, 'progress' | 'explanation' | 'activity' | 'session' | 'observeEvent'> {
@@ -9,14 +10,23 @@ export interface ReviewObserver extends Pick<DeveloperReporter, 'progress' | 'ex
   };
   finish(result: { summary: string }): Promise<void>;
   fail(error: unknown): Promise<void>;
+  closure?(report: ClosureReport): void;
 }
 
-export function reviewEvents(observer?: ReviewObserver, structured = false) {
+export function reviewEvents(observer?: ReviewObserver, structured = false, planScope: 'assignment' | 'inspection' = 'assignment') {
   if (!observer) return undefined;
-  const reporter = scopedProgress({ ...observer, async finish() {}, async fail() {} });
+  const reporter = scopedProgress({ ...observer,
+    ...(observer.progress ? { progress: (text: string, detail: Parameters<NonNullable<DeveloperReporter['progress']>>[1]) =>
+      observer.progress!(text, { ...detail, ...(detail.category === 'plan' ? { plan_scope: planScope } : {}) }) } : {}),
+    async finish() {}, async fail() {},
+  });
   return (event: ThreadEvent) => {
     // The structured verdict is published by the controller after validation.
-    if (structured && 'item' in event && event.item.type === 'agent_message') return;
+    if (structured && 'item' in event && event.item.type === 'agent_message'
+        && (event.type !== 'item.completed' || /^\s*(?:[\[{]|```)/.test(event.item.text))) {
+      reporter.observeEvent?.(event);
+      return;
+    }
     publishDeveloperEvent(event, reporter);
   };
 }

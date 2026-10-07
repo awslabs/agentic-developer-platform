@@ -15,7 +15,7 @@ from typing import Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -34,6 +34,7 @@ class RootBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     source: Literal["chat", "gitlab"]
     producer_role: str = Field(pattern=r"^arn:aws(?:-us-gov|-cn)?:iam::[0-9]{12}:role/[A-Za-z0-9/+=,.@_-]+$")
+    chat_supervisor_role: str | None = Field(default=None, pattern=r"^arn:aws(?:-us-gov|-cn)?:iam::[0-9]{12}:role/[A-Za-z0-9/+=,.@_-]+$")
     tenant_id: str = Field(min_length=1, max_length=255)
     # GitLab registration is instance AND immutable project qualified. Neither
     # project path nor username is an identity. Chat has no external project.
@@ -41,6 +42,12 @@ class RootBinding(BaseModel):
     project_id: int = Field(default=0, ge=0)
     repo: str = ""
     personas: frozenset[str]
+
+    @model_validator(mode="after")
+    def chat_only_supervisor(self):
+        if self.chat_supervisor_role is not None and (self.source != "chat" or self.chat_supervisor_role == self.producer_role):
+            raise ValueError("supervisor must be a separate chat identity")
+        return self
 
 
 class RootAdmission(BaseModel):
@@ -101,8 +108,13 @@ def provision_root(store: BootstrapStore, envelope: dict, *, source: str, human_
     invocation, tenant = envelope["message_id"], envelope["tenant_id"]
     repo = envelope["source_ref"]["repo"]
     created = datetime.fromisoformat(envelope["arrived_at"].replace("Z", "+00:00"))
-    if created.tzinfo is None or not now - timedelta(minutes=15) <= created <= now + timedelta(seconds=30):
+    if created.tzinfo is None or created > now + timedelta(seconds=30):
         raise BootstrapRefusedError("stale root event")
+    if created < now - timedelta(minutes=15):
+        from src.agentauth.chat_pending_registration import retained_registration_matches
+
+        if source != "chat" or not retained_registration_matches(envelope, human_id, created, now):
+            raise BootstrapRefusedError("stale root event")
     expiry = created + timedelta(hours=2)
     reference = f"{source}-event:{envelope_digest(envelope)}"
     kind = "service_policy" if service_identity else f"{source}_event"
@@ -133,7 +145,28 @@ def provision_root(store: BootstrapStore, envelope: dict, *, source: str, human_
         flow_id=invocation,
         expires_at=expiry,
     )
-    store.provision_pending(envelope=envelope, grant=grant, now=now)
+    metadata = {}
+    retained_chat_input = None
+    if source == "chat" and "message" in envelope and os.environ.get("ADP_CHAT_DATA_ENABLED") == "true":
+        from src.agentauth.chat_admission import retention_seconds
+        from src.agentauth.chat_capability import ChatAuthorizationUnavailableError
+        from src.agentauth.chat_delivery import protected_delivery
+        from src.agentauth.chat_user_turn import protected_user_turn
+        from src.orchestration.intake_wiring import _get_context_table
+
+        input_table = _get_context_table()
+        try:
+            input_expiry = min(int(expiry.timestamp()), int(created.timestamp()) + retention_seconds())
+        except ChatAuthorizationUnavailableError:
+            raise BootstrapRefusedError("retained chat input unavailable") from None
+        if input_table is None or (input_expiry <= int(now.timestamp()) and store._read(f"INVOCATION#{invocation}", "DISPATCH") is None):
+            raise BootstrapRefusedError("retained chat input unavailable")
+        metadata["chat_user_turn"], input_item = protected_user_turn(envelope, human_id=human_id, expires_at=input_expiry)
+        delivery = protected_delivery(envelope, human_id)
+        if delivery is not None:
+            metadata["chat_delivery"] = delivery
+        retained_chat_input = (input_table.name, input_item)
+    store.provision_pending(envelope=envelope, grant=grant, now=now, execution_metadata=metadata, retained_chat_input=retained_chat_input)
 
 
 router = APIRouter(prefix="/internal/v1/agent/roots", tags=["agent-authority"])
@@ -182,6 +215,9 @@ async def admit_root(
         if not isinstance(invocation, str) or not 1 <= len(invocation) <= 128:
             raise ValueError()
         if body.source == "chat":
+            from src.agentauth.chat_user_turn import UserTurn
+
+            UserTurn.model_validate({"message": envelope["message"], "attachments": envelope.get("attachments", [])})
             session_id = envelope["session_id"]
             if not isinstance(session_id, str) or not 1 <= len(session_id) <= 128:
                 raise ValueError()
@@ -197,8 +233,47 @@ async def admit_root(
             envelope["actor"] = {**envelope.get("actor", {}), "user_id": human_id, "org_id": binding.tenant_id, "is_bot": False}
         # A root cannot claim to inherit somebody else's snapshot or authority.
         envelope.pop("parent_principal", None)
+        if body.source == "chat":
+            envelope.pop("session_mode", None)
+        mailbox = None
+        owner = None
+        selected_mode = "ephemeral"
+        if body.source == "chat" and os.environ.get("ADP_CHAT_DATA_ENABLED") == "true":
+            from src.agentauth.chat_authority import current_chat_member
+            from src.agentauth.chat_capability import ChatAuthorizationRefusedError, ChatAuthorizationUnavailableError
+            from src.agentauth.chat_session_mailbox import AcceptedTurn, ChatSessionMailbox
+            from src.orchestration.intake_wiring import _get_context_table
+
+            table = _get_context_table()
+            if table is not None:
+                mailbox = ChatSessionMailbox(table)
+                owner = (binding.tenant_id, envelope.get("team_id", ""), human_id)
+                try:
+                    selected = await run_in_threadpool(mailbox.state, session_id=session_id, owner=owner, now=int(datetime.now(UTC).timestamp()))
+                    selected_mode = selected["mode"]
+                    if selected_mode == "persistent" and not await current_chat_member(session, binding.tenant_id, human_id, owner[1]):
+                        raise ChatAuthorizationRefusedError("chat membership refused")
+                except ChatAuthorizationRefusedError:
+                    raise HTTPException(403, "chat session refused") from None
+                except (ChatAuthorizationUnavailableError, BotoCoreError, ClientError):
+                    raise HTTPException(503, "chat mailbox unavailable") from None
+                envelope["session_mode"] = selected_mode
         await run_in_threadpool(provision_root, store, envelope, source=body.source, human_id=human_id, now=datetime.now(UTC))
         snapshot = await ensure_snapshot_report_only(session, store=store, invocation_id=invocation)
+        if mailbox is not None and selected_mode == "persistent":
+            try:
+                await run_in_threadpool(
+                    mailbox.accept,
+                    session_id=session_id,
+                    owner=owner,
+                    turn=AcceptedTurn(turn_id=invocation, message=envelope["message"]),
+                    now=int(datetime.now(UTC).timestamp()),
+                    expected_mode="persistent",
+                )
+            except ChatAuthorizationRefusedError:
+                raise HTTPException(403, "chat session refused") from None
+            except (ChatAuthorizationUnavailableError, BotoCoreError, ClientError):
+                raise HTTPException(503, "chat mailbox unavailable") from None
         # TS consumers hash these exact canonical bytes; reparsing arbitrary
         # metadata would lose distinctions such as Python's 1.0 spelling.
         from starlette.responses import JSONResponse

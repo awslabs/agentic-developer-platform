@@ -12,7 +12,6 @@ import fcntl
 import hashlib
 import json
 import os
-import ipaddress
 import subprocess
 import sys
 import tempfile
@@ -25,19 +24,21 @@ from urllib.parse import urlsplit
 import httpx
 import yaml
 
+from .cluster_probe import ClusterProbe
 from .config import (
     COMPONENTS,
     LABEL,
     MODULE,
     Refusal,
+    deployment_identity,
     digest,
     identity,
     image,
     require,
     verify_cluster_dns,
 )
+from .image_provenance import ImageProvenance
 from .manifests import bootstrap_job, migration_job, render
-from .cluster_probe import ClusterProbe
 
 sys.path.insert(0, str(MODULE / "infra/scripts"))
 from domain_ownership import validate_plan  # noqa: E402
@@ -134,12 +135,88 @@ class Installer:
             self.receipt["mode"] = "control-plane-only"
         self.receipt_path = directory / "receipt.json"
 
+    def verify_deployment_identity(self):
+        selected = deployment_identity(self.env, required=True)
+        # Use the active command credentials each time. Never cache success across
+        # phases, credential refresh, compensation, cleanup or lock recovery.
+        caller = self.json(
+            self.commands.call(
+                [
+                    "aws",
+                    "--region",
+                    self.env["region"],
+                    "--no-cli-pager",
+                    "sts",
+                    "get-caller-identity",
+                    "--output",
+                    "json",
+                ]
+            )
+        )
+        role_arn = selected["expected_role_arn"]
+        role_name = role_arn.rsplit("/", 1)[1]
+        prefix = f"arn:aws:sts::{self.env['account_id']}:assumed-role/{role_name}/"
+        arn, user_id = caller.get("Arn", ""), caller.get("UserId", "")
+        require(
+            caller.get("Account") == self.env["account_id"],
+            "AWS identity does not match the selected account",
+        )
+        require(
+            isinstance(arn, str)
+            and arn.startswith(prefix)
+            and bool(arn[len(prefix) :])
+            and "/" not in arn[len(prefix) :]
+            and user_id == selected["expected_role_id"] + ":" + arn[len(prefix) :],
+            "AWS session does not match the selected connection role identity",
+        )
+        observed = self.json(
+            self.commands.call(
+                [
+                    "aws",
+                    "--region",
+                    self.env["region"],
+                    "--no-cli-pager",
+                    "iam",
+                    "get-role",
+                    "--role-name",
+                    role_name,
+                    "--output",
+                    "json",
+                ]
+            )
+        ).get("Role", {})
+        require(
+            observed.get("Arn") == role_arn
+            and observed.get("RoleId") == selected["expected_role_id"],
+            "Selected IAM role was replaced or differs from the authorized connection",
+        )
+        self.receipt["deployment_identity_verification"] = {
+            **selected,
+            "account_id": caller["Account"],
+            "assumed_role_arn": arn,
+            "verified_at": datetime.now(UTC).isoformat(),
+            "stage": self.receipt.get("stage"),
+        }
+        self.save()
+        return caller
+
     def aws(self, *args, **kwargs):
+        # S3 locks/routes and secret preparation also mutate outside phase().
+        # Unknown operations are guarded; only AWS read verbs/local kubeconfig
+        # generation may proceed without another check.
+        operation = args[1] if len(args) > 1 else ""
+        if (
+            not operation.startswith(("get-", "describe-", "list-", "head-"))
+            and operation != "update-kubeconfig"
+        ):
+            self.verify_deployment_identity()
         return self.commands.call(
             ["aws", "--region", self.env["region"], "--no-cli-pager", *args], **kwargs
         )
 
     def kube(self, *args, data=None, **kwargs):
+        if not args or args[0] not in {"get", "logs", "auth", "config", "wait"}:
+            self.verify_deployment_identity()
         return self.commands.call(
             [
                 "kubectl",
@@ -165,6 +242,7 @@ class Installer:
         self.receipt["stage"] = name
         self.save()
         try:
+            self.verify_deployment_identity()
             result = action()
         except Exception:
             self.receipt["status"] = "failed"
@@ -248,11 +326,7 @@ class Installer:
         return self.receipt
 
     def target(self, verify_source=True):
-        account = self.json(self.aws("sts", "get-caller-identity"))["Account"]
-        require(
-            account == self.env["account_id"],
-            "AWS identity does not match the selected account",
-        )
+        account = self.verify_deployment_identity()["Account"]
         cluster = self.json(
             self.aws("eks", "describe-cluster", "--name", self.env["cluster"])
         )["cluster"]
@@ -356,37 +430,33 @@ class Installer:
         self.receipt["reused_image_sources"] = evidence
         self.save()
 
+    def registry_provenance(self, name):
+        source = self.lock["image_sources"][name]
+        provenance = ImageProvenance.from_source(name, source)
+        data = self.json(
+            self.aws(
+                "ecr",
+                "describe-images",
+                "--repository-name",
+                source["repository"],
+                "--image-ids",
+                f"imageDigest={self.lock['images'][name]}",
+            )
+        )
+        details = data.get("imageDetails", [])
+        require(
+            len(details) == 1
+            and details[0]["imageDigest"] == self.lock["images"][name],
+            f"Release image unavailable: {name}",
+        )
+        provenance.verify_tags(details[0].get("imageTags", []))
+        return provenance
+
     def images(self):
         if self.env.get("image_execution") == "cluster":
             return self.cluster_images()
         for name in self.image_components[:-1]:
-            source = self.lock["image_sources"][name]
-            data = self.json(
-                self.aws(
-                    "ecr",
-                    "describe-images",
-                    "--repository-name",
-                    source["repository"],
-                    "--image-ids",
-                    f"imageDigest={self.lock['images'][name]}",
-                )
-            )
-            details = data.get("imageDetails", [])
-            require(
-                len(details) == 1
-                and details[0]["imageDigest"] == self.lock["images"][name],
-                f"Release image unavailable: {name}",
-            )
-            # Build lanes tag artifacts with the source commit. This verifies the
-            # registry observation, not only a source claim in a local lock file.
-            require(
-                any(
-                    tag == source["source_revision"]
-                    or tag == source["source_revision"][:12]
-                    for tag in details[0].get("imageTags", [])
-                ),
-                f"Registry does not bind image to source: {name}",
-            )
+            provenance = self.registry_provenance(name)
             self.commands.call(
                 ["docker", "pull", image(self.lock, name)],
                 timeout=self.env["timeout_seconds"],
@@ -396,23 +466,11 @@ class Installer:
                     ["docker", "image", "inspect", image(self.lock, name)]
                 )
             )
-            require(
-                len(inspected) == 1
-                and inspected[0]
-                .get("Config", {})
-                .get("Labels", {})
-                .get("org.opencontainers.image.revision")
-                == source["source_revision"],
-                f"Image OCI provenance does not match source: {name}",
-            )
+            require(len(inspected) == 1, "Image inspection is ambiguous: " + name)
+            provenance.verify_labels(inspected[0].get("Config", {}).get("Labels", {}))
         self.commands.call(
             ["docker", "pull", image(self.lock, "superplane-api")],
             timeout=self.env["timeout_seconds"],
-        )
-        environment = (
-            self.management_probe_environment()
-            if self.control_plane_only and not self.env.get("api_adapters")
-            else {}
         )
         result = self.commands.call(
             [
@@ -422,20 +480,16 @@ class Installer:
                 "--network=none",
                 "--entrypoint",
                 "python",
-                *[item for key in environment for item in ("--env", key)],
                 image(self.lock, "superplane-api"),
                 "-m",
                 "app.installation",
                 "image-contract"
-                if self.env.get("api_adapters")
-                else "management-capabilities"
-                if self.control_plane_only
+                if self.env.get("api_adapters") or self.control_plane_only
                 else "capabilities",
             ],
-            env=dict(os.environ, **environment),
             allow_failure=True,
         )
-        if self.env.get("api_adapters"):
+        if self.env.get("api_adapters") or self.control_plane_only:
             from .api_adapters import image_contract_valid
 
             require(
@@ -443,12 +497,6 @@ class Installer:
                 "Packaged API image contract failed",
             )
             self.receipt["image_contract"] = self.json(result)
-        elif self.control_plane_only:
-            require(
-                result.returncode == 0
-                and self.json(result).get("controller_management") is True,
-                "Image does not implement authenticated management mode",
-            )
         capabilities = self.json(result).get("capabilities", {})
         required = {
             "credential_evidence",
@@ -520,20 +568,10 @@ class Installer:
         self.receipt["controller_profiles"] = verify_result(self.json(result), self.env)
         self.save()
 
-    def management_probe_environment(self):
-        return {
-            "SUPERPLANE_MANAGEMENT_ONLY": "true",
-            "DOMAIN_AUTH_ENFORCED": "true",
-            "COGNITO_ENABLED": "true",
-            "COGNITO_ISSUER": self.env["auth"]["issuer"],
-            "DOMAIN_AUTH_ALLOWED_CLIENT_IDS": json.dumps(
-                self.env["auth"]["client_ids"]
-            ),
-        }
-
     def cluster_images(self):
         for name in self.image_components[:-1]:
             source = self.lock["image_sources"][name]
+            provenance = self.registry_provenance(name)
             result = self.json(
                 self.aws(
                     "ecr",
@@ -577,30 +615,21 @@ class Installer:
             )
             config = response.json()
             require(
-                config.get("architecture") == "amd64"
-                and config.get("os") == "linux"
-                and config.get("config", {})
-                .get("Labels", {})
-                .get("org.opencontainers.image.revision")
-                == source["source_revision"],
-                "Image OCI provenance does not match source: " + name,
+                config.get("architecture") == "amd64" and config.get("os") == "linux",
+                "Image platform does not match linux/amd64: " + name,
             )
+            provenance.verify_labels(config.get("config", {}).get("Labels", {}))
         with ClusterProbe(self) as probe:
             probe.prove_network_policy()
             probe.isolate()
             action = (
                 "image-contract"
-                if self.env.get("api_adapters")
-                else "management-capabilities"
-                if self.control_plane_only
+                if self.env.get("api_adapters") or self.control_plane_only
                 else "capabilities"
             )
             api = probe.run(
                 "superplane-api",
                 ["python", "-m", "app.installation", action],
-                values=self.management_probe_environment()
-                if self.control_plane_only and not self.env.get("api_adapters")
-                else None,
             )
             observed = self.json(api)
             from .api_adapters import image_contract_valid
@@ -609,15 +638,13 @@ class Installer:
                 api.returncode == 0
                 and (
                     image_contract_valid(observed)
-                    if self.env.get("api_adapters")
-                    else observed.get("controller_management") is True
-                    if self.control_plane_only
+                    if self.env.get("api_adapters") or self.control_plane_only
                     else len(observed.get("capabilities", {})) == 4
                     and all(observed["capabilities"].values())
                 ),
                 "API production capability preflight failed",
             )
-            if self.env.get("api_adapters"):
+            if self.env.get("api_adapters") or self.control_plane_only:
                 self.receipt["image_contract"] = observed
             controller = probe.run(
                 "superplane-controller",
@@ -1079,40 +1106,48 @@ class Installer:
             self.receipt.setdefault("database_observations", {})[key] = observed
 
     def resolve_database_addresses(self, endpoint):
-        # Private RDS DNS belongs to the selected VPC, not the operator laptop.
-        # The existing ADP API provides a read-only DNS lookup; no credential is read.
-        program = (
-            "import json,socket,sys; "
-            "print(json.dumps(sorted({r[4][0] for r in socket.getaddrinfo("
-            "sys.argv[1],int(sys.argv[2]),type=socket.SOCK_STREAM)})))"
-        )
-        addresses = self.json(
-            self.kube(
-                "exec",
-                "deployment/bedrockgateway",
-                "-n",
-                self.env.get("gateway_namespace", "adp"),
-                "-c",
-                "bedrockgateway",
-                "--",
-                "python",
-                "-c",
-                program,
-                endpoint["Address"],
-                str(endpoint["Port"]),
-            )
-        )
+        # Resolve in the selected management VPC without executing in a shared
+        # service. This probe has DNS egress only, no database values or identity.
+        from .database_dns_probe import normalize_addresses
+
         require(
-            isinstance(addresses, list) and 0 < len(addresses) <= 16,
-            "Selected database endpoint did not resolve in the management VPC",
+            isinstance(endpoint.get("Address"), str)
+            and 0 < len(endpoint["Address"]) <= 253
+            and not any(c.isspace() for c in endpoint["Address"])
+            and type(endpoint.get("Port")) is int
+            and 1 <= endpoint["Port"] <= 65535,
+            "Selected database endpoint is invalid",
         )
-        try:
-            addresses = sorted(
-                {str(ipaddress.ip_address(a)) for a in addresses if isinstance(a, str)}
+        with ClusterProbe(self) as probe:
+            probe.isolate(dns_only=True)
+            # Preserve the native resolver/UDP+TCP proof before using its answers.
+            probe.prove_dns(endpoint["Address"])
+            result = probe.run(
+                "superplane-api",
+                [
+                    "python",
+                    "-c",
+                    (MODULE / "installation/database_dns_probe.py").read_text(),
+                    endpoint["Address"],
+                    str(endpoint["Port"]),
+                ],
             )
-        except ValueError:
-            raise Refusal("Database DNS returned an invalid address") from None
-        require(bool(addresses), "Database DNS returned no usable address")
+            require(
+                result.returncode == 0 and len(result.stdout) <= 4096,
+                "Selected database endpoint did not resolve in the management VPC",
+            )
+            observed = self.json(result)
+            require(
+                isinstance(observed, dict)
+                and observed.get("host") == endpoint["Address"]
+                and type(observed.get("port")) is int
+                and observed["port"] == endpoint["Port"],
+                "Database DNS response differs from the selected endpoint",
+            )
+            try:
+                addresses = normalize_addresses(observed.get("addresses"))
+            except ValueError:
+                raise Refusal("Database DNS returned an invalid address set") from None
         self.receipt["database_network_target"] = {
             "host": endpoint["Address"],
             "addresses": addresses,
@@ -1175,17 +1210,10 @@ class Installer:
 
     def terraform(self):
         tf = self.directory / "terraform"
-        tf.mkdir(exist_ok=True)
-        # Copy only the maintained module files: Terraform's working data and
-        # reviewed plan stay in the private run directory, not the checkout.
-        for source in (MODULE / "infra/control-plane").glob("*.tf"):
-            # The module's release lock is a relative path. Keep its exact bytes
-            # and resolve that one expression against the maintained source.
-            text = source.read_text().replace(
-                "${path.module}/../../releases/superplane.lock.yaml",
-                str(MODULE / "releases/superplane.lock.yaml"),
-            )
-            (tf / source.name).write_text(text)
+        from .terraform_sources import stage_control_plane
+        from .image_build_ownership import preserve_domain_builds, runtime_plan
+
+        stage_control_plane(tf, self.lock)
         variables = {
             "environment": self.env["environment"],
             "account_id": self.env["account_id"],
@@ -1197,6 +1225,7 @@ class Installer:
             "jwt_secret_name": self.env["secrets"]["observation"],
             "cors_allowed_origins": [self.env["origin"]],
             "api_producer_role": self.env.get("api_producer_role"),
+            "manage_image_builds": preserve_domain_builds(self.env),
             # workspace_cluster_context is deferred in control-plane-only mode;
             # the Terraform module must treat an absent/null value as no-op.
             "workspace_cluster_context": ""
@@ -1225,7 +1254,9 @@ class Installer:
             self.commands.call([*prefix, "show", "-json", "installation.tfplan"])
         )
         report = validate_plan(
-            plan, account_id=self.env["account_id"], environment=self.env["environment"]
+            runtime_plan(self.env, plan),
+            account_id=self.env["account_id"],
+            environment=self.env["environment"],
         )
         require(
             report.ok and not report.has_destructive_changes,
@@ -1494,13 +1525,18 @@ class Installer:
                 for field in ("uid", "resourceVersion"):
                     require(current["metadata"].get(field), "Object identity is absent")
                     write["metadata"][field] = current["metadata"][field]
-            writes.append((write, current is not None))
-        for doc, present in writes:
+            writes.append((write, current))
+        for doc, previous in writes:
+            from .deployment_recovery import force_args
+
+            present = previous is not None
+            recovery_args = force_args(self, doc, previous)
             # Conditional apply fences both replacement and ownership-label races.
             # Create is essential for absent objects: apply could adopt a concurrent one.
             current = self.json(
                 self.kube(
                     *(["apply", "--server-side"] if present else ["create"]),
+                    *recovery_args,
                     "--field-manager=superplane-installer",
                     "-f",
                     "-",
@@ -1538,11 +1574,14 @@ class Installer:
             self.save()
 
     def foundations(self):
+        from .lifecycle_foundations import managed
+
         self.apply(
             [
                 d
                 for d in self.docs
-                if d["kind"]
+                if not managed(self.env, d)
+                and d["kind"]
                 in {
                     "Namespace",
                     "ServiceAccount",
@@ -1550,6 +1589,8 @@ class Installer:
                     "ConfigMap",
                     "Service",
                     "PodDisruptionBudget",
+                    "ScaledJob",
+                    "TriggerAuthentication",
                 }
             ]
         )
@@ -2056,6 +2097,29 @@ class Installer:
 
     def private_services(self):
         namespace = self.env["namespace"]
+        if self.control_plane_only and not self.env.get("api_adapters"):
+            # Production imports require the actual database URL and trusted CA.
+            # Prove the HTTP surface in the deployed environment before routing;
+            # the isolated image contract never claims management readiness.
+            result = self.kube(
+                "exec",
+                "deployment/superplane-api",
+                "-n",
+                namespace,
+                "--",
+                "python",
+                "-m",
+                "app.installation",
+                "management-capabilities",
+                allow_failure=True,
+            )
+            observed = self.json(result)
+            require(
+                result.returncode == 0
+                and observed.get("controller_management") is True,
+                "Deployed API does not implement authenticated management mode",
+            )
+            self.receipt["management_capabilities"] = observed
         from .controller_profiles import VERIFY_PROGRAM, projection, verify_result
 
         profiles = projection(self.env)
@@ -2187,7 +2251,12 @@ class Installer:
                 )
             )
             require(
-                runtime.get("mode") == "management"
+                runtime.get("mode")
+                == (
+                    "full"
+                    if self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                    else "management"
+                )
                 and runtime.get("release_id") == self.release
                 and runtime.get("source_revision") == self.lock["source_revision"]
                 and runtime.get("domain_auth_enforced") is True,
@@ -2462,7 +2531,10 @@ class Installer:
                 if self.env.get("api_adapters"):
                     from .adapter_staging import require_quiescent
 
-                    self.phase("adapter-quiescence", lambda: require_quiescent(self))
+                    self.phase(
+                        "adapter-quiescence",
+                        lambda: require_quiescent(self, shared=False),
+                    )
                 self.phase(
                     "infrastructure",
                     lambda: self.commands.call(
@@ -2482,7 +2554,23 @@ class Installer:
                     self.phase(
                         "api-producer-role-verified", lambda: verify_applied(self)
                     )
+                from . import lifecycle_worker
+
+                if lifecycle_worker.enabled(self.env):
+                    self.phase(
+                        "shared-execution-quiescence",
+                        lambda: lifecycle_worker.quiescence_job(self),
+                    )
                 self.phase("foundations", self.foundations)
+                from .lifecycle_foundations import (
+                    prepare as prepare_lifecycle_foundations,
+                )
+
+                if self.env.get("lifecycle_foundations"):
+                    self.phase(
+                        "lifecycle-foundations",
+                        lambda: prepare_lifecycle_foundations(self),
+                    )
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))
                 self.phase("rollout", self.rollout)
@@ -2495,10 +2583,17 @@ class Installer:
                     self.phase(
                         "adapter-stage-verification", lambda: verify(self, token)
                     )
-                    if not self.control_plane_only:
+                    if (
+                        not self.control_plane_only
+                        or self.env.get("paid_worker", {}).get("mode")
+                        == "native-lifecycle"
+                    ):
                         self.phase("adapter-activation", lambda: activate(self))
                 self.phase("private-verification", self.private_services)
-                if self.env.get("api_adapters") and not self.control_plane_only:
+                if self.env.get("api_adapters") and (
+                    not self.control_plane_only
+                    or self.env.get("paid_worker", {}).get("mode") == "native-lifecycle"
+                ):
                     from .adapter_staging import verify_active
 
                     self.phase(
@@ -2614,6 +2709,13 @@ class Installer:
             and self.receipt["verification"]["registered_workspaces"] == expected_count,
             "Durable organization/registrations changed across management restart",
         )
+        from . import lifecycle_worker
+
+        if lifecycle_worker.enabled(self.env):
+            lifecycle_worker.installed_snapshot(self, active=True)
+            self.receipt["adapter_stage"]["native_executable_proof"] = (
+                lifecycle_worker.proof(self, "executable")
+            )
         self.receipt["verification"]["restart_persistence_verified"] = True
 
     def resume(self, previous):
@@ -2671,10 +2773,18 @@ class Installer:
             "Receipt has no retained lock or temporary namespace",
         )
         self.target(verify_source=False)
-        for doc in (
+        recovery_jobs = [
             migration_job(self.env, self.lock, self.run_id),
             bootstrap_job(self.env, self.lock, self.run_id),
-        ):
+        ]
+        state = self.receipt.get("lifecycle_foundations", {}).get(
+            "PersistentVolumeClaim"
+        )
+        if self.env.get("lifecycle_foundations") and state:
+            from .lifecycle_foundations import probe_job
+
+            recovery_jobs.append(probe_job(self, state["uid"]))
+        for doc in recovery_jobs:
             job = self.existing(doc)
             require(
                 job is None

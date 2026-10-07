@@ -82,7 +82,6 @@ export function planVerifiedRun(
     maxContextBytes: Math.min(persona.limits.maxContextBytes, policy.limits.maxContextBytes),
     maxDurationMs: Math.min(persona.limits.maxDurationMs, policy.limits.maxDurationMs, policy.deadlineMs - nowMs),
   };
-  if (Buffer.byteLength(snapshot.instructions) >= limits.maxContextBytes) throw new Error("Instructions exhaust admitted context budget");
   const options: ThreadOptions = {
     model: policy.canonicalModel, modelReasoningEffort: persona.effort,
     skipGitRepoCheck: !repository, networkAccessEnabled: false, webSearchMode: "disabled",

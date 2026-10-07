@@ -1,0 +1,126 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: adp-chat-sandbox-template
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: Namespaced
+  matchConditions:
+    - name: chat-sandbox-only
+      expression: >-
+        ((has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'adp-chat-sandbox') ||
+         (has(object.metadata.labels) && 'adp.io/chat-sandbox' in object.metadata.labels))
+  validations:
+    - expression: >-
+        object.spec.serviceAccountName == 'adp-chat-sandbox' &&
+        has(object.metadata.labels) && object.metadata.labels['adp.io/chat-sandbox'] == 'true' &&
+        'adp.io/run-hash' in object.metadata.labels &&
+        object.metadata.labels['adp.io/run-hash'].matches('^[a-f0-9]{64}$') &&
+        has(object.metadata.generateName) &&
+        object.metadata.generateName.matches('^chat-turn-[a-f0-9]{12}-$')
+      message: Chat sandbox identity and run label must match the trusted template
+    - expression: >-
+        object.spec.automountServiceAccountToken == false &&
+        object.spec.enableServiceLinks == false &&
+        object.spec.shareProcessNamespace == false &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        object.spec.restartPolicy == 'Never' && object.spec.activeDeadlineSeconds == 900 &&
+        !has(object.spec.initContainers) && !has(object.spec.ephemeralContainers) &&
+        !has(object.spec.imagePullSecrets)
+      message: Chat sandboxes cannot access host namespaces, service links or extra containers
+    - expression: >-
+        has(object.spec.securityContext) && object.spec.securityContext.runAsNonRoot == true &&
+        object.spec.securityContext.runAsUser == 10001 &&
+        object.spec.securityContext.fsGroup == 10001 &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
+      message: Chat sandbox pod security context must be restricted
+    - expression: >-
+        size(object.spec.volumes) == 3 &&
+        object.spec.volumes.exists_one(volume, volume.name == 'gateway-ca' && has(volume.configMap) &&
+          volume.configMap.name.matches('^chat-sandbox-gateway-ca-[a-f0-9]{16}$') &&
+          volume.configMap.defaultMode == 292 &&
+          size(volume.configMap.items) == 1 && volume.configMap.items[0].key == 'ca.crt' && volume.configMap.items[0].path == 'ca.crt') &&
+        object.spec.volumes.exists_one(v, v.name == 'scratch' && has(v.emptyDir) && v.emptyDir.sizeLimit == '512Mi') &&
+        object.spec.volumes.exists_one(v, v.name == 'sandbox-identity' && has(v.projected) &&
+          v.projected.defaultMode == 292 &&
+          size(v.projected.sources) == 1 && has(v.projected.sources[0].serviceAccountToken) &&
+          v.projected.sources[0].serviceAccountToken.audience == 'adp-agent-bootstrap' &&
+          v.projected.sources[0].serviceAccountToken.path == 'token' &&
+          v.projected.sources[0].serviceAccountToken.expirationSeconds == 600)
+      message: Chat sandboxes may mount only their scoped identity, public gateway CA and fresh scratch
+    - expression: >-
+        size(object.spec.containers) == 1 &&
+        object.spec.containers[0].name == 'chat-agent' &&
+        object.spec.containers[0].image.matches('^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$') &&
+        object.spec.containers[0].imagePullPolicy == 'IfNotPresent' &&
+        object.spec.containers[0].command == ['/app/chat-sandbox-entrypoint'] &&
+        object.spec.containers[0].workingDir == '/tmp' &&
+        !has(object.spec.containers[0].args) &&
+        !has(object.spec.containers[0].envFrom)
+      message: Chat sandbox image and entrypoint must be pinned
+    - expression: >-
+        size(object.spec.containers[0].env) == 10 &&
+        object.spec.containers[0].env.all(e, has(e.value) && !has(e.valueFrom) &&
+          e.name in ['ADP_CHAT_MODEL_POLICY_ENABLED', 'ADP_CHAT_DATA_ENABLED',
+            'ADP_CHAT_DATA_URL', 'CONTEXT_STRATEGY', 'MEMORY_STRATEGY',
+            'ARTIFACT_STRATEGY', 'ADP_WORKLOAD_TOKEN_FILE', 'CLAUDE_CONFIG_DIR', 'HOME', 'NODE_EXTRA_CA_CERTS']) &&
+        object.spec.containers[0].env.exists_one(entry, entry.name == 'NODE_EXTRA_CA_CERTS' && entry.value == '/var/run/adp-chat-ca/ca.crt') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_MODEL_POLICY_ENABLED' && e.value == 'true') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_DATA_ENABLED' && e.value == 'true') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_WORKLOAD_TOKEN_FILE' && e.value == '/var/run/adp-model/token') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'CONTEXT_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'MEMORY_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ARTIFACT_STRATEGY' && e.value == 'gateway') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'CLAUDE_CONFIG_DIR' && e.value == '/tmp/workspace/.claude') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'HOME' && e.value == '/tmp/workspace') &&
+        object.spec.containers[0].env.exists_one(e, e.name == 'ADP_CHAT_DATA_URL' && e.value == 'https://chat-sandbox-gateway.adp-gateway.svc:8443')
+      message: Chat sandboxes cannot inherit service credentials or configuration
+    - expression: >-
+        size(object.spec.containers[0].volumeMounts) == 3 &&
+        object.spec.containers[0].volumeMounts.exists_one(mount,
+          mount.name == 'gateway-ca' && mount.mountPath == '/var/run/adp-chat-ca' && mount.readOnly == true &&
+          !has(mount.subPath) && !has(mount.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'sandbox-identity' && m.mountPath == '/var/run/adp-model' && m.readOnly == true &&
+          !has(m.subPath) && !has(m.subPathExpr)) &&
+        object.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'scratch' && m.mountPath == '/tmp' && !has(m.subPath) && !has(m.subPathExpr))
+      message: Chat sandbox identity and scratch mounts must not be substituted
+    - expression: >-
+        has(object.spec.containers[0].securityContext) &&
+        object.spec.containers[0].securityContext.runAsNonRoot == true &&
+        object.spec.containers[0].securityContext.runAsUser == 10001 &&
+        object.spec.containers[0].securityContext.readOnlyRootFilesystem == true &&
+        object.spec.containers[0].securityContext.allowPrivilegeEscalation == false &&
+        !has(object.spec.containers[0].securityContext.privileged) &&
+        object.spec.containers[0].securityContext.capabilities.drop == ['ALL'] &&
+        object.spec.containers[0].securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        !has(object.spec.containers[0].ports) && !has(object.spec.containers[0].volumeDevices)
+      message: Chat sandbox process must not gain host or container privileges
+    - expression: >-
+        has(object.spec.hostAliases) && size(object.spec.hostAliases) == 1 &&
+        object.spec.hostAliases[0].hostnames == ['chat-sandbox-gateway.adp-gateway.svc'] &&
+        object.spec.hostAliases[0].ip.matches('^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])') &&
+        size(object.spec.hostAliases[0].ip.split('.')) == 4 &&
+        object.spec.hostAliases[0].ip.split('.').all(octet, octet.matches('^(0|[1-9][0-9]{0,2})$') && int(octet) <= 255)
+      message: Chat sandbox address mapping must name only the private gateway Service
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: adp-chat-sandbox-template
+spec:
+  policyName: adp-chat-sandbox-template
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: adp-gateway-agents

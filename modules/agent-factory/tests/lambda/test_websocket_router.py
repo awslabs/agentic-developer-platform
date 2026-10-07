@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -55,6 +56,49 @@ def _make_sessions_table(name: str, item: dict | None = None):
     if item:
         table.put_item(Item=item)
     return table
+
+
+@pytest.mark.parametrize("change", [None, {"owner_principal": OWNER_ATTACKER}, {"created_at": 124},
+                                   {"expires_at": 1}, {"channel": "slack"}, {"threads": {}},
+                                   {"threads": {"thread-a": {"processing_task_id": "other-task"}}}])
+@mock_aws
+def test_strict_delivery_checks_current_owner_incarnation_and_task(change):
+    row = {"session_id": "sess-a", "connection_id": "current-owner", "owner_principal": OWNER_A,
+           "created_at": 123, "expires_at": int(time.time()) + 300, "channel": "webchat",
+           "threads": {"thread-a": {"processing_task_id": "task-a"}}}
+    table = _make_sessions_table("strict-delivery", {**row, **(change or {})})
+    router = _import_router()("https://websocket.example.test", sessions_table=table)
+    router._client = MagicMock()
+    delivered = router.route("private reply", {
+        "strict_delivery": True, "session_id": "sess-a", "owner_principal": OWNER_A,
+        "session_generation": 123, "thread_id": "thread-a", "task_id": "task-a", "connection_id": "untrusted-fallback",
+    }, "task-a")
+    assert delivered is (change is None)
+    if change is None:
+        assert router._client.post_to_connection.call_args.kwargs["ConnectionId"] == "current-owner"
+    else:
+        router._client.post_to_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "missing", "no-store", "no-owner", "no-generation", "bool-generation"])
+@mock_aws
+def test_strict_delivery_never_falls_back_on_missing_evidence(failure):
+    table = MagicMock()
+    table.get_item.return_value = {}
+    if failure == "unavailable":
+        table.get_item.side_effect = RuntimeError("store unavailable")
+    router = _import_router()("https://websocket.example.test", sessions_table=None if failure == "no-store" else table)
+    router._client = MagicMock()
+    metadata = {"strict_delivery": True, "session_id": "sess-a", "owner_principal": OWNER_A,
+                "session_generation": 123, "thread_id": "thread-a", "task_id": "task-a", "connection_id": "untrusted-fallback"}
+    if failure == "no-owner":
+        metadata.pop("owner_principal")
+    if failure == "no-generation":
+        metadata.pop("session_generation")
+    if failure == "bool-generation":
+        metadata["session_generation"] = True
+    assert not router.route("private reply", metadata, "task-a")
+    router._client.post_to_connection.assert_not_called()
 
 
 class TestDeliveryOwnership:

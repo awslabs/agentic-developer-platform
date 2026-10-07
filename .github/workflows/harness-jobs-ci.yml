@@ -45,6 +45,7 @@ name: Harness Jobs CI
 # guard below, which is what makes that failure loud instead of green.
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'modules/harness/jobs/**'
@@ -105,7 +106,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: harness-jobs-ci-${{ github.ref }}
+  group: ${{ github.workflow }}-harness-jobs-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

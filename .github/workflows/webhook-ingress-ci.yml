@@ -5,8 +5,10 @@ on:
   pull_request:
     paths:
       - 'modules/domain-apps/cyber/infra/platform-integration/**'
+      - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'modules/domain-apps/superplane/infra/provider-authority/**'
       - 'environments/*/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-ci.yml'
       - '.github/workflows/webhook-ingress-deploy.yml'
@@ -100,13 +102,20 @@ jobs:
             modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
             modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py \
-            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py
+            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py \
+            modules/agent-factory/webhook-ingress/scripts/tests/test_domain_operation_registration.py
       - name: Check Terraform rollout states with mocked providers
         working-directory: modules/agent-factory/webhook-ingress/infra
         run: |
           terraform init -backend=false -input=false
           terraform test -filter=tests/agent_worker_events_write.tftest.hcl \
-            -filter=tests/worker_security_rollout.tftest.hcl
+            -filter=tests/worker_security_rollout.tftest.hcl \
+            -filter=tests/domain_operation_bindings.tftest.hcl
+      - name: Check app-owned operation authority with mocked providers
+        working-directory: modules/domain-apps/superplane/infra/shared-operation-authority
+        run: |
+          terraform init -backend=false -input=false
+          terraform test
 
   lint:
     name: Lint
@@ -184,10 +193,11 @@ jobs:
             --cov=lambda --cov-report=xml
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: webhook-ingress-coverage
           path: modules/agent-factory/webhook-ingress/coverage.xml
+          retention-days: '14'
 
   package:
     name: Package Verification

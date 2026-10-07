@@ -130,6 +130,8 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
                 assert job["environment"].startswith("adp-context-deploy-"), name
             elif kind == "deployment" and name == "cyber-windows-image-build.yml":
                 assert job["environment"] == "adp-windows-build-dev", name
+            elif kind == "deployment" and name == "agent-worker-image.yml":
+                assert job["environment"].startswith("adp-worker-deploy-"), name
             elif kind == "deployment" and name == "chat-agent-deploy.yml":
                 assert job["environment"] == "adp-chat-deploy-dev", name
             elif kind == "deployment" and name in {"gateway-deploy.yml", "run-gateway-migrations.yml", "pricing-finalize.yml"}:
@@ -428,3 +430,31 @@ def test_generated_workflow_job_uses_org_pool():
     assert workflow["jobs"]["auto-fix-on-failure"]["runs-on"] == "arc-runner-org"
     onboarding = (ROOT / "modules/agent-factory/runner-infra/scripts/onboard-repo.sh").read_text()
     assert 'echo "  runs-on: arc-runner-org"' in onboarding
+
+
+def test_superplane_automation_definitions_are_app_owned_with_state_moves():
+    app = ROOT / 'modules/domain-apps/superplane/infra/automation'
+    wrapper = (AUTOMATION / 'skypilot-deployment.tf').read_text()
+    resources = {
+        'aws_iam_role', 'aws_iam_role_policy',
+        'aws_eks_access_entry', 'aws_eks_access_policy_association',
+    }
+    assert 'resource "' not in wrapper
+    assert '../../modules/domain-apps/superplane/infra/automation/skypilot-deployment' in wrapper
+    moves = re.findall(r'moved\s*\{\s*from\s*=\s*(\S+)\s+to\s*=\s*(\S+)\s*\}', wrapper)
+    assert set(moves) == {
+        (f'{kind}.skypilot_deployment',
+         f'module.superplane_skypilot_deployment.{kind}.skypilot_deployment')
+        for kind in resources
+    }
+    owned = (app / 'skypilot-deployment/main.tf').read_text()
+    assert set(re.findall(r'resource "([^"]+)" "[^"]+"', owned)) == resources
+    build = (AUTOMATION / 'build-dispatch.tf').read_text()
+    assert 'module.superplane_build_dispatch.policy_statements' in build
+    assert 'condition     = module.superplane_build_dispatch.publisher_identity_valid' in build
+    assert 'superplane/releases/' not in build
+    assert 'Sid      = "Superplane' not in build
+    assert 'resource "' not in (app / 'build-dispatch/main.tf').read_text()
+    workflow = yaml.safe_load((ROOT / '.github/workflows/automation-trust-ci.yml').read_text())
+    triggers = workflow.get('on', workflow.get(True))
+    assert 'modules/domain-apps/superplane/infra/automation/**' in triggers['pull_request']['paths']

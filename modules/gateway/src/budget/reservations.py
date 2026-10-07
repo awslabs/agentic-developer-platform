@@ -232,6 +232,7 @@ for i = 1, #KEYS do
             local ttl = tonumber(ARGV[3 + i])
             redis.call('HSET', KEYS[i], request_id, amount .. ':' .. (now + ttl))
             redis.call('HDEL', KEYS[i], 'pending:' .. request_id)
+            redis.call('HDEL', KEYS[i], 'bounded:' .. request_id)
             redis.call('HDEL', KEYS[i], 'unbounded:' .. request_id)
             redis.call('EXPIRE', KEYS[i], ttl)
             adjusted = adjusted + 1
@@ -488,6 +489,66 @@ class ReservationStore:
         except Exception:
             logger.warning("Policy budget snapshot unavailable")
             return None
+
+    async def retain_failed_bound(self, request_id: str, target: ReservationTarget) -> bool:
+        """Keep the entire admitted bound after HTTP 5xx or a stream interruption.
+
+        This is NOT an actual-cost receipt or a release. The request's original
+        amount and deadline remain unchanged. A late trusted receipt may still
+        replace it. Missing/expired/unbounded accounting remains unavailable.
+        The marker distinguishes this conservative charge from settled usage.
+        """
+        if not target.require_initialization or request_id == "__initialized__":
+            return False
+        script = """
+        local key, id, now = KEYS[1], ARGV[1], tonumber(ARGV[2])
+        local anchor = redis.call('HGET', key, '__initialized__')
+        local entry = redis.call('HGET', key, id)
+        if not anchor or not entry or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
+        local a, d = string.match(anchor, '^([^:]+):([^:]+)$')
+        if tonumber(a) ~= 0 or not tonumber(d) or tonumber(d) <= now then return 0 end
+        local amount, deadline = string.match(entry, '^([^:]+):([^:]+)$')
+        if not tonumber(amount) or tonumber(amount) < 0 or not tonumber(deadline) or tonumber(deadline) <= now then return 0 end
+        -- A trusted receipt that won the race must never become estimated again.
+        if redis.call('HEXISTS', key, 'pending:' .. id) == 0 then return 1 end
+        redis.call('HSET', key, 'bounded:' .. id, '0:' .. deadline)
+        redis.call('HDEL', key, 'pending:' .. id)
+        return 1
+        """
+        try:
+            return bool(await (await self._get_client()).eval(script, 1, target.key(), request_id, self._clock()))
+        except Exception:
+            logger.warning("Failed provider request bound could not be retained")
+            return False
+
+    async def unresolved_requests(self, target: ReservationTarget) -> list[str]:
+        """IDs only; the caller must obtain actual amounts from trusted receipts."""
+        entries = await (await self._get_client()).hgetall(target.key())
+        return sorted({field.split(":", 1)[1] for field in entries if field.startswith(("pending:", "bounded:"))})
+
+    async def reconcile_receipt(self, request_id: str, actual_usd: Decimal, target: ReservationTarget) -> bool:
+        """Retry a durable receipt without resetting deadlines or reviving a lost meter.
+
+        A live finalizer may have settled first. Only unresolved, unexpired fields
+        can change; expired strict accounting remains unknown instead of disappearing.
+        """
+        if not actual_usd.is_finite() or actual_usd < 0 or not target.require_initialization:
+            return False
+        script = """
+        local key, id, now = KEYS[1], ARGV[1], tonumber(ARGV[3])
+        local anchor = redis.call('HGET', key, '__initialized__')
+        local value = redis.call('HGET', key, id)
+        if not anchor or not value or redis.call('HEXISTS', key, 'unbounded:' .. id) == 1 then return 0 end
+        local a, d = string.match(anchor, '^([^:]+):([^:]+)$')
+        local amount, deadline = string.match(value, '^([^:]+):([^:]+)$')
+        if tonumber(a) ~= 0 or not tonumber(d) or tonumber(d) <= now
+          or not tonumber(amount) or tonumber(amount) < 0 or not tonumber(deadline) or tonumber(deadline) <= now then return 0 end
+        if redis.call('HEXISTS', key, 'pending:' .. id) == 0 and redis.call('HEXISTS', key, 'bounded:' .. id) == 0 then return 0 end
+        redis.call('HSET', key, id, ARGV[2] .. ':' .. deadline)
+        redis.call('HDEL', key, 'pending:' .. id, 'bounded:' .. id)
+        return 1
+        """
+        return bool(await (await self._get_client()).eval(script, 1, target.key(), request_id, str(actual_usd), self._clock()))
 
     async def mark_unknown(self, request_id: str, target: ReservationTarget) -> None:
         """Retain the reserved upper bound and block new spend until a receipt."""

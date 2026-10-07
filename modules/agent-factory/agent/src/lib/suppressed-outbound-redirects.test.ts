@@ -10,13 +10,48 @@ const vault = () => new VaultGatewayClient({ baseUrl: 'https://gateway.example.c
 const identity = { user_id: 'fixture-user', agent_id: 'fixture-agent', task_id: 'fixture-task', service: 'aws' };
 
 const originalGitLabUrl = process.env.GITLAB_URL;
+const originalVaultUrl = process.env.VAULT_GATEWAY_URL;
 beforeEach(() => {
   process.env.GITLAB_URL = 'https://gitlab.example.com';
+  process.env.VAULT_GATEWAY_URL = 'https://gateway.example.com';
   mockFetch.mockReset(); global.fetch = mockFetch as typeof fetch;
 });
 afterEach(() => {
   if (originalGitLabUrl === undefined) delete process.env.GITLAB_URL;
   else process.env.GITLAB_URL = originalGitLabUrl;
+  if (originalVaultUrl === undefined) delete process.env.VAULT_GATEWAY_URL;
+  else process.env.VAULT_GATEWAY_URL = originalVaultUrl;
+});
+
+test('vault refuses missing operator configuration before sending the API key', () => {
+  delete process.env.VAULT_GATEWAY_URL;
+  expect(vault).toThrow('VAULT_GATEWAY_URL must configure');
+  expect(mockFetch).not.toHaveBeenCalled();
+});
+
+test.each([
+  'https://attacker.example',
+  'https://gateway.example.com.attacker.example',
+  'https://gateway.example.com:8443',
+  'http://gateway.example.com',
+  'https://gateway.example.com@attacker.example',
+  'https://gateway.example.com/api',
+  'https://gateway.example.com?next=attacker',
+  'https://169.254.169.254',
+])('vault refuses an untrusted caller destination before sending the API key: %s', baseUrl => {
+  expect(() => new VaultGatewayClient({ baseUrl, apiKey: 'fixture-vault-key' })).toThrow();
+  expect(mockFetch).not.toHaveBeenCalled();
+});
+
+test('vault retains operator-configured internal HTTP and encodes query identifiers', async () => {
+  process.env.VAULT_GATEWAY_URL = 'http://gateway.internal:8080/';
+  mockFetch.mockResolvedValue({ ok: true, json: async () => [] });
+  const client = new VaultGatewayClient({ baseUrl: 'http://gateway.internal:8080', apiKey: 'fixture-vault-key' });
+  await expect(client.listCredentials('user/../other?x=y', 'run&foreign')).resolves.toEqual([]);
+  expect(mockFetch).toHaveBeenCalledWith(
+    'http://gateway.internal:8080/internal/v1/user-credentials?user_id=user%2F..%2Fother%3Fx%3Dy&invocation_id=run%26foreign',
+    expect.objectContaining({ redirect: 'error', headers: expect.objectContaining({ 'X-Internal-Api-Key': 'fixture-vault-key' }) }),
+  );
 });
 
 const calls: Array<[string, () => Promise<unknown>]> = [

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Alert, Button, Input } from '@/components/ui';
 
@@ -13,6 +13,16 @@ export function ApprovalPanel({ approval, guard, onChange }: {
 }) {
   const [problem, setProblem] = useState<Unavailable | null>(null);
   const [busy, setBusy] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const problemRef = useRef<HTMLDivElement>(null);
+  const previousResult = useRef(approval.result);
+  useEffect(() => { headingRef.current?.focus(); }, []);
+  useEffect(() => {
+    if (previousResult.current !== approval.result) statusRef.current?.focus();
+    previousResult.current = approval.result;
+  }, [approval.result]);
+  useEffect(() => { if (problem) problemRef.current?.focus(); }, [problem]);
   const now = useFreshnessClock();
   const expires = Date.parse(approval.expires_at);
   const current = Number.isFinite(expires) && expires > now && !approval.revoked;
@@ -27,16 +37,16 @@ export function ApprovalPanel({ approval, guard, onChange }: {
     else if ('unavailable' in result) setProblem(result.unavailable);
   };
   return <section className="mt-4 rounded border p-4" aria-label="Operation approval">
-    <h3 className="font-semibold">Operation approval</h3>
-    <p>Approval reference: {approval.approval_id}</p>
+    <h3 ref={headingRef} tabIndex={-1} className="font-semibold">Operation approval</h3>
+    <p className="break-all">Approval reference: {approval.approval_id}</p>
     <p>Workspace: {approval.workspace_id}</p>
     <p>Action: {approval.action}</p>
     {Object.entries(approval.target).map(([key, value]) => <p key={key}>{key.replace(/_/g, ' ')}: {value}</p>)}
-    <p>Status: {approval.result}{!current ? ' (expired or revoked)' : ''}</p>
+    <p ref={statusRef} tabIndex={-1} role="status">Status: {approval.result}{!current ? ' (expired or revoked)' : ''}</p>
     <p>Maximum resources: {approval.envelope.max_resource_units ?? 'not reported'}</p>
     <p>Maximum runtime: {approval.envelope.max_runtime_seconds ?? 'not reported'} seconds</p>
     <p>Maximum cost: {approval.envelope.max_cost_micros === null ? 'not reported' : `${approval.envelope.max_cost_micros / 1_000_000} USD`}</p>
-    <p>Plan reference: {approval.plan_digest}</p>
+    <p className="break-all">Plan reference: {approval.plan_digest}</p>
     <p>Expires: {approval.expires_at || 'not reported'}</p>
     {approval.result === 'pending' && !approval.can_decide && <p>Share this approval reference with a selected approver.</p>}
     <div className="mt-3 flex flex-wrap gap-2">
@@ -46,7 +56,7 @@ export function ApprovalPanel({ approval, guard, onChange }: {
         <Button variant="danger" disabled={busy} onClick={() => void act('rejected')}>Reject operation</Button>
       </>}
     </div>
-    {problem && <Alert variant="warning" title="Approval unavailable">{problem.detail}</Alert>}
+    {problem && <div ref={problemRef} tabIndex={-1} role="group" aria-label="Approval problem"><Alert variant="warning" title="Approval unavailable">{problem.detail}</Alert></div>}
   </section>;
 }
 

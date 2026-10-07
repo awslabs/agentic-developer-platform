@@ -88,6 +88,33 @@ def _make_sqs_event(records: list[dict]) -> dict:
     }
 
 
+@pytest.mark.parametrize("ag_ui", [True, False])
+def test_strict_owner_delivery_uses_only_top_level_binding(mocked_aws_services, ag_ui):
+    handler = _import_handler()
+    handler.ws_router = MagicMock()
+    response = {
+        "task_id": "task-a", "thread_id": "thread-a", "session_id": "session-a", "channel": "webchat",
+        "owner_principal": "owner-a", "session_generation": 123, "strict_delivery": True,
+        "status": "progress", "text": "hello", "ag_ui_event": ag_ui,
+        "event": {"event_type": "TEXT_MESSAGE_CONTENT", "delta": "hello", "event_cursor": f"{'a' * 32}:7"},
+        "channel_metadata": {"task_id": "forged", "thread_id": "forged", "session_generation": 456,
+                             "owner_principal": "forged", "strict_delivery": False},
+    }
+    handler._process_response(response)
+    metadata = handler.ws_router.route.call_args.args[1]
+    assert metadata.items() >= {
+        "task_id": "task-a", "thread_id": "thread-a", "session_id": "session-a",
+        "owner_principal": "owner-a", "session_generation": 123, "strict_delivery": True,
+    }.items()
+    assert "forged" not in json.dumps(metadata)
+    if ag_ui:
+        assert metadata["ag_ui_payload"]["event_cursor"] == f"{'a' * 32}:7"
+    response.pop("strict_delivery")
+    response["channel_metadata"]["strict_delivery"] = True
+    handler._process_response(response)
+    assert "strict_delivery" not in handler.ws_router.route.call_args.args[1]
+
+
 class TestResponseRouting:
     """Test 12: Consume SQS message, push to WS."""
 

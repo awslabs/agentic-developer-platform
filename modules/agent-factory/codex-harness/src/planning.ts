@@ -2,40 +2,53 @@
 import { z } from 'zod';
 import { sha256 } from './persona.js';
 
-const text = z.string().trim().min(1).max(2000);
-const list = z.array(text).max(30);
-const ref = z.string().min(1).max(256);
-const key = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
-const requirement = z.strictObject({ id: key, text, source_refs: z.array(ref).min(1).max(20) });
-const story = z.strictObject({ key, title: z.string().trim().min(1).max(200), description: text,
-  acceptance_criteria: list.min(1), blocked_by: z.array(key).max(30), source_refs: z.array(ref).min(1).max(20) });
-export const intentDraftSchema = z.strictObject({
-  intent: text.optional(), motivation: text.optional(), outcomes: list.optional(), constraints: list.optional(), openQuestions: list.optional(),
-  epicDisplay: z.strictObject({ title: z.string().trim().min(1).max(200), description: z.string().trim().min(1).max(3000) }).optional(),
-  waveDisplay: z.strictObject({ title: z.string().trim().min(1).max(120), description: z.string().trim().min(1).max(500) }).optional(),
-});
-const common = { summary: text, requirements: z.array(requirement).min(1).max(40), assumptions: list,
-  open_questions: list, superseded_requirements: z.array(z.strictObject({ id: key, reason: text, source_ref: ref })).max(40) };
-export const planningSchemas = {
-  architect: z.strictObject({ ...common, design: z.string().trim().min(1).max(12000), stories: z.array(story).max(30), publish_stories: z.boolean() }),
-  product: z.strictObject({ ...common, acceptance_criteria: list.min(1) }),
-  pm: z.strictObject({ ...common, schedule: z.array(z.strictObject({ issue: z.number().int().positive(), persona: z.literal('codex-developer') })).max(30) }),
-  'intent-refinement': z.strictObject({ ...common, draft: intentDraftSchema }),
-};
+/** Direct GitHub reports use the same structural contract without narrative size ceilings.
+ * Task API artifacts retain their existing bounded document contract.
+ */
+function makePlanningSchemas(direct: boolean) {
+  const bounded = <T extends z.ZodString | z.ZodArray>(schema: T, maximum: number): T =>
+    (direct ? schema : schema.max(maximum)) as T;
+  const text = bounded(z.string().trim().min(1), 2000);
+  const list = bounded(z.array(text), 30);
+  const ref = z.string().min(1).max(256);
+  const key = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
+  const requirement = z.strictObject({ id: key, text, source_refs: bounded(z.array(ref).min(1), 20) });
+  const story = z.strictObject({ key, title: bounded(z.string().trim().min(1), 200), description: text,
+    acceptance_criteria: list.min(1), blocked_by: bounded(z.array(key), 30), source_refs: bounded(z.array(ref).min(1), 20) });
+  const intentDraftSchema = z.strictObject({
+    intent: text.optional(), motivation: text.optional(), outcomes: list.optional(), constraints: list.optional(), openQuestions: list.optional(),
+    epicDisplay: z.strictObject({ title: bounded(z.string().trim().min(1), 200), description: bounded(z.string().trim().min(1), 3000) }).optional(),
+    waveDisplay: z.strictObject({ title: bounded(z.string().trim().min(1), 120), description: bounded(z.string().trim().min(1), 500) }).optional(),
+  });
+  const common = { summary: text, requirements: bounded(z.array(requirement).min(1), 40), assumptions: list,
+    open_questions: list, superseded_requirements: bounded(z.array(z.strictObject({ id: key, reason: text, source_ref: ref })), 40) };
+  const planningSchemas = {
+    architect: z.strictObject({ ...common, design: bounded(z.string().trim().min(1), 12000), stories: bounded(z.array(story), 30), publish_stories: z.boolean() }),
+    product: z.strictObject({ ...common, acceptance_criteria: list.min(1) }),
+    pm: z.strictObject({ ...common, schedule: bounded(z.array(z.strictObject({ issue: z.number().int().positive(), persona: z.literal('codex-developer') })), 30) }),
+    'intent-refinement': z.strictObject({ ...common, draft: intentDraftSchema }),
+  };
+  return { schemas: planningSchemas, intentDraftSchema, text };
+}
+const taskPlanning = makePlanningSchemas(false);
+const directPlanning = makePlanningSchemas(true);
+export const planningSchemas = taskPlanning.schemas;
+export const directPlanningSchemas = directPlanning.schemas;
+export const intentDraftSchema = taskPlanning.intentDraftSchema;
 export type PlanningPersona = keyof typeof planningSchemas;
 export type PlanningArtifact = z.infer<(typeof planningSchemas)[PlanningPersona]>;
 export function planningPersona(name: string): PlanningPersona | undefined {
   const key = name.replace(/^agent-(?:task-gpt-|codex-)/, '');
   return Object.hasOwn(planningSchemas, key) ? key as PlanningPersona : undefined;
 }
-export function planningContract(persona: PlanningPersona) {
-  return { instruction: 'Return only JSON matching this schema. Keep the artifact below 24000 UTF-8 bytes. Requirements must cite supplied source refs. Omit unknown optional string fields instead of emitting empty strings. Preserve previous story keys and requirement IDs; list an explicit supersession with its amendment reference when a requirement changes or is removed. This includes adding detail after a clarification: either keep the previous requirement text verbatim and add a separate requirement, or add a superseded_requirements entry with the existing id, a reason, and the exact follow_up_input source_ref. Never treat an assumption as a user requirement. Ask at most one necessary question using clarification, otherwise set clarification to null. For Architect set publish_stories only when the task asks to create stories. PM schedule is only a proposal: the host rechecks eligibility and grants before dispatch.',
-    schema: z.toJSONSchema(z.strictObject({ artifact: planningSchemas[persona], clarification: text.nullable() })) };
+export function planningContract(persona: PlanningPersona, direct = false) {
+  return { instruction: 'Return only JSON matching this schema. ' + (direct ? '' : 'Keep the artifact below 24000 UTF-8 bytes. ') + 'Requirements must cite supplied source refs. Omit unknown optional string fields instead of emitting empty strings. Preserve previous story keys and requirement IDs; list an explicit supersession with its amendment reference when a requirement changes or is removed. This includes adding detail after a clarification: either keep the previous requirement text verbatim and add a separate requirement, or add a superseded_requirements entry with the existing id, a reason, and the exact follow_up_input source_ref. Never treat an assumption as a user requirement. Ask at most one necessary question using clarification, otherwise set clarification to null. For Architect set publish_stories only when the task asks to create stories. PM schedule is only a proposal: the host rechecks eligibility and grants before dispatch.',
+    schema: z.toJSONSchema(z.strictObject({ artifact: (direct ? directPlanningSchemas : planningSchemas)[persona], clarification: (direct ? directPlanning : taskPlanning).text.nullable() })) };
 }
-export function parsePlanning(raw: string, persona: PlanningPersona, refs: ReadonlySet<string>, previous?: PlanningArtifact) {
-  const result = z.strictObject({ artifact: planningSchemas[persona], clarification: text.nullable() }).parse(JSON.parse(raw));
+export function parsePlanning(raw: string, persona: PlanningPersona, refs: ReadonlySet<string>, previous?: PlanningArtifact, direct = false) {
+  const result = z.strictObject({ artifact: (direct ? directPlanningSchemas : planningSchemas)[persona], clarification: (direct ? directPlanning : taskPlanning).text.nullable() }).parse(JSON.parse(raw));
   const artifact = result.artifact;
-  if (Buffer.byteLength(JSON.stringify(artifact)) > 32768) throw new Error("Planning artifact exceeds document bound");
+  if (!direct && Buffer.byteLength(JSON.stringify(artifact)) > 32768) throw new Error("Planning artifact exceeds document bound");
   const ids = new Set(artifact.requirements.map(r => r.id));
   if (ids.size !== artifact.requirements.length) throw new Error('Duplicate requirement identity');
   const superseded = new Set(artifact.superseded_requirements.map(r => r.id));

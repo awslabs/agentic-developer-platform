@@ -246,6 +246,11 @@ def _expected_prerequisites(
     these prerequisites were optional and unverified, so an absent flag refuses instead
     of skipping the rule check.
     """
+    if outputs.get("cluster_endpoint_public_access") is True and (
+        not isinstance(outputs.get("cluster_endpoint_public_access_cidrs"), list)
+        or not outputs["cluster_endpoint_public_access_cidrs"]
+    ):
+        raise BootstrapRefused("public endpoint requires its published NAT allowlist")
     return ExpectedPrerequisites(
         account_id=_text_output(outputs, "account_id"),
         vpc_id=_text_output(outputs, "vpc_id"),
@@ -259,6 +264,11 @@ def _expected_prerequisites(
         sts_endpoint_vpc_id=_text_output(outputs, "sts_endpoint_vpc_id"),
         sts_endpoint_security_group_id=_text_output(
             outputs, "sts_endpoint_security_group_id"
+        ),
+        public_access_cidrs=(
+            tuple(outputs["cluster_endpoint_public_access_cidrs"])
+            if outputs.get("cluster_endpoint_public_access") is True
+            else ()
         ),
     )
 

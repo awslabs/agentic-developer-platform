@@ -1,72 +1,88 @@
 name: Gateway Live Tests
 
-# Runs the `live_only`-marked tests against the deployed gateway.
-# Requires GATEWAY_URL (resolved via SSM from CloudFront domain).
-
+# The scheduled coordinator owns cron; manual calls remain diagnostic.
 on:
-  schedule:
-    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_call:
+    outputs:
+      cleanup_ok:
+        description: No test mutation started, or the live test teardown succeeded
+        value: ${{ jobs.live.outputs.cleanup_ok }}
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 concurrency:
-  group: gateway-live-tests
+  group: cli-live-eval-dev
   cancel-in-progress: false
 
 jobs:
   live:
+    outputs:
+      cleanup_ok: ${{ steps.boundary.outputs.cleanup_ok }}
     if: github.ref == 'refs/heads/main'
     environment: adp-checks-dev
     runs-on: arc-runner-org
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
+    env:
+      TEST_ENV: dev
+      ENVIRONMENT: dev
+      AWS_REGION: us-east-1
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts
+      REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/gateway-inventory.json
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: main
           persist-credentials: false
-
       - name: Assume gateway checks identity
         uses: aws-e/adp/.github/actions/trusted-checks@main
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-
-      - name: Install Python
-        run: |
-          if ! command -v python3 >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-venv
-          fi
-          python3 --version
-
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Resolve reviewed live target and owned fixture
+        env:
+          GATEWAY_LIVE_TEST_BINDINGS_JSON: ${{ secrets.GATEWAY_LIVE_TEST_BINDINGS_JSON }}
+        run: python .github/scripts/regression_gateway_config.py
       - name: Install dependencies
         working-directory: modules/gateway
         run: |
-          python3 -m venv .venv
-          . .venv/bin/activate
-          pip install -e ".[dev]"
-
-      - name: Resolve deployed gateway URL
-        id: gw
-        run: |
-          set -euo pipefail
-          command -v aws >/dev/null
-          CF_DOMAIN=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain \
-            --query Parameter.Value --output text --region us-east-1)
-          echo "GATEWAY_URL=https://${CF_DOMAIN}" >> "$GITHUB_ENV"
-          echo "Resolved: https://${CF_DOMAIN}"
-
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
       - name: Run live tests
+        id: tests
         working-directory: modules/gateway
         run: |
-          . .venv/bin/activate
-          pytest tests/ -v --tb=short \
-            -m "live_only" \
-            --timeout=120
-
-      - name: Summary
+          .venv/bin/python -m pytest tests/ -v --tb=short \
+            -m live_only -p regression_pytest --timeout=120 \
+            --junitxml=../../test-results/gateway.xml
+      - name: Verify complete scenario evidence
         if: always()
+        run: >-
+          python .github/scripts/regression_report.py junit
+          --suite gateway --junit test-results/gateway.xml
+          --inventory test-results/gateway-inventory.json
+          --output test-results/gateway-result.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gateway-live-results
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish mutation boundary
+        id: boundary
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
         run: |
-          echo "## Gateway Live Tests — $(date -u +%Y-%m-%d)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Gateway: $GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "- See job log for pytest output" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TEST_OUTCOME" = success ] || [ "$TEST_OUTCOME" = skipped ]; then
+            echo 'cleanup_ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'cleanup_ok=false' >> "$GITHUB_OUTPUT"
+          fi

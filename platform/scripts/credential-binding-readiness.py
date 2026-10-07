@@ -141,7 +141,7 @@ def main(argv=None) -> int:
                 "run",
                 "list",
                 "--workflow",
-                "credential-binding-adversarial-e2e.yml",
+                "adp-regression.yml",
                 "--repo",
                 args.repo,
                 "--branch",

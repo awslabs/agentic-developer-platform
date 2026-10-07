@@ -8252,7 +8252,7 @@ class TestWave2PreflightIsDiscriminating:
         assert set(_mod.CI_GATE_JOB_IDS) == set(_mod.WAVE2_REQUIRED_CI_GATES)
         for gate, job_id in _mod.CI_GATE_JOB_IDS.items():
             assert f"  {job_id}:\n    # AC-S7 required-check name. Do not rename.\n    name: {gate}\n" in workflow, job_id
-            assert f"name: checked-out-revision-{job_id}" in workflow, job_id
+            assert f"CI_EVIDENCE_NAME: checked-out-revision-{job_id}" in workflow, job_id
 
     # ---- a pull_request run tests a MERGE commit, not the branch tip ----
     #

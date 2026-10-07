@@ -1,0 +1,489 @@
+{
+  "version": 1,
+  "issue": 147,
+  "updated_at": "2026-10-07T06:52:14.853Z",
+  "tasks": [
+    {
+      "id": "SES01-c1",
+      "kind": "code",
+      "criterion": "SES01",
+      "title": "Persist ordered turns and server-owned session mode",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_session_mailbox.py"
+      ],
+      "note": "Preserved implementation at 3f77b9c. Ordered-turn and mode fixtures pass in the final 1,828-test gateway suite.",
+      "commits": [
+        "3f77b9c"
+      ]
+    },
+    {
+      "id": "SES01-c2",
+      "kind": "code",
+      "criterion": "SES01",
+      "title": "Bind renewable lease and exclusive sandbox to session",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_admission.py"
+      ],
+      "note": "Preserved implementation at d5ce3b4. Session-bound admission coverage passes in the final gateway and agent suites.",
+      "commits": [
+        "d5ce3b4"
+      ]
+    },
+    {
+      "id": "SES01-c-wire",
+      "kind": "code",
+      "criterion": "SES01",
+      "title": "Connect ingest, supervisor, sandbox and UI to server-owned mode and health",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/frontend/src/pages/AgentChat.tsx",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts"
+      ],
+      "note": "Remaining supervisor and ingestion integration inspection completed. Final gateway and agent suites pass; unchanged frontend and ingest evidence is preserved. Live affinity remains deferred.",
+      "commits": [
+        "470dcf7",
+        "b024238",
+        "32aa18d",
+        "cbe7d27",
+        "26c5bdd",
+        "e0b3660",
+        "753b333",
+        "541460c",
+        "41dd308",
+        "c2aaa07",
+        "29c54d2",
+        "6321174",
+        "4aef4cc",
+        "fefc761",
+        "6989dcf",
+        "0aa30c1",
+        "2f3c5ba",
+        "6370c5d"
+      ]
+    },
+    {
+      "id": "SES01-t1",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Run gateway DynamoDB ordered-turn and mode-reload fixtures",
+      "status": "done",
+      "covers": [
+        "SES01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_session_mailbox.py"
+      ],
+      "note": "Passes in the final gateway regression: /tmp/issue147-final-repair-gateway.xml."
+    },
+    {
+      "id": "SES01-t2",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Reject cross-user and cross-session polling, takeover and writes",
+      "status": "done",
+      "covers": [
+        "SES01-c1",
+        "SES01-c2",
+        "SES01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth"
+      ],
+      "note": "Gateway authorization, ownership, fencing, and mounted-route inventory fixtures pass in the final gateway suite. Client scope and lifecycle denial fixtures pass in the final agent suite.",
+      "commits": [
+        "850364e"
+      ]
+    },
+    {
+      "id": "SES01-t4",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Run gateway and agent session-bound admission fixtures",
+      "status": "done",
+      "covers": [
+        "SES01-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth"
+      ],
+      "note": "Final gateway admission/follow-up and agent admission suites pass. Evidence: /tmp/issue147-final-repair-gateway.xml and /tmp/issue147-final-repair-agent.log."
+    },
+    {
+      "id": "SES01-t5",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Run ingress, sandbox and frontend mode fixtures",
+      "status": "done",
+      "covers": [
+        "SES01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/frontend/src/__tests__"
+      ],
+      "note": "Final agent suite passes 1,357 tests across 61 suites; TypeScript compilation passes. Reused unchanged frontend evidence: 3,053 tests passed in /tmp/issue147-merged-frontend.log. Reused unchanged ingest/response/IAM evidence: 341 tests passed in /tmp/issue147-merged-ingest.xml.",
+      "commits": [
+        "0f7b903"
+      ]
+    },
+    {
+      "id": "SES01-t3",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Measure real-pod affinity, context and follow-up latency",
+      "status": "blocked",
+      "covers": [
+        "SES01-c1",
+        "SES01-c2",
+        "SES01-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evidence owner; cloud rollout is not authorized here. Deferred qualification, not an additional code-merge blocker."
+    },
+    {
+      "id": "SES01-t6",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Verify prepared base merge with gateway emulator and deployment-guard fixtures",
+      "status": "done",
+      "covers": [
+        "SES01-c1",
+        "SES01-c2",
+        "SES01-c-wire",
+        "SES04-c1",
+        "SES04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_session_mailbox.py",
+        "modules/gateway/tests/agentauth/test_chat_session_cleanup.py",
+        "modules/gateway/tests/agentauth/test_chat_persistent_lease.py",
+        "modules/gateway/tests/orchestration/test_chat_history.py",
+        "modules/gateway/tests/orchestration/test_chat_delivery_wiring.py",
+        "modules/gateway/tests/orchestration/test_assistant_deploy_boundary.py"
+      ],
+      "note": "Preserved accepted 162-test merge checkpoint. Lifecycle, wiring, and deployment-boundary fixtures also pass in the final 1,828-test gateway suite."
+    },
+    {
+      "id": "SES01-t7",
+      "kind": "test",
+      "criterion": "SES01",
+      "title": "Verify merged session integration with full relevant suites and final-head evidence",
+      "status": "open",
+      "covers": [
+        "SES01-c-wire",
+        "SES02-c-wire",
+        "SES03-c-wire",
+        "SES04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth",
+        "modules/gateway/tests/orchestration",
+        "modules/agent-factory/agent/src/complex-task-chat",
+        "modules/gateway/frontend/src/__tests__",
+        "modules/agent-factory/tests/lambda"
+      ],
+      "note": "Local inspection and validation complete; only publication and published-head CI verification remain. Inspected supervisor completion, browser replay integration, ingestion routing, and affected security boundaries without finding another concrete defect. Gateway: 1,828 passed in 726.83 seconds using synthetic AWS credentials and uv run --no-sync pytest -n 4 --dist loadfile -q --disable-warnings tests/agentauth/test_chat*.py tests/agentauth/test_external_roots.py tests/orchestration/test_chat_history.py tests/orchestration/test_chat_delivery_wiring.py tests/orchestration/test_assistant_deploy_boundary.py tests/auth/test_mounted_route_identity_coverage.py tests/test_db_auto_create.py --junitxml=/tmp/issue147-final-repair-gateway.xml from modules/gateway. Agent: npm test -- --runInBand src/complex-task-chat/ passes 61 suites/1,357 tests; npm run build -- --pretty false passes from modules/agent-factory/agent. Logs: /tmp/issue147-final-repair-agent.log and /tmp/issue147-final-repair-agent-build.log. Reused unchanged frontend and ingest evidence. Tested HEAD: 21eb69a1f19e7400505de48558e6fd9a6e4c4e55 plus the accepted two-file repair; SHA-256 of its git diff --binary HEAD output: 8f2939bb9c4e6bd8d4b8d88d8ef83f26c74922b44787edaf98f5800b29bb74f1. No published-head CI pass claimed."
+    },
+    {
+      "id": "SES02-c1",
+      "kind": "code",
+      "criterion": "SES02",
+      "title": "Deduplicate accepted turns and fence result commits",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_session_mailbox.py"
+      ],
+      "note": "Preserved implementation at 63e2009. Duplicate acceptance and fenced-result fixtures pass in the final gateway suite.",
+      "commits": [
+        "63e2009"
+      ]
+    },
+    {
+      "id": "SES02-c2",
+      "kind": "code",
+      "criterion": "SES02",
+      "title": "Reconcile launch intent, pod assignment and expired leases",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_session_recovery.py"
+      ],
+      "note": "Preserved implementation at 962bee8. Gateway recovery and agent supervisor fixtures pass in the final suites.",
+      "commits": [
+        "962bee8"
+      ]
+    },
+    {
+      "id": "SES02-c-wire",
+      "kind": "code",
+      "criterion": "SES02",
+      "title": "Wire durable notifications and pending-turn recovery",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_notifications.py"
+      ],
+      "note": "Preserved implementation at 8a0a033 and 4d09b0f. Inspected ingestion uncertainty handling and supervisor acknowledgement boundaries; final notification and recovery fixtures pass.",
+      "commits": [
+        "8a0a033",
+        "4d09b0f"
+      ]
+    },
+    {
+      "id": "SES02-t1",
+      "kind": "test",
+      "criterion": "SES02",
+      "title": "Run duplicate-notification and fenced-result fixtures",
+      "status": "done",
+      "covers": [
+        "SES02-c1",
+        "SES02-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth"
+      ],
+      "note": "Duplicate-notification, result, and persistent-completion fixtures pass in /tmp/issue147-final-repair-gateway.xml."
+    },
+    {
+      "id": "SES02-t2",
+      "kind": "test",
+      "criterion": "SES02",
+      "title": "Run launch-crash, lost-wakeup, restart and stale-lease fixtures",
+      "status": "done",
+      "covers": [
+        "SES02-c1",
+        "SES02-c2",
+        "SES02-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth"
+      ],
+      "note": "Local recovery and notification fixtures pass in the final gateway suite. Real-pod recovery remains separately deferred."
+    },
+    {
+      "id": "SES02-t3",
+      "kind": "test",
+      "criterion": "SES02",
+      "title": "Verify real-pod crash, replacement fencing and notification recovery",
+      "status": "blocked",
+      "covers": [
+        "SES02-c1",
+        "SES02-c2",
+        "SES02-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evidence owner; authorized pod-loss testing required. Deferred qualification, not an additional code-merge blocker."
+    },
+    {
+      "id": "SES02-t4",
+      "kind": "test",
+      "criterion": "SES02",
+      "title": "Run gateway and supervisor launch-recovery fixtures",
+      "status": "done",
+      "covers": [
+        "SES02-c2"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth"
+      ],
+      "note": "Gateway launch-recovery and agent supervisor recovery tests pass in the final 1,828-test gateway and 1,357-test agent suites.",
+      "commits": [
+        "9559c0a"
+      ]
+    },
+    {
+      "id": "SES03-c1",
+      "kind": "code",
+      "criterion": "SES03",
+      "title": "Persist sequenced output and expose authorized replay",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_event_journal.py"
+      ],
+      "note": "Preserved implementation at bb6212b and d901f33. Journal and authorized replay fixtures pass in the final gateway suite."
+    },
+    {
+      "id": "SES03-c-wire",
+      "kind": "code",
+      "criterion": "SES03",
+      "title": "Reconnect frontend by durable cursor and display uncertain effects",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/frontend/src/hooks/useAgUiEvents.ts"
+      ],
+      "note": "Browser replay integration inspection completed. Preserved implementation and unchanged passing frontend replay evidence; no additional source changes needed."
+    },
+    {
+      "id": "SES03-t1",
+      "kind": "test",
+      "criterion": "SES03",
+      "title": "Run ordered disconnect/reconnect replay fixtures",
+      "status": "done",
+      "covers": [
+        "SES03-c1",
+        "SES03-c-wire"
+      ],
+      "files": [
+        "modules/gateway/frontend/src/__tests__"
+      ],
+      "note": "Reused unchanged passing frontend and response-handler evidence. Final gateway replay validation also passes in /tmp/issue147-final-repair-gateway.xml.",
+      "commits": [
+        "c993c75"
+      ]
+    },
+    {
+      "id": "SES03-t2",
+      "kind": "test",
+      "criterion": "SES03",
+      "title": "Run retention-gap and node-loss uncertainty fixtures",
+      "status": "done",
+      "covers": [
+        "SES03-c1",
+        "SES03-c-wire"
+      ],
+      "files": [
+        "modules/gateway/frontend/src/__tests__"
+      ],
+      "note": "Preserved passing frontend gap and uncertainty fixtures. Gateway retention and recovery fixtures pass in the final suite. Real transport remains SES03-t3."
+    },
+    {
+      "id": "SES03-t4",
+      "kind": "test",
+      "criterion": "SES03",
+      "title": "Run gateway journal and authenticated HTTP replay fixtures",
+      "status": "done",
+      "covers": [
+        "SES03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_event_journal.py"
+      ],
+      "note": "Journal and authenticated replay fixtures pass in the completed final gateway suite: /tmp/issue147-final-repair-gateway.xml.",
+      "commits": [
+        "fcea7d2"
+      ]
+    },
+    {
+      "id": "SES03-t3",
+      "kind": "test",
+      "criterion": "SES03",
+      "title": "Verify replay and node loss over real response transport",
+      "status": "blocked",
+      "covers": [
+        "SES03-c1",
+        "SES03-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evidence owner; real transport and pod-loss testing required. Deferred qualification, not an additional code-merge blocker."
+    },
+    {
+      "id": "SES04-c1",
+      "kind": "code",
+      "criterion": "SES04",
+      "title": "Revoke lease and reconcile sandbox destruction",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_session_cleanup.py",
+        "modules/gateway/src/agentauth/chat_followup_activation.py"
+      ],
+      "note": "Accepted R1 repair remains intact and uncommitted atop 21eb69a. Idle fencing matches the observed activity timestamp, turn sequence, and lease; conflicts trigger fresh evaluation. Expired authority and leases still trigger cleanup. Final gateway suite passes.",
+      "commits": [
+        "e03720a"
+      ]
+    },
+    {
+      "id": "SES04-c-wire",
+      "kind": "code",
+      "criterion": "SES04",
+      "title": "Connect end and mode-switch actions to authoritative cleanup status",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/orchestration/chat_history.py",
+        "modules/gateway/src/agentauth/chat_session_mailbox.py",
+        "modules/gateway/frontend/src/pages/AgentChat.tsx",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.ts"
+      ],
+      "note": "Preserved lifecycle-schema repair in 21eb69a. Pending mode switches retain active-turn processing while malformed and scope-changing responses remain rejected. Final gateway and agent suites pass.",
+      "commits": [
+        "8dc4b42"
+      ]
+    },
+    {
+      "id": "SES04-t1",
+      "kind": "test",
+      "criterion": "SES04",
+      "title": "Run end, mode-switch and idle-expiry fixtures",
+      "status": "done",
+      "covers": [
+        "SES04-c1",
+        "SES04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/orchestration/test_chat_history.py",
+        "modules/gateway/tests/agentauth/test_chat_session_cleanup.py",
+        "modules/gateway/tests/agentauth/test_chat_data_routes.py",
+        "modules/gateway/frontend/src/__tests__/pages/AgentChat.test.tsx",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.mailbox.test.ts"
+      ],
+      "note": "End, mode-switch, idle-expiry, and client heartbeat fixtures pass in the final gateway and agent suites. Unchanged frontend evidence is preserved."
+    },
+    {
+      "id": "SES04-t2",
+      "kind": "test",
+      "criterion": "SES04",
+      "title": "Run expired-authority, revoked-membership and failed-cleanup fixtures",
+      "status": "done",
+      "covers": [
+        "SES04-c1",
+        "SES04-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_session_cleanup.py",
+        "modules/gateway/tests/agentauth/test_chat_session_mailbox.py",
+        "modules/gateway/tests/orchestration/test_chat_history.py",
+        "modules/agent-factory/agent/src/complex-task-chat/sandbox-session-heartbeat.test.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/gateway/chat-data-client.mailbox.test.ts"
+      ],
+      "note": "Final suites pass authority, membership, failed-cleanup, delayed-health, and scope-denial fixtures, including regressions proving new acceptance cannot delay expired-lease or revoked-membership cleanup."
+    },
+    {
+      "id": "SES04-t4",
+      "kind": "test",
+      "criterion": "SES04",
+      "title": "Run fenced-end and durable-cleanup gateway emulator fixtures",
+      "status": "done",
+      "covers": [
+        "SES04-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_session_cleanup.py",
+        "modules/gateway/tests/agentauth/test_chat_followup_activation.py",
+        "modules/gateway/tests/agentauth/test_chat_persistent_completion.py",
+        "modules/gateway/tests/agentauth/test_chat_notifications.py"
+      ],
+      "note": "Preserved six failing-before/passing-after race regressions and two authority-cleanup regressions. All 67 focused tests passed at the previous checkpoint; all also pass within the completed 1,828-test final gateway suite. Evidence: /tmp/issue147-idle-race-before.xml, /tmp/issue147-idle-cleanup-focused.xml, and /tmp/issue147-final-repair-gateway.xml. Ruff and diff checks pass."
+    },
+    {
+      "id": "SES04-t3",
+      "kind": "test",
+      "criterion": "SES04",
+      "title": "Measure real sandbox destruction and two-minute reconciliation",
+      "status": "blocked",
+      "covers": [
+        "SES04-c1",
+        "SES04-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 live-evidence owner; authorized deployment and cleanup observations required. Deferred qualification, not an additional code-merge blocker."
+    }
+  ]
+}

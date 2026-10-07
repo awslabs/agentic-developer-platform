@@ -19,7 +19,9 @@ describe('vault tools', () => {
   let client: VaultGatewayClient;
   let tools: SanitizableAgentTool[];
 
+  const originalVaultUrl = process.env.VAULT_GATEWAY_URL;
   beforeEach(() => {
+    process.env.VAULT_GATEWAY_URL = 'http://gateway:8080';
     scrubber = new Scrubber();
     client = new VaultGatewayClient({
       baseUrl: 'http://gateway:8080',
@@ -33,6 +35,11 @@ describe('vault tools', () => {
       client,
     });
     mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    if (originalVaultUrl === undefined) delete process.env.VAULT_GATEWAY_URL;
+    else process.env.VAULT_GATEWAY_URL = originalVaultUrl;
   });
 
   function findTool(name: string): SanitizableAgentTool {

@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: ''
+      manual_source_revision:
+        description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
+        required: false
+        type: string
+        default: ''
       adp_source_revision:
         description: 'Engine-approved immutable source commit.'
         required: false
@@ -67,6 +72,11 @@ on:
         required: false
         type: string
         default: ''
+      manual_source_revision:
+        description: 'Manual deployment of an exact reviewed main ancestor; cannot accompany engine delivery inputs.'
+        required: false
+        type: string
+        default: ''
       adp_source_revision:
         description: 'Engine-approved immutable source commit.'
         required: false
@@ -119,6 +129,7 @@ on:
         default: ''
 
 env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
   AWS_REGION: us-east-1
 
 jobs:
@@ -132,12 +143,17 @@ jobs:
     steps:
       - name: Guard engine delivery revisions
         env:
+          ADP_MANUAL_SOURCE: ${{ inputs.manual_source_revision }}
           ADP_CORRELATION: ${{ inputs.adp_correlation }}
           ADP_SOURCE: ${{ inputs.adp_source_revision }}
           ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
           ACTUAL_DEFINITION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
+          if [ -n "${ADP_MANUAL_SOURCE:-}" ]; then
+            [[ "$ADP_MANUAL_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
+          fi
           if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
             [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
             [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -146,12 +162,16 @@ jobs:
           fi
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
+          ref: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - name: Verify source belongs to reviewed main history
         shell: bash
+        env:
+          ADP_SELECTED_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ADP_SELECTED_SOURCE"
           git fetch --no-tags origin "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD FETCH_HEAD
 
@@ -170,11 +190,24 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
+      - name: Load deployment evidence publisher from workflow revision
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ADP_WORKFLOW_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$ADP_WORKFLOW_REVISION"
+          git merge-base --is-ancestor "$ADP_WORKFLOW_REVISION" "$GITHUB_SHA"
+          for file in scripts/publish-deployment-evidence.py scripts/deployment-workflow-context.py scripts/deployment-release-evidence.py deployment_evidence/__init__.py deployment_evidence/store.py; do
+            mkdir -p "$RUNNER_TEMP/adp-deployment-evidence/$(dirname "$file")"
+            git show "$ADP_WORKFLOW_REVISION:modules/gateway/$file" > "$RUNNER_TEMP/adp-deployment-evidence/$file"
+          done
+
       - name: Record deployment workflow context
         env:
           CONTEXT_WORKFLOW: .github/workflows/run-gateway-migrations.yml
           CONTEXT_REVISION: ${{ github.workflow_sha }}
-          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
@@ -185,14 +218,11 @@ jobs:
           INPUT_EXPECTED_IMAGE: ${{ inputs.expected_image || '' }}
           INPUT_EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest || '' }}
           INPUT_EXPECTED_IMAGE_TAG: ${{ inputs.expected_image_tag || '' }}
-        run: python3 modules/gateway/scripts/deployment-workflow-context.py
-      - name: Upload deployment workflow context
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-deployment-context-run-gateway-migrations.yml-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
-          if-no-files-found: error
-          retention-days: 30
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-workflow-context.py"
+      - name: Publish deployment workflow context to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" context run-gateway-migrations.yml "$RUNNER_TEMP/adp-deployment-context/deployment-context.json"
 
       - name: Install kubectl
         run: |
@@ -233,14 +263,11 @@ jobs:
       - name: Record gateway-migrations build evidence
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_SOURCE: ${{ inputs.manual_source_revision || inputs.adp_source_revision || github.sha }}
           ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
           ADP_RELEASE_WORKFLOW: .github/workflows/run-gateway-migrations.yml
-        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-migrations
-      - name: Upload gateway-migrations build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-release-gateway-migrations-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-release-gateway-migrations/release.json
-          if-no-files-found: error
-          retention-days: 30
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/deployment-release-evidence.py" gateway-migrations
+      - name: Publish gateway-migrations build evidence to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 "$RUNNER_TEMP/adp-deployment-evidence/scripts/publish-deployment-evidence.py" release gateway-migrations "$RUNNER_TEMP/adp-release-gateway-migrations/release.json"

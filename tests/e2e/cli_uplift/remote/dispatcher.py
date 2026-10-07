@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # purpose -> (module, extra payload the orchestrator does not have to supply)
 PURPOSES = {
+    "assistant_baseline": ("assistant_baseline", {}),
     "hosted_coding": ("hosted_coding", {}),
     "hierarchy_lifecycle": ("hierarchy_lifecycle", {}),
     "knowledge_lifecycle": ("knowledge_lifecycle", {}),

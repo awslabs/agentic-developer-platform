@@ -1,8 +1,11 @@
 name: Live explanation browser tests
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:
+      - '.github/actions/upload-ci-evidence-s3/**'
+      - '.github/scripts/upload_ci_evidence_s3.py'
       - 'modules/gateway/frontend/**'
       - '.github/workflows/agent-explanations-browser.yml'
       # Documentation-only changes do not start this workflow.
@@ -15,7 +18,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: explanations-browser-${{ github.ref }}
+  group: ${{ github.workflow }}-explanations-browser-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   browser:
@@ -39,7 +42,7 @@ jobs:
           "$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" install --with-deps chromium
       - run: npx vitest run src/__tests__/components/LiveExplanations.test.tsx src/__tests__/services/agentExplanations.test.ts
       - run: '"$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" test --config tests/e2e/explanations.config.ts'
-      - uses: actions/upload-artifact@v7
+      - uses: ./.github/actions/upload-ci-evidence-s3
         if: always()
         with:
           name: live-explanation-browser

@@ -1,7 +1,9 @@
+import { ModelStreamError } from "./model-response.js";
+import { ModelHttpError } from "./model-http.js";
 import { z } from "zod";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
+import { ResponsesBridgeError, normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
 
 const policy: TextResponsesPolicy = { model: "fixture-model", effort: "medium", maxOutputTokens: 100, maxRequestBytes: 65536, maxResponseBytes: 65536, maxOperations: 2, timeoutMs: 5000 };
 const request = () => ({ model: policy.model, input: [{ role: "user", content: [{ type: "input_text", text: "fixture" }] }], stream: true, store: false, reasoning: { effort: "medium" } });
@@ -262,3 +264,87 @@ test("native provider metadata and empty placeholders normalize without relaxing
   assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[1],
     content: [{ type: "output_text", text: "fixture", annotations: [], logprobs: [1] }] }] }, policy));
 });
+
+test("explicit HTTP failures preserve sanitized status without SDK replay", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; throw new ModelHttpError(500); }, policy);
+  try {
+    assert.equal((await post(proxy)).status, 502);
+    assert.equal(proxy.failure?.code, "model_http_failed");
+    assert.equal(proxy.failure?.httpStatus, 500);
+    assert.match(String(proxy.failure), /HTTP 500/);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});
+
+
+test("direct HTTP forwards large accumulated history and SDK envelopes without a local size gate", async () => {
+  const input = Array.from({ length: 80 }, (_, i) => ({ role: "user", content: [{ type: "input_text", text: `${i}:` + "x".repeat(4096) }] }));
+  let received: unknown;
+  const proxy = await startTextResponsesProxy(async request => {
+    received = request.input;
+    return { operationStatus: "confirmed", response: result() };
+  }, { ...policy, maxRequestBytes: undefined });
+  try {
+    const response = await post(proxy, { ...request(), input, client_metadata: { discarded: "x".repeat(300000) } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(received, input);
+    assert.equal(proxy.failure, undefined);
+  } finally { await proxy.close(); }
+});
+
+test("direct HTTP preserves long message parts and opaque reasoning history", () => {
+  const input = [{ role: "user", content: [{ type: "input_text", text: "x".repeat(1200000) }] },
+    { type: "reasoning", encrypted_content: "opaque".repeat(10000), summary: [] }];
+  const normalized = normalizeTextRequest({ ...request(), input }, { ...policy, maxRequestBytes: undefined });
+  assert.deepEqual(normalized.input, input);
+});
+
+
+test("direct model transport continues beyond legacy operation ceilings", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, { ...policy, maxOperations: undefined });
+  try {
+    for (let i = 0; i < 40; i++) {
+      const response = await post(proxy);
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+    assert.equal(calls, 40);
+  } finally { await proxy.close(); }
+});
+
+
+test("direct responses retain large completed output without a local token or byte ceiling", () => {
+  const direct = { ...policy, maxOutputTokens: undefined, maxResponseBytes: undefined };
+  assert.equal("max_output_tokens" in normalizeTextRequest({ ...request(), max_output_tokens: 4096 }, direct), false);
+  const text = "Detailed report. ".repeat(10000);
+  const large = { ...result(), output: [{ id: "message_large", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }], usage: { input_tokens: 100, output_tokens: 20000 } };
+  assert.ok(textResponseEvents(large, direct).includes(text));
+  assert.throws(() => textResponseEvents(large, policy));
+});
+
+test("provider stream failures preserve diagnostics without replay", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; throw new ModelStreamError("model_stream_failed"); }, policy);
+  try {
+    assert.equal((await post(proxy)).status, 502);
+    assert.equal(proxy.failure?.code, "model_stream_failed");
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});
+
+for (const code of ['operation_claim_failed', 'operation_settlement_failed', 'model_authority_failed'] as const) {
+  test(`control failure preserves ${code} without replay`, async () => {
+    let calls = 0;
+    const proxy = await startTextResponsesProxy(async () => { calls++; throw new ResponsesBridgeError(code); }, policy);
+    try {
+      assert.equal((await post(proxy)).status, 502);
+      assert.equal(proxy.failure?.code, code);
+      assert.equal((await post(proxy)).status, 409);
+      assert.equal(calls, 1);
+    } finally { await proxy.close(); }
+  });
+}

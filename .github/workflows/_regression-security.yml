@@ -1,0 +1,60 @@
+name: Regression source security
+'on':
+  workflow_call: {}
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: arc-runner-org
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - id: checkov
+            tool: checkov
+            package: ''
+          - id: semgrep
+            tool: semgrep
+            package: ''
+          - id: bandit
+            tool: bandit
+            package: ''
+          - id: detect-secrets
+            tool: detect-secrets
+            package: ''
+          - id: npm-frontend
+            tool: npm-audit
+            package: modules/gateway/frontend
+          - id: npm-agent
+            tool: npm-audit
+            package: modules/agent-factory/agent
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - run: pip install PyYAML
+      - name: Run scanner with existing commands and reviewed baselines
+        env:
+          SCAN_TOOL: ${{ matrix.tool }}
+          SCAN_PACKAGE: ${{ matrix.package }}
+        run: |-
+          ARGS=()
+          if [ -n "$SCAN_PACKAGE" ]; then ARGS+=(--package "$SCAN_PACKAGE"); fi
+          python .github/scripts/regression_security.py "$SCAN_TOOL" "${ARGS[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: source-security-${{ matrix.id }}
+          path: test-results/security/
+          if-no-files-found: error
+          retention-days: 14

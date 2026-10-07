@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { createCodexDeveloperReporter, publicDeveloperText } from './codex-developer-reporting';
+import { createCodexPersonaReporter } from './codex-persona-reporting';
 import { startControlRuntime } from './control-runtime-factory';
 
 jest.mock('./worker-activity-log', () => ({ createWorkerActivityLog: () => ({ start: async () => {}, log: jest.fn(), flush: async () => {} }) }));
@@ -100,4 +101,121 @@ test('reviewer controller operations obey pause admission and release the gate o
   await expect(reporter.control!.operation(effect)).rejects.toThrow('Operator aborted');
   expect(effect).toHaveBeenCalledTimes(1);
   await reporter.fail(new Error('Operator aborted'));
+});
+
+test('architect reports its own persona, audit progress and design PR', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-architect' });
+  reporter.activity('Running: git ls-files');
+  await reporter.finish({ summary: 'Design documented in docs/design.md', prUrl: 'https://github.com/acme/repository/pull/7' });
+  const bodies = fetchMock.mock.calls.map(([, init]) => JSON.stringify(JSON.parse(init.body))).join('\n');
+  expect(bodies).toContain('agent-codex-architect');
+  expect(bodies).toContain('Architecture assessment run');
+  expect(bodies).toContain('docs/design.md');
+  expect(bodies).toContain('https://github.com/acme/repository/pull/7');
+  expect(bodies).not.toContain('Reading the issue and developing the change');
+});
+
+
+test.each(['developer', 'architect', 'reviewer'] as const)('%s keeps the current authored explanation in the live comment and transcript', async persona => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona });
+  reporter.progress!('I traced the deployment order and found a missing dependency.', { id: 'message-1', category: 'message', state: 'completed' });
+  reporter.progress!('Running: git ls-files', { id: 'tool-1', category: 'tool', state: 'running' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const comments = fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body).body || '');
+  expect(comments.some(body => body.includes('### Agent explanation') && body.includes('I traced the deployment order'))).toBe(true);
+  await reporter.finish({ summary: 'Design ready.', prUrl: 'https://github.com/acme/repository/pull/9' });
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('I traced the deployment order'), 'utf8');
+});
+
+test.each(['product', 'pm', 'intent-refinement'])('Codex %s records distinct repository activity in the transcript', async persona => {
+  const reporter = await createCodexPersonaReporter({ ...context, persona: `agent-codex-${persona}` });
+  reporter.progress('Starting the repository assessment.');
+  reporter.progress('Reading deploy.sh (lines 1–100)', { id: 'read-1', category: 'tool', state: 'running' });
+  reporter.progress('Read deploy.sh (lines 1–100)', { id: 'read-1', category: 'tool', state: 'completed' });
+  await jest.advanceTimersByTimeAsync(5000);
+  await reporter.finish({ response: 'Assessment ready.', threadId: 'session', usage: {} }, {});
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Reading deploy.sh'), 'utf8');
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining('Read deploy.sh'), 'utf8');
+});
+
+test.each(['agent-codex-developer', 'agent-codex-reviewer'])('%s retains running checklist updates through tools and failure', async persona => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona });
+  const before = '**0 of 2 tasks complete**\n\n- ☐ Implement history\n- ☐ Verify integration';
+  const after = '**1 of 2 tasks complete**\n\n- ☑ Implement history\n- ☐ Verify integration';
+  reporter.progress!(before, { id: 'plan', category: 'plan', state: 'running' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const comments = () => fetchMock.mock.calls.filter(([url]) => url.endsWith('/issues/comments/123'))
+    .map(([, init]) => JSON.parse(init.body).body);
+  expect(comments().at(-1)).toContain(before);
+  reporter.progress!(after, { id: 'plan', category: 'plan', state: 'running' });
+  for (let i = 0; i < 15; i++) reporter.activity(`Running command ${i}`);
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(comments().at(-1)).toContain('### Task checklist');
+  expect(comments().at(-1)).toContain(after);
+  expect(comments().at(-1)).not.toContain(before);
+  await reporter.fail(new Error('Execution deadline exhausted'));
+  expect(comments().at(-1)).toContain(after);
+  expect(comments().at(-1)).not.toContain('2 of 2 tasks complete');
+  expect(fs.writeFileSync).toHaveBeenCalledWith('/tmp/adp-run-transcript.md.tmp', expect.stringContaining(after), 'utf8');
+});
+
+test('archives Codex assignment progress across repair and inspection SDK sessions', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.session('repair-session');
+  reporter.progress!('- ☐ Deliver story', { id: 'repair-plan', category: 'plan', state: 'running' });
+  reporter.session('inspection-session');
+  reporter.progress!('- ☑ Read diff', { id: 'inspection-plan', category: 'plan', state: 'completed', plan_scope: 'inspection' });
+  await reporter.finish({ summary: 'Inspection done; delivery remains open' });
+  const writes = (fs.writeFileSync as jest.Mock).mock.calls.filter(([path]) => path === '/tmp/adp-run-transcript.md.tmp');
+  const markdown = writes.at(-1)![1] as string;
+  const encoded = /^<!-- adp-run-record:v1 ([A-Za-z0-9+/=]+) -->/.exec(markdown)![1];
+  const record = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  expect(record.session_ids).toEqual(['repair-session', 'inspection-session']);
+  expect(record.latest_checklist.tasks.map((t: any) => t.text)).toEqual(['Deliver story']);
+  expect(record.latest_checklist.tasks[0].status).toBe('pending');
+});
+
+test('final reviewer closure and reconciled tasks reach the saved transcript', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.progress!('- ☐ Browser validation\n- ⛔ Live demo', { id: 'board', category: 'plan', state: 'running' });
+  reporter.progress!('- ☑ Browser validation\n- ⛔ Live demo', { id: 'board', category: 'plan', state: 'completed' });
+  reporter.closure!({ summary: 'The workspace UI is ready for integration.', completed: ['Browser validation passed.'],
+    remaining: ['Live demo remains with the evaluator.'], delivery: 'Pull request merged.', reporting_notes: [] });
+  await reporter.finish({ summary: 'Reviewer finished: merged' });
+  const writes = (fs.writeFileSync as jest.Mock).mock.calls.filter(([path]) => path === '/tmp/adp-run-transcript.md.tmp');
+  const markdown = writes.at(-1)![1] as string;
+  const encoded = /^<!-- adp-run-record:v1 ([A-Za-z0-9+/=]+) -->/.exec(markdown)![1];
+  const record = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'blocked']);
+  expect(record.closure_report.summary).toBe('The workspace UI is ready for integration.');
+  expect(record.closure_report.remaining).toEqual(['Live demo remains with the evaluator.']);
+  expect(markdown).toContain('## Closure report');
+});
+
+test('GitHub retains the implementation plan and publishes the full saved closure instead of a generic status', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.plan!('Keep conversations available after reconnecting. I will save ordered output and verify replay after a disconnect.');
+  reporter.explanation('Replay now resumes from the last acknowledged event.');
+  reporter.progress!('**▶ Plan `recover` — Keep conversations after disconnects**\n- ☑ `code` A-c1 — Save ordered output\n- ▶ `test` A-t1 — Verify replay',
+    { id: 'board', category: 'plan', state: 'running', plan_scope: 'assignment' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const issueBodies = () => fetchMock.mock.calls.filter(([url, init]) => url.endsWith('/issues/comments/123') && init.method === 'PATCH')
+    .map(([, init]) => JSON.parse(init.body).body as string);
+  const live = issueBodies().at(-1)!;
+  expect(live).toContain('### Implementation plan');
+  expect(live).toContain('I will save ordered output');
+  expect(live.indexOf('Replay now resumes')).toBeLessThan(live.indexOf('### Implementation progress'));
+  expect(live).toContain('- **Keep conversations after disconnects** — In progress');
+  expect(live.indexOf('<details><summary>Detailed tasks and evidence')).toBeLessThan(live.indexOf('A-c1'));
+  reporter.closure!({ summary: 'Conversations now recover after a lost connection. The browser resumes from a saved cursor.',
+    completed: ['Ordered replay passed the reconnect regression test.'], remaining: ['Deployment and real transport verification remain with the evaluator.'],
+    delivery: 'Pull request merged; deployment has not been verified.', reporting_notes: [] });
+  await reporter.finish({ summary: 'Reviewer finished: merged' });
+  const closed = issueBodies().at(-1)!;
+  expect(closed).toContain('Conversations now recover');
+  expect(closed).toContain('Ordered replay passed');
+  expect(closed).toContain('Deployment and real transport verification remain');
+  expect(closed).toContain('deployment has not been verified');
+  expect(closed).not.toContain('Reviewer finished: merged');
+  expect(closed).toContain('Original implementation plan');
 });

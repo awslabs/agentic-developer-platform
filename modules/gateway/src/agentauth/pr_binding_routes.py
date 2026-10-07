@@ -87,6 +87,7 @@ from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.orchestration.developer_personas import DEVELOPER_PERSONAS
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ router = APIRouter(
 # `head_sha` is what makes review/check evidence falsifiable, and comparing a
 # provider SHA against a caller-supplied branch name would always differ.
 _SHA_PATTERN = r"^[0-9a-f]{7,64}$"
+_REVIEWER_PERSONAS = frozenset({"reviewer", "agent-codex-reviewer"})
 
 
 class BindPullRequestRequest(BaseModel):
@@ -179,7 +181,7 @@ async def bind_pull_request(
         if (
             repository_id < 1
             or installation_id < 1
-            or persona not in {"developer", "reviewer"}
+            or persona not in DEVELOPER_PERSONAS | _REVIEWER_PERSONAS
             or grant.authority.kind != AUTHORITY_GATE_DECISION
             or not record.repo
             or execution["repo"]["S"] != record.repo
@@ -233,7 +235,7 @@ async def bind_pull_request(
                 pr=pr,
                 actor_id=caller.principal,
                 actor_kind=ActorKind.SERVICE,
-                declared_role=BindingRole.REVIEWER_ARTIFACT if persona == "reviewer" or body.reviewer_artifact else None,
+                declared_role=BindingRole.REVIEWER_ARTIFACT if persona in _REVIEWER_PERSONAS or body.reviewer_artifact else None,
             )
             await session.commit()
     except PrIdentityError:

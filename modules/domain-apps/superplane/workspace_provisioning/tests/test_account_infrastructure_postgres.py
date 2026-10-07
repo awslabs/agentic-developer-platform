@@ -5,8 +5,9 @@ does not claim a ready workspace; canonical bootstrap has its separate composer
 suite. Public new-account activation remains closed.
 """
 
-from copy import deepcopy
 import json
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,8 @@ from .postgres_bridge import requires_harness_postgres
 from .test_account_bootstrap_postgres import Child
 from .test_account_creation_postgres import (
     AccountScenario,
+)
+from .test_account_creation_postgres import (
     harness as lifecycle_harness,
 )
 from .test_provider_observation import fixture as provider_fixture
@@ -36,6 +39,25 @@ def infrastructure_child(scenario, monkeypatch):
     scenario.outputs = {key: {"value": value} for key, value in outputs.items()}
 
     class Infrastructure:
+        def get_paginator(self, method):
+            # This scenario's Terraform state contains only the output VPC and
+            # EKS cluster; the provider has no additional VPC or tagged members.
+            fields = {
+                "describe_instances": "Reservations",
+                "describe_network_interfaces": "NetworkInterfaces",
+                "describe_volumes": "Volumes",
+                "get_resources": "ResourceTagMappingList",
+            }
+            assert method in fields
+            return SimpleNamespace(paginate=lambda **kwargs: [{fields[method]: []}])
+
+        def describe_addresses(self, **kwargs):
+            return {"Addresses": []}
+
+        def describe_vpcs(self, *, VpcIds):
+            assert VpcIds == [outputs["vpc_id"]]
+            return {"Vpcs": [{"VpcId": outputs["vpc_id"]}]}
+
         def get_caller_identity(self):
             return {"Account": "000000000003"}
 
@@ -93,7 +115,7 @@ def infrastructure_child(scenario, monkeypatch):
         def client(self, service, **kwargs):
             return (
                 Infrastructure()
-                if service in {"sts", "eks", "ec2"}
+                if service in {"sts", "eks", "ec2", "resourcegroupstaggingapi"}
                 else super().client(service, **kwargs)
             )
 
@@ -174,6 +196,18 @@ def test_account_and_infrastructure_phases_preserve_approved_child_lineage(
         assert scenario.bootstrap_calls[0][4] == applied
         assert len(scenario.accounts) == 1
         async with harness.connect() as connection:
+            assert await connection.fetchval(
+                "SELECT sealed_revision FROM harness_allocation_seal WHERE allocation_id=$1",
+                applying.request.parameters["allocation_id"],
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM harness_provider_report WHERE operation_id=$1 AND allocation_id=$2",
+                    applying.grant.lease.operation_id,
+                    applying.request.parameters["allocation_id"],
+                )
+                == 1
+            )
             assert (
                 await connection.fetchval(
                     "SELECT count(*) FROM workspace_lifecycle_artifacts"

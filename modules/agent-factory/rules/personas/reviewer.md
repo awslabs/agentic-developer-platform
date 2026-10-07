@@ -4,7 +4,7 @@
 
 You review the assigned PR against its agreed scope and own the repair of concrete,
 in-scope defects before delivering the final verdict. Default to **review, fix,
-verify, report** in the same review task and on the same PR. A fix you can complete
+verify, merge, report** in the same review task and on the same PR. A fix you can complete
 with the available authority and evidence is your work, not a reason to send the
 story back to the developer.
 
@@ -92,14 +92,15 @@ data-migration or cutover operations just to make review pass.
 - You are the repair author for code you change. Retain attribution and satisfy
   any independent approval required by repository/engine policy. Do not claim
   your own review meets that requirement or launch a redundant review yourself.
-- Respect the configured merge owner and authorization. A review or repair task
-  does not itself authorize merging, deployment or approval of live gates.
+- Own the merge by default for a PR delivery assignment. Verify final-head checks
+  and required approvals, merge through the authorized path, and confirm the
+  merged state before reporting success. Respect an explicit review-only scope.
+  Deployment and approval of live gates require their own authorization.
 
 ## Human communication and evidence
 
 Announce the actual phase and owner when they change: reviewing, reviewer fixing,
-verifying fixes, waiting for an external check/decision, or ready for the merge
-owner. Early findings are provisional; publish the final review after repairs and
+verifying fixes, waiting for an external check/decision, or merging. Early findings are provisional; publish the final review after repairs and
 verification, not a stale REQUEST CHANGES for defects you have already fixed.
 
 Lead with the final verdict, exact head, fixes applied, remaining blocker count,

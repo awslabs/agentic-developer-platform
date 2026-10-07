@@ -57,6 +57,8 @@ UNIT_MODULES = [
     "src.agentauth.model_policy_keys",
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
+    "src.agentauth.chat_data_routes",
+    "src.agentauth.chat_cancellation",
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
@@ -324,9 +326,15 @@ async def lifespan(app: FastAPI):
     from src.orchestration.work_admission import maintain_work_claims
 
     claims_task = asyncio.create_task(maintain_work_claims(), name="work_claim_cleanup")
+    from src.agentauth.chat_notifications import maintain_chat_notifications
+
+    notifications_task = asyncio.create_task(maintain_chat_notifications(), name="chat_notification_recovery")
     try:
         yield
     finally:
+        notifications_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await notifications_task
         pricing_task.cancel()
         with suppress(asyncio.CancelledError):
             await pricing_task

@@ -36,6 +36,7 @@ class AssumeRoleResult:
     region: str
     profile_name: str
     assumed_role_arn: str | None = None
+    assumed_role_id: str | None = None
 
 
 class STSAssumeError(Exception):
@@ -58,6 +59,7 @@ def _assume_role(
     label: str,
     aws_region: str = "us-east-1",
     send_session_tags: bool = True,
+    session_policy: str | None = None,
 ) -> AssumeRoleResult:
     """Execute STS AssumeRole with session tagging.
 
@@ -114,6 +116,8 @@ def _assume_role(
         "RoleSessionName": session_name,
         "DurationSeconds": session_duration_seconds,
     }
+    if session_policy is not None:
+        kwargs["Policy"] = session_policy
     if send_session_tags:
         kwargs["Tags"] = tags
     if external_id:
@@ -157,6 +161,7 @@ def _assume_role(
         region=default_region,
         profile_name=profile_name,
         assumed_role_arn=response.get("AssumedRoleUser", {}).get("Arn"),
+        assumed_role_id=response.get("AssumedRoleUser", {}).get("AssumedRoleId"),
     )
 
 

@@ -1,10 +1,10 @@
-# Single-stage build — both stages were identical (same base + bun); multi-stage
-# added no size benefit and broke the gbrain binary (COPY dereferenced the bin
-# symlink, severing cli.ts from its relative imports).
+# Install gbrain in its runtime stage so the CLI symlink and relative imports
+# stay intact. The donor stage supplies only reviewed curl Debian packages.
 #
 # Base image pinned to specific Node 22 LTS patch for reproducibility and
 # vulnerability tracking. Bump when a newer 22.x patch ships OS-level fixes.
-FROM public.ecr.aws/docker/library/node:22.23.3-trixie-slim
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+FROM public.ecr.aws/docker/library/node:22.23.3-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa
 ENV HOME=/home/appuser
 ENV BUN_INSTALL=/opt/bun
 ENV PATH=/opt/bun/bin:$PATH
@@ -34,6 +34,18 @@ RUN git init /opt/gbrain \
     && ln -s /opt/gbrain/src/cli.ts /opt/bun/bin/gbrain \
     && bun pm cache rm
 
+# Patch the bundled trust-address parser without resolving other dependencies.
+ADD --checksum=sha256:ffcc8055b78b0852b2889a426ad3a3003b60bc79df704faca194157efa2b2587 https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.8.tgz /tmp/proxy-addr-2.0.8.tgz
+COPY docker/security/ /tmp/proxy-maintenance/
+RUN --network=none node /tmp/proxy-maintenance/maintain-proxy-addr.cjs \
+    && node /tmp/proxy-maintenance/verify-proxy-addr.cjs \
+    && rm -rf /tmp/proxy-maintenance /tmp/proxy-addr-2.0.8.tgz
+
+# Preserve curl/Git behavior with the shared reviewed curl binaries.
+COPY --from=curl-security /out/ /tmp/adp-curl/
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
+
 # Copy configuration and entrypoint
 COPY config/ /app/config/
 COPY docker/entrypoint.sh /app/entrypoint.sh
@@ -49,6 +61,8 @@ EXPOSE 3000
 # Drop to non-root before the runtime instructions (USER must precede
 # HEALTHCHECK/CMD so the missing-user check is satisfied).
 USER appuser
+RUN --network=none --mount=type=bind,source=docker/security,target=/checks,readonly \
+    node /checks/verify-proxy-addr.cjs
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1

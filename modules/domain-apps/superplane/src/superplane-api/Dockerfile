@@ -2,13 +2,18 @@
 # Multi-stage Dockerfile for the Superplane API Server
 # ============================================================================
 
+# Select the same Python base for wheel construction and runtime. Release builds
+# may supply a reviewed immutable maintenance image through PYTHON_IMAGE.
+ARG PYTHON_IMAGE=public.ecr.aws/docker/library/python:3.12-slim
+
 # Stage 1: Build dependencies
-FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
+FROM ${PYTHON_IMAGE} AS builder
 
 WORKDIR /build
 
 # Install build dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN python -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 is required"' \
+    && pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy dependency spec and install
 COPY pyproject.toml .
@@ -56,7 +61,7 @@ RUN PYTHONPATH=/install/lib/python3.12/site-packages python -c \
     'from workspace_provisioning.preview import preview_workspace; from superplane_bootstrap.admission import required_proofs; from account_factory.dependencies import load; from account_factory.bootstrap import policy_path; from account_provisioning.creation_runner import create_account; assert required_proofs(); load(); assert policy_path("bootstrap-trust-policy.json").is_file()'
 
 # Stage 2: Runtime image
-FROM public.ecr.aws/docker/library/python:3.12-slim
+FROM ${PYTHON_IMAGE}
 
 # Install runtime system deps
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \

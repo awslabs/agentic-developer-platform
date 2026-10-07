@@ -238,7 +238,7 @@ def test_prepare_and_verify_registers_before_invoking(monkeypatch, form):
 
 
 @pytest.mark.parametrize("mode", ["prepare-and-verify", "verify"])
-def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_path, mode):
+def test_retired_chat_rollout_refuses_before_model_or_deployment_calls(tmp_path, mode):
     relative = "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
     script = tmp_path / relative
     script.parent.mkdir(parents=True)
@@ -246,7 +246,7 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
     helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
     helper.parent.mkdir(parents=True)
     helper.write_text(
-        f'#!/bin/bash\n[ "$1" = --{mode} ] || exit 9\necho "model denied" >&2\nexit 1\n'
+        '#!/bin/bash\necho "unexpected model access call" >&2\nexit 9\n'
     )
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -267,7 +267,8 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
         text=True,
     )
     assert result.returncode == 1
-    assert "model denied" in result.stderr
+    assert "Credentialed chat ScaledJob retired" in result.stderr
+    assert "unexpected model access call" not in result.stderr
     assert "unexpected deployment call" not in result.stderr
     assert "Reading Terraform outputs" not in result.stdout
 
@@ -365,6 +366,7 @@ def test_main_wrapper_dry_run_preserves_backend_cache(tmp_path):
     shutil.copyfile(ROOT / "deploy.sh", tmp_path / "deploy.sh")
     helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
     helper.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / "platform/scripts/deploy-prerequisites.sh", helper.parent / "deploy-prerequisites.sh")
     helper.write_text('#!/bin/bash\n[ "$1" = "--dry-run" ] || exit 9\n')
     cache = tmp_path / ".terraform/terraform.tfstate"
     cache.parent.mkdir()
@@ -416,9 +418,10 @@ def test_access_preparation_runs_on_deploy_and_update_only(
 ):
     source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
     start = source.index("# Upgrades may introduce a new runtime default too.")
+    assert source.index('upgrade-preflight.py') < start
     block = source[
         start : source.index(
-            "\n# ---------------------------------------------------------------------------",
+            "\n# =============================================================================",
             start,
         )
     ]
@@ -448,6 +451,7 @@ def test_main_wrapper_stops_when_default_model_cannot_invoke(tmp_path, failure_s
     shutil.copyfile(ROOT / "deploy.sh", tmp_path / "deploy.sh")
     scripts = tmp_path / "platform/scripts"
     scripts.mkdir(parents=True)
+    shutil.copyfile(ROOT / "platform/scripts/deploy-prerequisites.sh", scripts / "deploy-prerequisites.sh")
     log = tmp_path / "calls"
     (scripts / "deploy-all.sh").write_text(
         '#!/bin/bash\n[ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ] || exit 9\n'

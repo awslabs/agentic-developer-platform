@@ -33,12 +33,42 @@ variable "build_publish_worker_image_tag" {
   nullable    = false
 }
 
+# These capabilities belong to the independent automation state, never the
+# domain installer or selected connected runtime role. Omitted flags add no grant.
+variable "enable_superplane_operator_source" {
+  description = "Allow the protected build publisher to deliver reviewed aws-e/adp Git history through the exact private Superplane source prefix."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "enable_superplane_paid_release" {
+  description = "Enroll only the prepared Superplane paid worker project, repository, source staging and durable dispatch evidence. Does not provision the builder."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+module "superplane_build_dispatch" {
+  source                 = "../../modules/domain-apps/superplane/infra/automation/build-dispatch"
+  environment            = var.environment
+  account_id             = data.aws_caller_identity.current.account_id
+  repository             = var.repository
+  name_prefix            = var.name_prefix
+  enable_operator_source = var.enable_superplane_operator_source
+  enable_paid_release    = var.enable_superplane_paid_release
+}
+
 locals {
+  build_dispatch_projects = distinct(concat(var.build_project_names,
+  module.superplane_build_dispatch.project_names))
+
   build_layer_artifact_keys = [for project, key in {
     "adp-${var.environment}-pyjwt-layer"    = "lambda-layers/pyjwt-py313.zip"
     "adp-${var.environment}-psycopg2-layer" = "lambda-layers/psycopg2-py312.zip"
   } : key if contains(var.build_project_names, project)]
-  build_ecr_read_names = var.build_ecr_repository_names == null ? ["adp-*"] : var.build_ecr_repository_names
+  build_ecr_read_names = var.build_ecr_repository_names == null ? ["adp-*"] : distinct(concat(
+  var.build_ecr_repository_names, module.superplane_build_dispatch.ecr_repository_names))
 }
 
 resource "aws_iam_role" "build" {
@@ -54,20 +84,26 @@ resource "aws_iam_role" "build" {
 }
 
 resource "aws_iam_role_policy" "build_dispatch" {
+  lifecycle {
+    precondition {
+      condition     = module.superplane_build_dispatch.publisher_identity_valid
+      error_message = "Superplane publication requires aws-e/adp, an exact environment and its canonical adp-<environment>-trusted-build identity."
+    }
+  }
   name = "reviewed-project-dispatch"
   role = aws_iam_role.build.id
   policy = jsonencode({ Version = "2012-10-17", Statement = concat([
     {
       Sid    = "DispatchKnownProjects", Effect = "Allow",
       Action = ["codebuild:StartBuild", "codebuild:StopBuild", "codebuild:BatchGetBuilds", "codebuild:BatchGetProjects"],
-      Resource = flatten([for name in var.build_project_names : [
+      Resource = flatten([for name in local.build_dispatch_projects : [
         "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:project/${name}",
         "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:build/${name}:*",
       ]])
     },
     {
       Sid      = "StageReviewedSource", Effect = "Allow", Action = ["s3:PutObject"],
-      Resource = [for name in var.build_project_names : "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/codebuild/src/${name}/*"]
+      Resource = [for name in local.build_dispatch_projects : "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/codebuild/src/${name}/*"]
     },
     {
       Sid      = "ReadPublishedImages", Effect = "Allow",
@@ -77,7 +113,7 @@ resource "aws_iam_role_policy" "build_dispatch" {
     {
       Sid = "ImageAuthentication", Effect = "Allow", Action = ["ecr:GetAuthorizationToken", "sts:GetCallerIdentity"], Resource = "*"
     },
-    ], [for _ in range(length(local.build_layer_artifact_keys) > 0 ? 1 : 0) : {
+    ], module.superplane_build_dispatch.policy_statements, [for _ in range(length(local.build_layer_artifact_keys) > 0 ? 1 : 0) : {
       Sid      = "VerifyPublishedLayerArtifacts", Effect = "Allow", Action = ["s3:GetObject"],
       Resource = [for key in local.build_layer_artifact_keys : "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/${key}"]
       }], [for _ in range(var.build_publish_worker_image_tag ? 1 : 0) : {

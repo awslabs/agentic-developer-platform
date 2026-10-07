@@ -31,7 +31,7 @@ export interface SessionHost {
   toolBroker?: {
     definitions: readonly HostTool[];
     execute: ToolHost["execute"];
-    maxCalls: number;
+    maxCalls?: number;
     repositoryCapabilities: readonly Capability[];
   };
 }
@@ -43,8 +43,8 @@ export interface AdmittedSession {
   repository?: RepositoryBinding;
   prompt: string;
   /** Additional host-owned model limits from the admitted run grant. */
-  maxOutputTokens: number;
-  maxResponseBytes: number;
+  maxOutputTokens?: number;
+  maxResponseBytes?: number;
   /** Host transport ceiling; Task IPC retains its 63 KiB payload default. */
   maxRequestBytes?: number;
   signal: AbortSignal;
@@ -62,9 +62,11 @@ export interface AdmittedSession {
  */
 export async function runAdmittedSession(input: AdmittedSession, host: SessionHost) {
   const { runId, prompt, maxOutputTokens, maxResponseBytes, signal: callerSignal } = input;
-  const maxRequestBytes = input.maxRequestBytes ?? 63 * 1024;
-  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024 || maxRequestBytes > 256 * 1024
-    || (input.source.kind === "task-api" && maxRequestBytes > 63 * 1024)) throw new Error("Invalid host request bound");
+  // Only Task API uses the bounded IPC frame. Direct HTTP hosts need no
+  // additional prompt/history byte ceiling in front of the model provider.
+  const maxRequestBytes = input.maxRequestBytes ?? (input.source.kind === "task-api" ? 63 * 1024 : undefined);
+  if (maxRequestBytes !== undefined && (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024
+    || (input.source.kind === "task-api" && maxRequestBytes > 63 * 1024))) throw new Error("Invalid host request bound");
   const snapshot = verifySnapshot(input.snapshot);
   const policy = structuredClone(input.policy);
   const source = structuredClone(input.source);
@@ -87,8 +89,10 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     || plan.capabilities.some(value => value !== "artifacts.publish" && !planningCapabilities.includes(value as "story.create" | "agents.delegate") && !broker?.definitions.some(tool => tool.capability === value))) {
     throw new Error("Session requires the executable capability broker");
   }
-  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 4096
-    || !Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 65536) {
+  if ((maxOutputTokens !== undefined && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1))
+    || (maxResponseBytes !== undefined && (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1))
+    || (source.kind === "task-api" && (maxOutputTokens === undefined || maxOutputTokens > 4096
+      || maxResponseBytes === undefined || maxResponseBytes > 65536))) {
     throw new Error("Invalid admitted model limits");
   }
   for (const skill of plan.persona.skills) {
@@ -106,11 +110,8 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     ...(planningCapabilities.length ? [`Host planning capabilities: ${planningCapabilities.filter(capability => plan.capabilities.includes(capability)).join(', ')}. These operations are executed by the host after validating your structured artifact, not through model tools. For authorized story creation set publish_stories=true. For authorized dispatch return schedule entries. Do not claim completion before host receipts exist.`] : []),
     ...(plan.unavailableOptionalCapabilities.length ? [`Unavailable optional capabilities: ${plan.unavailableOptionalCapabilities.join(', ')}. Do not attempt these operations.`] : []),
   ].join('\n\n');
-  const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes, 32768)) : undefined;
+  const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes ?? 32768, 32768)) : undefined;
   callerSignal.throwIfAborted();
-  if (Buffer.byteLength(prompt) + Buffer.byteLength(instructions) > plan.limits.maxContextBytes) {
-    throw new Error("Task and persona exceed admitted context budget");
-  }
   const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(plan.limits.maxDurationMs)]);
   await host.assertCurrent(signal);
   signal.throwIfAborted();
@@ -128,8 +129,11 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       execute: (name, args, active) => receipts.execute({ assertCurrent: signal => host.assertCurrent(signal),
         execute: (...args) => broker.execute(...args) }, name, args, active),
     }, { capabilities: plan.capabilities, maxCalls: broker.maxCalls, maxRequestBytes: 63 * 1024,
-      maxResultBytes: maxResponseBytes, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
-      maxClientContinuations: host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
+      maxResultBytes: maxResponseBytes ?? 65536, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
+      maxClientContinuations: host.takeSteering && source.kind !== "task-api" ? null : host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
+    // Task API retains explicit task-grant budgets. Direct persona runs do not
+    // inherit the legacy hard-coded model/tool call ceilings.
+    const maxOperations = source.kind === "task-api" ? plan.limits.maxTurns : undefined;
     let modelOperations = 0;
     proxy = await startTextResponsesProxy(async (request, requestSignal) => {
       const active = AbortSignal.any([signal, requestSignal]);
@@ -145,7 +149,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       maxOutputTokens: maxOutputTokens,
       // Reserve wrapper space within the existing 64 KiB Task IPC contract.
       maxRequestBytes, maxResponseBytes: maxResponseBytes,
-      maxOperations: plan.limits.maxTurns, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000),
+      maxOperations, timeoutMs: source.kind === "task-api" ? Math.min(plan.limits.maxDurationMs, 120000) : plan.limits.maxDurationMs,
     });
     // Shared ADP personas already contain the maintained workflow and tool
     // policy. A bounded base avoids duplicating the CLI's coding-agent prompt
@@ -181,7 +185,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     const turnContext = {
       runId: runId, personaKey: plan.persona.key, model: policy.canonicalModel,
       harnessRevision: policy.harnessRevision, surface: source.kind,
-      timeoutMs: plan.limits.maxDurationMs, maxInputBytes: plan.limits.maxContextBytes,
+      timeoutMs: plan.limits.maxDurationMs,
       maxOutputBytes: maxResponseBytes, signal,
     };
     let nextPrompt = prompt;
@@ -190,7 +194,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     for (let continuation = 0; ; continuation++) {
       await host.assertCurrent(signal);
       signal.throwIfAborted();
-      if (modelOperations >= plan.limits.maxTurns) throw new Error("Persona completion exhausted model budget");
+      if (maxOperations !== undefined && modelOperations >= maxOperations) throw new Error("Persona completion exhausted model budget");
       if (continuation > 0) tools?.advanceClient();
       const evidence = await runSdkTurn(thread, nextPrompt, { ...turnContext, previousUsage }, event => host.progress(event));
       previousUsage = evidence.usage;

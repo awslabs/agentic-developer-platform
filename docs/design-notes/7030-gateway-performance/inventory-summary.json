@@ -1,0 +1,29 @@
+{
+  "baseline": "fc5fe6f21100df5d49c29f4c3a882907ff8e659e",
+  "tracked_artifacts": 8818,
+  "scopes": {
+    "component-audit": 2636,
+    "entrypoint-audit": 1417,
+    "excluded-unrelated": 4202,
+    "integration-reference": 563
+  },
+  "signals": {
+    "action": 23,
+    "build": 89,
+    "executable": 189,
+    "execution-reference": 1200,
+    "gateway-reference": 850,
+    "infra": 519,
+    "lifecycle-name": 347,
+    "package-entry": 27,
+    "runtime-manifest": 38,
+    "shell-entry": 231,
+    "workflow": 129
+  },
+  "migrations": 88,
+  "migration_heads": [
+    "084_reservation_receipt_scopes"
+  ],
+  "non_blob_entries": [],
+  "unmapped_artifacts": 0
+}

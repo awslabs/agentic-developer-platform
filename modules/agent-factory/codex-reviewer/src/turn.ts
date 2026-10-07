@@ -36,7 +36,8 @@ export async function runResumableTurn(
           }
           if (event.type === 'turn.completed') result.usage = event.usage;
           if (event.type === 'turn.failed') throw new Error(event.error.message);
-          if (event.type === 'error') throw new Error(event.message);
+          // SDK `error` events include native reconnect notifications. Like
+          // Thread.run(), consume them; only turn.failed is terminal.
         }
       } else result = await thread.run(input, options);
       // The SDK can return without a terminal event. An arbitrary last message

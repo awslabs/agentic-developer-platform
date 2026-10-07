@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json as _json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -31,6 +32,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: ANN001
     skip_live = pytest.mark.skip(reason="live_only tests require TEST_ENV=dev")
     skip_browser = pytest.mark.skip(reason="browser tests require Playwright (pip install playwright)")
     for item in items:
+        if not Path(str(item.path)).is_relative_to(Path(__file__).parent):
+            continue
         if "live_only" in item.keywords and not is_live():
             item.add_marker(skip_live)
         if "browser" in item.keywords and not is_live():

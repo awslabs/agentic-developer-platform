@@ -157,3 +157,81 @@ test('concurrent SDK commands settle once, out of order, without an early paused
   expect(adapter.activeWorkCount()).toBe(0);
   expect(adapter.gate.currentPhase()).toBe('paused');
 });
+
+test('intercepted shell patches release their admission and deliver pending steering at Stop', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  await hook(adapter, 'PreToolUse', 'shell-patch');
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(1);
+  expect(await adapter.submitInput({ kind: 'steering', text: 'too early' })).toBe('rejected');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(0);
+  adapter.drainSteering = async () => {
+    expect(await adapter.submitInput({ kind: 'steering', text: 'Patch follow-up' })).toBe('delivered');
+  };
+  expect(await hook(adapter, 'Stop')).toEqual({ decision: 'block', reason: 'Patch follow-up' });
+});
+
+test('a completed patch cannot confirm pause while another shell is still executing', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  for (const [id, type] of [['shell', 'command_execution'], ['patch', 'file_change']]) {
+    await hook(adapter, 'PreToolUse', id);
+    adapter.observeSdkEvent({ type: 'item.started', item: { id, type } });
+  }
+  await adapter.requestPause();
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'patch', type: 'file_change' } });
+  expect(adapter.activeWorkCount()).toBe(1);
+  expect(adapter.gate.currentPhase()).not.toBe('paused');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'shell', type: 'command_execution' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(adapter.activeWorkCount()).toBe(0);
+  expect(adapter.gate.currentPhase()).toBe('paused');
+  await adapter.resumeFromPause();
+});
+
+test('a new tool boundary accepts steering while an earlier SDK shell is still running', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  await hook(adapter, 'PreToolUse', 'long-test');
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'long-test', type: 'command_execution' } });
+  const deliver = jest.fn(async () => {
+    expect(await adapter.submitInput({ kind: 'steering', text: 'The failing test is already identified' })).toBe('delivered');
+  });
+  adapter.drainSteering = deliver;
+  const result = await hook(adapter, 'PreToolUse', 'next-read');
+  expect(result.hookSpecificOutput.additionalContext).toBe('The failing test is already identified');
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(adapter.activeWorkCount()).toBe(2);
+  expect(adapter.canAcceptInput()).toBe(false);
+  // Context delivery has not settled either tool or falsely confirmed a pause.
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'next-read', type: 'command_execution' } });
+  expect((await adapter.requestPause()).outcome).toBe('requested');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'next-read', type: 'command_execution' } });
+  expect(adapter.gate.currentPhase()).not.toBe('paused');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'long-test', type: 'command_execution' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(adapter.gate.currentPhase()).toBe('paused');
+  await adapter.resumeFromPause();
+});
+
+test('Stop does not consume steering until outstanding SDK work has settled', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  await hook(adapter, 'PreToolUse', 'long-test');
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'long-test', type: 'command_execution' } });
+  const deliver = jest.fn(async () => {
+    expect(await adapter.submitInput({ kind: 'steering', text: 'Continue after the tests' })).toBe('delivered');
+  });
+  adapter.drainSteering = deliver;
+  expect(await hook(adapter, 'Stop')).toEqual({});
+  expect(deliver).not.toHaveBeenCalled();
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'long-test', type: 'command_execution' } });
+  expect(await hook(adapter, 'Stop')).toEqual({ decision: 'block', reason: 'Continue after the tests' });
+  expect(deliver).toHaveBeenCalledTimes(1);
+});

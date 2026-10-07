@@ -74,7 +74,7 @@ run "the_published_skypilot_reference_is_digest_pinned" {
 
   # The digest U2's lock pins for skypilot-api, restated on purpose — see the header.
   assert {
-    condition     = local.skypilot_digest == "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4"
+    condition     = local.skypilot_digest == "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4"
     error_message = "the module must publish the digest the lock pins for skypilot-api. If the lock was intentionally re-pinned, update this expected value in the same change — that is what makes a silent re-pin impossible."
   }
 
@@ -189,7 +189,32 @@ run "skypilot_tagged_rollback_images_do_not_expire" {
     error_message = "Retain the bounded untagged-image cleanup policy."
   }
   assert {
-    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-api"].policy).rules) == 2
+    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-controller"].policy).rules) == 2
     error_message = "The SkyPilot exception must not remove other repositories' retention limits."
+  }
+}
+
+run "executor_python_build_inputs_survive_new_publications" {
+  command = plan
+  assert {
+    condition = alltrue([
+      for rule in jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-executor"].policy).rules :
+      rule.selection.tagStatus == "untagged"
+    ]) && length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-executor"].policy).rules) == 1
+    error_message = "Pinned Python build inputs must not expire as new executor application tags are published."
+  }
+}
+
+run "consumer_python_build_inputs_survive_new_publications" {
+  command = plan
+  assert {
+    condition = alltrue([
+      for repository in ["adp-superplane-api", "adp-superplane-paid-worker"] :
+      length(jsondecode(aws_ecr_lifecycle_policy.superplane[repository].policy).rules) == 1 && alltrue([
+        for rule in jsondecode(aws_ecr_lifecycle_policy.superplane[repository].policy).rules :
+        rule.selection.tagStatus == "untagged"
+      ])
+    ])
+    error_message = "Each consumer's immutable Python base must survive later application publications."
   }
 }

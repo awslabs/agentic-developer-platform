@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { loadHumanCommunication } from './human-communication';
+import { loadCodingGuidelines } from './coding-guidelines';
 
 const personas = path.resolve(__dirname, '../../rules/personas');
 const persona = fs.readFileSync(path.join(personas, 'aidlc.md'), 'utf8');
@@ -46,8 +47,8 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     const compiled = ts.transpileModule(loader.getText(source), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    return new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication',
-      `${compiled}; return loadRules();`)(fs, path, cwd, agentType, loadHumanCommunication);
+    return new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines',
+      `${compiled}; return loadRules();`)(fs, path, cwd, agentType, loadHumanCommunication, loadCodingGuidelines);
   }
 
   it('loads the complete AI-DLC layout from shipped assets without optional workflow files', () => {
@@ -55,7 +56,8 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     const rules = loadRules('aidlc');
     expect(rules.split(persona)).toHaveLength(2);
     const policy = loadHumanCommunication([path.join(cwd, '.adp-rules/personas')]);
-    expect(rules.endsWith(policy)).toBe(true);
+    expect(rules.split(policy)).toHaveLength(2);
+    expect(rules.endsWith(loadCodingGuidelines())).toBe(true);
     expect(policy).toContain('except required AI-DLC workflow layouts');
     expect(policy).not.toContain('These rules replace conflicting presentation templates');
     expect(loadRules('developer')).not.toContain(persona);

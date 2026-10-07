@@ -81,11 +81,13 @@ source_access:
 #
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
+# Private installation inputs bind source_revision to the selected clean merged
+# checkout. Individual image revisions below retain their actual build identity.
 images:
-  skypilot-api: sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4
-  superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
+  skypilot-api: sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4
+  superplane-controller: sha256:cb5dbf14eff53e665e00f7810f67a7a063dcb7f99fa7693853d35676aa769635
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
-  superplane-platform-monitor: sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9
+  superplane-platform-monitor: sha256:0b62e74cb32b93519476f85a6f7d10792c7084315f9b046ff1c21765bef32792
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
 image_sources:
@@ -94,28 +96,32 @@ image_sources:
     repository: adp-superplane-platform-monitor
     ecr_repository: adp-superplane-platform-monitor
     source_path: src/superplane-platform-monitor
+    source_revision: 59958880d617996614c43207435fafe799815887
     build_workflow: .github/workflows/superplane-monitor-build.yml
-    tag: security27-de59fd318
-    publication_receipt: docs/security/runs/2026-09-27/monitor-promotion/publication.json
-    resolved_by: ECR manifest/config verification and native monitor acceptance
-    selected_because: Fixed Go runtime; zero Critical and High candidate findings
+    tag: 59958880d617996614c43207435fafe799815887
+    publication_receipt: docs/security/runs/2026-10-06/demo-image-pins/monitor-publication.json
+    resolved_by: Immutable registry manifest/config readback and exact OCI revision/source labels
+    selected_because: Previously qualified runtime bytes; component tree unchanged from the selected release source
   skypilot-api:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    tag: security27-high-openssh-20260927
-    resolved_by: ECR index/platform/config byte identities verified, 2026-09-27
-    publication_receipt: docs/security/runs/2026-09-27/high-skypilot/publication.json
-    selected_because: Preserved SkyPilot contract with tested tool, XML, crypto, HTTP parser and OpenSSH maintenance; zero reviewed Critical, residual OS High findings retained
+    source_revision: a7b50c90da7df1e9ae8a7251234bae09fd0f6792
+    tag: skypilot-7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4
+    resolved_by: Published qualified OCI platform and config bytes unchanged; exact registry readback verified
+    publication_receipt: docs/security/runs/2026-10-06/demo-image-pins/skypilot-publication.json
+    selected_because: Independently reviewed image gate and packaged runtime checks passed; live installation remains separate
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller
     ecr_repository: adp-superplane-controller
     source_path: src/superplane-controller
+    source_revision: 59958880d617996614c43207435fafe799815887
     build_workflow: .github/workflows/superplane-controller-build.yml
-    tag: security27-de59fd318
-    resolved_by: ECR digest read-back, 2026-09-27; wave1-publication.json
-    selected_because: x/net CVE-2026-46600 fix and unused curl/zlib removal; zero Critical/High candidate matches
+    tag: 59958880d617996614c43207435fafe799815887
+    publication_receipt: docs/security/runs/2026-10-06/demo-image-pins/controller-publication.json
+    resolved_by: Immutable registry manifest/config readback and exact OCI revision/source labels
+    selected_because: Previously qualified runtime bytes; component tree unchanged from the selected release source
   superplane-api:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-api
@@ -275,12 +281,12 @@ schema:
     # Explicit cluster scope children preserve maintained organization grant authority.
     # #5927 adds the original-instance native command journal.
     # #5928 records cleanup ownership and exact pre-POST workload specifications.
-    version_files: 56
+    version_files: 58
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 042_controller_cleanup_snapshots
+    head: 044_organization_grant_changes
     base: 001_initial
   compatible_with: null
   blocked_by:

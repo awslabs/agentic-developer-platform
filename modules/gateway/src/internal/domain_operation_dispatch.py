@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.bootstrap import BootstrapRefusedError, _iso, _key
 from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION, AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
-from src.internal.domain_operation_store import aws_client, harness, operation_connect
+from src.internal.domain_operation_store import aws_client, domain_connect, harness, operation_connect
 
 
 def canonical(value):
@@ -26,19 +26,13 @@ async def paid_operation(binding, operation_id, *, connection=None, require_curr
             return await paid_operation(binding, operation_id, connection=current, require_current=require_current)
     row = await connection.fetchrow(
         "SELECT o.*,a.approval_id,a.requester,a.approved_by,a.reservation_state,a.max_resource_units,"
-        "a.max_runtime_seconds,a.max_cost_micros,r.state AS budget_state FROM harness_operations o "
+        "a.max_runtime_seconds,a.max_cost_micros,a.reservation_id FROM harness_operations o "
         "JOIN harness_approval_consumption a USING(operation_id) "
-        "JOIN operation_budget_reservations r ON r.reservation_id=a.reservation_id "
-        "AND r.job_id=o.job_id AND r.attempt_id=o.attempt_id AND r.org_id=o.org_id AND r.workspace_id=o.workspace_id "
-        "AND r.max_resource_units=a.max_resource_units AND r.max_runtime_seconds=a.max_runtime_seconds AND r.max_cost_micros=a.max_cost_micros "
-        "JOIN organizations d ON d.id::text=o.org_id "
-        "WHERE o.operation_id=$1 AND o.org_id=$2 AND d.adp_org_id=$3 "
+        "WHERE o.operation_id=$1 AND o.org_id=$2 "
         "AND a.org_id=o.org_id AND a.workspace_id=o.workspace_id "
-        "AND a.plan_digest=o.plan_digest AND a.reservation_state IN ('confirmed','retained','released') "
-        "AND r.state IN ('confirmed','retained','released')",
+        "AND a.plan_digest=o.plan_digest AND a.reservation_state IN ('confirmed','retained','released')",
         operation_id,
         binding.org_id,
-        binding.adp_org_id,
     )
     if row is None:
         raise HTTPException(403, "paid operation authority refused")
@@ -47,12 +41,40 @@ async def paid_operation(binding, operation_id, *, connection=None, require_curr
     if identity.payload_digest(request) != row["plan_digest"]:
         raise HTTPException(403, "paid operation authority refused")
     operation = dict(row)
-    if require_current:
-        from src.internal.domain_operation_approval import current_approval
+    async with domain_connect(binding) as domain:
+        mapped = await domain.fetchval("SELECT adp_org_id FROM organizations WHERE id::text=$1", binding.org_id)
+        budget = await domain.fetchrow(
+            "SELECT state FROM operation_budget_reservations WHERE reservation_id=$1 "
+            "AND job_id=$2 AND attempt_id=$3 AND org_id=$4 AND workspace_id=$5 "
+            "AND max_resource_units=$6 AND max_runtime_seconds=$7 AND max_cost_micros=$8 "
+            "AND state IN ('confirmed','retained','released')",
+            *(
+                operation[key]
+                for key in (
+                    "reservation_id",
+                    "job_id",
+                    "attempt_id",
+                    "org_id",
+                    "workspace_id",
+                    "max_resource_units",
+                    "max_runtime_seconds",
+                    "max_cost_micros",
+                )
+            ),
+        )
+        if mapped != binding.adp_org_id or budget is None:
+            raise HTTPException(403, "paid domain authority refused")
+        operation["budget_state"] = budget["state"]
+        if require_current:
+            from src.internal.domain_operation_approval import current_approval
 
-        if operation["budget_state"] != "confirmed" or operation["reservation_state"] != "confirmed":
-            raise HTTPException(403, "current domain budget refused")
-        operation["approval_expires_at"] = await current_approval(connection, operation, request)
+            if operation["budget_state"] != "confirmed" or operation["reservation_state"] != "confirmed":
+                raise HTTPException(403, "current domain budget refused")
+            operation["approval_expires_at"] = await current_approval(domain, operation, request)
+            if binding.current_identity_enforced:
+                from src.internal.domain_current_identity import revalidate_original_humans
+
+                await revalidate_original_humans(operation, adp_org_id=binding.adp_org_id)
     return operation
 
 
@@ -65,6 +87,10 @@ async def dispatch(binding, body, store, *, authorize=None):
                 "SELECT operation_id FROM harness_operations WHERE operation_id=$1 AND org_id=$2 FOR UPDATE", body.operation_id, binding.org_id
             )
             operation = await paid_operation(binding, body.operation_id, connection=connection, require_current=body.mode == "execution")
+            if body.mode == "recovery" and binding.current_identity_enforced:
+                from src.internal.domain_current_identity import revalidate_original_humans
+
+                await revalidate_original_humans(operation, adp_org_id=binding.adp_org_id)
             for key in ("operation_id", "job_id", "attempt_id", "org_id", "workspace_id"):
                 if operation[key] != getattr(body, key):
                     raise HTTPException(403, "paid operation dispatch refused")

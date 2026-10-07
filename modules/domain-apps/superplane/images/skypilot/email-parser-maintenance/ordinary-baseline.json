@@ -1,0 +1,799 @@
+{
+  "module_sha256": "4308932872acbf4a674312a45a49b870e48026e3dfedc878ee2f512ddf2f30ba",
+  "cases": [
+    {
+      "name": "mailbox",
+      "value": "john@example.com",
+      "legacy": [
+        [
+          "",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              "john@example.com"
+            ]
+          ],
+          "pos": 16,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "display-name",
+      "value": "John Doe <john@example.com>",
+      "legacy": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "John Doe",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "John Doe",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "John Doe",
+              "john@example.com"
+            ]
+          ],
+          "pos": 27,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "quoted-display",
+      "value": "\"Doe, Jane\" <jane@example.net>",
+      "legacy": [
+        [
+          "Doe, Jane",
+          "jane@example.net"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "Doe, Jane",
+          "jane@example.net"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "Doe, Jane",
+          "jane@example.net"
+        ]
+      ],
+      "strict_parseaddr": [
+        "Doe, Jane",
+        "jane@example.net"
+      ],
+      "compat_parseaddr": [
+        "Doe, Jane",
+        "jane@example.net"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "Doe, Jane",
+              "jane@example.net"
+            ]
+          ],
+          "pos": 30,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "comment",
+      "value": "john@example.com (Team West)",
+      "legacy": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "Team West",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "Team West",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "Team West",
+              "john@example.com"
+            ]
+          ],
+          "pos": 28,
+          "comments": [
+            "Team West"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nested-comment",
+      "value": "john@example.com (Team (West))",
+      "legacy": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "Team West",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "Team West",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "Team West",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "Team West",
+              "john@example.com"
+            ]
+          ],
+          "pos": 30,
+          "comments": [
+            "Team West"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "escaped-comment",
+      "value": "john@example.com (Team \\(West\\))",
+      "legacy": [
+        [
+          "Team (West)",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "Team (West)",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "Team (West)",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "Team (West)",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "Team (West)",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "Team (West)",
+              "john@example.com"
+            ]
+          ],
+          "pos": 32,
+          "comments": [
+            "Team (West)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "quoted-local",
+      "value": "\"john.doe\"@example.com",
+      "legacy": [
+        [
+          "",
+          "\"john.doe\"@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          "\"john.doe\"@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          "\"john.doe\"@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        "\"john.doe\"@example.com"
+      ],
+      "compat_parseaddr": [
+        "",
+        "\"john.doe\"@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              "\"john.doe\"@example.com"
+            ]
+          ],
+          "pos": 22,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "domain-literal",
+      "value": "john@[192.0.2.1]",
+      "legacy": [
+        [
+          "",
+          "john@[192.0.2.1]"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          ""
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          "john@[192.0.2.1]"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "",
+        "john@[192.0.2.1]"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              "john@[192.0.2.1]"
+            ]
+          ],
+          "pos": 16,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "mailbox-list",
+      "value": "john@example.com, jane@example.net",
+      "legacy": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              "john@example.com"
+            ]
+          ],
+          "pos": 17,
+          "comments": []
+        },
+        {
+          "result": [
+            [
+              "",
+              "jane@example.net"
+            ]
+          ],
+          "pos": 34,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "group",
+      "value": "Friends: John <john@example.com>, Jane <jane@example.net>;",
+      "legacy": [
+        [
+          "John",
+          "john@example.com"
+        ],
+        [
+          "Jane",
+          "jane@example.net"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "John",
+          "john@example.com"
+        ],
+        [
+          "Jane",
+          "jane@example.net"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "John",
+          "john@example.com"
+        ],
+        [
+          "Jane",
+          "jane@example.net"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "John",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "John",
+              "john@example.com"
+            ],
+            [
+              "Jane",
+              "jane@example.net"
+            ]
+          ],
+          "pos": 58,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "empty-group",
+      "value": "Undisclosed recipients:;",
+      "legacy": [
+        [
+          "",
+          ""
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          ""
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          ""
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "",
+        ""
+      ],
+      "address_states": [
+        {
+          "result": [],
+          "pos": 24,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "group-followed-mailbox",
+      "value": "Friends: john@example.com;, jane@example.net",
+      "legacy": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              "john@example.com"
+            ]
+          ],
+          "pos": 27,
+          "comments": []
+        },
+        {
+          "result": [
+            [
+              "",
+              "jane@example.net"
+            ]
+          ],
+          "pos": 44,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "group-comment",
+      "value": "Friends (Work): john@example.com (Primary), jane@example.net;",
+      "legacy": [
+        [
+          "Primary",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "Primary",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "Primary",
+          "john@example.com"
+        ],
+        [
+          "",
+          "jane@example.net"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "Primary",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "Primary",
+              "john@example.com"
+            ],
+            [
+              "",
+              "jane@example.net"
+            ]
+          ],
+          "pos": 61,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "folded-display",
+      "value": "John\r\n Doe <john@example.com>",
+      "legacy": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "John Doe",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "John Doe",
+        "john@example.com"
+      ],
+      "compat_parseaddr": [
+        "John Doe",
+        "john@example.com"
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "John Doe",
+              "john@example.com"
+            ]
+          ],
+          "pos": 29,
+          "comments": []
+        }
+      ]
+    },
+    {
+      "name": "obsolete-route",
+      "value": "<@example.org,@example.net:john@example.com>",
+      "legacy": [
+        [
+          "",
+          ""
+        ],
+        [
+          "",
+          "@example.net"
+        ],
+        [
+          "",
+          "john@example.com"
+        ]
+      ],
+      "strict_getaddresses": [
+        [
+          "",
+          ""
+        ]
+      ],
+      "compat_getaddresses": [
+        [
+          "",
+          ""
+        ],
+        [
+          "",
+          "@example.net"
+        ],
+        [
+          "",
+          "john@example.com"
+        ]
+      ],
+      "strict_parseaddr": [
+        "",
+        ""
+      ],
+      "compat_parseaddr": [
+        "",
+        ""
+      ],
+      "address_states": [
+        {
+          "result": [
+            [
+              "",
+              ""
+            ]
+          ],
+          "pos": 14,
+          "comments": []
+        },
+        {
+          "result": [
+            [
+              "",
+              "@example.net"
+            ]
+          ],
+          "pos": 26,
+          "comments": []
+        },
+        {
+          "result": [
+            [
+              "",
+              "john@example.com"
+            ]
+          ],
+          "pos": 44,
+          "comments": []
+        }
+      ]
+    }
+  ],
+  "fragments": [
+    {
+      "kind": "comment",
+      "value": "(Team (West))",
+      "result": "Team West",
+      "pos": 13,
+      "comments": []
+    },
+    {
+      "kind": "comment",
+      "value": "(Team \\(West\\))",
+      "result": "Team (West)",
+      "pos": 15,
+      "comments": []
+    },
+    {
+      "kind": "comment",
+      "value": "(Team\r\n West)",
+      "result": "Team",
+      "pos": 6,
+      "comments": []
+    },
+    {
+      "kind": "comment",
+      "value": "(Team (West) Office)",
+      "result": "Team West Office",
+      "pos": 20,
+      "comments": []
+    },
+    {
+      "kind": "quote",
+      "value": "\"Doe, Jane\"",
+      "result": "Doe, Jane",
+      "pos": 11,
+      "comments": []
+    },
+    {
+      "kind": "quote",
+      "value": "\"Jane \\\"JJ\\\" Doe\"",
+      "result": "Jane \"JJ\" Doe",
+      "pos": 17,
+      "comments": []
+    },
+    {
+      "kind": "domainliteral",
+      "value": "[192.0.2.1]",
+      "result": "[192.0.2.1]",
+      "pos": 11,
+      "comments": []
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat-sandbox-deny
+  namespace: adp-gateway-agents
+spec:
+  podSelector:
+    matchLabels:
+      adp.io/chat-sandbox: 'true'
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []

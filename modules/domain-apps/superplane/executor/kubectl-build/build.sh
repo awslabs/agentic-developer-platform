@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Keep the supported CLI minor behavior; report the downstream dependency patch.
-version=v1.31.4+adp.security.1
+version=v1.31.4+adp.security.2
 commit=a78aa47129b8539636eb86a9d00e31b2720fe06b
 flags='-s -w'
 for package in k8s.io/client-go/pkg/version k8s.io/component-base/version; do

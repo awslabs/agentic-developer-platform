@@ -40,7 +40,9 @@ locals {
     ADP_TASK_WORKER_IMAGE_DIGESTS   = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
     } : {}, length(var.codex_task_personas) > 0 ? {
     ADP_CODEX_PERSONA_CATALOG_FILE = "/app/src/agentauth/codex-github-catalogue.json"
-  } : {})
+    } : {}, local.domain_operation_enabled ? {
+    ADP_DOMAIN_OPERATION_BINDINGS = jsonencode(local.domain_operation_gateway_bindings)
+  } : {}, var.domain_provider_authority == null ? {} : module.superplane_provider_authority[0].gateway_environment)
 }
 
 resource "kubernetes_config_map" "worker_gateway" {
@@ -49,7 +51,8 @@ resource "kubernetes_config_map" "worker_gateway" {
     name      = "adp-worker-authority-config"
     namespace = var.gateway_namespace
   }
-  data = local.worker_gateway_config
+  data       = local.worker_gateway_config
+  depends_on = [module.superplane_operation_authority]
   lifecycle {
     precondition {
       condition     = !var.shared_worker_continuation_enabled || (var.shared_run_reporting_enabled && !var.agent_authority_enabled)
@@ -85,6 +88,7 @@ resource "terraform_data" "worker_gateway_rollout" {
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,
+    module.superplane_operation_authority,
   ]
 }
 

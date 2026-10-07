@@ -1,21 +1,26 @@
 # Moving existing build infrastructure into Superplane ownership
 
-This is a preparation procedure, not an executable migration or authorization.
-The existing platform CodeBuild module still owns `superplane-api`,
-`superplane-controller`, `superplane-monitor` and `superplane-executor` projects,
-their project roles and inline policies. This change does not remove them:
-removing their definitions now would plan destruction. The new unmerged paid
-project is isolated first and needs no state migration unless an operator has
-independently deployed the earlier platform manifest.
+This is a preparation procedure, not evidence of an installed state transfer.
+The current platform CodeBuild source selects core projects only. Superplane's
+`infra/control-plane` declares the four standard image build lanes through the
+shared CodeBuild module and app-owned `codebuild/projects.json`, gated by
+`manage_image_builds` (default `false`). Source ownership does **not** establish
+which backend owns existing projects, roles, policies or log groups. Before any
+platform apply, verify the installed ownership; an old platform state can still
+contain domain resources whose definitions are no longer in that root.
 
-Before migrating existing resources, implement app-owned definitions matching
-their actual configuration and stable names, plus a reviewed platform exclusion
-input that preserves today's ownership by default. Do not reuse the paid-worker
-root for unrelated buildspecs or widen its role. Keep the shared CodeBuild
-boundary, source bucket/lifecycle and unrelated projects in platform state.
-Existing shared boundaries must remain attached until an equivalent app-owned
-boundary is reviewed and available. Do not delete a shared boundary during the
-transfer. Inventory log groups and their actual owner before importing them.
+The paid-worker builder has its own app-owned root. Do not reuse it for unrelated
+buildspecs or widen its role. Keep the shared CodeBuild boundary, source
+bucket/lifecycle and unrelated projects in platform state. Existing shared
+boundaries must remain attached until an equivalent app-owned boundary is
+reviewed and available. Inventory log groups and their actual owner before
+importing them.
+
+The app-owned automation modules in [automation](automation/README.md) are a
+separate case: the platform automation root composes those definitions within
+its existing backend. SkyPilot's four resource address changes use `moved`
+blocks; the shared build role and policy keep their original addresses. They
+require no cross-state migration and do not enable image-build ownership.
 
 For each confirmed account, region and environment:
 

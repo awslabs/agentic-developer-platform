@@ -34,6 +34,7 @@ shape if they ever need to split payloads.
 import json
 import logging
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -121,6 +122,9 @@ class WebSocketRouter:
         task's own connection and emit a metric instead.
         """
         fallback = metadata.get("connection_id", "")
+        strict = metadata.get("strict_delivery") is True
+        if strict:
+            fallback = ""
         session_id = metadata.get("session_id", "")
         task_owner = str(metadata.get("owner_principal", "") or "")
 
@@ -138,11 +142,26 @@ class WebSocketRouter:
         try:
             resp = self._sessions_table.get_item(
                 Key={"session_id": session_id},
-                ProjectionExpression="connection_id, owner_principal",
+                ProjectionExpression=(
+                    "connection_id, owner_principal, created_at, expires_at, channel, threads"
+                    if strict else "connection_id, owner_principal"
+                ),
                 ConsistentRead=True,
             )
             item = resp.get("Item", {})
             active = item.get("connection_id", "")
+
+            if strict and (
+                type(metadata.get("session_generation")) is not int
+                or metadata["session_generation"] <= 0
+                or item.get("created_at") != metadata["session_generation"]
+                or item.get("expires_at", 0) <= int(time.time())
+                or item.get("channel") != "webchat"
+                or not metadata.get("task_id")
+                or item.get("threads", {}).get(metadata.get("thread_id"), {}).get("processing_task_id")
+                != metadata["task_id"]
+            ):
+                return ""
 
             row_owner = str(item.get("owner_principal", "") or "")
             if row_owner != task_owner:
@@ -218,6 +237,10 @@ class WebSocketRouter:
         # without relying on content heuristics.
         if metadata.get("status"):
             extra["status"] = metadata["status"]
+        if metadata.get("terminal_delivery") is True and metadata.get("strict_delivery") is True:
+            extra.update({field: metadata[field] for field in (
+                "terminal_delivery", "delivery_id", "session_id", "status", "retryable", "accounting_status",
+            )})
 
         # Build the full frame to measure its size.
         frame: dict[str, Any] = {

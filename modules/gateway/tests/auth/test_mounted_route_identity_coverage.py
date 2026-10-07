@@ -76,6 +76,14 @@ REVIEWED_EXCEPTIONS: frozenset[tuple[frozenset[str], str]] = frozenset(
         # work_routes.py: STS SigV4 proof + signed invocation header + role allowlist
         (frozenset({"POST"}), "/internal/v1/agent/work/admit"),
         (frozenset({"POST"}), "/internal/v1/agent/roots/admit"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/admit"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/exit"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/teardown"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/finalize"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/complete"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/session/commit"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/resume"),
+        (frozenset({"POST"}), "/internal/v1/agent/chat/data/reserve"),
         # persona_model_selection.py: STS SigV4 proof via require_agent_transport
         (frozenset({"POST"}), "/internal/v1/agent/persona-model/resolve"),
         # chat_model.py: Kubernetes TokenReview pod identity + live grant + bound dispatch
@@ -207,10 +215,32 @@ class TestReviewedExceptionsAreStable:
     def test_exception_count_is_pinned(self):
         """S10 counted 9 exceptions (Appendix B §2). This continuation added 5
         task-api routes with independent STS SigV4 producer-proof authentication,
-        and the asset/attempt-scoped signed ingestion callback brings the total to 15. Updating this count requires reviewing the
+        and the asset/attempt-scoped signed ingestion callback brought the total to 15.
+        Chat data admission adds body-bound STS producer proof, restricted by the
+        registered chat producer, tenant and persona. Sandbox exit separately checks
+        a body-bound STS supervisor proof, registered tenant/persona, and current
+        run/attempt/pod binding before observing exit. Teardown uses the same
+        supervisor proof and requires durable exit evidence before confirming
+        removal. Finalization uses that same proof and records terminal state
+        only after removal. Completion repeats that proof and removal check before
+        atomically releasing the owner-bound processing lock. Recovery uses the same
+        body-bound supervisor proof and registered tenant/persona before returning
+        the original launch binding without model authority. Creation reservation
+        verifies a body-bound STS supervisor proof, the registered tenant/persona
+        and owner session, and live root authority before atomically reserving the
+        approved image and original pod name. Persistent turn completion uses
+        the same body-bound STS supervisor proof and registered tenant/persona
+        checks, verifies the original run/attempt/pod binding, and requires a
+        sealed result and owner delivery without removing the live pod, for a
+        total of 23.
+        Negative authentication cases live in test_chat_sandbox_exit.py,
+        test_chat_teardown.py, test_chat_turn_finalization.py, test_chat_turn_completion.py,
+        test_chat_supervisor_resume.py, test_chat_sandbox_creation.py and
+        test_chat_persistent_completion.py.
+        Updating this count requires reviewing the
         new route's authentication mechanism."""
-        assert len(REVIEWED_EXCEPTIONS) == 15, (
-            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 15. If a new exception was reviewed and added, update this count."
+        assert len(REVIEWED_EXCEPTIONS) == 23, (
+            f"REVIEWED_EXCEPTIONS has {len(REVIEWED_EXCEPTIONS)} entries, expected 23. If a new exception was reviewed and added, update this count."
         )
 
     def test_every_exception_exists_in_the_app(self, internal_routes):

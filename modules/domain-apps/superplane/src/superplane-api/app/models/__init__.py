@@ -37,6 +37,7 @@ from app.models.research_proposal import ResearchProposal  # noqa: F401
 from app.models.budget_alert import BudgetAlert  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.workspace_grant import WorkspaceGrantRecord  # noqa: F401
+from app.models.workspace_grant_change import WorkspaceGrantChange  # noqa: F401
 from app.models.provider_connection import (  # noqa: F401
     ProviderConnection,
     ProviderConnectionBinding,
@@ -62,6 +63,7 @@ from app.models.controller_network import (  # noqa: F401
 )
 
 from app.models.cluster_grant_scope import OrganizationGrantClusterScope  # noqa: F401
+from app.models.organization_grant_change import OrganizationGrantChange as OrganizationGrantChange
 from app.models.controller_workload_submission import ControllerWorkloadSubmission  # noqa: F401
 from app.models.controller_node_command import ControllerNodeCommand  # noqa: F401
 from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot  # noqa: F401

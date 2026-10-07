@@ -159,6 +159,9 @@ resource "aws_ssm_parameter" "agent_authority_enabled" {
 }
 
 resource "aws_ssm_parameter" "agent_authority_worker_images" {
+  # Preserve approved images across rolling upgrades; the catalog can exceed 4 KiB.
+  # Keep the tier stable: AWS cannot downgrade an Advanced parameter in place.
+  tier   = "Advanced"
   name   = "/adp/${var.environment}/gateway/agent-authority-worker-images"
   type   = "SecureString"
   key_id = aws_kms_key.dynamodb.arn

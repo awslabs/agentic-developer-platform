@@ -1520,7 +1520,7 @@ def test_resolution_accepts_a_snapshot_up_to_but_not_including_its_expiry(policy
     assert exact.value.reason == "snapshot_expired"
 
 
-def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
+def _live_policy_record(policy_store, policy: ModelPolicySnapshot, *, persona="developer"):
     raw = canonical_json(policy.to_dict()).decode()
     digest = policy_digest(policy.to_dict())
     _put(
@@ -1530,7 +1530,7 @@ def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
             "sk": {"S": "EXEC#run-live-developer"},
             "tenant_id": {"S": "tenant-a"},
             "status": {"S": "active"},
-            "persona": {"S": "developer"},
+            "persona": {"S": persona},
             "model_policy_snapshot": {"S": raw},
             "model_policy_snapshot_digest": {"S": digest},
         },
@@ -2215,3 +2215,123 @@ async def test_database_persona_defaults_are_frozen_at_root(db_session):
     assert first.policy_revision != second.policy_revision
     assert resolve_decision(first, invocation_id="child", persona="developer", now=NOW).resolved_model_id == OPUS
     assert resolve_decision(second, invocation_id="child", persona="developer", now=NOW).resolved_model_id == HAIKU
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-codex-architect",
+        "agent-codex-product",
+        "agent-codex-pm",
+        "agent-codex-intent-refinement",
+    ],
+)
+@pytest.mark.parametrize("posture", ["report_only", "enforcing"])
+@pytest.mark.parametrize("evidence", ["missing", "expired", "refused"])
+async def test_codex_report_admission_does_not_require_probe_cache(
+    db_session,
+    policy_store,
+    monkeypatch,
+    persona,
+    posture,
+    evidence,
+):
+    await _exercise_codex_report_admission(db_session, policy_store, monkeypatch, persona=persona, posture=posture, evidence=evidence)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,patterns,reason",
+    [
+        ("openai.gpt-6-astra", ["anthropic.*"], "not_permitted"),
+        (SONNET, None, "harness_incompatible"),
+        ("unknown.model", None, "model_unavailable"),
+    ],
+)
+async def test_codex_report_admission_still_checks_policy_and_compatibility(
+    db_session,
+    policy_store,
+    monkeypatch,
+    model,
+    patterns,
+    reason,
+):
+    await _exercise_codex_report_admission(db_session, policy_store, monkeypatch, model=model, patterns=patterns, reason=reason)
+
+
+async def _exercise_codex_report_admission(
+    db_session,
+    policy_store,
+    monkeypatch,
+    *,
+    persona="agent-codex-architect",
+    posture="report_only",
+    evidence="missing",
+    model="openai.gpt-6-astra",
+    patterns=None,
+    reason=None,
+):
+    current = datetime.now(UTC)
+    policy = snapshot(
+        issued_at=current - timedelta(minutes=1),
+        expires_at=current + timedelta(hours=2),
+        mappings={persona: model},
+        persona_contracts={persona: {"compatibility_class": "codex-sdk", "harness_contract_revision": "0.155.1"}},
+        class_defaults={
+            "codex-sdk": {"model_id": model, "revision": 1, "posture": posture, "posture_revision": 1, "harness_contract_revision": "0.155.1"}
+        },
+    )
+    record = _live_policy_record(policy_store, policy, persona=persona)
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="codex-sdk",
+            harness_contract_revision="0.155.1",
+            active_default_model_id="openai.gpt-6-astra",
+            revision=1,
+            posture_revision=1,
+            enforcement_posture=posture,
+        )
+    )
+    db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="report-probe@example.test", cognito_sub="report-probe-sub"))
+    if evidence != "missing":
+        db_session.add(
+            ModelInvocabilityEvidence(
+                account_id="111111111111",
+                region="us-east-1",
+                canonical_model_id=model,
+                compatibility_class="codex-sdk",
+                harness_contract_revision="0.155.1",
+                request_shape_sha256=compute_request_shape_sha256(model, persona),
+                outcome="refused" if evidence == "refused" else "proven",
+                provider_request_id="fixture-provider-request",
+                verified_at=current - timedelta(days=2),
+                expires_at=current - timedelta(days=1),
+                updated_at=current,
+            )
+        )
+    await db_session.commit()
+    if patterns is not None:
+        monkeypatch.setenv("BG_MODEL_ALLOWED_MODELS_CONFIG", json.dumps({"tenant-a": patterns}))
+    monkeypatch.setattr(
+        bedrock_routing_resolver, "resolve", AsyncMock(return_value=BedrockTarget(account_id="111111111111", region="us-east-1", rung="user"))
+    )
+    private = Ed25519PrivateKey.generate()
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()
+    ).decode()
+    result = await bootstrap_model_policy_live(
+        db_session,
+        store=policy_store,
+        record=record,
+        grant=_grant("github_event"),
+        env={SIGNING_KEY_ENV: pem, SIGNING_KEY_ID_ENV: "policy-key"},
+    )
+    if reason:
+        assert result["status"] == "unavailable"
+        assert result["reason"] == reason
+    else:
+        assert result["status"] == "proposed", result
+        assert result["decision"]["resolved_model_id"] == model
+        assert result["decision"]["runtime_posture"] == posture
+        assert result["decision"]["evidence_verified_at"] is None

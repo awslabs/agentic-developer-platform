@@ -18,6 +18,7 @@ from src.agentauth.review_upload import REVIEW_RESULT_KIND, ReviewUploadRefusedE
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_services import live_context
 from src.agentauth.store import AuthorityStoreError
+from src.orchestration.reviewer_checks import ReviewChecksRequest, protected_review_checks
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 _KINDS = {
@@ -170,3 +171,8 @@ def _verify_stored_artifact(key: str, *, record, runtime, storage) -> bool:
         return 0 < len(data) <= MAX_ARTIFACT_BYTES and obj.get("ContentType") == content_type and hashlib.sha256(data).hexdigest() == match[1]
     except (BotoCoreError, ClientError, OSError):
         return False
+
+
+@router.post("/review-checks")
+async def reviewer_checks(body: ReviewChecksRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)):
+    return await protected_review_checks(body, request, runtime)

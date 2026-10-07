@@ -16,16 +16,16 @@ The essentials, so you don't start down the wrong path:
 
 - **Confirm the target AWS account first** (`aws sts get-caller-identity` via the
   active `AWS_PROFILE`); get the user's OK before Phase 1.
-- **There is no upfront GitHub setup.** GitHub is wired at the END (Phase 8/9)
+- **There is no upfront GitHub setup.** GitHub is wired at the END (Phase 8b)
   for the agent path; gateway-only needs no GitHub. The primary path is the UI
   flow (Settings → Connections → "Set up GitHub App" as the Phase-6d
   `platform_admin`); the CLI fallback is `register-github-app.sh`. Any "Phase 0
   / setup-org / 3 org-owned apps" instruction is the superseded legacy ARC
   track — do not run it.
-- **`deploy-all.sh` chains Phases 1–6 only.** Phases 6c (broker), 6d
-  (bootstrap-admin), 7 (webhook stack), and 8 (GitHub App) are separate
-  stage-by-stage scripts — without them you have no working login, first admin,
-  or agent path. See the phase table + placeholder-artifact rule in AGENTS.md.
+- **The full launcher chains core deployment stages**, including broker,
+  first-admin bootstrap, webhook, separate agent factory and final frontend
+  publication. Do not rerun those stages after successful full deployment.
+  Follow the canonical guide for ordering, verification and recovery.
 
 This file is intentionally a redirect so the deploy procedure has one source of
-truth (AGENTS.md + deploy-quickstart.md) and never drifts across copies.
+truth (deploy-with-agent.md + deploy-quickstart.md) and never drifts across copies.

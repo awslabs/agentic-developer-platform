@@ -108,6 +108,7 @@ resource "aws_iam_policy" "gateway_backend_ceiling" {
     { Sid = "DenyOtherSchedules", Effect = "Deny", Action = ["events:DisableRule", "events:EnableRule"], NotResource = local.gateway_backend_pricing_rule },
     { Sid = "DenyOtherUploads", Effect = "Deny", Action = "s3:PutObject", NotResource = concat(
       ["arn:aws:s3:::adp-terraform-state-${local.gateway_backend_account}/codebuild/src/${var.name_prefix}-gateway-build/*"],
+      ["arn:aws:s3:::adp-${var.environment}-deployment-evidence-${local.gateway_backend_account}/deployment-evidence/v1/*"],
       local.gateway_backend_cfn_objects,
     ) },
   ] })

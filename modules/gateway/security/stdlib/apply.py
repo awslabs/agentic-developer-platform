@@ -15,10 +15,13 @@ def verify(stdlib, manifest, stage):
             raise RuntimeError(f"Unexpected CPython source ({stage}): {name}; review the security backports")
 
 
-def apply_bundle(stdlib, bundle, *, verify_only=False, patch_file="cpython-3.13.15.patch"):
+def apply_bundle(stdlib, bundle, *, verify_only=False, patch_file="cpython-3.13.15.patch",
+                 manifest_file="manifest.json"):
     if Path(patch_file).name != patch_file:
         raise ValueError("The patch must be a filename within the reviewed bundle")
-    manifest = json.loads((bundle / "manifest.json").read_text())
+    if Path(manifest_file).name != manifest_file:
+        raise ValueError("The manifest must be a filename within the reviewed bundle")
+    manifest = json.loads((bundle / manifest_file).read_text())
     if not verify_only:
         verify(stdlib, manifest, "before")
         subprocess.run(
@@ -37,6 +40,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--patch-file", default="cpython-3.13.15.patch")
+    parser.add_argument("--manifest-file", default="manifest.json")
     args = parser.parse_args()
     apply_bundle(Path(sysconfig.get_path("stdlib")), Path(__file__).parent,
-                 verify_only=args.verify_only, patch_file=args.patch_file)
+                 verify_only=args.verify_only, patch_file=args.patch_file,
+                 manifest_file=args.manifest_file)

@@ -2,6 +2,7 @@
 # Keep every gateway Terraform pass on the same edge and internal-plane ALBs.
 gateway_alb_vars() {
   GATEWAY_ALB_ARGS=()
+  local allow_missing="${1:-false}"
   local arn dns groups prefix
   for prefix in internal-alb internal-plane-alb; do
     local parameters fields
@@ -25,6 +26,7 @@ else:
 ' "$prefix" <<< "$parameters") || fail "Incomplete $prefix configuration"
     if [ "$fields" = ABSENT ]; then
       [ "$prefix" = internal-plane-alb ] && continue
+      [ "$allow_missing" = true ] && continue
       fail "Edge ALB is not cached; run wire-gateway-alb.sh"
     fi
     IFS=$'\t' read -r arn dns groups <<< "$fields"

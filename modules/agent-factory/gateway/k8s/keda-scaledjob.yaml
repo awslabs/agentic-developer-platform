@@ -20,7 +20,7 @@
 #
 # identityOwner: keda = use the KEDA operator's own SA credentials for scaling.
 # The operator role only has sqs:GetQueueAttributes (least-privilege).
-# Worker pods use their own SA (adp-agent) with full Bedrock/DDB/Secrets perms.
+# Worker pods use their own SA (adp-gateway-worker) with full Bedrock/DDB/Secrets perms.
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:
@@ -56,7 +56,7 @@ spec:
         labels:
           app.kubernetes.io/name: agent-gateway-worker
       spec:
-        serviceAccountName: adp-agent
+        serviceAccountName: adp-gateway-worker
         restartPolicy: Never
         containers:
           - name: agent-worker

@@ -1,6 +1,7 @@
 name: Orchestration Review Contract Tests
 
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:
@@ -53,7 +54,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: review-contract-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-review-contract-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

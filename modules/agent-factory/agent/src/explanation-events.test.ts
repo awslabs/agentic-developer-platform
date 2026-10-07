@@ -63,6 +63,20 @@ describe('real read-only listener', () => {
     expect((await (await request('/agent/state')).json() as any).capabilities.pause).toBe(false);
     await reader.cancel();
   });
+  it('replays retained history larger than the socket buffer without dropping the feed', async () => {
+    for (let n = 0; n < 100; n++) hub.publish(`marker-${n}: ` + 'deployment evidence '.repeat(180));
+    const retained = hub.replay().events;
+    expect(JSON.stringify(retained).length).toBeGreaterThan(65536);
+    const response = await request('/agent/events');
+    hub.publish('live-after-replay');
+    hub.finish();
+    const body = await response.text();
+    const received = body.split('\n').filter(line => line.startsWith('data: '))
+      .map(line => JSON.parse(line.slice(6))).filter(event => event.sequence);
+    expect(received.map(event => event.sequence)).toEqual([...retained.map(event => event.sequence), 101, 102]);
+    expect(received.at(-2).payload.text).toBe('live-after-replay');
+    expect(received.at(-1).kind).toBe('terminal');
+  });
   it('refuses missing auth and wrong generation', async () => {
     expect((await request('/agent/events', 'GET', false)).status).toBe(401);
     expect((await fetch(`http://127.0.0.1:${port}/agent/events`, { headers: {
@@ -76,4 +90,31 @@ describe('real read-only listener', () => {
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('terminal');
     expect((await reader.read()).done).toBe(true);
   });
+});
+
+test('latest sanitized checklist survives history eviction and rapid updates without resetting cursors', () => {
+  const hub = new ExplanationEvents('run', 1);
+  const plan = { id: 'plan', category: 'plan' as const, state: 'running' as const };
+  hub.publish('0 of 2 tasks complete', plan);
+  hub.publish('1 of 2 tasks complete', plan);
+  for (let i = 0; i < 200; i++) hub.publish(`tool ${i}`);
+  const replay = hub.replay();
+  expect(replay.reset).toBe(true);
+  expect(replay.events[0].payload.text).toBe('1 of 2 tasks complete');
+  expect(replay.events.length).toBeLessThanOrEqual(HISTORY_EVENTS);
+  expect(hub.replay('run:1:201').events.map(e => e.sequence)).toEqual([202]);
+  expect(hub.replay('run:1:1').events[0].payload.text).toBe('1 of 2 tasks complete');
+  hub.publish('AKIAABCDEFGHIJKLMNOP', plan);
+  for (let i = 0; i < 200; i++) hub.publish(`later tool ${i}`);
+  expect(hub.replay().events[0].payload.text).toContain('omitted');
+  expect(JSON.stringify(hub.replay())).not.toContain('AKIA');
+});
+
+it('inspection plans cannot replace the pinned assignment checklist', () => {
+  const hub = new ExplanationEvents('run', 1);
+  hub.publish('- ☐ Repair and deliver', { id: 'assignment', category: 'plan', state: 'running' });
+  hub.publish('- ☑ Read diff', { id: 'inspect', category: 'plan', state: 'completed', plan_scope: 'inspection' });
+  for (let i = 0; i < 200; i++) hub.publish(`Tool activity ${i}`);
+  const plans = hub.replay().events.filter(e => e.payload.progress?.category === 'plan');
+  expect(plans.map(e => e.payload.text)).toEqual(['- ☐ Repair and deliver']);
 });

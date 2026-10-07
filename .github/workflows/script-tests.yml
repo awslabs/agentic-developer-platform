@@ -5,6 +5,7 @@ name: Script Tests
 # gate citing them is vacuous.
 
 on:
+  workflow_call: {}
   # Runs on both PR and post-merge push to main. The push trigger is not
   # redundant: a pull_request-only workflow never attaches a check-run to a
   # main commit, so "does this gate exist on main?" is unanswerable via the
@@ -120,6 +121,9 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/exact_image_disposition.py'
+      - 'codebuild/exact_image_components.py'
+      - 'modules/domain-apps/superplane/images/skypilot/cache-maintenance/**'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -243,6 +247,9 @@ on:
       - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
       - '.github/security/cfn-nag-suppressions.yml'
       - 'codebuild/security_image_targets.py'
+      - 'codebuild/exact_image_disposition.py'
+      - 'codebuild/exact_image_components.py'
+      - 'modules/domain-apps/superplane/images/skypilot/cache-maintenance/**'
       - 'codebuild/scan_security_images.py'
       - 'codebuild/bs-grype-scan.yml'
       - 'codebuild/bs-syft-scan.yml'
@@ -261,7 +268,7 @@ on:
       - main
 
 concurrency:
-  group: script-tests-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-script-tests-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -368,9 +375,12 @@ jobs:
       # cannot reach it. No other workflow executes it either: without this step
       # the S19 (#5618) coverage gate -- "every expected image must produce a
       # real result" -- is asserted by tests that never run.
-      - name: Run container scan inventory tests
+      - name: Run container scan inventory and exact-image verifier tests
         working-directory: ${{ github.workspace }}
         run: |
           pytest \
             codebuild/tests/test_security_image_scan.py \
+            codebuild/tests/test_exact_image_disposition.py \
+            codebuild/tests/test_exact_image_components.py \
+            modules/domain-apps/superplane/images/skypilot/cache-maintenance/test_clean_oci.py \
             -v --tb=short --timeout=60

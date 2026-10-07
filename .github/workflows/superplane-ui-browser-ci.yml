@@ -1,7 +1,8 @@
 name: Superplane UI Browser CI
 
 # Isolated rendering and interaction checks against fixture HTTP responses.
-# No deployed environment, product login, AWS credentials or provider operations.
+# Tests use no deployed environment, product login or provider operations.
+# The final evidence upload uses the runner identity for the private CI bucket.
 on:
   workflow_call:
   workflow_dispatch:
@@ -35,15 +36,22 @@ jobs:
       - name: Install browser and maintained frontend dependencies
         run: |
           npm ci --prefix modules/gateway/frontend
-          python -m pip install playwright==1.55.0
+          python -m pip install playwright==1.55.0 pytest
           python -m playwright install chromium --with-deps
+      - name: Check onboarding fixture contracts when present
+        run: |
+          fixture_tests=modules/domain-apps/superplane/ui/browser-tests/test_onboarding_fixture.py
+          if [ -f "$fixture_tests" ]; then
+            python -m pytest -q -o addopts= "$fixture_tests"
+          fi
       - name: Check serving interactions and layout with fixture transports
         run: python modules/domain-apps/superplane/ui/browser-tests/verify_browser.py
+      - name: Check Demo 1 session transport and maintained onboarding re-entry
+        run: python modules/domain-apps/superplane/ui/browser-tests/verify_demo1_browser.py
       - name: Retain browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-ci-evidence-s3
         with:
           name: serving-browser-evidence
           path: test-results/superplane-browser/
-          if-no-files-found: error
           retention-days: 14

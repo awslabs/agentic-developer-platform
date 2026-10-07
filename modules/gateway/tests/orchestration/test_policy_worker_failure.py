@@ -20,6 +20,8 @@ from tests.orchestration.test_review_cycle import ORG, REPO, cycle, pg_server, p
     [
         "failed",
         "protected_failed",
+        "protected_failed_after_handoff",
+        "protected_failed_with_invalid_handoff",
         "protected_released_failed",
         "protected_released_startup_cancelled",
         "protected_released_other_run",
@@ -50,6 +52,11 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
         "pr_binding_required": True,
     }
     async with cycle.factory() as db:
+        execution = await db.get(OrchestrationExecution, cycle.execution.id)
+        # The ordinary cases failed before a handoff. Only the explicit late
+        # cleanup case retains the fixture's real committed handoff receipt.
+        if evidence != "protected_failed_after_handoff":
+            execution.handoff_receipt_ref = "invalid-receipt" if evidence == "protected_failed_with_invalid_handoff" else None
         db.add(
             OrchestrationDecision(
                 org_id=ORG,
@@ -153,18 +160,48 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
         node = await db.get(OrchestrationNode, cycle.node.id)
         assert node.attempts == 1
         assert result.errors == int(evidence in {"wrong_attempt", "release_refused"})
-        assert result.advanced == int(evidence in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"})
+        assert result.advanced == int(
+            evidence
+            in {
+                "failed",
+                "protected_failed",
+                "protected_failed_with_invalid_handoff",
+                "protected_released_failed",
+                "protected_released_startup_cancelled",
+            }
+        )
         assert node.state == (
-            "failed" if evidence in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"} else "running"
+            "failed"
+            if evidence
+            in {
+                "failed",
+                "protected_failed",
+                "protected_failed_with_invalid_handoff",
+                "protected_released_failed",
+                "protected_released_startup_cancelled",
+            }
+            else "running"
         )
         merged.assert_not_called()
+        if evidence == "protected_failed_after_handoff":
+            execution = await db.get(OrchestrationExecution, cycle.execution.id)
+            claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
+            assert result.waiting == 1
+            assert execution.handoff_receipt_ref and execution.status == "awaiting_external"
+            assert execution.next_check_at is not None and claim.state == "held"
         if not evidence.startswith("advisory"):
             advisory.get.assert_not_called()
         if evidence == "release_refused":
             execution = await db.get(OrchestrationExecution, cycle.execution.id)
             claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
             assert execution.status != "concluded" and claim.state == "held"
-        if evidence not in {"failed", "protected_failed", "protected_released_failed", "protected_released_startup_cancelled"}:
+        if evidence not in {
+            "failed",
+            "protected_failed",
+            "protected_failed_with_invalid_handoff",
+            "protected_released_failed",
+            "protected_released_startup_cancelled",
+        }:
             return
         decisions = list((await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "result_observed"))).all())
         assert len(decisions) == 1

@@ -1,0 +1,332 @@
+{
+  "version": 1,
+  "issue": 6933,
+  "updated_at": "2026-10-06T05:05:09.057Z",
+  "tasks": [
+    {
+      "id": "ACT01-c1",
+      "kind": "code",
+      "criterion": "ACT01",
+      "title": "Summarize mixed legacy and Task activity with lineage and evidence",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/work_summary.py"
+      ],
+      "note": "Implementation and prior passing timeline/provenance evidence retained; unchanged by the prepared merge.",
+      "commits": [
+        "02f37a0"
+      ]
+    },
+    {
+      "id": "ACT01-c-wire",
+      "kind": "code",
+      "criterion": "ACT01",
+      "title": "Wire read-only summaries into delegated chat access",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/agentauth/chat_data_routes.py"
+      ],
+      "note": "Trusted launch identity and activity.read enforcement remain unchanged; prior capability and delegated-route evidence retained.",
+      "commits": [
+        "e029e95"
+      ]
+    },
+    {
+      "id": "ACT01-t1",
+      "kind": "test",
+      "criterion": "ACT01",
+      "title": "Verify mixed three-day gateway timeline",
+      "status": "done",
+      "covers": [
+        "ACT01-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_work_summary.py"
+      ],
+      "note": "Prior 1,082-test gateway validation retained for unchanged story implementation and fixtures.",
+      "commits": [
+        "9ea84a5"
+      ]
+    },
+    {
+      "id": "ACT01-t3",
+      "kind": "test",
+      "criterion": "ACT01",
+      "title": "Verify delegated gateway and chat wiring",
+      "status": "done",
+      "covers": [
+        "ACT01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_activity_work.py"
+      ],
+      "note": "Prior local gateway and chat-worker integration results retained. Final published-head Chat Data Port Integration remains pending under ACT01-t4."
+    },
+    {
+      "id": "ACT01-t2",
+      "kind": "test",
+      "criterion": "ACT01",
+      "title": "Verify entitled-user-only invocation and Task retrieval on a deployed target",
+      "status": "blocked",
+      "covers": [
+        "ACT01-c1",
+        "ACT01-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: #6937 evaluation owner must supply controlled records, authorized retrieval/isolation, rendered citations, deployed source/image and cleanup. Deferred qualification, not a pre-merge validation gap."
+    },
+    {
+      "id": "ACT01-t4",
+      "kind": "test",
+      "criterion": "ACT01",
+      "title": "Verify published-head required CI and chat-data integration evidence",
+      "status": "open",
+      "covers": [
+        "ACT01-c1",
+        "ACT01-c-wire",
+        "ACT02-c1",
+        "ACT03-c1",
+        "ACT03-c2",
+        "ACT03-c-wire"
+      ],
+      "files": [
+        ".github/workflows/gateway-ci.yml",
+        ".github/workflows/gateway-deploy.yml",
+        "modules/gateway/tests/agentauth/test_chat_lease_handoff.py",
+        "modules/gateway/tests/orchestration/test_assistant_deploy_boundary.py",
+        "modules/gateway/tests/orchestration/test_deployment_workflow_contract.py",
+        "modules/gateway/tests/orchestration/test_gateway_deployment_receipt.py",
+        "modules/gateway/tests/features/test_superplane_proxy.py"
+      ],
+      "note": "Verified controller-supplied published head e595fe5be7e430b098b8d74519acdb1efe073bf2: all five repair blobs match the previously tested hashes. Prepared MERGE_HEAD 935e8e052700394f98924a51f9f3e8037b65e251 has zero conflicts; all 41 incoming paths equal the requested base. Story code/tests and gateway deployment workflows are unchanged. From /work/repo/modules/gateway, AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true uv run --no-sync pytest -q tests/features/test_superplane_proxy.py --tb=short passed 58 tests in 0.92s. No unstaged changes or unexpected untracked files; diff checks pass. Supplied CI snapshot is pending, not passing. Final merged-revision publication and required checks remain outstanding."
+    },
+    {
+      "id": "ACT02-c1",
+      "kind": "code",
+      "criterion": "ACT02",
+      "title": "Enforce half-open windows and traverse empty filtered pages",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/chat_work.py",
+        "modules/gateway/src/activity/service.py"
+      ],
+      "note": "Half-open filtering, independent cursors and conservative index bounds retained unchanged.",
+      "commits": [
+        "b1d7aab"
+      ]
+    },
+    {
+      "id": "ACT02-t1",
+      "kind": "test",
+      "criterion": "ACT02",
+      "title": "Verify UTC and DST half-open windows",
+      "status": "done",
+      "covers": [
+        "ACT02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/agentauth/test_chat_activity_work.py",
+        "modules/gateway/tests/activity/test_read_tenant_boundary.py"
+      ],
+      "note": "Prior passing window and mixed-precision boundary evidence retained."
+    },
+    {
+      "id": "ACT02-t2",
+      "kind": "test",
+      "criterion": "ACT02",
+      "title": "Verify continuation after empty filtered pages",
+      "status": "done",
+      "covers": [
+        "ACT02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_chat_work_pagination.py"
+      ],
+      "note": "Prior passing independent-cursor and empty-page traversal evidence retained."
+    },
+    {
+      "id": "ACT02-t3",
+      "kind": "test",
+      "criterion": "ACT02",
+      "title": "Reject forged user and tenant filters",
+      "status": "done",
+      "covers": [
+        "ACT01-c-wire",
+        "ACT02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_chat_work_pagination.py"
+      ],
+      "note": "Prior forged-argument and cursor-scope rejection evidence retained; authorization is unchanged."
+    },
+    {
+      "id": "ACT02-t4",
+      "kind": "test",
+      "criterion": "ACT02",
+      "title": "Deny cross-scope transcript lookup",
+      "status": "done",
+      "covers": [
+        "ACT01-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_read_tenant_boundary.py"
+      ],
+      "note": "Prior actual-row cross-user and cross-tenant transcript-denial evidence retained.",
+      "commits": [
+        "409b38d"
+      ]
+    },
+    {
+      "id": "ACT02-t5",
+      "kind": "test",
+      "criterion": "ACT02",
+      "title": "Verify merged gateway authorization and Activity integration",
+      "status": "done",
+      "covers": [
+        "ACT01-c-wire",
+        "ACT02-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity",
+        "modules/gateway/tests/agentauth/test_chat_capability.py",
+        "modules/gateway/tests/agentauth/test_chat_data_routes.py",
+        "modules/gateway/tests/agentauth/test_task_service_policy.py"
+      ],
+      "note": "Retained validation from /work/repo/modules/gateway: AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true uv run --no-sync pytest -q tests/activity/ tests/agentauth/test_chat_capability.py tests/agentauth/test_chat_data_routes.py tests/agentauth/test_chat_activity_work.py tests/agentauth/test_task_service_policy.py --tb=short — 1,082 passed. Relevant source/tests are unchanged; no redundant rerun."
+    },
+    {
+      "id": "ACT03-c1",
+      "kind": "code",
+      "criterion": "ACT03",
+      "title": "Represent missing evidence and source failures as incomplete coverage",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/chat_work.py"
+      ],
+      "note": "Failure and retention handling remain verified. Published R3 continuation repair is preserved by the merge.",
+      "commits": [
+        "766199e"
+      ]
+    },
+    {
+      "id": "ACT03-c2",
+      "kind": "code",
+      "criterion": "ACT03",
+      "title": "Constrain answers to cited recorded outcomes",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/activity/answer.ts"
+      ],
+      "note": "Recorded-outcome qualifications, browser citations and explicit continuation wording match the tested published file.",
+      "commits": [
+        "442394c"
+      ]
+    },
+    {
+      "id": "ACT03-t1",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Verify missing-index and retention-gap coverage",
+      "status": "done",
+      "covers": [
+        "ACT03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_chat_work_coverage.py"
+      ],
+      "note": "Prior passing missing-index and retention-gap evidence retained; published test blob matches validated content."
+    },
+    {
+      "id": "ACT03-t2",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Verify Task and provider failure coverage",
+      "status": "done",
+      "covers": [
+        "ACT03-c1"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_chat_work_coverage.py"
+      ],
+      "note": "Prior passing Task-policy/store and Activity-provider failure evidence retained."
+    },
+    {
+      "id": "ACT03-t3",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Verify synthetic cited answers and trigger attribution",
+      "status": "done",
+      "covers": [
+        "ACT03-c2"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/activity/answer.test.ts",
+        "modules/gateway/frontend/src/__tests__/pages/AgentActivityDeepLink.test.tsx"
+      ],
+      "note": "Prior passing answer/tool and frontend deep-link evidence retained. Relevant packages are unchanged by the prepared merge."
+    },
+    {
+      "id": "ACT03-t4",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Verify the full chat-worker suite against the base",
+      "status": "done",
+      "covers": [
+        "ACT03-c2",
+        "ACT03-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat"
+      ],
+      "note": "Retained validation: npm test -- --runInBand --silent src/complex-task-chat/ yielded 677 passes and the two established inherited recall failures across 38 suites; npm run build passed. Published repair blobs match tested content and the worker package is unchanged by this merge. The full suite is not claimed globally green."
+    },
+    {
+      "id": "ACT03-t5",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Reproduce inherited recall failures on the exact base revision",
+      "status": "done",
+      "covers": [
+        "ACT03-c2"
+      ],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.test.ts"
+      ],
+      "note": "Prior exact-base reproduction retained for the same two missing identity-header assertions. This merge does not change the worker package."
+    },
+    {
+      "id": "ACT03-c-wire",
+      "kind": "code",
+      "criterion": "ACT03",
+      "title": "Scope gateway continuations and resumed chat answers to retrieved pages",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/gateway/src/activity/chat_work.py",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/tools.ts",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/answer.ts"
+      ],
+      "note": "R3 repair publication verified at e595fe5be7e430b098b8d74519acdb1efe073bf2 through matching tested blobs. Gateway and tool continuations remain explicitly partial/page-scoped; actual source warnings remain intact. No further R3 code repair is required."
+    },
+    {
+      "id": "ACT03-t6",
+      "kind": "test",
+      "criterion": "ACT03",
+      "title": "Verify gateway and tool continuation coverage across the twenty-page limit",
+      "status": "done",
+      "covers": [
+        "ACT03-c-wire"
+      ],
+      "files": [
+        "modules/gateway/tests/activity/test_chat_work_coverage.py",
+        "modules/agent-factory/agent/src/complex-task-chat/activity/tools.test.ts"
+      ],
+      "note": "Published regression blobs match the previously passing focused and broader runs. Twenty-one-page cases protect empty resumed results with missing sources, both gateway-marker variants, and fully aggregated empty windows. Prepared merge preserves these files unchanged."
+    }
+  ]
+}

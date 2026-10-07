@@ -3,15 +3,21 @@
 Public examples and historical evidence have sanitized deployment identities.
 See [publishing documentation](../PUBLISHING.md); obtain real targets from private configuration.
 
-Start here to run ADP's CLI regression tests, choose coverage, configure a target,
-and interpret the result.
+Start with [platform regression](platform-regression.md) for the combined
+daily/weekly schedule, deployment checks, coverage, private configuration and
+failure semantics. The CLI workflows below are reusable lanes and diagnostics.
+
+For module IDs, scenario IDs and mapped test counts, use the [master register](master-test-coverage.md). To select tests by module and understand their stored tags, see [module selection](module-selection.md).
+
+The proposed [Engineering Insights capability](../engineering-insights/README.md) serves independent projects through shared publishing and query APIs, using S3 for retained evidence and S3 Tables for analytics. ADP regression is its first consumer. The design now specifies project onboarding, tenant isolation and external-project acceptance; the service and upload migration remain proposed.
 
 ## Choose a workflow
 
 | Workflow | Purpose | Target and execution |
 | --- | --- | --- |
 | [CLI Uplift](../../.github/workflows/eval-cli-uplift.yml) | Run a selected CLI suite against an already-deployed revision. | Select a configured, protected GitHub environment. Product commands run on disposable EC2. |
-| [Nightly CLI Regression](../../.github/workflows/nightly-cli-regression.yml) | Coordinate onboarding/agent conversations, budget/rate-limit enforcement, then CLI Uplift. | Runs daily at 05:00 UTC against platform dev; also supports manual dispatch. Uses clean EKS pods and disposable EC2. |
+| [ADP Regression](../../.github/workflows/adp-regression.yml) | Full offline and live regression; weekly extends daily. | 02:17 UTC daily, with the weekly profile on Sunday. |
+| [CLI Regression](../../.github/workflows/nightly-cli-regression.yml) | Coordinate onboarding/agent conversations, budget/rate-limit enforcement, then CLI Uplift. | Called by ADP Regression; also supports manual diagnosis. Uses clean EKS pods and disposable EC2. |
 
 CLI Uplift is one of the suites called by the combined nightly. Running CLI
 Uplift with `suites=nightly` does not run the other two suites.

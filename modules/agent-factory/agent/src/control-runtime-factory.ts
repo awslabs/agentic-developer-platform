@@ -32,7 +32,7 @@ export type ControlLogger = (level: string, message: string, context?: Record<st
 
 /** The published runtime a started control listener makes available to a run. */
 export type RuntimeAdapter = ControlRuntimeAdapter & Pick<ClaudeControlAdapter,
-  'activeWorkCount' | 'isCancelled' | 'notifyWhenInputAccepted'> & { backgroundWorkCount?(): number | null };
+  'activeWorkCount' | 'isCancelled' | 'notifyWhenInputAccepted'> & { backgroundWorkCount?(): number | null; readonly acceptsInputDuringTools?: boolean };
 
 export interface ControlRuntime<A extends RuntimeAdapter = ClaudeControlAdapter> {
   readonly adapter: A;
@@ -98,7 +98,7 @@ export async function startControlRuntime<A extends RuntimeAdapter = ClaudeContr
     store: controlStore,
     submitInput: (input) => controlAdapter.submitInput(input),
     atBoundary: () => controlAdapter.canAcceptInput() &&
-      !pauseGate.isPauseActive() && pauseGate.activeToolCount() === 0,
+      !pauseGate.isPauseActive() && (pauseGate.activeToolCount() === 0 || controlAdapter.acceptsInputDuringTools === true),
     subscribe: (onBoundary) => {
       const unsubscribe = controlAdapter.subscribe((event) => {
         if (event.type === 'attempt_attached') controlAdapter.notifyWhenInputAccepted(onBoundary);

@@ -1,0 +1,251 @@
+name: ADP CI
+'on':
+  workflow_call: {}
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/adp-*.yml
+      - .github/workflows/_regression-*.yml
+      - .github/workflows/nightly-cli-regression.yml
+      - .github/workflows/gateway-live-tests.yml
+      - .github/workflows/e2e-*-playwright.yml
+      - .github/workflows/credential-binding-adversarial-e2e.yml
+      - .github/scripts/regression_*.py
+      - .github/regression-profiles.json
+      - tests/unit/test_regression_catalog.py
+      - tests/regression/**
+      - tests/unit/test_regression_stack.py
+permissions:
+  contents: read
+jobs:
+  gateway-ci:
+    uses: ./.github/workflows/gateway-ci.yml
+    permissions:
+      contents: read
+    with:
+      offline_only: true
+  agent-context-ci:
+    uses: ./.github/workflows/agent-context-ci.yml
+    permissions:
+      contents: read
+  agent-control-ci:
+    uses: ./.github/workflows/agent-control-ci.yml
+    permissions:
+      contents: read
+  agent-reporting-tests:
+    uses: ./.github/workflows/agent-reporting-tests.yml
+    permissions:
+      contents: read
+  credential-path-tests:
+    uses: ./.github/workflows/credential-path-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - gateway-ci
+    if: ${{ !cancelled() }}
+  credential-binding-readiness-tests:
+    uses: ./.github/workflows/credential-binding-readiness-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - agent-context-ci
+    if: ${{ !cancelled() }}
+  codex-harness-tests:
+    uses: ./.github/workflows/codex-harness-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - agent-control-ci
+    if: ${{ !cancelled() }}
+  provenance-contract-tests:
+    uses: ./.github/workflows/provenance-contract-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - agent-reporting-tests
+    if: ${{ !cancelled() }}
+  hitl-ticket-contract-tests:
+    uses: ./.github/workflows/hitl-ticket-contract-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - credential-path-tests
+    if: ${{ !cancelled() }}
+  orchestration-review-contract-tests:
+    uses: ./.github/workflows/orchestration-review-contract-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - credential-binding-readiness-tests
+    if: ${{ !cancelled() }}
+  orchestration-harness-ci:
+    uses: ./.github/workflows/orchestration-harness-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - codex-harness-tests
+    if: ${{ !cancelled() }}
+  harness-jobs-ci:
+    uses: ./.github/workflows/harness-jobs-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - provenance-contract-tests
+    if: ${{ !cancelled() }}
+  lambda-tests:
+    uses: ./.github/workflows/lambda-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - hitl-ticket-contract-tests
+    if: ${{ !cancelled() }}
+  fixture-edge-ci:
+    uses: ./.github/workflows/fixture-edge-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - orchestration-review-contract-tests
+    if: ${{ !cancelled() }}
+  superplane-domain-ci:
+    uses: ./.github/workflows/superplane-domain-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - orchestration-harness-ci
+    if: ${{ !cancelled() }}
+  cyber-tools-ci:
+    uses: ./.github/workflows/cyber-tools-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - harness-jobs-ci
+    if: ${{ !cancelled() }}
+  cyber-url-analysis-ci:
+    uses: ./.github/workflows/cyber-url-analysis-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - lambda-tests
+    if: ${{ !cancelled() }}
+  shared-agentcore-tools-ci:
+    uses: ./.github/workflows/shared-agentcore-tools-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - fixture-edge-ci
+    if: ${{ !cancelled() }}
+  platform-upgrade-tests:
+    uses: ./.github/workflows/platform-upgrade-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - superplane-domain-ci
+    if: ${{ !cancelled() }}
+  adp-release-tests:
+    uses: ./.github/workflows/adp-release-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - cyber-tools-ci
+    if: ${{ !cancelled() }}
+  script-tests:
+    uses: ./.github/workflows/script-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - cyber-url-analysis-ci
+    if: ${{ !cancelled() }}
+  gateway-hardening-ci:
+    uses: ./.github/workflows/gateway-hardening-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - shared-agentcore-tools-ci
+    if: ${{ !cancelled() }}
+  automation-trust-ci:
+    uses: ./.github/workflows/automation-trust-ci.yml
+    permissions:
+      contents: read
+    needs:
+      - platform-upgrade-tests
+    if: ${{ !cancelled() }}
+  agent-explanations-browser:
+    uses: ./.github/workflows/agent-explanations-browser.yml
+    permissions:
+      contents: read
+    needs:
+      - adp-release-tests
+    if: ${{ !cancelled() }}
+  agent-gateway-build-tests:
+    uses: ./.github/workflows/agent-gateway-build-tests.yml
+    permissions:
+      contents: read
+    needs:
+      - script-tests
+    if: ${{ !cancelled() }}
+  regression-contracts:
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-timeout pytest-socket pyyaml boto3 httpx ruff==0.9.6
+      - run: |-
+          ruff check .github/scripts/regression_*.py tests/regression tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py
+          python -m pytest tests/unit/test_regression_catalog.py tests/unit/test_regression_stack.py tests/unit/test_cli_regression.py -q --disable-socket --timeout=60
+  summary:
+    if: ${{ always() }}
+    needs:
+      - gateway-ci
+      - agent-context-ci
+      - agent-control-ci
+      - agent-reporting-tests
+      - credential-path-tests
+      - credential-binding-readiness-tests
+      - codex-harness-tests
+      - provenance-contract-tests
+      - hitl-ticket-contract-tests
+      - orchestration-review-contract-tests
+      - orchestration-harness-ci
+      - harness-jobs-ci
+      - lambda-tests
+      - fixture-edge-ci
+      - superplane-domain-ci
+      - cyber-tools-ci
+      - cyber-url-analysis-ci
+      - shared-agentcore-tools-ci
+      - platform-upgrade-tests
+      - adp-release-tests
+      - script-tests
+      - gateway-hardening-ci
+      - automation-trust-ci
+      - agent-explanations-browser
+      - agent-gateway-build-tests
+      - regression-contracts
+      - security
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Combined verdict
+        env:
+          REGRESSION_JOBS: ${{ toJSON(needs) }}
+        run: python .github/scripts/regression_report.py aggregate --required gateway-ci agent-context-ci agent-control-ci agent-reporting-tests
+          credential-path-tests credential-binding-readiness-tests codex-harness-tests provenance-contract-tests hitl-ticket-contract-tests
+          orchestration-review-contract-tests orchestration-harness-ci harness-jobs-ci lambda-tests fixture-edge-ci superplane-domain-ci
+          cyber-tools-ci cyber-url-analysis-ci shared-agentcore-tools-ci platform-upgrade-tests adp-release-tests script-tests gateway-hardening-ci
+          automation-trust-ci agent-explanations-browser agent-gateway-build-tests regression-contracts security
+  security:
+    needs:
+      - automation-trust-ci
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/_regression-security.yml
+    permissions:
+      contents: read

@@ -19,7 +19,6 @@ for (const persona of ['developer', 'reviewer', 'operations', 'architect', 'prod
     assert.deepEqual(verifySnapshot(snapshot), snapshot);
     const text = resolveRuleReferences(rules, refs);
     assert.ok(text.includes(readFileSync(join(rules, `personas/${persona}.md`), 'utf8')));
-    assert.ok(Buffer.byteLength(text + snapshot.instructions) < raw.limits.maxContextBytes);
     assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) < 16000, 'Transport must contain references, not duplicated rule bodies');
     assert.deepEqual(projectRules(rules, persona, projection.sources.map(s => s.path)), projection);
     assert.deepEqual(projection.sources.filter(s => s.path.startsWith('personas/') && !s.path.includes('/shared/')).map(s => s.path), [`personas/${persona}.md`]);

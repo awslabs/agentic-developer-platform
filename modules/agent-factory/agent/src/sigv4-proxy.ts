@@ -161,6 +161,7 @@ const server = http.createServer(async (req, res) => {
     headers: signed.headers,
     timeout: 3600_000, // 1 hour — match Bedrock's maximum response time
   }, (proxyRes) => {
+    if (res.destroyed) { proxyRes.destroy(); return; }
     console.log(`[proxy] ← ${proxyRes.statusCode}`);
     res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
 
@@ -177,12 +178,18 @@ const server = http.createServer(async (req, res) => {
       }, RESP_IDLE_MS);
     };
     proxyRes.on('data', bumpIdle);
-    proxyRes.on('end', () => clearTimeout(idleTimeout));
+    const clearIdle = () => {
+      clearTimeout(idleTimeout);
+      proxyRes.removeListener('data', bumpIdle);
+    };
+    proxyRes.once('end', clearIdle);
+    proxyRes.once('close', clearIdle);
 
     // Handle errors on the response stream (e.g. from idle-timeout destroy).
     // Without this handler, a destroyed proxyRes emits an unhandled 'error'
     // which would crash the proxy process.
     proxyRes.on('error', (err) => {
+      if (res.destroyed) return;
       console.error('[proxy] response stream error:', err.message);
       if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
       else if (!res.destroyed) res.destroy();
@@ -199,10 +206,19 @@ const server = http.createServer(async (req, res) => {
   });
 
   proxyReq.on('error', (err) => {
+    if (res.destroyed) return;
     console.error('[proxy] upstream error:', err.message);
     if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
     else if (!res.destroyed) res.destroy();
   });
+
+  // SDKs can stop reading at their terminal SSE event before upstream EOF.
+  // Cancel that upstream request when its consumer leaves, including a client
+  // that disconnected while credentials were being resolved above.
+  res.once('close', () => {
+    if (!res.writableFinished) proxyReq.destroy();
+  });
+  if (res.destroyed) { proxyReq.destroy(); return; }
 
   if (body.length) proxyReq.write(body);
   proxyReq.end();

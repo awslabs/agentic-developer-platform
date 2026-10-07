@@ -3,12 +3,15 @@ import test from 'node:test';
 import { readFileSync, existsSync } from 'node:fs';
 import { sharedInstructions } from './shared-instructions.js';
 
-for (const persona of ['developer', 'reviewer'] as const) {
+const codingGuidelines = readFileSync(new URL('../../rules/coding-guidelines.md', import.meta.url), 'utf8');
+
+for (const persona of ['developer', 'reviewer', 'architect'] as const) {
   test(`${persona}: active compatibility adapter loads common policy and usable frozen skill paths`, () => {
     const adapter = `Preserve ${persona} completion semantics.`;
     const instructions = sharedInstructions(persona, adapter);
     const expected = readFileSync(new URL(`../../rules/personas/${persona}.md`, import.meta.url), 'utf8');
     assert.ok(instructions.includes(expected));
+    assert.equal(instructions.split(codingGuidelines).length - 1, 1, 'Full coding policy must appear exactly once');
     assert.ok(instructions.endsWith(adapter));
     assert.ok(!instructions.includes('## ADP source: personas/operations.md'));
     const paths = [...instructions.matchAll(/Read (\/[^\n;]+\/SKILL.md); version sha256:([a-f0-9]{64})/g)];
@@ -28,7 +31,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-for (const persona of ['developer', 'reviewer'] as const) {
+for (const persona of ['developer', 'reviewer', 'architect'] as const) {
   test(`${persona}: pinned SDK receives shared policy separately from repository content`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'adp-sdk-projection-'));
     const home = join(root, 'home');
@@ -60,6 +63,11 @@ for (const persona of ['developer', 'reviewer'] as const) {
       const policy = JSON.stringify(developer);
       assert.ok(policy.includes(`## ADP source: personas/${persona}.md`));
       assert.ok(policy.includes('credential-access.md'));
+      assert.ok(policy.includes('## ADP source: coding-guidelines.md'));
+      const policyText = developer.flatMap(item => Array.isArray(item.content) ? item.content : [])
+        .map(part => part.text ?? '').join('\n');
+      assert.equal(policyText.split(codingGuidelines).length - 1, 1, 'SDK must receive the full coding policy exactly once');
+      assert.ok(policyText.includes('Fixture completion contract.'));
       assert.ok(!policy.includes('UNTRUSTED_REPOSITORY_FIXTURE'));
     } finally {
       server.closeAllConnections();
@@ -87,7 +95,7 @@ test('installed package loads shared rules outside a repository checkout', async
     await cp(new URL('../../rules/', import.meta.url), join(root, 'codex-harness/rules'), { recursive: true });
     await cp(new URL('../../skills/', import.meta.url), join(root, 'skills'), { recursive: true });
     const script = join(root, 'probe.mjs');
-    await writeFile(script, "import { sharedInstructions } from './codex-reviewer/dist/shared-instructions.js';\nconst text = sharedInstructions('developer', 'Packaged fixture.'); if (!text.includes('credential-access.md') || !text.includes('aidlc-emit-issues')) throw new Error('Missing packaged resources');");
+    await writeFile(script, "import { sharedInstructions } from './codex-reviewer/dist/shared-instructions.js';\nconst text = sharedInstructions('developer', 'Packaged fixture.'); if (!text.includes('credential-access.md') || !text.includes('aidlc-emit-issues') || !text.includes('Minimum code that solves the problem. Nothing speculative.')) throw new Error('Missing packaged resources');");
     await promisify(execFile)(process.execPath, [script], { cwd: root, env: { PATH: process.env.PATH }, timeout: 10000 });
   } finally { await rm(root, { recursive: true, force: true }); }
 });

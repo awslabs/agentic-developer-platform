@@ -1,0 +1,60 @@
+name: Regression deployment snapshot
+'on':
+  workflow_call:
+    outputs:
+      revision:
+        description: Verified deployed full SHA
+        value: ${{ jobs.snapshot.outputs.revision }}
+    inputs:
+      expected_revision:
+        description: Optional source SHA of a completed gateway deployment
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    name: Snapshot deployed gateway revision
+    if: github.ref == 'refs/heads/main'
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    outputs:
+      revision: ${{ steps.snapshot.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install boto3
+      - name: Require an explicit OIDC role (fail closed)
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+      - name: Configure AWS credentials (OIDC, scoped role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          role-skip-session-tagging: true
+          role-duration-seconds: 900
+          role-session-name: cli-nightly-snapshot-${{ github.run_id }}
+      - name: Snapshot deployment identity (read only)
+        id: snapshot
+        env:
+          CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+          CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
+          REGRESSION_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: python -m tests.e2e.cli_regression.prepare

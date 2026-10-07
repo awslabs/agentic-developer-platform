@@ -54,7 +54,7 @@ async def test_listing_keeps_only_approval_proposals_and_preserves_result_eviden
     async def connect():
         yield connection
 
-    composition = SimpleNamespace(operation_connect=connect)
+    composition = SimpleNamespace(domain_connect=connect)
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(trust_composition=composition))
     )

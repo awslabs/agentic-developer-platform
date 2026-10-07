@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -293,3 +294,238 @@ def test_failed_applied_role_verification_precedes_any_foundations(
     foundations.assert_not_called()
     assert any("apply" in args for args, _ in tools.calls)
     assert tools.route["enabled"] is False
+
+
+def test_known_legacy_route_upgrade_keeps_role_identity_and_exact_new_policy(planned):
+    installer, plan = planned
+    evidence = installer.receipt["api_producer_role_preflight"]
+    evidence.pop("role_missing")
+    evidence.update(role_id="AROATEST", legacy_routes=True)
+    change = plan["resource_changes"][0]["change"]
+    change["actions"] = ["update"]
+    change["after_unknown"] = {}
+    change["after"].update(
+        arn=producer_role.expected_arn(installer.env), unique_id="AROATEST"
+    )
+    producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "REPLACED"
+    with pytest.raises(Refusal, match="identity differs"):
+        producer_role.inspect_plan(installer, plan)
+    change["after"]["unique_id"] = "AROATEST"
+    change["after"]["inline_policy"][0]["policy"] = json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+    )
+    with pytest.raises(Refusal, match="inline policy differs"):
+        producer_role.inspect_plan(installer, plan)
+
+
+def test_identity_preflight_has_exact_readiness_invoke_route(managed):
+    _, policy = producer_role.documents(
+        managed, "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    )
+    resources = policy["Statement"][0]["Resource"]
+    assert {resource.split("/internal/v1/", 1)[1] for resource in resources} == {
+        "controller-execution/producer-readiness",
+        "controller-execution/verify-run",
+        "controller-execution/dispatch",
+        "controller-execution/binding-proof",
+        "controller-execution/current-identity",
+        "controller-execution/current-identity/readiness",
+        "credential-evidence",
+    }
+    assert all("*" not in resource for resource in resources)
+
+
+@pytest.fixture
+def provider_create_plan(planned):
+    installer, _ = planned
+    installer.env["account_id"] = "111111111111"
+    installer.receipt["api_producer_role_preflight"]["role_arn"] = (
+        producer_role.expected_arn(installer.env)
+    )
+    plan = json.loads(
+        (
+            Path(__file__).parent / "fixtures/producer-role-create-aws-6.67.json"
+        ).read_text()
+    )
+    return installer, plan
+
+
+def test_real_provider_create_plan_preserves_literal_empty_authority(
+    provider_create_plan,
+):
+    producer_role.inspect_plan(*provider_create_plan)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        None,
+        {},
+        {"constant_value": None},
+        {"references": ["var.managed_policy_arns"]},
+        {"constant_value": ["arn:aws:iam::aws:policy/AdministratorAccess"]},
+        {"constant_value": [], "references": ["var.managed_policy_arns"]},
+    ],
+)
+def test_computed_attachments_require_literal_empty_configuration(
+    provider_create_plan, expression
+):
+    installer, plan = provider_create_plan
+    expressions = plan["configuration"]["root_module"]["resources"][0]["expressions"]
+    if expression is None:
+        expressions.pop("managed_policy_arns")
+    else:
+        expressions["managed_policy_arns"] = expression
+    with pytest.raises(Refusal, match="unknown authority"):
+        producer_role.inspect_plan(installer, plan)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("name", True),
+        ("path", True),
+        ("assume_role_policy", True),
+        ("inline_policy", [{"policy": True}]),
+        ("inline_policy", [{"name": True}]),
+        ("permissions_boundary", True),
+        ("managed_policy_arns", [True]),
+        ("name_prefix", {"nested": True}),
+    ],
+)
+def test_provider_computed_exception_does_not_hide_unknown_authority(
+    provider_create_plan, field, value
+):
+    installer, plan = provider_create_plan
+    plan["resource_changes"][0]["change"]["after_unknown"][field] = value
+    with pytest.raises(Refusal, match="unknown authority"):
+        producer_role.inspect_plan(installer, plan)
+
+
+@pytest.mark.parametrize("field", ["name", "name_prefix"])
+def test_computed_prefix_cannot_substitute_an_exact_name(provider_create_plan, field):
+    installer, plan = provider_create_plan
+    plan["resource_changes"][0]["change"]["after"][field] = "another-role"
+    with pytest.raises(Refusal):
+        producer_role.inspect_plan(installer, plan)
+
+
+def test_configured_prefix_is_not_provider_computed_metadata(provider_create_plan):
+    installer, plan = provider_create_plan
+    plan["configuration"]["root_module"]["resources"][0]["expressions"][
+        "name_prefix"
+    ] = {"references": ["var.prefix"]}
+    with pytest.raises(Refusal, match="unknown authority"):
+        producer_role.inspect_plan(installer, plan)
+
+
+@pytest.mark.parametrize("actions", [["update"], ["no-op"]])
+@pytest.mark.parametrize("field", ["managed_policy_arns", "name_prefix"])
+def test_computed_creation_exception_never_applies_to_existing_identity(
+    provider_create_plan, actions, field
+):
+    installer, plan = provider_create_plan
+    evidence = installer.receipt["api_producer_role_preflight"]
+    evidence.pop("role_missing")
+    evidence.update(role_id="AROATEST", legacy_routes=actions == ["update"])
+    change = plan["resource_changes"][0]["change"]
+    change["actions"] = actions
+    change["after"].update(
+        arn=producer_role.expected_arn(installer.env), unique_id="AROATEST"
+    )
+    change["after_unknown"] = {field: True}
+    with pytest.raises(Refusal, match="unknown authority"):
+        producer_role.inspect_plan(installer, plan)
+
+
+def test_computed_creation_exception_requires_absent_prior_identity(
+    provider_create_plan,
+):
+    installer, plan = provider_create_plan
+    plan["resource_changes"][0]["change"]["before"] = {"name": "old-role"}
+    with pytest.raises(Refusal, match="prior Terraform identity"):
+        producer_role.inspect_plan(installer, plan)
+
+
+@pytest.mark.parametrize("unknown_target", [False, True])
+def test_computed_empty_set_never_permits_separate_attachment(
+    provider_create_plan, unknown_target
+):
+    installer, plan = provider_create_plan
+    plan["resource_changes"].append(
+        {
+            "address": "aws_iam_role_policy_attachment.extra",
+            "change": {
+                "actions": ["create"],
+                "after": {}
+                if unknown_target
+                else {"role": producer_role.expected_name(installer.env)},
+                "after_unknown": {"role": True} if unknown_target else {},
+            },
+        }
+    )
+    plan["configuration"]["root_module"]["resources"].append(
+        {
+            "address": "aws_iam_role_policy_attachment.extra",
+            "expressions": {
+                "role": {"references": ["aws_iam_role.api_producer[0].name"]}
+            },
+        }
+    )
+    with pytest.raises(Refusal, match="Terraform resource|Unknown IAM role target"):
+        producer_role.inspect_plan(installer, plan)
+
+
+@pytest.mark.parametrize("managed_role", [True, False])
+def test_live_empty_attachment_contract_is_specific_to_managed_role(
+    managed, managed_role
+):
+    env = copy.deepcopy(managed)
+    env["api_adapters"] = {"dispatcher": producer_role.dispatcher(env)}
+    if not managed_role:
+        env.pop("api_producer_role")
+        env["api_adapters"]["dispatcher"]["role_arn"] = (
+            "arn:aws:iam::879318057152:role/external-api-producer"
+        )
+    issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    trust, policy = producer_role.documents(managed, issuer)
+    installer = SimpleNamespace(
+        env=env,
+        aws=Mock(return_value=SimpleNamespace(returncode=0)),
+        json=Mock(
+            side_effect=[
+                {
+                    "Role": {
+                        "Arn": env["api_adapters"]["dispatcher"]["role_arn"],
+                        "RoleId": "AROATEST",
+                        "AssumeRolePolicyDocument": trust,
+                    }
+                },
+                {"PolicyNames": ["exact-inline"]},
+                {"PolicyDocument": policy},
+                {
+                    "AttachedPolicies": [
+                        {"PolicyArn": "arn:aws:iam::879318057152:policy/same-routes"}
+                    ]
+                },
+                {"Policy": {"DefaultVersionId": "v1"}},
+                {"PolicyVersion": {"Document": policy}},
+            ]
+        ),
+    )
+    if managed_role:
+        with pytest.raises(Refusal, match="has attached policies"):
+            adapter_staging.role_identity(
+                installer, {"identity": {"oidc": {"issuer": issuer}}}
+            )
+    else:
+        assert (
+            adapter_staging.role_identity(
+                installer, {"identity": {"oidc": {"issuer": issuer}}}
+            )["role_id"]
+            == "AROATEST"
+        )

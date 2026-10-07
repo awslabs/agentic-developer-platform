@@ -1,5 +1,6 @@
 name: ADP Release Tests
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'platform/scripts/release/**'
@@ -28,6 +29,7 @@ jobs:
       - uses: ./.github/actions/release-tools
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_release*.py'
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py'
+      - run: python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q
       - run: terraform -chdir=platform/release-infra init -backend=false -input=false
       - run: terraform -chdir=platform/release-infra validate
       - name: Build portable Lambda/layer/frontend packages without AWS credentials

@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat-sandbox-gateway-egress
+  namespace: adp-gateway-agents
+spec:
+  podSelector:
+    matchLabels:
+      adp.io/chat-sandbox: 'true'
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-gateway
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: chat-sandbox-gateway
+      ports:
+        - protocol: TCP
+          port: 8443

@@ -306,3 +306,8 @@ variable "gateway_customer_role_arns" {
     error_message = "Customer role approvals must be exact IAM role ARNs without wildcards."
   }
 }
+variable "bootstrap_cluster_creator_admin_permissions" {
+  description = "Creation-only bootstrap access. Null uses the provider default; existing clusters retain their original immutable value."
+  type        = bool
+  default     = null
+}

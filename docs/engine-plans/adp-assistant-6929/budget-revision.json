@@ -1,0 +1,32 @@
+{
+  "flow_id": "00000000-0000-0000-0000-000000000000",
+  "base_plan_version": 1,
+  "base_plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "proposal_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "acceptance_gate_id": "00000000-0000-0000-0000-000000000000",
+  "acceptance_gate_address": "adp-assistant-6929/epic-6929/delivery/accept",
+  "execution_paused": true,
+  "execution_authorized": false,
+  "added_nodes": [],
+  "removed_nodes": [],
+  "retained_nodes": [
+    "adp-assistant-6929/epic-6929/delivery/accept",
+    "adp-assistant-6929/epic-6929/delivery/adp-activity",
+    "adp-assistant-6929/epic-6929/delivery/assistant-tests",
+    "adp-assistant-6929/epic-6929/delivery/assistant-ui",
+    "adp-assistant-6929/epic-6929/delivery/installation-tools",
+    "adp-assistant-6929/epic-6929/delivery/isolated-runtime",
+    "adp-assistant-6929/epic-6929/delivery/persistent-sessions",
+    "adp-assistant-6929/epic-6929/delivery/provider-activity",
+    "adp-assistant-6929/epic-6929/delivery/repository-evidence",
+    "adp-assistant-6929/epic-6929/delivery/scoped-data",
+    "adp-assistant-6929/epic-6929/delivery/warm-capacity",
+    "adp-assistant-6929/epic-6929/qualification/assistant-qualification",
+    "adp-assistant-6929/epic-6929/qualification/live-readiness"
+  ],
+  "added_edges": [],
+  "removed_edges": [],
+  "plan_version": 2,
+  "plan_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "already_revised": false
+}

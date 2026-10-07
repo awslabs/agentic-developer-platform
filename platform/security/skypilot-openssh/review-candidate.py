@@ -1,16 +1,24 @@
 """Verify the full Debian source backport against installed SSH package binaries."""
 
+import argparse
 import collections
 import hashlib
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 source = Path(__file__).resolve().parent
 repo = source.parents[2]
-scan = Path(sys.argv[1])
-output = Path(sys.argv[2])
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("scan_directory", type=Path)
+parser.add_argument("output", type=Path)
+parser.add_argument(
+    "--standalone",
+    action="store_true",
+    help="Review SSH alone; leave all other findings unresolved",
+)
+args = parser.parse_args()
+scan, output = args.scan_directory, args.output
 receipt = json.loads((scan / "receipt.json").read_text())
 assert (
     hashlib.sha256((scan / "grype.json").read_bytes()).hexdigest()
@@ -80,17 +88,21 @@ for index, m in enumerate(raw["matches"]):
             }
         )
 assert len(rows) == 3 and all(r["severity"] == "Critical" for r in rows)
-curl = json.loads((output.parent / "curl-review.json").read_text())
-rsync = json.loads((output.parent / "rsync-review.json").read_text())
-assert (
-    curl["docker_root_descriptor"]
-    == rsync["raw_scan_receipt"]["docker_root_descriptor"]
-    == receipt["docker_root_descriptor"]
-)
-indices = {
-    r["native_match_index"]
-    for r in rows + curl["dispositions"] + rsync["rsync_dispositions"]
-}
+inherited_reviews = []
+indices = {r["native_match_index"] for r in rows}
+if not args.standalone:
+    curl = json.loads((output.parent / "curl-review.json").read_text())
+    rsync = json.loads((output.parent / "rsync-review.json").read_text())
+    assert (
+        curl["docker_root_descriptor"]
+        == rsync["raw_scan_receipt"]["docker_root_descriptor"]
+        == receipt["docker_root_descriptor"]
+    )
+    indices = {
+        r["native_match_index"]
+        for r in rows + curl["dispositions"] + rsync["rsync_dispositions"]
+    }
+    inherited_reviews = ["curl-review.json", "rsync-review.json"]
 remaining = collections.Counter(
     m["vulnerability"]["severity"]
     for i, m in enumerate(raw["matches"])
@@ -101,7 +113,7 @@ report = {
     "raw_scan_receipt": receipt,
     "binary_observations": obs,
     "openssh_dispositions": rows,
-    "inherited_reviews": ["curl-review.json", "rsync-review.json"],
+    "inherited_reviews": inherited_reviews,
     "reviewed_remaining_native_match_counts": dict(remaining),
     "other_openssh_advisories": "remain open; the patch addresses CVE-2026-60002 only",
 }

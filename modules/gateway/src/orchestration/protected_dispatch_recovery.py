@@ -120,12 +120,12 @@ async def recover_one(session, *, node, dispatch, envelope, config, store):
         raise ValueError("protected_dispatch_persona_changed")
     raw = await run_in_threadpool(store._read, f"TENANT#{node.org_id}", f"EXEC#{run_id}")
     if raw:
-        if raw.get("envelope_digest") != {"S": envelope_digest(envelope)}:
-            raise ValueError("protected_dispatch_digest_changed")
         # Atomic bootstrap forbids a second pod binding. Never restart a bound,
         # terminal, revoked or cancelled invocation, even if queue ack was lost.
         if raw.get("status") != {"S": "pending"} or raw.get("workload_binding"):
             return None
+        if raw.get("envelope_digest") != {"S": envelope_digest(envelope)}:
+            raise ValueError("protected_dispatch_digest_changed")
     if _unsatisfied(await _predecessor_states(session, org_id=node.org_id, node_id=node.id)):
         return None
     genesis = await resolve_engine_genesis(session, org_id=node.org_id, decision_id=root)

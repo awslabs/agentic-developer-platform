@@ -1,13 +1,14 @@
 name: Agent Reporting Tests
 
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:
       - 'modules/domain-apps/*/ci/**'
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
-      - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/rules/**'
       - 'modules/agent-factory/skills/codex-bridge/**'
       - 'modules/agent-factory/skills/aidlc-emit-issues/**'
       - 'modules/agent-factory/gateway/**'
@@ -31,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: agent-reporting-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-agent-reporting-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -51,9 +52,20 @@ jobs:
           cache-dependency-path: modules/agent-factory/agent/package-lock.json
       - run: npm ci --include=dev
       - run: npm run build -- --noEmit
+      - name: Verify proxy trust rejects spoofed client addresses
+        run: npm test -- --runInBand --runTestsByPath src/proxy-addr-security.test.ts
+      - name: Verify tests preserve the worker's GitHub credentials
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/token-test-isolation.test.ts
+          src/utils/ghPost.test.ts
+          src/token-file-on-local-mint.test.ts
+          src/token-refresh-broker.test.ts
+          src/token-propagation.test.ts
       - name: Verify explanation capture, bounded publication and independent archival
         run: >-
           npm test -- --runInBand --runTestsByPath
+          src/codex-developer-reporting.test.ts
           src/reporting-text.test.ts
           src/components/checkRunStreamer.test.ts
           src/components/checkRunStreamer.token-rotation.test.ts
@@ -64,6 +76,7 @@ jobs:
           src/aidlc-communication.test.ts
           src/aidlc-gate-enforcer.test.ts
           src/agent-worker-aidlc-gating.test.ts
+          src/agent-worker-coding-guidelines.test.ts
           src/agent-worker-prompt-order.test.ts
       - name: Verify memory reads and writes from shallow clones
         run: npm test -- --runInBand --runTestsByPath src/memory.test.ts

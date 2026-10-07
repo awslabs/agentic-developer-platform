@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_model_readiness_is_required_before_build_authority():
     jobs = yaml.safe_load((ROOT / '.github/workflows/agent-worker-image.yml').read_text())['jobs']
-    assert jobs['build']['needs'] == 'model-readiness'
+    assert set(jobs['build']['needs']) == {'model-readiness', 'installation-boundary-tests', 'codex-tests', 'task-investigator-tests'}
+    assert jobs['deploy']['needs'] == 'build'
     check = jobs['model-readiness']
     assert check['environment'].startswith('adp-model-checks-')
     assert 'refs/heads/main' in check['if']

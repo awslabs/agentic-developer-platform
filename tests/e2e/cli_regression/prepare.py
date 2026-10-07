@@ -24,6 +24,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ec2", action="store_true")
     args = parser.parse_args(argv)
+    if not os.environ.get("CLI_UPLIFT_EVAL_BINDINGS_JSON", "").strip():
+        raise ValueError(
+            "Configure private CLI_UPLIFT_EVAL_BINDINGS_JSON; examples are not live targets"
+        )
     cfg = (
         config.from_environment(os.environ)
         if args.ec2
@@ -31,12 +35,23 @@ def main(argv=None):
             {
                 "CLI_UPLIFT_EVAL_BINDINGS": str(
                     config.EXAMPLE_PATH.with_name("bindings.dev.json")
-                )
+                ),
+                "CLI_UPLIFT_EVAL_BINDINGS_JSON": os.environ[
+                    "CLI_UPLIFT_EVAL_BINDINGS_JSON"
+                ],
+                "CLI_UPLIFT_EVAL_GATEWAY_CATALOG": os.environ.get(
+                    "CLI_UPLIFT_EVAL_GATEWAY_CATALOG", ""
+                ),
             }
         )
     )
     transport = ports.default_ports(cfg)
     revision, source = snapshot(cfg, transport["aws"], transport["http"])
+    expected = os.environ.get("REGRESSION_EXPECTED_REVISION", "")
+    if expected and (not config.REVISION.fullmatch(expected) or revision != expected):
+        raise ValueError(
+            "Deployed gateway does not match the triggering deployment revision"
+        )
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write(f"revision={revision}\n")
     if args.ec2:

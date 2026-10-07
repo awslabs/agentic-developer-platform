@@ -1,6 +1,7 @@
 # CodeGraphContext — pre-baked image for Agent Context Intelligence Platform
 # Eliminates slow apt-get + pip install at pod startup.
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 
 RUN apt-get update && \
     apt-get -y upgrade && \
@@ -23,12 +24,18 @@ RUN addgroup --system --gid 10001 appgroup && \
 # CodeGraphContext 0.6.13 uses Path.home(), not CGC_HOME. Mount /data
 # writable when running with a read-only root filesystem.
 ENV HOME=/data
-# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+# Verify the reviewed Python 3.13.16 source bytes and security behavior.
 COPY security-stdlib/ /opt/adp-stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/adp-stdlib-security/apply.py \
-    && python /opt/adp-stdlib-security/check.py \
-    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
+    && python /opt/adp-stdlib-security/check.py
+
+# Preserve curl and Git transports using the existing reviewed curl packages.
+# Keep source identities/licenses outside dpkg's slim-image doc exclusions.
+COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
+COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
+COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/gnutls.deb
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 USER appuser
 

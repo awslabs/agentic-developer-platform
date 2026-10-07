@@ -1,4 +1,6 @@
 """Start the shipped MCP server offline; verify auth and ACL-outage boundaries."""
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -6,6 +8,9 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 def request(path, headers=None):
@@ -21,9 +26,25 @@ def main():
     if not __debug__:
         raise RuntimeError('Acceptance requires assertions')
     assert os.getuid() == os.getgid() == 10001
+    key = Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    environment = {**os.environ, 'DOOR_VERIFICATION_KEYS': json.dumps({'fixture': public})}
+
+    def identity(path='/tools'):
+        now = int(time.time())
+        claims = dict(iss='adp-gateway', aud='adp-knowledge-door', kid='fixture',
+                      sub='fixture-run#1', tenant_id='fixture-tenant', github_login='fixture',
+                      owner_sub='', method='GET', path=path,
+                      body_sha256=hashlib.sha256(b'').hexdigest(), iat=now, exp=now + 30)
+        def encode(value):
+            return base64.urlsafe_b64encode(value).rstrip(b'=')
+        message = b'adpd1.' + encode(json.dumps(claims).encode())
+        return (message + b'.' + encode(key.sign(message))).decode()
+
     log = open('/tmp/context-mcp.log', 'w')
     process = subprocess.Popen(['uvicorn', 'door.server:app', '--host', '127.0.0.1', '--port', '5100'],
-                               stdout=log, stderr=log)
+                               stdout=log, stderr=log, env=environment)
     try:
         ready = False
         for _ in range(120):
@@ -39,7 +60,9 @@ def main():
         assert ready, Path('/tmp/context-mcp.log').read_text()
         assert request('/tools')[0] == 401
         assert request('/tools', {'X-Internal-Api-Key': 'wrong-fixture'})[0] == 401
-        code, tools = request('/tools', {'X-Internal-Api-Key': 'fixture-door-key'})
+        assert request('/tools', {'X-Internal-Api-Key': 'fixture-door-key'})[0] == 401
+        assert request('/tools', {'X-Adp-Door-Identity': identity('/call')})[0] == 401
+        code, tools = request('/tools', {'X-Adp-Door-Identity': identity()})
         assert code == 200 and isinstance(tools, list) and len(tools) >= 5
         assert 'search' in {tool['name'] for tool in tools}
         # No database is available in this offline fixture: readiness must fail

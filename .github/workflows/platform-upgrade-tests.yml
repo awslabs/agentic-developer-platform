@@ -1,9 +1,19 @@
 name: Platform Upgrade Tests
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/deploy-prerequisites.sh'
+      - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/ecr/**'
+      - 'platform/infra/main.tf'
+      - 'platform/infra/variables.tf'
+      - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
+      - 'modules/gateway/infra/variables.tf'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
       - 'platform/infra/release-configuration.tf'
@@ -65,6 +75,15 @@ on:
     branches: [main]
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/deploy-prerequisites.sh'
+      - 'platform/infra/modules/eks/**'
+      - 'platform/infra/modules/ecr/**'
+      - 'platform/infra/main.tf'
+      - 'platform/infra/variables.tf'
+      - 'modules/gateway/infra/main.tf'
+      - 'modules/gateway/infra/modules/rds-bootstrap/**'
+      - 'platform/scripts/tests/test_rds_bootstrap.py'
+      - 'modules/gateway/infra/variables.tf'
       - 'platform/scripts/prepare-release-config.py'
       - 'config/release-defaults/**'
       - 'platform/infra/release-configuration.tf'
@@ -207,9 +226,19 @@ jobs:
           terraform_version: '1.14.6'
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
+      - run: python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q
+      - run: python -m unittest discover -s platform/scripts/tests -p test_rds_bootstrap.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_deployment_recovery.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/modules/eks
+      - run: terraform test -no-color -filter=tests/legacy_bootstrap_admin.tftest.hcl -filter=tests/endpoint_access.tftest.hcl
+        working-directory: platform/infra/modules/eks
+      - run: terraform init -backend=false -input=false
+        working-directory: platform/infra/modules/ecr
+      - run: terraform test -no-color -filter=tests/registry_ownership.tftest.hcl
+        working-directory: platform/infra/modules/ecr
       - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
       # Capacity-subnet retention and the runbook's resolve block (#5830). Pinned
       # explicitly, like the rest of this job: a glob silently stops covering a file

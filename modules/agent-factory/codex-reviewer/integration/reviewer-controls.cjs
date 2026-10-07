@@ -52,6 +52,8 @@ async function verify(mode) {
   const command =
     mode === "abort"
       ? "sleep 5; touch " + home + "/after-abort"
+      : mode === "patch-steer"
+      ? "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: control-probe.txt\n+patch complete\n*** End Patch\nPATCH"
       : "sleep 2; echo CONTROL_PROBE_DONE";
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -143,7 +145,8 @@ async function verify(mode) {
         if (e.type === "turn.completed") turnCompleted = true;
         publish(e);
         console.log("EVENT", JSON.stringify(e));
-        if (e.type === "item.started" && e.item.type === "command_execution") {
+        if (e.type === "item.started" &&
+            ["command_execution", "file_change"].includes(e.item.type)) {
           if (mode === "abort") {
             setTimeout(() => adapter.cancel("abort probe"), 200);
             return;
@@ -174,7 +177,10 @@ async function verify(mode) {
           }, 2500);
         }
       });
-      assert.ok(activity.some(text => text.includes("Running:")), "Reviewer activity must reach UI sink");
+      assert.ok(activity.some(text => text.includes(mode === "patch-steer" ? "Files changed:" : "Running:")),
+        "Reviewer activity must reach UI sink");
+      assert.equal(adapter.activeWorkCount(), 0, "Completed tools must release their admissions");
+      if (mode === "patch-steer") assert.equal(await fs.readFile(home + "/control-probe.txt", "utf8"), "patch complete\n");
     } catch (error) {
       if (mode !== "abort" || !adapter.signal.aborted) throw error;
     }
@@ -202,6 +208,7 @@ async function verify(mode) {
   }
 }
 verify("pause-steer-resume")
+  .then(() => verify("patch-steer"))
   .then(() => verify("abort"))
   .catch((e) => {
     console.error(e);

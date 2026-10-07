@@ -310,6 +310,20 @@ describe('the ticker', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
+  it('schedules only a function callback and clears the resulting interval', () => {
+    const schedule = jest.spyOn(global, 'setInterval');
+    const { sinks: heartbeatSinks } = sinks();
+    try {
+      const handle = startRunHeartbeat({ ...sources(), intervalMs: 321 }, heartbeatSinks);
+      expect(typeof schedule.mock.calls[0][0]).toBe('function');
+      expect(schedule.mock.calls[0][1]).toBe(321);
+      handle.stop();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      schedule.mockRestore();
+    }
+  });
+
   it('ticks at the production interval until stopped', () => {
     const ticks: RunHeartbeatTick[] = [];
     const { sinks: s } = sinks();

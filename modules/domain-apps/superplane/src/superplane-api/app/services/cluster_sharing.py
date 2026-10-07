@@ -39,6 +39,7 @@ from app.auth import VerifiedCaller
 from app.cluster_authorization import REFUSAL, authorized_cluster_ids
 from app.models.cluster import Cluster
 from app.models.cluster_grant_scope import CLUSTER_USE
+from app.current_identity import CurrentIdentityReader
 from app.models.cluster_membership import (
     STATE_ACTIVE,
     STATE_RESERVED,
@@ -103,7 +104,11 @@ class ResolvedSharedTarget:
 
 
 async def list_eligible_clusters(
-    db: AsyncSession, org_id: uuid.UUID, *, caller: VerifiedCaller | None = None
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    caller: VerifiedCaller | None = None,
+    identity_reader: CurrentIdentityReader | None = None,
 ) -> list[EligibleCluster]:
     """Clusters this exact caller may select with an explicit live use scope.
 
@@ -113,7 +118,9 @@ async def list_eligible_clusters(
     identifier"). `member_count` counts live (non-removed) memberships so a
     caller can see how many workspaces are already there before choosing.
     """
-    allowed = await authorized_cluster_ids(db, org_id, caller, CLUSTER_USE)
+    allowed = await authorized_cluster_ids(
+        db, org_id, caller, CLUSTER_USE, identity_reader=identity_reader
+    )
     result = await db.execute(
         select(Cluster).where(
             Cluster.id.in_(allowed),
@@ -154,6 +161,7 @@ async def resolve_shared_target(
     shared_cluster_id: uuid.UUID,
     *,
     caller: VerifiedCaller | None = None,
+    identity_reader: CurrentIdentityReader | None = None,
 ) -> ResolvedSharedTarget:
     """Verify a shared-placement selection under the caller's organization.
 
@@ -167,7 +175,9 @@ async def resolve_shared_target(
     organization's inventory, and revealing it would make this an enumeration
     oracle. A caller sees only "no eligible shared cluster" either way.
     """
-    allowed = await authorized_cluster_ids(db, org_id, caller, CLUSTER_USE)
+    allowed = await authorized_cluster_ids(
+        db, org_id, caller, CLUSTER_USE, identity_reader=identity_reader
+    )
     if shared_cluster_id not in allowed:
         raise ProvisioningRefused(REFUSAL)
     cluster = await db.scalar(

@@ -83,6 +83,84 @@ write statement. Project dispatch and source staging remain limited to
 `build_project_names`. These inputs do not create a CodeBuild project or ECR
 repository; verify those separately in their canonical owning states.
 
+## Superplane source and paid release capabilities
+
+The independent **automation state owner** can enable these default-off build
+capabilities for the protected `aws-e/adp` workflows:
+
+```hcl
+enable_superplane_operator_source = true
+enable_superplane_paid_release    = true
+```
+
+Source export adds only versioned read/write of
+`superplane/releases/operator-source/<environment>/*/{bundles,consumers,manifests}/*`
+and metadata reads of the one `adp-terraform-state-<account>` bucket. Paid release
+adds only `adp-<environment>-superplane-paid-worker` to project/source dispatch,
+`adp-superplane-paid-worker` to an explicit ECR read inventory, conditional writes
+to `superplane/releases/paid-worker/dispatch/*/{claim,child}.json`, and bucket
+versioning/lifecycle reads. The lifecycle IAM action is
+`s3:GetLifecycleConfiguration`. Existing null ECR inventory retains its previous
+read scope. Source-only and paid-only flags work independently. No delete, claim
+reset, bucket changes, IAM mutation, runtime deployment, or source-repository
+token delegation is granted. Human recovery reads remain with the existing
+operator; the paid CLI itself only writes its durable evidence.
+
+Use the existing reviewed inputs and backend of this maintained root, never the
+domain installation state or its connected role. For the current dev rollout the
+state owner must independently verify account `879318057152`, region `us-east-1`,
+state key `dev/trusted-automation/terraform.tfstate`, existing role
+`adp-dev-trusted-build`, and source destination authorization. Keep all current
+inventory inputs; do not replace them with a demo-only subset. With that owner's
+already authorized profile active, the handoff commands from the repository root
+are:
+
+```bash
+aws sts get-caller-identity
+terraform -chdir=platform/automation-infra init -reconfigure \
+  -backend-config=bucket=adp-terraform-state-879318057152 \
+  -backend-config=key=dev/trusted-automation/terraform.tfstate \
+  -backend-config=region=us-east-1 \
+  -backend-config=dynamodb_table=adp-terraform-locks \
+  -backend-config=encrypt=true
+terraform -chdir=platform/automation-infra plan \
+  -var-file=/private/existing-reviewed-automation.tfvars \
+  -var=enable_superplane_operator_source=true \
+  -var=enable_superplane_paid_release=true \
+  -target=aws_iam_role_policy.build_dispatch \
+  -out=/private/superplane-build-authority.tfplan
+terraform -chdir=platform/automation-infra show -no-color \
+  /private/superplane-build-authority.tfplan
+```
+
+Keep the existing lock table configured before creating the saved plan. Terraform
+stores the backend configuration in saved plans; `apply -lock=true` cannot provide
+remote locking when that backend has no locking mechanism configured. A plan
+created without the lock table must be superseded by a newly reviewed plan after
+correct initialization. Do not disable locking or discard a checksum mismatch to
+get past initialization; reconcile the existing backend with its state owner.
+
+Review must show **one in-place update**, solely
+`aws_iam_role_policy.build_dispatch`, retaining all existing project/role/trust
+identities and adding only the bounded statements above. Refuse create, delete,
+replacement, unrelated drift or any role/trust change; targeting can include
+dependencies, so it is not itself proof of scope. After review and authorization,
+apply that exact saved plan:
+
+```bash
+terraform -chdir=platform/automation-infra apply \
+  /private/superplane-build-authority.tfplan
+```
+
+Retain both opt-ins in the owner's normal inputs to avoid reverting them later.
+The domain build preparation must separately create the dedicated paid project
+and immutable repository before dispatch. Both workflows are main-only, manual,
+and use the existing protected `adp-build-dev` environment. The source workflow
+publishes private repository history only to the explicitly authorized operator
+and destination; successful source receipts, not unauthenticated manifest fields,
+provide the independent manifest hash/version trust anchor. See
+[operator source transport](../../modules/domain-apps/superplane/releases/OPERATOR-SOURCE.md).
+
 ## Ordered rollout
 
 This is an upgrade procedure after GitHub has already been connected. It does
@@ -388,3 +466,49 @@ manages namespaced objects only in `skypilot`; it has no secret-value reads,
 Terraform, IAM mutation, publishing, or Superplane control-plane authority.
 The workflow prepares its pinned YAML parser in an ephemeral Python environment.
 Validate with `dry_run=true` before an intended manifest rollout.
+
+## Automatic worker image rollout
+
+`Agent Worker Image Build` runs the adapter, installation-boundary and Task API
+checks before building. Its deployment job then resolves the full source SHA to
+an ECR digest, adds that digest to gateway trust, rolls and verifies every gateway
+pod, and updates the worker ScaledJob with KEDA's `gradual` strategy. Running jobs
+keep their images and trusted digests. Optional prepull and warm-pool workloads
+also receive the image. The job does not apply webhook Terraform or enable any
+agent authority flags. Domain-owned worker images retain their own release path.
+
+Bootstrap `enable_worker_deployment=true` in this module using the operator's
+retained inputs. Install `worker-release-rbac.yaml` in the existing cluster. Set
+up GitHub environment `adp-worker-deploy-<environment>` restricted to `main`, with
+`ADP_DEPLOY_ROLE_ARN` from `worker_deployment_role_arn` and `ADP_DEPLOY_REGION`.
+The role can read the worker ECR digest and update only the two worker release
+SSM parameters, read parameter metadata, and use the webhook DynamoDB KMS key
+only through SSM for the trusted-image parameter. Rollout preserves that
+parameter's existing encryption key. Kubernetes RBAC names the worker templates and gateway config;
+it grants neither cluster administration nor IAM mutation. Bootstrap this once
+per deployment target before enabling automatic releases.
+
+Successful rollout records the source SHA and digest in
+`/adp/<environment>/webhook-ingress/deployed-worker-image`. Webhook CI reads that
+pin and the current trust list as its final Terraform overlay, preserving them
+through later infrastructure updates. Explicit authority rollout inputs still
+have precedence. Full platform release deployments select their own release
+images; this pin is for the continuous worker/webhook CI path. A late build of
+an older ancestor is skipped. Worker, gateway and webhook CI deployments share
+a concurrency group; running deployment jobs are not cancelled.
+
+To retry a failed rollout, rerun the failed workflow job. Trust additions are
+idempotent. If gateway verification fails, workers retain their previous image.
+Manual rollback must select a reviewed source revision and update the persisted
+pin as well as the templates; changing a mutable `latest` tag does not roll out.
+
+### Superplane automation source ownership
+
+Superplane's build publication contract and dedicated SkyPilot deployment
+resources are defined in
+[`modules/domain-apps/superplane/infra/automation`](../../modules/domain-apps/superplane/infra/automation/README.md).
+This root remains their composition/state owner and owns the shared build role.
+Existing inputs, default-off flags, protected OIDC subjects and permissions are
+unchanged. Retain the four `moved` blocks in `skypilot-deployment.tf` so existing
+states upgrade without replacing IAM roles or EKS access. No backend transfer or
+cloud mutation is performed by the source move.

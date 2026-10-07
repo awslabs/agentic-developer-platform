@@ -1,9 +1,10 @@
 # Nightly CLI regression
 
-[Nightly CLI Regression](../../.github/workflows/nightly-cli-regression.yml) is
-the single scheduled entry point for the three CLI evaluation suites. It runs
-daily at **05:00 UTC**, against **dev (AWS account 000000000101)**. GitHub may
-start scheduled workflows later when runners are busy.
+[CLI Regression](../../.github/workflows/nightly-cli-regression.yml) is the
+reusable coordinator for the three CLI evaluation suites. The single platform
+schedule is [ADP Regression](../../.github/workflows/adp-regression.yml), at
+**02:17 UTC**, with a weekly superset on Sunday. See
+[platform regression](platform-regression.md) for configuration and coverage.
 
 ```bash
 # Run the nightly key scenarios on demand, from the reviewed default branch.
@@ -22,7 +23,7 @@ building its run config: dev can advance during the
 onboarding and budget suites. EC2 preflight still checks that exact revision and
 the independently derived served CLI hashes. Recovery uses the same resolved pin.
 Both revisions appear in the combined summary; a deployment change between suites
-is reported, not presented as single-revision acceptance. Neither pin assumes
+makes the result incomplete and requires a stable-revision rerun. Neither pin assumes
 that current `main` has already been deployed.
 
 The parent forwards optional non-secret `fixtures_json` unchanged to the existing
@@ -59,14 +60,14 @@ credentials.
 | 3 | CLI Uplift key scenarios | [E01 install; C01 login/refresh; E20 capabilities/doctor; E21 usage/export; E22 Activity reads/errors; E23 tenant selection/errors; cleanup/recovery](../../tests/e2e/cli_uplift/cases.py) | Disposable EC2 |
 
 The daily EC2 invocation selects **`nightly`**: E01 install, C01 native login and
-refresh, E20 capabilities/doctor (#5621), E21 own usage views and bounded export
-(#5628), E22 Activity pagination and missing-run errors (#5629), E24 vault metadata and mutation previews (#5631), and E26 own budget daily/weekly/monthly reads (#5589). All product
-commands run from the hash-verified served CLI on the disposable EC2 instance.
-These three new scenarios add no inference or platform mutations. Missing CLI
-helpers, endpoint errors, malformed JSON, or inconsistent exit codes fail the run.
+refresh, and E20–E42. These 25 scenarios include story reads, tenant isolation
+and hosted coding, with their existing fixture and spend guards. The executable
+selection in `cases.py` is authoritative. All product commands run from the
+hash-verified served CLI on disposable EC2. Missing helpers, endpoint errors,
+malformed JSON or inconsistent exit codes fail the run; missing fixtures block it.
 
 `ec2_scope=login` retains the narrow install/login diagnostic. `ec2_scope=full`
-selects the registered E01–E23 cases plus fixture-gated E27; blocked/not-run cases keep it red. E02–E19 remain outside the
+selects the registered E01–E50 cases; blocked/not-run cases keep it red. E02–E19 remain outside the
 nightly scope. Passing read regressions does not establish active remote-control
 acceptance, marked usage/spend reconciliation, or capability permission contrasts.
 
@@ -239,3 +240,16 @@ These checks use live responses, not inferred module availability. Configured
 module failures, authorization errors, malformed responses, and unavailable
 backends still fail. Blocked cases retain a non-passing nightly verdict and never
 count as full acceptance.
+
+## Assistant headless coverage
+
+The opt-in `assistant` selection (E43–E50) belongs to the existing CLI Uplift
+child, not a second nightly schedule. The 05:00 UTC `nightly` selection and its
+OIDC authority, revision pin, locks, recovery and cleanup gates remain unchanged.
+Do not add these model-spending or faulting cases to scheduled runs until the
+feature journeys, ordinary-user fixtures, cost limits and target-scoped authority
+have been reviewed. See [the existing EC2 evaluation guide](cli-uplift-evaluation.md#assistant-headless-suite-opt-in-not-yet-qualified)
+for fixture shape, the explicit operator-only workflow command, recovery, and
+headless-versus-browser coverage. Missing fixtures are blocked; unimplemented
+journeys fail. E50 executes the current authenticated WebSocket baseline; it
+does not complete E43–E49 or establish platform acceptance.

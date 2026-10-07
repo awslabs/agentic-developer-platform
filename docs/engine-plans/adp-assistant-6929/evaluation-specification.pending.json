@@ -1,0 +1,206 @@
+{
+  "adp-assistant-6929/epic-6929/qualification/assistant-qualification": {
+    "criteria": [
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD04"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD05"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "HEAD06"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DATA01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DATA02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DATA03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DATA04"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SEC01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SEC02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SEC03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SEC04"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SEC05"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "ACT01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "ACT02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "ACT03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "EXT01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "EXT02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "EXT03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DEP01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DEP02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "DEP03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SES01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SES02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SES03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "SES04"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "WARM01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "WARM02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "WARM03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "UI01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "UI02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "UI03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "QUAL01"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "QUAL02"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "QUAL03"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "QUAL04"
+      },
+      {
+        "kind": "functional",
+        "required": true,
+        "criterion_id": "QUAL05"
+      }
+    ],
+    "schema_version": 1,
+    "acceptance_mode": "human",
+    "evidence_schema": "orchestration-evaluation/v1",
+    "max_age_seconds": 3600,
+    "max_duration_seconds": 7200
+  }
+}

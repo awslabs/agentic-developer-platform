@@ -59,7 +59,7 @@ HARNESS_PORTS: tuple[str, ...] = (
 # configured, so a failing preflight names the setting to change rather than only
 # reporting that something is missing.
 _NO_OPERATION_STORE = (
-    "no PostgreSQL operation store is configured: set DATABASE_URL. The harness "
+    "no PostgreSQL operation store is configured: set SUPERPLANE_OPERATION_DATABASE_URL. The harness "
     "operation store backs this port"
 )
 
@@ -93,15 +93,32 @@ class Composition:
     _closeables: list[Any] = field(default_factory=list)
     _installed: dict[str, Any] = field(default_factory=dict)
     _connections: Any = None
+    _domain_connections: Any = None
     ledger: Any = None
     dispatcher: Any = None
+    identity_reader: Any = None
+    _identity_app: Any = None
     dispatch_enabled: bool = True
+
+    def install_identity_reader(self, app: Any) -> None:
+        if (
+            self.identity_reader is not None
+            and getattr(app.state, "current_identity_reader", None) is None
+        ):
+            app.state.current_identity_reader = self.identity_reader
+            self._identity_app = app
 
     @property
     def operation_connect(self) -> Any:
         if self._connections is None:
             raise RuntimeError("operation authority is not configured")
         return self._connections.connect
+
+    @property
+    def domain_connect(self) -> Any:
+        if self._domain_connections is None:
+            raise RuntimeError("domain authority is not configured")
+        return self._domain_connections.connect
 
     @property
     def installed(self) -> frozenset[str]:
@@ -148,6 +165,9 @@ class Composition:
         try:
             await connections.open()
             await connections.ensure_ready()
+            if self._domain_connections is not None:
+                await self._domain_connections.open()
+                await self._domain_connections.ensure_ready()
         except Exception:
             # No message and no repr: a DSN carries a password, and a schema
             # mismatch names a deployment version. `harness_connection` has
@@ -159,6 +179,8 @@ class Composition:
                 exc_info=False,
             )
             await connections.aclose()
+            if self._domain_connections is not None:
+                await self._domain_connections.aclose()
 
     async def aclose(self) -> None:
         """Release the adapters and transports **this** composition installed.
@@ -190,6 +212,13 @@ class Composition:
         Each step is independent and nothing propagates: a shutdown path that
         raised would abandon the rest of its cleanup.
         """
+        if self._identity_app is not None:
+            if (
+                getattr(self._identity_app.state, "current_identity_reader", None)
+                is self.identity_reader
+            ):
+                del self._identity_app.state.current_identity_reader
+            self._identity_app = None
         for port, adapter in list(self._installed.items()):
             uninstall = _UNINSTALL.get(port)
             if uninstall is None:
@@ -223,6 +252,7 @@ class Composition:
                     exc_info=False,
                 )
         self._connections = None
+        self._domain_connections = None
         self.ledger = None
         self.dispatcher = None
 
@@ -265,7 +295,7 @@ def _compose_credential_evidence(settings: Any, result: Composition) -> None:
             installed=False,
             detail=(
                 "ADP vault is not configured: set ADP_GATEWAY_INTERNAL_URL and "
-                "ADP_GATEWAY_INTERNAL_API_KEY"
+                "ADP_GATEWAY_EVIDENCE_AUTH=api-producer-iam and the selected producer endpoint"
             ),
         )
         return
@@ -330,7 +360,10 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     for the same stated reason: "a package that could mint the credential it checks
     is a package whose authority check is decorative."
     """
-    from app.adapters.harness_connection import build_harness_connections
+    from app.adapters.harness_connection import (
+        build_domain_connections,
+        build_harness_connections,
+    )
 
     outstanding = [port for port in HARNESS_PORTS if not _preexisting(port, result)]
     if not outstanding:
@@ -363,18 +396,24 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     from app.database import async_session_factory
 
     connect = connections.connect
+    domain_connections = build_domain_connections(settings)
+    domain_connect = domain_connections.connect
     store = OperationStore()
     authority_source = GrantBackedAuthority(async_session_factory)
     ledger = OperationBudgetLedger(
-        connect, limits_for=authority_source.budget_limits_for
+        domain_connect, limits_for=authority_source.budget_limits_for
     )
-    execution = HarnessExecutionAuthority(connect, store=store)
+    execution = HarnessExecutionAuthority(
+        connect, store=store, domain_connect=domain_connect
+    )
 
     # The pool is owned by the composition, not by any one adapter: three adapters
     # share it, so the *last* of them closing it would close it under the other
     # two. `aclose` releases it once, after every port is released.
     result._connections = connections
     result._closeables.append(connections)
+    result._domain_connections = domain_connections
+    result._closeables.append(domain_connections)
     result.ledger = ledger
     result.dispatch_enabled = (
         getattr(settings, "superplane_operation_dispatch_enabled", True) is True
@@ -388,6 +427,7 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
 
         result.dispatcher = OperationDispatcher(
             connect,
+            domain_connect=domain_connect,
             transport=ProducerTransport(
                 endpoint, getattr(settings, "superplane_operation_gateway_region", "")
             ),
@@ -396,10 +436,19 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
         result._closeables.append(result.dispatcher)
         execution._verify_run = result.dispatcher.verify_run
 
+    async def activation_ready():
+        from app.installation import prepared_lifecycle_binding
+
+        return await prepared_lifecycle_binding(result)
+
     adapters: dict[str, Any] = {}
     if PORT_OPERATION_FACADE in outstanding:
         adapters[PORT_OPERATION_FACADE] = HarnessOperationFacade(
             enabled=result.dispatch_enabled,
+            activation_verify=activation_ready,
+            lifecycle_verify=result.dispatcher.binding_ready
+            if result.dispatcher
+            else None,
             service=OperationFacadeService(
                 connect=connect,
                 resolver=authority_source,
@@ -497,6 +546,30 @@ def compose(settings: Any | None = None) -> Composition:
             result.ports.setdefault(
                 port,
                 PortComposition(port=port, installed=False, detail=detail),
+            )
+
+    endpoint = getattr(settings, "superplane_operation_gateway_url", "")
+    if endpoint:
+        try:
+            from app.adapters.operation_dispatch import ProducerTransport
+            from app.current_identity import MappedProducerIdentityReader
+            from app.database import async_session_factory
+
+            if result.dispatcher is not None:
+                transport = result.dispatcher.transport
+            else:
+                transport = ProducerTransport(
+                    endpoint,
+                    getattr(settings, "superplane_operation_gateway_region", ""),
+                )
+                result._closeables.append(transport)
+            result.identity_reader = MappedProducerIdentityReader(
+                transport, async_session_factory
+            )
+        except Exception:
+            logger.error(
+                "the signed current-identity reader could not be composed",
+                exc_info=False,
             )
 
     absent = sorted(result.unconfigured)

@@ -5,7 +5,8 @@ import { interruptedTransport } from './turn.js';
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string };
   observeEvent?(event: ThreadEvent): void;
-  progress?(text: string, detail: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed' }): void;
+  progress?(text: string, detail: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed'; plan_scope?: 'assignment' | 'inspection' }): void;
+  plan?(text: string): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -40,13 +41,17 @@ export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperRep
     `Files changed: ${item.changes.map(change => `${change.kind} ${change.path}`).join(', ')}`, 'tool', item.status === 'failed');
   if (item.type === 'mcp_tool_call' && event.type !== 'item.updated') emit(`${item.server}/${item.tool}: ${item.status}`, 'tool', item.status === 'failed');
   if (item.type === 'web_search' && event.type !== 'item.updated') emit(`${completed ? 'Searched' : 'Searching'} the web: ${item.query}`, 'tool');
-  if (item.type === 'todo_list') emit(item.items.map(step => `${step.completed ? '✓' : '○'} ${step.text}`).join('\n'), 'plan');
-  if (item.type === 'error' && completed) emit(`Agent reported: ${item.message}`, 'message', true);
+  if (item.type === 'todo_list' && item.items.length) emit(
+    `**${item.items.filter(step => step.completed).length} of ${item.items.length} tasks complete** (agent-reported)\n\n`
+    + item.items.map(step => `- ${step.completed ? '☑' : '☐'} ${step.text}`).join('\n'), 'plan');
+  if (item.type === 'error' && completed) emit(`Agent reported: ${item.message}`, 'tool', true);
 }
 
 export async function runDeveloperStream(
   thread: Pick<Thread, 'runStreamed' | 'id'>, prompt: string, options: TurnOptions, reporter: DeveloperReporter,
   verifyInstructions: () => void = () => {},
+  /** Structured turns end in a JSON outcome; the controller publishes its summary after validation. */
+  structured = false,
 ): Promise<RunResult> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -58,14 +63,24 @@ export async function runDeveloperStream(
       let usage: RunResult['usage'] = null;
       const streamReporter = scopedProgress(reporter);
       for await (const event of events) {
-        publishDeveloperEvent(event, streamReporter);
+        if (structured && 'item' in event && event.item.type === 'agent_message') {
+          // Buffer structured-turn messages until complete so fragments of the
+          // final JSON never leak, while ordinary human explanations stay visible.
+          if (event.type === 'item.completed' && !/^\s*(?:[\[{]|```)/.test(event.item.text)) publishDeveloperEvent(event, streamReporter);
+          else streamReporter.observeEvent?.(event);
+        } else if (structured && 'item' in event && event.item.type === 'todo_list') {
+          // Native scratch plans must not replace the durable assignment board.
+          publishDeveloperEvent(event, { ...streamReporter, progress: (text, detail) =>
+            streamReporter.progress?.(text, { ...detail, plan_scope: 'inspection' }) });
+        } else publishDeveloperEvent(event, streamReporter);
         if (event.type === 'item.completed') {
           items.push(event.item);
           if (event.item.type === 'agent_message') finalResponse = event.item.text;
         }
         if (event.type === 'turn.completed') usage = event.usage;
         if (event.type === 'turn.failed') throw new Error(event.error.message);
-        if (event.type === 'error') throw new Error(event.message);
+        // SDK `error` events include native reconnect notifications. Like
+        // Thread.run(), consume them; only turn.failed is terminal.
       }
       if (!usage) throw new Error('stream disconnected before completion: missing turn.completed');
       return { items, finalResponse, usage };

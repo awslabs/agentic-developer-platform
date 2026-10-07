@@ -1,0 +1,66 @@
+name: CI evidence storage
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/actions/upload-ci-evidence-s3/**'
+      - '.github/scripts/upload_ci_evidence_s3.py'
+      - '.github/scripts/tests/test_ci_evidence_s3.py'
+      - '.github/workflows/ci-evidence-storage.yml'
+      - 'platform/ci-evidence-infra/**'
+      - 'modules/agent-factory/infra/modules/runner-runtime-policy/**'
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install uploader test dependencies
+        run: python -m pip install pytest pyyaml boto3
+      - name: Test evidence packaging and receipt checks
+        run: python -m pytest .github/scripts/tests/test_ci_evidence_s3.py -q
+      - name: Create harmless storage probe
+        run: printf 'CI evidence probe\n' > "$RUNNER_TEMP/ci-evidence-probe.txt"
+      - id: upload
+        uses: ./.github/actions/upload-ci-evidence-s3
+        with:
+          name: ci-evidence-storage-probe
+          path: ${{ runner.temp }}/ci-evidence-probe.txt
+          retention-days: '7'
+      - name: Verify retained bytes and unconditional-write denial
+        env:
+          MANIFEST_URI: ${{ steps.upload.outputs.manifest-uri }}
+          MANIFEST_VERSION: ${{ steps.upload.outputs.manifest-version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess, tarfile
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          uri = urlsplit(os.environ['MANIFEST_URI'])
+          def get(key, destination):
+              return json.loads(subprocess.check_output(['aws', 's3api', 'get-object', '--bucket', uri.netloc, '--key', key, str(destination), '--output', 'json']))
+          receipt = get(uri.path.lstrip('/'), temporary / 'manifest.json')
+          assert receipt['VersionId'] == os.environ['MANIFEST_VERSION']
+          manifest = json.loads((temporary / 'manifest.json').read_text())
+          assert manifest['run_id'] == os.environ['GITHUB_RUN_ID']
+          assert manifest['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          assert manifest['checked_out_revision'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          archive = temporary / 'retained-evidence.tar.gz'
+          receipt = get(manifest['artifact']['key'], archive)
+          assert receipt['VersionId'] == manifest['artifact']['version_id']
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest['artifact']['sha256']
+          with tarfile.open(archive) as packed:
+              assert packed.extractfile('ci-evidence-probe.txt').read() == b'CI evidence probe\n'
+          # This is a fresh harmless key, never an existing evidence object.
+          refused = subprocess.run(['aws', 's3api', 'put-object', '--bucket', uri.netloc,
+              '--key', uri.path.lstrip('/') + '.unconditional-probe',
+              '--body', str(temporary / 'ci-evidence-probe.txt')], capture_output=True, text=True)
+          assert refused.returncode != 0 and 'AccessDenied' in refused.stderr, 'Bucket must refuse writes without If-None-Match'
+          print('Actual ARC upload/download checksums and write-once enforcement passed.')
+          PY

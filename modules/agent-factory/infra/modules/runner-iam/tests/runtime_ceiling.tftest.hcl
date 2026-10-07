@@ -25,9 +25,10 @@ run "service_escalation_is_explicitly_denied" {
   }
   assert {
     condition = toset(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyOtherOwnSmokeSourceResources"]).NotResource) == toset([
-      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*"
+      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*",
+      "arn:aws:s3:::adp-test-ci-evidence-123456789012/artifacts/*"
     ])
-    error_message = "Object access must remain restricted to smoke source only; never tenant objects or Terraform state."
+    error_message = "Object access must remain restricted to smoke source and CI evidence only; never tenant objects or Terraform state."
   }
   assert {
     condition     = alltrue([for policy in [aws_iam_policy.runner_base.policy, aws_iam_policy.runner_services.policy, aws_iam_policy.runner_boundary.policy] : length(policy) <= 6144])

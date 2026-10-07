@@ -50,6 +50,7 @@ jobs:
         run: |
           python -m unittest discover -s platform/scripts/tests -p 'test_release*.py'
           python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py'
+          python -m pytest platform/scripts/tests/test_upgrade_worker_migration.py -q
           python -m unittest discover -s platform/scripts/tests -p test_update_safety.py
           python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
       - uses: aws-actions/configure-aws-credentials@v6

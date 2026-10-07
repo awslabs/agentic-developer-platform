@@ -1,4 +1,5 @@
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -35,10 +36,14 @@ def setup(monkeypatch):
     return SimpleNamespace(envelope=envelope, delivery=delivery, uploaded=uploaded, submit=submit, result=result)
 
 
-def finish(setup, *, parent=HEAD):
+def finish(setup, *, parent=HEAD, ancestor=True):
+    def run(args, **kwargs):
+        if "merge-base" in args and not ancestor:
+            raise subprocess.CalledProcessError(1, args)
+        return SimpleNamespace(stdout=parent if args[-1] == "HEAD^" else setup.result["sha"])
     return finalizer.finish_engine_review(json.dumps(setup.result), envelope=setup.envelope,
         delivery=setup.delivery, cwd="/workspace",
-        run=lambda args, **kwargs: SimpleNamespace(stdout=parent if args[-1] == "HEAD^" else setup.result["sha"]))
+        run=run)
 
 
 def test_codex_exact_head_review_is_uploaded_before_completion(setup):
@@ -105,8 +110,8 @@ def test_unassigned_head_cannot_be_published_or_uploaded(setup, change):
         setup.envelope["review_cycle_input"]["allow_story_repairs"] = False
     if change == "lineage":
         setup.result["repair_base_sha"] = "c" * 40
-    with pytest.raises(RuntimeError):
-        finish(setup, parent="c" * 40 if change == "parent" else HEAD)
+    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+        finish(setup, ancestor=change != "parent")
     assert not setup.uploaded
     setup.submit.assert_not_called()
 
@@ -179,3 +184,50 @@ def test_lost_upload_response_replays_evidence_without_repeating_formal_review(s
     finish(setup)
     setup.submit.assert_called_once()
     assert setup.uploaded[0] == setup.uploaded[1]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_real_git_checkpoint_chain_is_delivered_for_both_transports(setup, monkeypatch, tmp_path, owned):
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.test")
+    path = tmp_path / "code.txt"
+    shas = []
+    for index in range(3):
+        path.write_text(f"revision {index}\n")
+        git("add", "code.txt")
+        git("commit", "-m", f"milestone {index}")
+        shas.append(git("rev-parse", "HEAD"))
+    setup.envelope["review_cycle_input"].update(head_sha=shas[0], reviewer_owned_delivery=owned)
+    setup.delivery.expectation["expected_head_sha"] = shas[0]
+    monkeypatch.setenv(review_result.REVIEW_EXPECT_ENV, json.dumps(setup.delivery.expectation))
+    setup.result.update(sha=shas[-1], repair_base_sha=shas[0])
+    setup.submit.return_value["commit_id"] = shas[-1]
+    finalizer.finish_engine_review(json.dumps(setup.result), envelope=setup.envelope, delivery=setup.delivery,
+        cwd=tmp_path, run=lambda args, **kwargs: subprocess.run(args, check=True, capture_output=True, text=True, **kwargs))
+    assert setup.uploaded[0]["subject"]["reviewed_head_sha"] == shas[-1]
+
+
+@pytest.mark.parametrize("kind", ["engine", "standalone"])
+@pytest.mark.parametrize("merged", [False, True])
+def test_delivery_success_requires_merge(kind, merged):
+    envelope = {"review_cycle_input": {"reviewer_owned_delivery": True}} if kind == "engine" else {"source_ref": {"pr": 42}}
+    result = {"merged": merged, "status": "merged" if merged else "changes_requested"}
+    if merged:
+        finalizer.require_delivery_success(json.dumps(result), envelope)
+    else:
+        with pytest.raises(finalizer.ReviewDeliveryBlocked, match="verified merge"):
+            finalizer.require_delivery_success(json.dumps(result), envelope)
+
+
+def test_explicit_review_only_does_not_require_merge(monkeypatch):
+    monkeypatch.setenv("CODEX_REVIEWER_MERGE_ENABLED", "false")
+    finalizer.require_delivery_success(json.dumps({"status": "approved"}), {"source_ref": {"pr": 42}})
+
+
+@pytest.mark.parametrize("output", ["", "not-json", "[]", "null"])
+def test_malformed_delivery_result_cannot_succeed(output):
+    with pytest.raises(finalizer.ReviewDeliveryBlocked, match="no verifiable delivery result"):
+        finalizer.require_delivery_success(output, {"source_ref": {"pr": 42}})

@@ -50,6 +50,7 @@ export interface CodexPullRequestReviewEnvelope extends CodexEnvelopeBase {
     base_ref: string;
     expected_head_sha: string;
     html_url: string;
+    triggering_comment?: string;
   };
 }
 
@@ -192,6 +193,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
 
   const head = pr.head as Record<string, unknown> | undefined;
   const base = pr.base as Record<string, unknown> | undefined;
+  const comment = payload.comment as Record<string, unknown> | undefined;
   const headRef = requiredString(
     head?.ref,
     "pull_request.head_ref",
@@ -220,6 +222,9 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
       ),
       expected_head_sha: expectedSha,
       html_url: requiredString(pr.html_url, "pull_request.html_url"),
+      ...(typeof comment?.body === "string" && comment.body.trim()
+        ? { triggering_comment: comment.body }
+        : {}),
     },
   };
 }

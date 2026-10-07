@@ -15,6 +15,9 @@ import {
 import { PauseGate, type AdmissionTicket } from "../pause-gate";
 
 export class CodexControlAdapter {
+  // canAcceptInput still requires a real serialized hook boundary; steering
+  // does not claim that concurrent tools have paused or completed.
+  readonly acceptsInputDuringTools = true;
   private registry = new CurrentAttemptRegistry();
   private tickets = new Map<string, AdmissionTicket>();
   private hooked = false;
@@ -114,9 +117,12 @@ export class CodexControlAdapter {
   submitInput(input: ControlInput): Promise<InputHandoffResult> {
     return this.registry.deliver(input);
   }
-  /** Async exec_command has no PostToolUse; its SDK completion owns settlement. */
+  /** Shell execution (including intercepted apply_patch) settles on SDK completion. */
   observeSdkEvent(event: { type: string; item?: { id: string; type: string } }) {
-    if (!this.options.sdkCommands || event.item?.type !== 'command_execution') return;
+    // Codex intercepts shell apply_patch before spawning a process. It still
+    // admits a Bash hook, but emits file_change events and no PostToolUse.
+    if (!this.options.sdkCommands || !event.item ||
+        !['command_execution', 'file_change'].includes(event.item.type)) return;
     if (event.type === 'item.started') {
       const hookId = this.pendingCommands.shift();
       const ticket = hookId ? this.tickets.get(hookId) : undefined;
@@ -259,8 +265,10 @@ export class CodexControlAdapter {
         res.end(JSON.stringify(output));
       });
     };
-    // Serialize boundary ownership: concurrent tool hooks may not steal a reader.
-    if (!this.boundary && this.gate.activeToolCount() === 0) {
+    // Steering adds context at an observed tool hook; it does not promise that
+    // other asynchronous tools have stopped. Pause still uses the gate above.
+    // Keep Stop quiescent and serialize ownership so hooks cannot steal a reader.
+    if (!this.boundary && (event !== "Stop" || this.gate.activeToolCount() === 0)) {
       this.boundary = reply;
       this.notify?.();
       await this.drainSteering();

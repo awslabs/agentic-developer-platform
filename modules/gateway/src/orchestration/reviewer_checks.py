@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.shared.database import get_session_factory
 
-from .execution_policy import Action
+from .execution_policy import Action, CredentialScope, ResourceRef, authorize_action
 from .merge_evidence import EligibilityReason, EvidenceUnavailableError, GitHubMergeObserver, evaluate_observation, evaluate_required_checks
 from .merge_provider import MergeProvider
 from .merge_review import load_merge_review
@@ -31,10 +31,13 @@ class ReviewChecksRequest(BaseModel):
     for_merge: bool = False
 
 
-async def observe_reviewer_checks(session, *, credential, head_sha, for_merge=False, provider=None, storage=None):
+async def observe_reviewer_checks(session, *, credential=None, head_sha, for_merge=False, provider=None, storage=None, protected=None):
     async def assigned():
-        row = await authenticate_run_report(session, credential, lock=False)
-        execution, identity = await validate_current_report_assignment(session, row)
+        if protected is None:
+            row = await authenticate_run_report(session, credential, lock=False)
+            execution, identity = await validate_current_report_assignment(session, row)
+        else:
+            row, execution, identity = await protected_assignment(session, *protected)
         if for_merge and execution.deadline_at and execution.deadline_at <= datetime.now(UTC):
             raise RunReportError("reviewer_deadline_exceeded", retryable=False)
         cycle = row.dispatch_metadata.get("review_cycle_input") or {}
@@ -59,16 +62,40 @@ async def observe_reviewer_checks(session, *, credential, head_sha, for_merge=Fa
             or binding.provider_pr_node_id != expected.get("provider_pr_node_id")
         ):
             raise RunReportError("review_checks_binding_changed", retryable=False)
-        await authorize_shared_action(
-            session,
-            SimpleNamespace(execution=execution, identity=identity),
-            node,
-            binding,
-            row.run_id,
-            Action.MERGE if for_merge else Action.REVIEW,
-            reserve=False,
-            observation=True,
-        )
+        context = SimpleNamespace(execution=execution, identity=identity)
+        if protected is None:
+            await authorize_shared_action(
+                session, context, node, binding, row.run_id, Action.MERGE if for_merge else Action.REVIEW, reserve=False, observation=True
+            )
+        else:
+            from .review_cycle_dispatch import ReviewCycleServices
+
+            authority = ReviewCycleServices(get_session_factory())
+            if for_merge:
+                from .dispatch import graph_address
+                from .models import OrchestrationFlow
+                from .runtime_policy import policy_github_permissions
+
+                facts = await authority.authority_context(session, context, node, binding, row.run_id, Action.MERGE)
+                # The reviewer already holds the repository-scoped repair token.
+                # MERGE is checked independently against current policy; it does
+                # not mint or delegate a broader worker capability.
+                scope = (
+                    CredentialScope.SCOPED
+                    if (cycle.get("allow_story_repairs") is True and policy_github_permissions(facts[2].policy, Action.REPAIR))
+                    else CredentialScope.UNSCOPABLE
+                )
+                flow = await session.get(OrchestrationFlow, node.flow_id)
+                decision = authorize_action(
+                    replace(facts[-1], credential_scope=scope),
+                    Action.MERGE,
+                    ResourceRef(repository_id=binding.repo, node_address=graph_address(node, flow_slug=flow.slug), org_id=node.org_id),
+                    facts[2].plan_version,
+                )
+                if not decision.permitted:
+                    raise CycleBlockedError(decision.reason.value)
+            else:
+                await authority.authorize(session, context, node, binding, row.run_id, Action.REVIEW)
         if for_merge:
             # Read-only authorization of an accepted review. The worker performs
             # the merge; this endpoint neither mutates GitHub nor schedules work.
@@ -149,6 +176,56 @@ async def review_checks(body: ReviewChecksRequest, request: Request):
             return await observe_reviewer_checks(
                 session, credential=request.headers.get("X-Adp-Report-Credential", ""), head_sha=body.head_sha, for_merge=body.for_merge
             )
+    except RunReportError as error:
+        raise HTTPException(503 if error.retryable else 409, error.code) from None
+    except CycleBlockedError as error:
+        raise HTTPException(409, error.reason) from None
+    except (EvidenceUnavailableError, httpx.HTTPError):
+        raise HTTPException(503, "review_checks_unavailable") from None
+
+
+async def protected_assignment(session, request, runtime):
+    """Use the existing workload-bound credential and committed dispatcher receipt."""
+    from starlette.concurrency import run_in_threadpool
+
+    from src.agentauth.run_services import live_context
+
+    from .execution_state import OutcomeKind
+    from .execution_store import load_execution
+    from .handoff import identity_for_attempt
+    from .review_assignment import review_assignment
+
+    _, _, record, _ = await live_context(request, runtime)
+    raw = await run_in_threadpool(runtime.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+    node_id = (raw or {}).get("orchestration_node_id", {}).get("S")
+    attempt = int((raw or {}).get("orchestration_node_attempt", {}).get("N", "0"))
+    if not node_id or attempt < 1:
+        raise RunReportError("review_checks_not_assigned")
+    identity = await identity_for_attempt(session, org_id=record.tenant_id, node_id=node_id, attempt=attempt)
+    loaded = await load_execution(session, identity=identity) if identity else None
+    metadata = await review_assignment(session, org_id=record.tenant_id, node_id=node_id, run_id=record.invocation_id)
+    if loaded is None or loaded.kind is not OutcomeKind.APPLIED or not metadata:
+        raise RunReportError("execution_assignment_unverifiable")
+    source = metadata["source_ref"]
+    row = SimpleNamespace(
+        run_id=record.invocation_id,
+        org_id=record.tenant_id,
+        node_id=node_id,
+        attempt=attempt,
+        persona=metadata["persona"],
+        repo=source["repo"],
+        installation_id=int(source["installation_id"]),
+        provider_repository_id=source["provider_repository_id"],
+        terminal_receipt=None,
+        dispatch_metadata=metadata,
+    )
+    return row, loaded.record, identity
+
+
+async def protected_review_checks(body, request, runtime):
+    try:
+        async with get_session_factory()() as session:
+            return await observe_reviewer_checks(session, head_sha=body.head_sha, for_merge=body.for_merge, protected=(request, runtime))
     except RunReportError as error:
         raise HTTPException(503 if error.retryable else 409, error.code) from None
     except CycleBlockedError as error:

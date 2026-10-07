@@ -24,6 +24,7 @@ set -euo pipefail
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/deploy-prerequisites.sh"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "${SCRIPT_DIR}/gateway-rollout.sh"
 
@@ -149,6 +150,17 @@ for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY"; do
   [ "$_scope" != true ] || _SCOPE_COUNT=$((_SCOPE_COUNT + 1))
 done
 [ "$_SCOPE_COUNT" -le 1 ] || fail "Choose only one scope flag"
+WORKER_MIGRATION=false
+if [ -n "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ]; then
+  [ "$UPDATE_MODE" = true ] && [ "$_SCOPE_COUNT" -eq 0 ] && [ "$SKIP_WEBHOOK_INGRESS" = false ] \
+    && [ "$CONFIRM_DESTRUCTIVE" = false ] || fail "Worker migration requires a full guarded --update"
+  WORKER_MIGRATION=true
+  export ADP_PORTABLE_RELEASE_CONFIG=true
+fi
+worker_migration() {
+  python3 "$SCRIPT_DIR/upgrade-workers.py" "$1" --directory "$UPGRADE_RUN_DIR" \
+    || fail "Worker migration stopped; retain the upgrade directory and retry with the same evidence"
+}
 
 # Prepared releases only enter through release/upgrade.py, which checks the
 # source, account, manifest and every artifact before any infrastructure apply.
@@ -213,19 +225,6 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Accept Bedrock marketplace agreements for the Claude models the platform
-# invokes. Fresh accounts have none; without them every model call fails with
-# AccessDeniedException and the agent-worker misreports it as "no changes
-# needed". Idempotent — skips models already enabled.
-# ---------------------------------------------------------------------------
-# Upgrades may introduce a new runtime default too. Readiness must not be
-# skipped merely because an earlier version was already deployed.
-if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
-  step "Bedrock model access and first-use registration"
-  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --prepare-and-verify || fail "Required Bedrock model access is not ready; runtime deployment has not started."
-fi
-
-# ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
 # ---------------------------------------------------------------------------
 # Anyone cloning this repo can run the script without editing tfvars. The
@@ -284,6 +283,13 @@ if [ "$UPDATE_MODE" = true ]; then
       [ "$CLUSTER_NAME" = "$EKS_CLUSTER" ] && [ "$AWS_REGION" = "$ADP_REGION" ] ) \
       || fail "Agent-context config does not match the upgrade target"
   fi
+  COMPATIBILITY_ARGS=()
+  [ "$DEPLOY_GATEWAY" = true ] || COMPATIBILITY_ARGS+=(--skip-gateway)
+  [ "$DEPLOY_WEBHOOK" = true ] || COMPATIBILITY_ARGS+=(--skip-webhook)
+  [ "$WORKER_MIGRATION" = false ] || COMPATIBILITY_ARGS+=(--worker-migration)
+  python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
+    --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+    "${COMPATIBILITY_ARGS[@]}" || fail "Resolve upgrade compatibility findings before changing this account"
   if [ "$UPGRADE_NEEDS_EKS_ACCESS" = true ]; then
     python3 "$SCRIPT_DIR/upgrade-state.py" open-access --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION"
   fi
@@ -297,7 +303,20 @@ if [ "$UPDATE_MODE" = true ]; then
   # 3. Gateway namespace must exist (indicates prior deploy).
   if [ "$DEPLOY_GATEWAY" = true ]; then
     kubectl get namespace adp-gateway --request-timeout=30s &>/dev/null \
-      || fail "Cannot reach the existing gateway namespace"
+      || fail "Cannot reach the existing gateway namespace. Verify network reachability and operator EKS access; see platform_upgrades.md (operator access)."
+  fi
+
+  if [ "$DEPLOY_WEBHOOK" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-preflight.py" --directory "$UPGRADE_RUN_DIR" \
+      --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" --verify-live-workers \
+      || fail "Live worker identity differs from the preserved upgrade configuration"
+  fi
+  if [ "$WORKER_MIGRATION" = true ]; then
+    [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Worker migration requires gateway and webhook"
+    worker_migration pause
+    ADP_RELEASE_GATEWAY_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gateway_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified gateway image"
+    ADP_RELEASE_AGENT_RUNTIME_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["worker_image"])' "$UPGRADE_RUN_DIR/worker-migration.json")" || fail "Cannot read qualified worker image"
+    export ADP_RELEASE_GATEWAY_IMAGE ADP_RELEASE_AGENT_RUNTIME_IMAGE
   fi
 
   NETWORK_WAS_ENABLED=$(python3 "$SCRIPT_DIR/upgrade-network.py" enabled)
@@ -329,6 +348,19 @@ if [ "$UPDATE_MODE" = true ] && [ "$DEPLOY_GATEWAY" = true ]; then
     "${ADP_GATEWAY_UPDATE_TFVARS:-}" "$ACCOUNT_ID") \
     || fail "Gateway update needs target-specific tfvars"
   ok "Gateway update tfvars: $GATEWAY_UPDATE_VAR_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Accept Bedrock marketplace agreements for the Claude models the platform
+# invokes. Fresh accounts have none; without them every model call fails with
+# AccessDeniedException and the agent-worker misreports it as "no changes
+# needed". Idempotent — skips models already enabled.
+# ---------------------------------------------------------------------------
+# Upgrades may introduce a new runtime default too. Readiness must not be
+# skipped merely because an earlier version was already deployed.
+if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
+  step "Bedrock model access and first-use registration"
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --prepare-and-verify || fail "Required Bedrock model access is not ready; runtime deployment has not started."
 fi
 
 # =============================================================================
@@ -777,6 +809,23 @@ fi
 # =============================================================================
 
 refresh_credentials
+# Build once per invocation; on checkpoint resumes CodeBuild uses its existing
+# immutable-source cache. Also used before the initial plan for legacy engines.
+prepare_gateway_image() {
+  [ "${GATEWAY_IMAGE_PREPARED:-false}" = false ] || return 0
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
+  else
+    # Docker build via CodeBuild (Terraform-managed project)
+    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml" adp-gateway
+  fi
+  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
+    || fail "Gateway release digest could not be verified"
+
+  GATEWAY_IMAGE_PREPARED=true
+}
+
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
@@ -846,12 +895,31 @@ else
   # longer build them here — that path now works for stage-by-stage applies and
   # CI too, not just this script. See modules/gateway/infra/main.tf.
 
-  # The release image is built in the next phase. Keep the installed engine
-  # pinned during this first plan; customer ECR repositories need no latest tag.
+  # Keep an existing engine pinned during the first upgrade plan. Fresh installs
+  # need the real gateway image before Terraform can resolve the engine digest.
   if [ "$UPDATE_MODE" = true ]; then
     GATEWAY_INITIAL_ENGINE_DIGEST=$(python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
-      --current-image-digest --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
+      --current-image-digest --allow-missing --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT") \
       || fail "Cannot verify the installed orchestration image before the gateway plan"
+    if [ "$GATEWAY_INITIAL_ENGINE_DIGEST" = MISSING ]; then
+      python3 - "$UPGRADE_RUN_DIR/engine-before.json" <<'PYENGINE' || fail "Previously installed engine disappeared; refusing to recreate it"
+import json, sys
+with open(sys.argv[1]) as evidence:
+    if json.load(evidence)['missing'] is not True:
+        sys.exit("Engine was present during preflight")
+PYENGINE
+      # Terraform's engine image data source requires an existing immutable image.
+      # Platform has now created the repository and build project, so build first.
+      prepare_gateway_image
+      GATEWAY_INITIAL_ENGINE_DIGEST="${GATEWAY_IMAGE##*@}"
+    else
+      python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+        --quiesce --account "$ACCOUNT_ID" --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+        || fail "Cannot pause and drain the existing engine before gateway changes"
+    fi
+  else
+    prepare_gateway_image
+    GATEWAY_INITIAL_ENGINE_DIGEST="${GATEWAY_IMAGE##*@}"
   fi
 
   # Freeze the old pricing writer before Terraform changes either Lambda.
@@ -872,7 +940,12 @@ else
     terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
       -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST"
   else
+    # A restarted fresh install may already have its ALBs wired. Preserve them
+    # so this first pass does not delete routes and recreate the VPC origin.
+    gateway_alb_vars true
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      "${GATEWAY_ALB_ARGS[@]+"${GATEWAY_ALB_ARGS[@]}"}" \
+      -var "orchestration_tick_image_digest=$GATEWAY_INITIAL_ENGINE_DIGEST" \
       -auto-approve
     ok "Gateway infrastructure deployed"
   fi
@@ -892,17 +965,7 @@ if [ "$DEPLOY_GATEWAY" = false ]; then
   echo "Skipping gateway deploy (scope exclusion)"
   ok "Skipped"
 else
-  # Migrations run after rollout on Ready replicas of this exact release.
-  # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
-  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
-      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
-  else
-    # Docker build via CodeBuild (Terraform-managed project)
-    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml" adp-gateway
-  fi
-  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
-    || fail "Gateway release digest could not be verified"
+  prepare_gateway_image
 
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/gateway/infra"
@@ -1495,6 +1558,7 @@ refresh_credentials
 if deploy_phase_begin webhook; then
 if [ "$DEPLOY_WEBHOOK" = true ]; then
   step "Step 9/11: Deploy webhook-ingress stack"
+  [ "$WORKER_MIGRATION" = false ] || worker_migration check
   WEBHOOK_UPDATE_ARGS=()
   if [ "$UPDATE_MODE" = true ]; then
     WEBHOOK_UPDATE_ARGS+=(--update)
@@ -1534,6 +1598,16 @@ refresh_credentials
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
+if [ "$WORKER_MIGRATION" = true ]; then
+  worker_migration tick
+  (
+    cd "$ROOT_DIR/modules/gateway/infra"
+    gateway_alb_vars
+    terraform_update_apply gateway-worker-authority "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" -var "orchestration_tick_image_tag=$IMAGE_TAG"
+  )
+  worker_migration verify
+fi
 if deploy_phase_begin factory; then
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/11: Deploy agent-factory"
@@ -1802,17 +1876,29 @@ fi
 deploy_phase_complete
 fi
 
+if [ "$WORKER_MIGRATION" = true ]; then
+  worker_migration admit
+  bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
+    --env "$ENVIRONMENT" --region "$AWS_REGION" --update --skip-image --skip-lambda
+  worker_migration complete
+  (
+    cd "$ROOT_DIR/modules/gateway/infra"
+    gateway_alb_vars
+    ADP_WORKER_MIGRATION_EVIDENCE= terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_digest=${GATEWAY_IMAGE##*@}" -var "orchestration_tick_image_tag=$IMAGE_TAG"
+  )
+fi
 if deploy_phase_begin verify; then
 if [ "$UPDATE_MODE" = true ]; then
   REQUIRED_MODULE_ARGS=()
   [ "$DEPLOY_FACTORY" != true ] || REQUIRED_MODULE_ARGS+=(--require-module agent-factory)
   python3 "$SCRIPT_DIR/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION" \
     ${REQUIRED_MODULE_ARGS[@]+"${REQUIRED_MODULE_ARGS[@]}"}
-  if [ "$DEPLOY_GATEWAY" = true ]; then
-    CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
-    curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
-      | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
-  fi
+fi
+if [ "$DEPLOY_GATEWAY" = true ]; then
+  CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
+  curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
+    | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
 fi
 
 if [ "$CI_MODE" = false ] && [ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ]; then
@@ -1834,7 +1920,8 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
-[ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$DEPLOY_WEBHOOK" = true ] && echo "Hosted agents: kubectl get scaledjobs -n adp-agents (check admission pause status)"
+[ "$DEPLOY_FACTORY" = true ] && echo "Factory workers: kubectl get scaledjobs -n adp-gateway-agents"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
@@ -1860,7 +1947,8 @@ if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEX
   echo "  2. Or CLI fallback:"
   echo "     modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env $ENVIRONMENT"
   echo "  3. Install the App on target repo(s)"
-  echo "  4. Comment '@agent-developer <task>' on an issue to trigger an agent"
+  echo "  4. Complete worker-security activation and admission checks: docs/security/terraform-worker-rollout.md"
+  echo "  5. With approval for a live GitHub test, comment '@agent-developer <task>' on an issue"
   echo ""
   echo "Admin credentials location: Secrets Manager → adp/$ENVIRONMENT/gateway/test-admin-credentials"
 fi

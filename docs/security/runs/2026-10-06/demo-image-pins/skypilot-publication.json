@@ -1,0 +1,11 @@
+{
+  "record_type": "sanitized-publication-summary",
+  "registry_identity": "Illustrative only; exact operational evidence remains private.",
+  "reference": "000000000101.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
+  "digest": "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
+  "config_digest": "sha256:13b37339105846307b05f19a696ad500fc286643581a0842dfe77c25d0dd3d52",
+  "source_revision": "a7b50c90da7df1e9ae8a7251234bae09fd0f6792",
+  "manifest_byte_identity_verified": true,
+  "config_byte_identity_verified": true,
+  "scope": "Qualified platform published without rebuilding or changing manifest/config bytes. Independent image-gate and packaged-runtime review precede publication. Runtime installation and live workspace acceptance remain separate."
+}

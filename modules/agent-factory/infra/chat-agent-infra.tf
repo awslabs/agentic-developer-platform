@@ -572,3 +572,8 @@ output "session_sweeper_lambda_arn" {
   description = "Session sweeper Lambda ARN"
   value       = aws_lambda_function.session_sweeper.arn
 }
+
+output "chat_supervisor_role_arn" {
+  description = "Dedicated chat queue supervisor role; grant pod RBAC only after sandbox admission is enforced"
+  value       = aws_iam_role.chat_supervisor.arn
+}

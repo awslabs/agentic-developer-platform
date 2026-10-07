@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "issue": 183,
+  "updated_at": "2026-10-06T23:18:27.480Z",
+  "tasks": [
+    {
+      "id": "WARM01-c1",
+      "kind": "code",
+      "criterion": "WARM01",
+      "title": "Add off-by-default bounded chat node and approved sandbox-image warming",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/chat-warm/chat-warm.yaml",
+        "modules/agent-factory/chat-warm/render-chat-warm.mjs"
+      ],
+      "note": "Inspected implementation and passing bounded-capacity/image-validation evidence retained; newer base does not change these files.",
+      "commits": [
+        "0e51a83"
+      ]
+    },
+    {
+      "id": "WARM01-c-wire",
+      "kind": "code",
+      "criterion": "WARM01",
+      "title": "Wire optional warming to the existing chat deployment without changing disabled routing",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/chat-warm/configure-chat-warm.sh"
+      ],
+      "note": "Default-off behavior and explicit operator enablement remain unchanged."
+    },
+    {
+      "id": "WARM01-t1",
+      "kind": "test",
+      "criterion": "WARM01",
+      "title": "Run unit and rendered-manifest checks for bounded capacity and image readiness",
+      "status": "done",
+      "covers": [
+        "WARM01-c1",
+        "WARM01-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/test_chat_warm_capacity.py"
+      ],
+      "note": "Retained full Kubernetes-suite result: 27 passed. Relevant source and tests are unchanged."
+    },
+    {
+      "id": "WARM01-t2",
+      "kind": "test",
+      "criterion": "WARM01",
+      "title": "Compare warming-off manifest output and isolated Terraform plans with baseline",
+      "status": "done",
+      "covers": [
+        "WARM01-c1",
+        "WARM01-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/test_chat_warm_disabled.py",
+        "modules/agent-factory/tests/k8s/compare_chat_warm_plans.py",
+        "modules/agent-factory/tests/k8s/fixtures/chat_warm_disabled.tftest.hcl",
+        "modules/agent-factory/tests/k8s/test_chat_warm_plan_comparison.py",
+        "modules/agent-factory/chat-warm/README.md"
+      ],
+      "note": "Accepted isolated comparison remains valid: identical default plans with 104 resources and 27 outputs against base 2ec74d552502491f22277ab3dc1bb8d43450af86. Verified that newer base 504a585e1652816c209e5dafaa2a34fed82551c3 does not change Terraform or warming inputs. Synthetic evidence does not establish live drift or deployment readiness.",
+      "commits": [
+        "1833fbb"
+      ]
+    },
+    {
+      "id": "WARM02-c1",
+      "kind": "code",
+      "criterion": "WARM02",
+      "title": "Keep per-turn sandbox creation and credential boundaries independent of warm capacity",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/sandbox-launcher.ts"
+      ],
+      "note": "Fresh-sandbox runtime and credential boundaries remain unchanged by the prepared base integration."
+    },
+    {
+      "id": "WARM02-c-wire",
+      "kind": "code",
+      "criterion": "WARM02",
+      "title": "Keep capacity failure on the authorized isolated cold execution path",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/chat-warm/configure-chat-warm.sh"
+      ],
+      "note": "Prior invalid-image and failed-rollout fixture evidence remains valid; no routing or execution changes."
+    },
+    {
+      "id": "WARM02-t1",
+      "kind": "test",
+      "criterion": "WARM02",
+      "title": "Run unit fixtures for A1/A2/B1 distinct sandboxes and canary isolation",
+      "status": "done",
+      "covers": [
+        "WARM02-c1"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/chat_warm_isolation.cjs",
+        "modules/agent-factory/tests/k8s/test_chat_warm_isolation.py"
+      ],
+      "note": "Synthetic lifecycle evidence and complete chat-suite result retained: 57 suites, 1,291 tests passed. No live isolation claim.",
+      "commits": [
+        "3ebab70"
+      ]
+    },
+    {
+      "id": "WARM02-t2",
+      "kind": "test",
+      "criterion": "WARM02",
+      "title": "Run unit failure fixtures for exhausted or failed warm capacity and cold fallback",
+      "status": "done",
+      "covers": [
+        "WARM02-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/test_chat_warm_cold_fallback.py"
+      ],
+      "note": "Previously passing mocked failure fixtures remain applicable. Actual capacity scheduling remains part of live qualification.",
+      "commits": [
+        "55e9cd5"
+      ]
+    },
+    {
+      "id": "WARM02-t3",
+      "kind": "test",
+      "criterion": "WARM02",
+      "title": "Verify live A1/A2/B1 canaries and cold-capacity isolation",
+      "status": "blocked",
+      "covers": [
+        "WARM02-c1",
+        "WARM02-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: authorized #6937 evaluation owner. Required before enablement, not before source merge; no deployment authorized or performed."
+    },
+    {
+      "id": "WARM02-t4",
+      "kind": "test",
+      "criterion": "WARM02",
+      "title": "Verify final-head Gateway CI Test and Chat Data Port Integration",
+      "status": "open",
+      "covers": [
+        "WARM02-c1",
+        "WARM02-c-wire"
+      ],
+      "files": [
+        ".github/workflows/gateway-ci.yml"
+      ],
+      "note": "Prepared base 504a585e1652816c209e5dafaa2a34fed82551c3 integrates without conflicts. Focused validation passed: npm test -- --runInBand --silent --runTestsByPath src/harnesses/codex-control.test.ts — 9 tests. Controller publication and final-head CI/S3 evidence remain pending. Supplied a3fdb214 results show Chat Data Port Integration and seven backend shards successful, one shard pending, and Frontend Unit Tests failed; these do not establish completion for the forthcoming reconciled head. Earlier local frontend validation passed all 3,031 tests, lint and typechecking."
+    },
+    {
+      "id": "WARM03-c1",
+      "kind": "code",
+      "criterion": "WARM03",
+      "title": "Ensure cancellation preserves accepted-turn fencing and recovery",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/agent/src/complex-task-chat/sandbox-supervisor-completion.ts",
+        "modules/gateway/src/agentauth/chat_supervisor_resume.py"
+      ],
+      "note": "Unchanged cancellation/recovery code retains prior inspection and test evidence."
+    },
+    {
+      "id": "WARM03-c-wire",
+      "kind": "code",
+      "criterion": "WARM03",
+      "title": "Ensure warm-capacity scale-down releases only idle reservations",
+      "status": "done",
+      "covers": [],
+      "files": [
+        "modules/agent-factory/chat-warm/configure-chat-warm.sh",
+        "modules/agent-factory/chat-warm/README.md"
+      ],
+      "note": "Cleanup remains restricted to named warm resources, preserving assigned sandboxes and durable turns.",
+      "commits": [
+        "d3aefe4"
+      ]
+    },
+    {
+      "id": "WARM03-t1",
+      "kind": "test",
+      "criterion": "WARM03",
+      "title": "Run unit fixtures for cancellation, duplicate delivery and fenced recovery",
+      "status": "done",
+      "covers": [
+        "WARM03-c1"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/test_chat_warm_fencing.py"
+      ],
+      "note": "Passing manifest-guard, supervisor and mocked gateway evidence retained for unchanged code.",
+      "commits": [
+        "ab6a075"
+      ]
+    },
+    {
+      "id": "WARM03-t2",
+      "kind": "test",
+      "criterion": "WARM03",
+      "title": "Run manifest and unit fixtures for safe scale-down and cleanup",
+      "status": "done",
+      "covers": [
+        "WARM03-c-wire"
+      ],
+      "files": [
+        "modules/agent-factory/tests/k8s/test_chat_warm_cleanup.py"
+      ],
+      "note": "Passing partial-apply, rollout-failure, cleanup-error and disable fixtures remain applicable."
+    },
+    {
+      "id": "WARM03-t3",
+      "kind": "test",
+      "criterion": "WARM03",
+      "title": "Measure live cold/image/node p50/p95 latency, idle cost and safe scale-down",
+      "status": "blocked",
+      "covers": [
+        "WARM03-c1",
+        "WARM03-c-wire"
+      ],
+      "files": [],
+      "note": "deployed-target: authorized #6937 evaluation owner must record target, source SHA, image, performance, costs and cleanup. Deferred enablement qualification, not a source-merge blocker."
+    }
+  ]
+}

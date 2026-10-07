@@ -15,6 +15,7 @@ name: Orchestration Harness CI
 # modules/gateway, and repo-root tests/ is covered by no PR workflow at all.
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'tests/e2e/orchestration/**'
@@ -50,7 +51,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: orchestration-harness-ci-${{ github.ref }}
+  group: ${{ github.workflow }}-orchestration-harness-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

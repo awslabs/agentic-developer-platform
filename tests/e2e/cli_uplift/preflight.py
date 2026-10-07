@@ -517,6 +517,8 @@ def missing_fixture_report(cfg, available):
     go and create the fixture, instead of a bare 'blocked'.
     """
     names = {
+        cases.ASSISTANT_LEDGER: "implemented and deployed installation upgrade ledger (#6896/#6927); cannot be supplied by a mock or config flag",
+        cases.ASSISTANT_USERS: "wss:// assistant endpoint and three separate ordinary-user fixture references (assistant_users.a1/a2/b1); A1/A2 in tenant A and B1 in tenant B, no admin credentials",
         cases.SUPERPLANE_RESEARCH: "an existing Superplane domain selected for read-only checks (research_readback=true); actual CLI reads must establish readiness",
         cases.DESTINATION: "cross-account destination and provisioner roles (config destination_role_arn + provisioner_role_arn)",
         cases.GITHUB_APP: "an isolated GitHub App fixture (config github.org + github.app_fixture/existing_app_fixture)",

@@ -12,6 +12,7 @@
   "agent-factory-infra-destroy.yml",
   "agent-factory-infra-plan.yml",
   "agent-gateway-deploy.yml",
+  "agent-worker-image.yml",
   "chat-agent-deploy.yml",
   "credential-binding-adversarial-e2e.yml",
   "cyber-infra-apply.yml",
@@ -51,8 +52,8 @@
   "superplane-k8s-deploy.yml",
   "superplane-migrate.yml",
   "undeploy.yml",
-  "webhook-ingress-ci.yml",
   "webhook-code-deploy.yml",
+  "webhook-ingress-ci.yml",
   "webhook-ingress-deploy.yml",
   "webhook-ingress-destroy.yml"
 ]

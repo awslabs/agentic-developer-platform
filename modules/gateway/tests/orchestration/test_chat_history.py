@@ -2,12 +2,16 @@
 
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+import boto3
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from moto import mock_aws
 
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.orchestration import chat_history as chat
 from src.shared.schemas.auth import TokenContext
 
@@ -48,6 +52,140 @@ def api(monkeypatch, user, row):
     app.dependency_overrides[chat.get_current_user] = lambda: user
     app.dependency_overrides[chat.store] = lambda: table
     return TestClient(app), table
+
+
+def test_session_mode_uses_authenticated_session_owner_and_survives_reload(api, row, monkeypatch):
+    client, _ = api
+    access = {"allowed": True}
+
+    async def membership(*_):
+        return access["allowed"]
+
+    monkeypatch.setattr(chat, "current_chat_member", membership)
+    with mock_aws():
+        context = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="chat-mode-context",
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        )
+        client.app.dependency_overrides[chat.mode_store] = lambda: ChatSessionMailbox(context)
+        path = "/chat/sessions/sess-123/mode"
+        assert client.get(path).json() == {"mode": "ephemeral", "sequence": 0, "health": "idle"}
+        selected = client.put(path, json={"mode": "persistent"})
+        assert selected.status_code == 200, selected.text
+        assert selected.json()["mode"] == "persistent"
+        assert client.get(path).json()["mode"] == "persistent"
+        context.update_item(
+            Key={"PK": "session#sess-123", "SK": "header"},
+            UpdateExpression="SET chatLease = :lease",
+            ExpressionAttributeValues={":lease": {"expires_at": int(time.time()) + 90}},
+        )
+        assert client.put(path, json={"mode": "ephemeral"}).status_code == 409
+        assert client.get(path).json()["mode"] == "persistent"
+        assert client.put(path, json={"mode": "untrusted"}).status_code == 422
+        access["allowed"] = False
+        assert client.get(path).status_code == 404
+        assert client.put(path, json={"mode": "ephemeral"}).status_code == 404
+        access["allowed"] = True
+        row["owner_user_id"] = "someone-else"
+        assert client.get(path).status_code == 404
+        assert client.put(path, json={"mode": "ephemeral"}).status_code == 404
+        assert context.get_item(Key={"PK": "session#sess-123", "SK": "header"})["Item"]["sessionMode"] == "persistent"
+
+
+def test_end_route_is_owner_scoped_and_reports_durable_cleanup_status(api, row, monkeypatch):
+    client, _ = api
+
+    access = {"allowed": True}
+
+    async def membership(*_):
+        return access["allowed"]
+
+    monkeypatch.setattr(chat, "current_chat_member", membership)
+    with mock_aws():
+        context = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="end-mode-context",
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        )
+        mailbox = ChatSessionMailbox(context)
+        client.app.dependency_overrides[chat.mode_store] = lambda: mailbox
+        now = int(time.time())
+        mailbox.select_mode(session_id="sess-123", owner=("tenant", "team", "user"), mode="persistent", now=now)
+        context.update_item(
+            Key={"PK": "session#sess-123", "SK": "header"},
+            UpdateExpression="SET chatLease = :lease, sessionState = :active",
+            ExpressionAttributeValues={
+                ":lease": {"run_id": "run-1", "sandbox_uid": "pod-1", "generation": 1, "expires_at": now + 90},
+                ":active": "active",
+            },
+        )
+        path = "/chat/sessions/sess-123/end"
+        ended = client.post(path)
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["health"] == "ending"
+        assert client.post(path).json()["health"] == "ending"
+        assert context.get_item(Key={"PK": "session#sess-123", "SK": "header"})["Item"]["chatLease"]["expires_at"] == 1
+        access["allowed"] = False
+        assert client.post(path).status_code == 404
+        access["allowed"] = True
+        row["owner_user_id"] = "other"
+        assert client.post(path).status_code == 404
+
+
+def test_ephemeral_mode_promotes_only_after_bound_teardown_and_terminal(api, monkeypatch):
+    client, _ = api
+
+    async def membership(*_):
+        return True
+
+    monkeypatch.setattr(chat, "current_chat_member", membership)
+    with mock_aws():
+        context = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="pending-mode-context",
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        )
+        mailbox = ChatSessionMailbox(context)
+        client.app.dependency_overrides[chat.mode_store] = lambda: mailbox
+        owner = ("tenant", "team", "user")
+        now = int(time.time())
+        mailbox.select_mode(session_id="sess-123", owner=owner, mode="ephemeral", now=now)
+        lease = {"run_id": "run-1", "sandbox_uid": "pod-1", "generation": 1, "expires_at": now + 90}
+        context.update_item(
+            Key={"PK": "session#sess-123", "SK": "header"}, UpdateExpression="SET chatLease = :lease", ExpressionAttributeValues={":lease": lease}
+        )
+        launch = SimpleNamespace(
+            session_run_id=None,
+            tenant_id="tenant",
+            team_id="team",
+            user_id="user",
+            session_id="sess-123",
+            sandbox_uid="pod-1",
+            lease_generation=1,
+            run_id="run-1",
+        )
+        records = {}
+        authority = SimpleNamespace(store=SimpleNamespace(_read=lambda pk, sk: records.get((pk, sk))))
+        capabilities = SimpleNamespace(launches=SimpleNamespace(load=lambda _: launch))
+        from src.agentauth import chat_data_routes
+
+        monkeypatch.setattr(chat_data_routes, "runtime", lambda: (authority, capabilities))
+        path = "/chat/sessions/sess-123/mode"
+        assert client.put(path, json={"mode": "persistent"}).json() == {
+            "mode": "ephemeral",
+            "sequence": 0,
+            "health": "idle",
+            "pending_mode": "persistent",
+        }
+        records[("CHAT-LAUNCH#run-1", "TEARDOWN")] = {"removed_at": {"N": str(now)}}
+        assert client.get(path).json()["pending_mode"] == "persistent"
+        records[("CHAT-DELIVERY#run-1", "TERMINAL")] = {"completion_receipt": {"M": {}}}
+        assert client.get(path).json() == {"mode": "persistent", "sequence": 0, "health": "idle"}
+        assert context.get_item(Key={"PK": "session#sess-123", "SK": "header"})["Item"].get("chatLease") is None
 
 
 def test_real_response_and_task_correlation(api):
