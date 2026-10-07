@@ -51,7 +51,7 @@ export const developerOutcomeSchema = {
   type: "object", additionalProperties: false,
   properties: {
     outcome: { type: "string", enum: ["complete", "checkpoint", "blocked"] },
-    summary: { type: "string" },
+    summary: { type: "string", description: "Human GitHub update. On the first planning turn, explain the requested behavior, the current problem, the implementation approach and how it will be verified. On intermediate turns, explain the meaningful change and next action. On complete or blocked, provide a self-contained outcome: how the solution works, what was implemented, reproducible verification and results, unresolved work and next owner/action. Distinguish PR publication, merge, deployment and live acceptance. Task IDs or counts alone are not an explanation." },
     tasks: taskListSchema,
     remainingWork: { type: "array", items: { type: "string" } },
     pullRequestUrl: { type: "string" },
@@ -333,12 +333,14 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
     checkBoard: tasks => breakdownWarnings(tasks, criteria),
     onOutcome: async (outcome, turn, warnings) => {
       for (const warning of warnings) sink.activity(`Task board check: ${warning}.`);
+      const firstPlan = turn === 1 && !existing.tasks?.length && !!sink.plan;
+      if (firstPlan) sink.plan!(outcome.summary);
       if (turn === 1) { const signal = sizeSignal(outcome.tasks); if (signal) sink.explanation(signal); }
       const next = outcome.outcome === "checkpoint" ? nextTask(outcome.tasks) : undefined;
       const working = next ? describeTask(next) : undefined;
       const since = next ? stamp() : undefined;
       const label = outcome.outcome === "checkpoint" ? `Checkpoint ${turn}` : outcome.outcome === "complete" ? "Story complete" : "Blocked";
-      sink.explanation(`${label}: ${outcome.summary}${working ? ` Next: ${working}.` : ""}`);
+      if (!firstPlan) sink.explanation(`${label}: ${outcome.summary}${working ? ` Next: ${working}.` : ""}`);
       // Task -> commit mapping is computed from Git by the controller: commits
       // made this turn go to the tasks their subject names, else to the tasks
       // that became done this turn. The model never writes this column.

@@ -15,6 +15,15 @@ export interface ClosureReport {
   summary: string; completed: string[]; remaining: string[]; delivery: string;
   reviewed_revision?: string; reporting_notes: string[];
 }
+/** One human outcome report for GitHub and the retained transcript. */
+export function renderClosureReport(report: ClosureReport): string {
+  return [report.summary, '', report.delivery,
+    '', '### What was completed', ...(report.completed.length ? report.completed.map(item => '- ' + item) : ['No completed work was recorded.']),
+    '', '### Remaining work and next steps', ...(report.remaining.length ? report.remaining.map(item => '- ' + item) : ['No remaining work was reported for this assignment.']),
+    ...(report.reviewed_revision ? ['', `Reviewed revision: \`${report.reviewed_revision}\``] : []),
+    ...report.reporting_notes.map(item => `Reporting note: ${item}`)].join('\n');
+}
+
 export interface RunRecord {
   version: 1; invocation_id: string; persona: string; model: string; repository: string; issue: number;
   started_at: string; captured_at: string; capture_closed_at?: string;
@@ -169,10 +178,7 @@ export class RunRecordCapture {
     const first = r.first_checklist?.tasks;
     const lines = [
       '<!-- adp-run-record:v1 ' + Buffer.from(JSON.stringify(r), 'utf8').toString('base64') + ' -->',
-      ...(r.closure_report ? ['## Closure report', r.closure_report.summary, r.closure_report.delivery,
-        '### Completed', ...(r.closure_report.completed.length ? r.closure_report.completed.map(t => '- ' + t) : ['No completed work was recorded.']),
-        '### Remaining', ...(r.closure_report.remaining.length ? r.closure_report.remaining.map(t => '- ' + t) : ['No remaining work was reported for this assignment.']),
-        ...r.closure_report.reporting_notes.map(t => 'Reporting note: ' + t)] : []),
+      ...(r.closure_report ? ['## Closure report', renderClosureReport(r.closure_report)] : []),
       '## Run record',
       'Run ID: ' + (r.invocation_id || 'Unavailable'),
       'Persona: ' + r.persona + ' · Model: ' + r.model,

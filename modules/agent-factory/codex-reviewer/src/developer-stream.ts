@@ -6,6 +6,7 @@ export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string };
   observeEvent?(event: ThreadEvent): void;
   progress?(text: string, detail: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed'; plan_scope?: 'assignment' | 'inspection' }): void;
+  plan?(text: string): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -43,7 +44,7 @@ export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperRep
   if (item.type === 'todo_list' && item.items.length) emit(
     `**${item.items.filter(step => step.completed).length} of ${item.items.length} tasks complete** (agent-reported)\n\n`
     + item.items.map(step => `- ${step.completed ? '☑' : '☐'} ${step.text}`).join('\n'), 'plan');
-  if (item.type === 'error' && completed) emit(`Agent reported: ${item.message}`, 'message', true);
+  if (item.type === 'error' && completed) emit(`Agent reported: ${item.message}`, 'tool', true);
 }
 
 export async function runDeveloperStream(

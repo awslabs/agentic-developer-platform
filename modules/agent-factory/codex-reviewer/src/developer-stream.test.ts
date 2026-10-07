@@ -130,3 +130,9 @@ test('structured turns publish human plans, hide outcome JSON, and isolate scrat
   assert.ok(!JSON.stringify(progress).includes('checkpoint'));
   assert.deepEqual(seen, []);
 });
+
+test('SDK diagnostics remain in technical activity without replacing the human explanation', () => {
+  const { reporter, seen } = recorder();
+  publishDeveloperEvent({ type: 'item.completed', item: { id: 'warning', type: 'error', message: 'Model metadata unavailable' } }, reporter);
+  assert.deepEqual(seen, ['activity:Agent reported: Model metadata unavailable']);
+});

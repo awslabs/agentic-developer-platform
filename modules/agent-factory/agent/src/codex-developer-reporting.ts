@@ -8,13 +8,14 @@ import { startControlRuntime } from './control-runtime-factory';
 import { containsSecret } from './experience-save-hook';
 import { writeFailureReport } from './failure-report';
 import { createWorkerActivityLog } from './worker-activity-log';
-import type { ClosureReport } from './run-record';
+import { renderClosureReport, type ClosureReport } from './run-record';
 
 export interface DeveloperReportingContext { repository: string; issue: number; model: string; persona?: string }
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string; operation<T>(work: () => Promise<T>): Promise<T> };
   observeEvent?(event: { type: string; item?: { id: string; type: string } }): void;
   progress?(text: string, detail: ProgressDetail): void;
+  plan?(text: string): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -108,6 +109,11 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       } } } : {}),
     observeEvent(event) { adapter?.observeSdkEvent(event); },
     explanation,
+    plan(text) {
+      text = publicDeveloperText(text);
+      live.setImplementationPlan(text);
+      explanation(text);
+    },
     progress(text, detail) {
       text = publicDeveloperText(text);
       control.events?.publish(text, detail);
@@ -134,11 +140,13 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     async finish(result) {
       if (ended) return;
       try {
+        const closure = check.runRecord.record.closure_report;
+        const summary = closure ? renderClosureReport(closure) : result.summary;
         check.runRecord.closeReport(result.summary);
-        explanation(result.summary);
+        explanation(summary);
         metadata({ session_completed: true, usage: result.usage, num_turns: sequence, pr_url: result.prUrl });
         live.transition(1, 'complete', reviewer ? 'Review completed' : 'Pull request published');
-        await live.finalizeSuccess({ details: publicDeveloperText(result.summary), prUrl: result.prUrl,
+        await live.finalizeSuccess({ details: publicDeveloperText(summary), prUrl: result.prUrl,
           artifacts: Number(process.env.CHECK_RUN_ID) > 0
             ? [`[Full activity stream](https://github.com/${context.repository}/runs/${process.env.CHECK_RUN_ID})`] : [],
         });

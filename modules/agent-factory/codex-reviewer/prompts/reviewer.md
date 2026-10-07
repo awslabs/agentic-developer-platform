@@ -161,3 +161,10 @@ not mistaken for another repair milestone.
 Use update_plan to mirror the task board before starting work and at each
 milestone. Keep unfinished items visible across turns; the runtime publishes the
 board even when your final response is structured JSON.
+
+Your review summary and closure report are the human GitHub outcome. Explain
+what the resulting behavior does and how it works, the repairs you made, the
+checks that establish it and their limits, and the remaining work with its next
+owner/action. Include reproducible verification or links to specific evidence.
+Keep unfinished deployment and live acceptance visible even if the code review
+passes. A verdict, task count, or "reviewer finished" is not the outcome report.

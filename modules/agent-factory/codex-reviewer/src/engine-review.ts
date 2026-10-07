@@ -33,6 +33,7 @@ export const engineReviewSchema = {
   ...reviewOutputSchema,
   properties: {
     ...reviewOutputSchema.properties,
+    summary: { type: "string", description: "Self-contained human GitHub review outcome: explain the resulting behavior and how it works, meaningful repairs, reproducible validation results, limitations and remaining work. Distinguish review approval from merge, deployment and live acceptance; the controller reports delivery separately." },
     stages: {
       type: "object", additionalProperties: false,
       properties: {
@@ -78,7 +79,7 @@ export const repairMilestoneSchema = {
   type: 'object', additionalProperties: false,
   properties: {
     outcome: { type: 'string', enum: ['checkpoint', 'complete', 'awaiting_ci', 'blocked'] },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'Human progress update: explain what changed, how it works, what was verified and the next useful action. For complete or blocked, give a self-contained outcome with limitations and remaining work; task IDs or a verdict alone are insufficient.' },
     remainingWork: { type: 'array', items: { type: 'string' } },
     tasks: taskListSchema,
   },
