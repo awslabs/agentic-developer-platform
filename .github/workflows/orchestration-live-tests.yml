@@ -202,7 +202,7 @@ jobs:
       # Fixtures would otherwise be unreachable and could not be cleaned up.
       - name: Restore the originating run's inventory
         if: github.event.inputs.mode == 'resume' || github.event.inputs.mode == 'cleanup'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: restored-inventory
           run-id: ${{ github.event.inputs.source_run_id }}

@@ -31,7 +31,7 @@ jobs:
         run: |
           python platform/scripts/release/workflow.py --check-approver
           python platform/scripts/release/workflow.py --check-integration-run
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: acceptance-integration-test
           path: ${{ runner.temp }}/integration-evidence

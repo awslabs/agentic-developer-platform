@@ -71,7 +71,7 @@ jobs:
             --python-image "$PYTHON_IMAGE" --receipt "$RUNNER_TEMP/paid-worker-build.json"
       - name: Retain original dispatch reconciliation receipt
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: superplane-paid-worker-build-receipt
           path: ${{ runner.temp }}/paid-worker-build.json
