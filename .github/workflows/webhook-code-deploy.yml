@@ -56,7 +56,7 @@ jobs:
             --receipt "$RECEIPT"
       - name: Preserve local intent and evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: webhook-code-${{ github.run_id }}
           path: ${{ runner.temp }}/webhook-${{ github.run_id }}/receipt.json

@@ -39,7 +39,7 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Assume protected integration-check identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@89a6a7e94631925f2f41c68041955587ded59f6e
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -65,7 +65,7 @@ jobs:
             -m "live_fleet" \
             --junitxml=live-fleet-results.xml
       - name: Upload live-fleet results and latency
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: gitlab-live-fleet-results
@@ -108,7 +108,7 @@ jobs:
         if: always()
         run: python .github/scripts/regression_report.py junit --suite gitlab-live-fleet --junit modules/agent-factory/live-fleet-results.xml
           --inventory test-results/gitlab-live-fleet-inventory.json --output test-results/gitlab-live-fleet-result.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: gitlab-live-fleet-coverage
@@ -146,7 +146,7 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Assume protected integration-check identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@89a6a7e94631925f2f41c68041955587ded59f6e
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -178,7 +178,7 @@ jobs:
             --junitxml=contract-results.xml
         id: live_tests
       - name: Upload contract test results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: gitlab-contract-test-results
@@ -209,7 +209,7 @@ jobs:
         if: always()
         run: python .github/scripts/regression_report.py junit --suite gitlab-deployed-contract --junit modules/agent-factory/contract-results.xml
           --inventory test-results/gitlab-deployed-contract-inventory.json --output test-results/gitlab-deployed-contract-result.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: gitlab-deployed-contract-coverage

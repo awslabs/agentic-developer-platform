@@ -67,7 +67,7 @@ jobs:
           for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build actual Lambda inputs before planning
@@ -82,7 +82,7 @@ jobs:
       # the plan has been failing. Keep the two in step: anything the apply needs
       # in order to evaluate the configuration, the plan needs too, or the plan
       # stops predicting what the apply will do.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - uses: actions/setup-python@v7
@@ -183,10 +183,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.14.2
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build actual Lambda inputs before validation

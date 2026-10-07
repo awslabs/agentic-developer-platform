@@ -140,7 +140,7 @@ jobs:
           node scripts/generate-native-probe-manifest.mjs --check
       - name: Preserve synthetic probe mismatch diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: native-probe-diagnostics
           path: ${{ runner.temp }}/adp-native-probe-diagnostics/*.json

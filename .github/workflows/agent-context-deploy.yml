@@ -655,7 +655,7 @@ jobs:
           export DEEPWIKI_IMAGE
           python3 modules/agent-context/scripts/promote-deepwiki-image.py
       - name: Retain promotion receipt
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: deepwiki-promotion-receipt
           path: deepwiki-promotion-receipt.json
@@ -705,7 +705,7 @@ jobs:
           export INGESTION_IMAGE
           python3 modules/agent-context/scripts/promote-ingestion-image.py
       - name: Retain promotion receipt
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: ingestion-promotion-receipt
           path: ingestion-promotion-receipt.json

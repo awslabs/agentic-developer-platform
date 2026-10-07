@@ -51,7 +51,7 @@ jobs:
           ARGS=()
           if [ -n "$SCAN_PACKAGE" ]; then ARGS+=(--package "$SCAN_PACKAGE"); fi
           python .github/scripts/regression_security.py "$SCAN_TOOL" "${ARGS[@]}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: source-security-${{ matrix.id }}
