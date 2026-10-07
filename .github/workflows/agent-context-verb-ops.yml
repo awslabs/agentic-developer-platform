@@ -277,7 +277,7 @@ jobs:
 
       - name: Upload eval results
         if: ${{ inputs.eval }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: qa-eval-results
           path: eval-results/

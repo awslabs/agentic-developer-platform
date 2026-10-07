@@ -259,7 +259,7 @@ jobs:
 
       - name: Upload evaluation evidence
         if: always() && inputs.evaluation_context != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: orchestration-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.dispatch.outputs.artifact_dir }}/evaluation/
@@ -271,7 +271,7 @@ jobs:
       # records resource ids and ownership tags, never a credential.
       - name: Upload qualification artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: qualification-${{ github.event.inputs.mode }}-${{ github.run_id }}
           # The directory the CONFIG names, not a hardcoded one: this artifact is

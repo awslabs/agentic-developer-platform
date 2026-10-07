@@ -73,7 +73,7 @@ jobs:
       env:
         REGRESSION_MODULES: ${{ inputs.modules }}
       run: python3 .github/scripts/regression_modules.py
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@v6
       if: ${{ always() && inputs.modules != '' }}
       with:
         name: module-test-plan

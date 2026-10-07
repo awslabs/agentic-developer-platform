@@ -38,7 +38,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Assume gateway checks identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@89a6a7e94631925f2f41c68041955587ded59f6e
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -68,7 +68,7 @@ jobs:
           --suite gateway --junit test-results/gateway.xml
           --inventory test-results/gateway-inventory.json
           --output test-results/gateway-result.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: gateway-live-results

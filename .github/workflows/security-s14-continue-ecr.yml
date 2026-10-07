@@ -69,7 +69,7 @@ jobs:
         run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage runtime --execute
       - name: Preserve runtime summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: s14-${{ github.run_id }}-runtime
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
@@ -79,7 +79,7 @@ jobs:
         run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage start-build --source-root "$GITHUB_WORKSPACE/source" --source-sha c6f20b35491541a99bc48e83b8e801296ffc645f --execute
       - name: Preserve build-start summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: s14-${{ github.run_id }}-build-start
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
@@ -101,7 +101,7 @@ jobs:
           exit 1
       - name: Preserve final summary
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: s14-${{ github.run_id }}-final
           path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
