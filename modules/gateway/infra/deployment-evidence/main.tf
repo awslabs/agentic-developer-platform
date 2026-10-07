@@ -7,6 +7,10 @@ variable "account_id" { type = string }
 variable "environment" { type = string }
 variable "writer_roles" { type = set(string) }
 variable "reader_role" { type = string }
+variable "additional_reader_roles" {
+  type    = set(string)
+  default = []
+}
 
 locals {
   bucket = "adp-${var.environment}-deployment-evidence-${var.account_id}"
@@ -78,6 +82,11 @@ resource "aws_iam_policy" "read" {
 }
 resource "aws_iam_role_policy_attachment" "read" {
   role       = var.reader_role
+  policy_arn = aws_iam_policy.read.arn
+}
+resource "aws_iam_role_policy_attachment" "additional_read" {
+  for_each   = var.additional_reader_roles
+  role       = each.value
   policy_arn = aws_iam_policy.read.arn
 }
 output "bucket_name" { value = aws_s3_bucket.evidence.id }
