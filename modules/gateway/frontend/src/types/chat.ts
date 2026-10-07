@@ -48,7 +48,11 @@ export interface WsResponseFrame extends WsFrameBase {
    * `content`). `progress` is a mid-run keep-alive; `completed` / `failed`
    * are terminal.
    */
-  status: 'progress' | 'completed' | 'failed' | 'notification';
+  status: 'progress' | 'completed' | 'failed' | 'notification' | 'cancelled' | 'interrupted';
+  terminal_delivery?: boolean;
+  delivery_id?: string;
+  retryable?: boolean;
+  accounting_status?: 'not_used' | 'settled' | 'unresolved';
   text?: string;
   result?: string;
   content?: string;
@@ -92,6 +96,9 @@ export interface ChatMessage {
   timestamp: number;
   /** Populated for assistant messages during long-running tasks. */
   taskId?: string;
+  terminalDeliveryId?: string;
+  terminalOutcome?: 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  retryable?: boolean;
   /** AG-UI messageId for correlating TEXT_MESSAGE events. */
   agUiMessageId?: string;
   /** Reason string when status === 'error'. */

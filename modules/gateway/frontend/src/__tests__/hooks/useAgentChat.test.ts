@@ -112,6 +112,31 @@ describe('useAgentChat', () => {
   // Connection lifecycle
   // -----------------------------------------------------------------------
 
+  it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)('renders protected %s once in the legacy hook', async status => {
+    const conversation = makeConversation('test-session', [{
+      id: 'pending', role: 'assistant', status: 'streaming', taskId: 'task-1', content: '', timestamp: 1,
+    }]);
+    const { result } = renderHook(() => useAgentChat({ conversation, onMessagesChange }));
+    await act(async () => { await Promise.resolve(); });
+    act(() => latestWs().simulateOpen());
+    const terminal = {
+      type: 'response', terminal_delivery: true, delivery_id: `chat-terminal-${'a'.repeat(64)}`,
+      session_id: 'test-session', task_id: 'task-1', status, content: `Owner-visible ${status}`,
+      retryable: status === 'interrupted', accounting_status: 'not_used',
+    };
+    act(() => {
+      latestWs().simulateMessage(terminal);
+      latestWs().simulateMessage(terminal);
+      latestWs().simulateMessage({ type: 'response', task_id: 'task-1', status: 'notification', content: 'late acknowledgement' });
+      latestWs().simulateMessage({ type: 'progress', task_id: 'task-1', status: 'progress' });
+    });
+    const messages = onMessagesChange.mock.calls.at(-1)![1] as ChatMessage[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ taskId: 'task-1', terminalOutcome: status, content: terminal.content });
+    expect(messages[0].status).toBe(['failed', 'interrupted'].includes(status) ? 'error' : 'complete');
+    expect(result.current.isAwaitingReply).toBe(false);
+  });
+
   it('does not open a socket when this deployment has no chat endpoint', async () => {
     vi.stubEnv('VITE_AGENT_WS_URL', '');
     const conv = makeConversation();

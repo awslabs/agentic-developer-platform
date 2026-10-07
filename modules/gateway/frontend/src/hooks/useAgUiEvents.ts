@@ -15,6 +15,7 @@ import { deploymentSetting } from '@/config/runtime';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
+import { apiClient } from '@/services/api';
 import type {
   AgentChatState,
   ChatMessage,
@@ -32,6 +33,7 @@ import {
   type ToolCallInfo,
 } from '@/types/ag-ui-events';
 import { applyPatches } from '@/utils/jsonPatch';
+import { terminalChatResponse } from './terminalChatResponse';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -102,6 +104,9 @@ export interface UseAgUiEventsReturn extends AgentChatState {
    * so an unrecognised value fails the send rather than silently downgrading.
    */
   sendMessage: (text: string, attachments?: string[], persona?: string) => void;
+  cancelTurn: () => Promise<void>;
+  canCancel: boolean;
+  cancelState: 'idle' | 'pending' | 'requested' | 'failed';
   /** Active tool calls for the current turn. */
   activeToolCalls: ToolCallInfo[];
   /** WebSocket ref exposed for upload-token/upload-complete actions. Stage C (#186). */
@@ -122,6 +127,10 @@ export function useAgUiEvents({
   const [sessionExpired, setSessionExpired] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | undefined>();
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [cancelState, setCancelState] = useState<UseAgUiEventsReturn['cancelState']>('idle');
+  const activeTaskRef = useRef<string | null>(null);
+  const cancelRequestRef = useRef<string | null>(null);
 
   // Refs to avoid stale closures inside WS callbacks.
   const wsRef = useRef<WebSocket | null>(null);
@@ -149,6 +158,7 @@ export function useAgUiEvents({
   // assistant bubbles. Bounded-size set so it doesn't grow unbounded during
   // a long session.
   const aguiCompletedTaskIdsRef = useRef<Set<string>>(new Set());
+  const streamSequencesRef = useRef<Map<string, number>>(new Map());
 
   // Keep refs in sync with conversation prop.
   useEffect(() => {
@@ -163,7 +173,42 @@ export function useAgUiEvents({
   // object so an unrelated message update does not re-enable a dead send box.
   useEffect(() => {
     setSessionExpired(false);
+    activeTaskRef.current = null;
+    cancelRequestRef.current = null;
+    setActiveTaskId(null);
+    setCancelState('idle');
   }, [conversation?.id]);
+
+  const trackActiveTask = useCallback((taskId?: string) => {
+    if (taskId && taskId !== activeTaskRef.current) {
+      activeTaskRef.current = taskId;
+      setActiveTaskId(taskId);
+      setCancelState('idle');
+      cancelRequestRef.current = null;
+    }
+  }, []);
+
+  const cancelTurn = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    const taskId = activeTaskRef.current;
+    if (!sessionId || !taskId || !isAwaitingReply || sessionExpired || cancelRequestRef.current || cancelState === 'requested') return;
+    const requestKey = `${sessionId}/${taskId}`;
+    cancelRequestRef.current = requestKey;
+    setCancelState('pending');
+    try {
+      const result = await apiClient.post<{ status: string; session_id: string; task_id: string }>('/v1/chat/turns/cancel', {
+        session_id: sessionId, task_id: taskId,
+      });
+      if (result.status !== 'cancellation_requested' || result.session_id !== sessionId || result.task_id !== taskId) {
+        throw new Error('Cancellation receipt mismatch');
+      }
+      if (sessionIdRef.current === sessionId && activeTaskRef.current === taskId) setCancelState('requested');
+    } catch {
+      if (sessionIdRef.current === sessionId && activeTaskRef.current === taskId) setCancelState('failed');
+    } finally {
+      if (cancelRequestRef.current === requestKey) cancelRequestRef.current = null;
+    }
+  }, [isAwaitingReply, sessionExpired, cancelState]);
 
   // ------------------------------------------------------------------
   // Message mutation helper
@@ -184,13 +229,14 @@ export function useAgUiEvents({
   // AG-UI event handlers
   // ------------------------------------------------------------------
 
-  const handleRunStarted = useCallback(() => {
+  const handleRunStarted = useCallback((event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_STARTED }) => {
+    trackActiveTask(event.runId);
     setIsAwaitingReply(true);
     // Reset tool calls for new run
     toolCallsRef.current.clear();
     endedBeforeStartRef.current.clear();
     setActiveToolCalls([]);
-  }, []);
+  }, [trackActiveTask]);
 
   const handleRunFinished = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_FINISHED }) => {
@@ -477,9 +523,22 @@ export function useAgUiEvents({
 
   const dispatchAgUiEvent = useCallback(
     (event: AgUiEvent) => {
+      if (event.stream_id !== undefined || event.stream_sequence !== undefined) {
+        const streamId = event.stream_id;
+        const sequence = event.stream_sequence;
+        if (
+          typeof streamId !== 'string' || !/^[a-f0-9]{64}$/.test(streamId) ||
+          typeof sequence !== 'number' || !Number.isSafeInteger(sequence) ||
+          sequence < 0 || sequence >= 16_384
+        ) return;
+        const sequences = streamSequencesRef.current;
+        if (sequence <= (sequences.get(streamId) ?? -1)) return;
+        sequences.set(streamId, sequence);
+        if (sequences.size > 128) sequences.delete(sequences.keys().next().value!);
+      }
       switch (event.event_type) {
         case AgUiEventType.RUN_STARTED:
-          handleRunStarted();
+          handleRunStarted(event);
           break;
         case AgUiEventType.RUN_FINISHED:
           handleRunFinished(event);
@@ -533,6 +592,7 @@ export function useAgUiEvents({
 
   const handleLegacyNotification = useCallback(
     (frame: WsFrame) => {
+      trackActiveTask(frame.task_id);
       updateMessages((msgs) => [
         ...msgs,
         {
@@ -544,7 +604,7 @@ export function useAgUiEvents({
         },
       ]);
     },
-    [updateMessages],
+    [updateMessages, trackActiveTask],
   );
 
   const handleLegacyProgress = useCallback(
@@ -578,6 +638,23 @@ export function useAgUiEvents({
 
   const handleLegacyResponse = useCallback(
     (frame: WsResponseFrame) => {
+      if (frame.terminal_delivery !== undefined) {
+        const messages = terminalChatResponse(frame, sessionIdRef.current, messagesRef.current, chunkBufferRef.current, activeTaskRef.current);
+        if (messages) {
+          updateMessages(() => messages);
+          if (!messages.some(message => message.role === 'assistant' && message.status === 'streaming') &&
+              (!activeTaskRef.current || activeTaskRef.current === frame.task_id)) {
+            setIsAwaitingReply(false);
+            toolCallsRef.current.clear();
+            endedBeforeStartRef.current.clear();
+            setActiveToolCalls([]);
+            activeTaskRef.current = null;
+            setActiveTaskId(null);
+            setCancelState('idle');
+          }
+        }
+        return;
+      }
       // Dedup guard: if this task_id already finished via AG-UI RUN_FINISHED,
       // the worker is sending a legacy terminal frame for backward-compat —
       // ignoring it here prevents the duplicate assistant bubble. We still
@@ -604,6 +681,7 @@ export function useAgUiEvents({
       // the acknowledgement. Do NOT clear isAwaitingReply — the typing
       // indicator should stay on until the final reply lands.
       if (frame.status === 'notification') {
+        trackActiveTask(frame.task_id);
         if (content) {
           updateMessages((msgs) => [
             ...msgs,
@@ -744,7 +822,7 @@ export function useAgUiEvents({
         });
       }
     },
-    [updateMessages],
+    [updateMessages, trackActiveTask],
   );
 
   // ------------------------------------------------------------------
@@ -833,6 +911,8 @@ export function useAgUiEvents({
           );
           return;
         }
+
+        if (messagesRef.current.some(message => message.taskId === frame.task_id && message.terminalDeliveryId)) return;
 
         // AG-UI event path
         if (frame.type === 'ag_ui') {
@@ -949,6 +1029,10 @@ export function useAgUiEvents({
 
       updateMessages((msgs) => [...msgs, userMsg]);
       setIsAwaitingReply(true);
+      activeTaskRef.current = null;
+      cancelRequestRef.current = null;
+      setActiveTaskId(null);
+      setCancelState('idle');
 
       // The ingest Lambda's webchat adapter reads `text`, not `message`
       // (gateway/lambdas/ingest/channels/webchat.py:125). Wrong field → silent drop.
@@ -981,6 +1065,9 @@ export function useAgUiEvents({
     sessionExpired,
     sessionMeta,
     sendMessage,
+    cancelTurn,
+    canCancel: isAwaitingReply && !sessionExpired && activeTaskId !== null && cancelState !== 'pending' && cancelState !== 'requested',
+    cancelState,
     activeToolCalls,
     wsRef,
   };

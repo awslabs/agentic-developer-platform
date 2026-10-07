@@ -10,6 +10,7 @@
  */
 
 import { deploymentSetting } from '@/config/runtime';
+import { terminalChatResponse } from './terminalChatResponse';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
@@ -168,6 +169,14 @@ export function useAgentChat({
 
   const handleResponse = useCallback(
     (frame: WsResponseFrame) => {
+      if (frame.terminal_delivery !== undefined) {
+        const messages = terminalChatResponse(frame, sessionIdRef.current, messagesRef.current, chunkBufferRef.current);
+        if (messages) {
+          updateMessages(() => messages);
+          if (!messages.some(message => message.role === 'assistant' && message.status === 'streaming')) setIsAwaitingReply(false);
+        }
+        return;
+      }
       const content = extractContent(frame);
 
       if (frame.status === 'failed') {
@@ -380,6 +389,7 @@ export function useAgentChat({
     ws.onmessage = (event) => {
       try {
         const frame: WsFrame = JSON.parse(event.data);
+        if (messagesRef.current.some(message => message.taskId === frame.task_id && message.terminalDeliveryId)) return;
         switch (frame.type) {
           case 'notification':
             handleNotification(frame);
