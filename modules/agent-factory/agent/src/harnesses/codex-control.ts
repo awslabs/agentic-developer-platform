@@ -262,8 +262,10 @@ export class CodexControlAdapter {
         res.end(JSON.stringify(output));
       });
     };
-    // Serialize boundary ownership: concurrent tool hooks may not steal a reader.
-    if (!this.boundary && this.gate.activeToolCount() === 0) {
+    // Steering adds context at an observed tool hook; it does not promise that
+    // other asynchronous tools have stopped. Pause still uses the gate above.
+    // Keep Stop quiescent and serialize ownership so hooks cannot steal a reader.
+    if (!this.boundary && (event !== "Stop" || this.gate.activeToolCount() === 0)) {
       this.boundary = reply;
       this.notify?.();
       await this.drainSteering();
