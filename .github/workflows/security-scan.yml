@@ -82,7 +82,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -136,7 +136,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -187,7 +187,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -250,7 +250,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -339,7 +339,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -478,7 +478,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -574,7 +574,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -638,7 +638,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -780,7 +780,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -856,7 +856,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -952,7 +952,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -1038,7 +1038,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: aws-e/adp/.github/actions/trusted-scan@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}

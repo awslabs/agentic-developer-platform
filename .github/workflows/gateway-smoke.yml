@@ -104,7 +104,7 @@ jobs:
           persist-credentials: false
 
       - name: Assume gateway checks identity
-        uses: aws-e/adp/.github/actions/trusted-checks@main
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
