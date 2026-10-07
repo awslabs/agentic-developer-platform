@@ -31,9 +31,12 @@ async def runtime(deployment):  # noqa: F811
     return await prepare_runtime(deployment)
 
 
-async def prepare_runtime(ctx):
+async def prepare_runtime(ctx, *, artifact_ref=None):
     ctx.entry = replace(ctx.entry, verification_adapter="gateway-health-verification")
-    ctx.runs.append(ctx.make_run())
+    run = ctx.make_run()
+    if artifact_ref is not None:
+        run = replace(run, artifact_id=None, artifact_ref=artifact_ref)
+    ctx.runs.append(run)
     await workflow_tick(ctx)
     await workflow_tick(ctx)
     assert (await state(ctx))[0].phase == "awaiting_runtime_verification"
@@ -114,6 +117,25 @@ async def test_verified_release_releases_lease_and_advances_only_to_evaluation(r
         final = next(a.detail["deployment_receipt"] for a in receipts if a.detail["deployment_receipt"]["delivery_complete"])
         assert final["source_revision"] == final["actual_revision"] == SOURCE
         assert final["components"][0]["tick_digest"] == DIGEST
+    assert ctx.dispatches == []
+
+
+@pytest.mark.parametrize("changed_version", [False, True])
+async def test_s3_receipt_version_is_rechecked_before_runtime_acceptance(deployment, changed_version):  # noqa: F811
+    reference = "s3://adp-dev-deployment-evidence-123456789012/deployment-evidence/v1/123/42/1/context/gateway-deploy.yml.json?versionId=original"
+    ctx = await prepare_runtime(deployment, artifact_ref=reference)
+    if changed_version:
+        ctx.runs[0] = replace(ctx.runs[0], artifact_ref=reference.replace("=original", "=changed"))
+        await tick(ctx)
+        execution = (await state(ctx))[0]
+        assert execution.phase == "awaiting_runtime_verification" and execution.status == "blocked"
+        async with ctx.factory() as db:
+            assert (await db.scalar(select(OrchestrationEnvironmentLease))).state == "held"
+            assert await db.scalar(select(OrchestrationAction).where(OrchestrationAction.kind == DEPLOYMENT_KIND)) is None
+        ctx.targets.resolve.assert_not_awaited()
+    else:
+        await finish(ctx)
+        assert (await state(ctx))[0].phase == "evaluation_pending"
     assert ctx.dispatches == []
 
 

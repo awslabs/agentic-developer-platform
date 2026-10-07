@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from .deployment_authority import load_delivery_merge
@@ -67,7 +67,11 @@ class WorkflowReceipt(BaseModel):
     run_attempt: int = Field(gt=0)
     conclusion: str = Field(min_length=1, max_length=64)
     run_url: str = Field(min_length=1, max_length=1024)
-    artifact_id: int = Field(gt=0)
+    artifact_id: int | None = Field(default=None, gt=0)
+    artifact_ref: str | None = Field(
+        default=None,
+        pattern=r"^s3://[a-z0-9-]+/deployment-evidence/v1/[0-9]+/[0-9]+/[0-9]+/context/(gateway-deploy|run-gateway-migrations)\.yml\.json\?versionId=[A-Za-z0-9%._~-]+$",
+    )
     artifact_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target: dict
     inputs: dict[str, str] = Field(max_length=20)
@@ -75,6 +79,12 @@ class WorkflowReceipt(BaseModel):
     lease_revision: int = Field(ge=1)
     lease_holder_action_id: str = Field(min_length=1, max_length=512)
     observed_at: datetime
+
+    @model_validator(mode="after")
+    def evidence_identity(self):
+        if (self.artifact_id is None) == (self.artifact_ref is None):
+            raise ValueError("exactly one GitHub artifact ID or S3 version reference is required")
+        return self
 
 
 def canonical(value):
@@ -595,6 +605,7 @@ class DeploymentWorkflows:
                         conclusion=run.conclusion or "unknown",
                         run_url=run.url,
                         artifact_id=run.artifact_id,
+                        artifact_ref=getattr(run, "artifact_ref", None),
                         artifact_digest=run.artifact_digest,
                         target=data["target"],
                         inputs=run.context.inputs,

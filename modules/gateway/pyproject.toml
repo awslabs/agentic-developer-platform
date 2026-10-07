@@ -152,7 +152,7 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "pricing_policy*"]
+include = ["src*", "pricing_policy*", "deployment_evidence*"]
 
 # Issue #4969: the rate snapshots are data, not code, so setuptools would omit
 # them from an installed/built distribution and `load_snapshot()` would raise
