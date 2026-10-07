@@ -3387,7 +3387,10 @@ def _start_sigv4_proxy(env: dict, tenant_id: str) -> subprocess.Popen | None:
         proc = subprocess.Popen(
             ["node", SIGV4_PROXY_SCRIPT],
             env=proxy_env,
-            stdout=subprocess.PIPE,
+            # No reader drains a private pipe after the health check. Inherit
+            # the worker log stream so long runs cannot fill that pipe and hide
+            # proxy errors or accumulate buffered output in the child.
+            stdout=None,
             stderr=subprocess.STDOUT,
         )
     except Exception as exc:
