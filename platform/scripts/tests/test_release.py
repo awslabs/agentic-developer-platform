@@ -402,7 +402,13 @@ class ReleaseContracts(unittest.TestCase):
                         continue
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
-                    self.assertEqual(job['runs-on'], 'arc-runner-org')
+                    if path.name == 'automation-trust-ci.yml' and name == 'public-workflow-contracts':
+                        self.assertEqual(job['runs-on'], 'ubuntu-latest')
+                        self.assertEqual(job['permissions'], {'contents': 'read'})
+                        self.assertNotIn('environment', job)
+                        self.assertNotIn('secrets.', yaml.safe_dump(job))
+                    else:
+                        self.assertEqual(job['runs-on'], 'arc-runner-org')
 
 
 if __name__ == '__main__':
