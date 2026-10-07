@@ -21,6 +21,26 @@ def workflow(name):
     return yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
 
 
+@pytest.mark.parametrize(
+    "name,job_name",
+    [
+        ("gateway-deploy.yml", "deploy-backend"),
+        ("gateway-deploy.yml", "deploy-frontend"),
+        ("run-gateway-migrations.yml", "migrate"),
+        ("gateway-frontend-deploy.yml", "publish"),
+    ],
+)
+def test_deployment_evidence_publishers_have_oidc_authority_and_no_github_artifact_dependency(name, job_name):
+    document = workflow(name)
+    assert document["env"]["ADP_DEPLOYMENT_EVIDENCE_STORE"] == "s3-oidc-v1"
+    job = document["jobs"][job_name]
+    assert job["permissions"]["id-token"] == "write"
+    assert not any(step.get("uses", "").startswith("actions/upload-artifact@") for step in job["steps"])
+    publishers = [step for step in job["steps"] if "publish-deployment-evidence.py" in step.get("run", "") and " release " in step["run"]]
+    assert len(publishers) == 1
+    assert publishers[0]["env"]["ADP_WORKFLOW_REVISION"] == "${{ github.workflow_sha }}"
+
+
 @pytest.mark.parametrize("name", ["gateway-deploy.yml", "run-gateway-migrations.yml"])
 def test_revision_guard_runs_before_checkout_and_rejects_moved_definition(name):
     document = workflow(name)
