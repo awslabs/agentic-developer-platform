@@ -48,6 +48,9 @@ export enum AgUiEventType {
 export interface AgUiBaseEvent {
   event_type: AgUiEventType;
   timestamp?: string;
+  stream_id?: string;
+  stream_sequence?: number;
+  event_cursor?: string;
 }
 
 export interface RunStartedEvent extends AgUiBaseEvent {

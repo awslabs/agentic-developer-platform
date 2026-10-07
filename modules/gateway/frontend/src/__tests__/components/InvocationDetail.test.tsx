@@ -91,7 +91,7 @@ describe('InvocationDetail', () => {
     const item = makeItem();
     renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
-    expect(screen.getByText('inv-001')).toBeInTheDocument();
+    expect(screen.getAllByText('inv-001').length).toBeGreaterThan(0);
     expect(screen.getByText('github')).toBeInTheDocument();
     expect(screen.getByText('(developer)')).toBeInTheDocument();
     expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
@@ -237,18 +237,14 @@ describe('InvocationDetail', () => {
       // Error row should not be present
       expect(labels).not.toContain('Error');
 
-      // Default order: Status → Invocation ID → ... → Duration should be after Channel
-      const statusIdx = labels.indexOf('Status');
-      const invocationIdIdx = labels.indexOf('Invocation ID');
-      const channelIdx = labels.indexOf('Channel');
-      const durationIdx = labels.indexOf('Duration');
-
-      expect(statusIdx).toBe(0);
-      expect(invocationIdIdx).toBe(statusIdx + 1);
-      expect(channelIdx).toBeLessThan(durationIdx);
+      // Summary prioritizes outcome; identifiers remain in the debugging panel.
+      expect(labels[0]).toBe('Status');
+      expect(labels).toContain('Duration');
+      expect(screen.getByText('Debugging context')).toBeInTheDocument();
+      expect(screen.getByText('Invocation ID')).toBeInTheDocument();
     });
 
-    it('shows identifiers after lineage for failed runs', () => {
+    it('retains lineage and identifiers in the debugging panel for failed runs', () => {
       const item = makeItem({
         status: 'failed',
         error_message: 'Something went wrong',
@@ -258,14 +254,10 @@ describe('InvocationDetail', () => {
       });
       renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
-      const dl = document.querySelector('dl')!;
-      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
-
-      const lineageIdx = labels.indexOf('Triggered by');
-      const invocationIdIdx = labels.indexOf('Invocation ID');
-
-      expect(lineageIdx).toBeGreaterThanOrEqual(0);
-      expect(invocationIdIdx).toBeGreaterThan(lineageIdx);
+      const debugging = screen.getByText('Debugging context').closest('details')!;
+      const labels = Array.from(debugging.querySelectorAll('dt')).map(dt => dt.textContent);
+      expect(labels).toContain('Triggered by');
+      expect(labels).toContain('Invocation ID');
     });
   });
 
@@ -465,33 +457,34 @@ describe('InvocationDetail', () => {
       const backBtn = screen.getByRole('button', { name: /back to detail/i });
       expect(backBtn).toBeInTheDocument();
 
-      // Detail content should be hidden (no detail rows visible)
-      expect(screen.queryByText('Invocation ID')).not.toBeInTheDocument();
+      // The transcript retains the run metadata and controls.
+      expect(screen.getByText('Invocation ID')).toBeInTheDocument();
+      expect(screen.getByText('Run summary')).toBeInTheDocument();
 
       // Click back
       await user.click(backBtn);
 
       // Detail content should be visible again
-      expect(screen.getByText('inv-001')).toBeInTheDocument();
+      expect(screen.getAllByText('inv-001').length).toBeGreaterThan(0);
       expect(screen.queryByRole('button', { name: /back to detail/i })).not.toBeInTheDocument();
     });
 
-    it('changes modal title to "Run Transcript" when transcript is shown', async () => {
+    it('keeps the workspace identity when transcript is shown', async () => {
       const user = userEvent.setup();
       mockGetMyTranscript.mockResolvedValueOnce('# Test transcript');
       const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
       renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
       // Initially shows "Invocation Detail"
-      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
+      expect(screen.getByText('Run workspace')).toBeInTheDocument();
 
       // Click transcript
       const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
       await user.click(transcriptBtn);
 
       // Title changes to "Run Transcript"
-      expect(screen.getByText('Run Transcript')).toBeInTheDocument();
-      expect(screen.queryByText('Invocation Detail')).not.toBeInTheDocument();
+      expect(screen.getByText('Run workspace')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Transcript & run record' })).toHaveAttribute('aria-pressed', 'true');
     });
   });
 

@@ -1,0 +1,31 @@
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      terminationGracePeriodSeconds: 960
+      containers:
+        - name: bedrockgateway
+          command: [uvicorn]
+          args: [src.app:create_app, --factory, --host, "0.0.0.0", --port, "8080", --workers, "2"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          env:
+            - name: BG_RDS_POOL_ENABLED
+              value: "true"
+            - name: BG_RDS_POOL_SIZE
+              value: "5"
+            - name: BG_RDS_POOL_MAX_OVERFLOW
+              value: "5"
+          lifecycle:
+            preStop:
+              exec:
+                command: [python, -S, -c, "import time; time.sleep(30)"]

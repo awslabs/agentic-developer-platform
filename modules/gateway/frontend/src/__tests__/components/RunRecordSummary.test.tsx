@@ -1,0 +1,73 @@
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { RunRecordSummary, RunClosureReport } from '@/components/RunRecordSummary';
+import { checklistContribution, parseRunRecord, type RunRecord } from '@/utils/runRecord';
+const at = '2026-10-05T05:00:00Z';
+const id = (n: number) => String(n).padStart(24, '0');
+const record: RunRecord = {
+  version: 1, invocation_id: 'run-42', persona: 'reviewer', model: 'codex', repository: 'acme/repo', issue: 42,
+  started_at: at, captured_at: at, session_ids: ['repair', 'inspect'], history_truncated: false, evidence: [], task_transitions: [],
+  first_checklist: { at, tasks: [
+    { id: id(1), text: 'Already done', status: 'completed' }, { id: id(2), text: 'Fix', status: 'pending' },
+    { id: id(3), text: 'Old wording', status: 'pending' },
+  ] },
+  latest_checklist: { at, tasks: [
+    { id: id(1), text: 'Already done', status: 'pending' }, { id: id(2), text: 'Fix', status: 'completed' },
+    { id: id(4), text: 'New wording', status: 'completed' }, { id: id(5), text: 'Verify', status: 'in_progress' },
+  ] },
+};
+const envelope = (r: unknown) => '<!-- adp-run-record:v1 ' + btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(r)))) + ' -->\n\n# Transcript';
+describe('retained run records', () => {
+  it('renders the closure as plain text with completed and remaining work', () => {
+    const withClosure = { ...record, closure_report: { summary: 'Workspace onboarding is ready for integration.',
+      completed: ['Browser checks passed.'], remaining: ['Live AWS demo is owned by the evaluator.'],
+      delivery: 'Pull request merged.', reporting_notes: ['PR checklist update failed; merge is unaffected.'] } };
+    const parsed = parseRunRecord(envelope(withClosure), 'run-42');
+    render(<RunClosureReport record={parsed} />);
+    expect(screen.getByRole('region', { name: 'Closure report' })).toHaveTextContent('Workspace onboarding is ready');
+    expect(screen.getByText('Browser checks passed.')).toBeInTheDocument();
+    expect(screen.getByText('Live AWS demo is owned by the evaluator.')).toBeInTheDocument();
+    expect(screen.getByText('Pull request merged.')).toBeInTheDocument();
+  });
+  it('ignores malformed closure data without hiding the saved checklist', () => {
+    const parsed = parseRunRecord(envelope({ ...record, closure_report: { summary: 'x', completed: 'all' } }), 'run-42');
+    expect(parsed).toEqual(record);
+    render(<RunClosureReport record={parsed} />);
+    expect(screen.getByText(/No closure report was saved/)).toBeInTheDocument();
+  });
+  it('decodes only bounded, supported records belonging to the requested invocation', () => {
+    expect(parseRunRecord(envelope(record), 'run-42')).toEqual(record);
+    expect(parseRunRecord(envelope(record), 'other')).toBeUndefined();
+    expect(parseRunRecord('Tool quoted this:\n' + envelope(record), 'run-42')).toBeUndefined();
+    expect(parseRunRecord(envelope({ ...record, version: 2 }), 'run-42')).toBeUndefined();
+    expect(parseRunRecord(envelope({ ...record, latest_checklist: { at, tasks: [{ id: id(1), text: 'Bad', status: 'done' }] } }), 'run-42')).toBeUndefined();
+    expect(parseRunRecord('<!-- adp-run-record:v1 !!!! -->', 'run-42')).toBeUndefined();
+  });
+  it('does not count renamed or reopened tasks as completed work', () => {
+    const progress = checklistContribution(record);
+    expect(progress.completedSinceFirst.map(t => t.text)).toEqual(['Fix']);
+    expect(progress.addedComplete.map(t => t.text)).toEqual(['New wording']);
+    expect(progress.removed.map(t => t.text)).toEqual(['Old wording']);
+    expect(progress.remaining.map(t => t.text)).toEqual(['Already done', 'Verify']);
+    render(<RunRecordSummary record={record} />);
+    expect(screen.getByText('1 checked after first observation')).toBeInTheDocument();
+    expect(screen.getByText('2 still open · 1 removed or renamed')).toBeInTheDocument();
+    expect(screen.getByText('Not captured; record may be incomplete')).toBeInTheDocument();
+  });
+  it('shows unavailable history for legacy runs without inventing completion counts', () => {
+    render(<RunRecordSummary />);
+    expect(screen.getByText(/Structured checklist history was not captured/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 of/)).not.toBeInTheDocument();
+  });
+});
+
+it('retains expandable hierarchy and blocked progress in a saved failed-run record', () => {
+  const tasks = [{ id: id(1), taskId: 'A-t1', kind: 'test', text: '`test` A-t1 — Verify recovery', status: 'blocked',
+    planStep: { id: 'recover', title: 'Keep conversations after disconnects', status: 'blocked' } }];
+  const parsed = parseRunRecord(envelope({ ...record, first_checklist: { at, tasks }, latest_checklist: { at, tasks } }), 'run-42');
+  expect(parsed).toBeDefined();
+  const { container } = render(<RunRecordSummary record={parsed} />);
+  expect(screen.getByText('0 of 1 steps completed')).toBeInTheDocument();
+  expect(screen.getByText('Keep conversations after disconnects')).toBeInTheDocument();
+  expect(container.querySelector('.plan-step details')).not.toHaveAttribute('open');
+});

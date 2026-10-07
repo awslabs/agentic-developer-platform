@@ -18,6 +18,11 @@ name: Gateway Smoke Test
 on:
   workflow_call:
     inputs:
+      require_token:
+        description: 'Fail if smoke credentials are unavailable; required by regression coordinators.'
+        required: false
+        type: boolean
+        default: false
       environment:
         description: 'Deployment environment (dev/staging/prod)'
         required: false
@@ -78,6 +83,10 @@ on:
 
 env:
   AWS_REGION: us-east-1
+
+concurrency:
+  group: cli-live-eval-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
   smoke:
@@ -154,6 +163,12 @@ jobs:
           echo "::add-mask::${REFRESH_TOKEN}"
           echo "refresh_token=${REFRESH_TOKEN}" >> "$GITHUB_OUTPUT"
           echo "token_available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Require smoke coverage for coordinated runs
+        if: ${{ inputs.require_token && steps.token.outputs.token_available != 'true' }}
+        run: |
+          echo "::error::Smoke coverage is required but no usable refresh token is configured."
+          exit 1
 
       - name: Resolve Cognito parameters from SSM
         if: steps.token.outputs.token_available == 'true'

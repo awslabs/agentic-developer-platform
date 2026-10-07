@@ -8,7 +8,7 @@ Quota and capacity remain separate: quota is measured, fleet capacity is unknown
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import boto3
@@ -61,7 +61,7 @@ class AwsEc2Validator:
         if not _quota_group(profile.instance_type):
             raise ValidationUnavailableError("unsupported EC2 quota family")
 
-    def validate(self, material, *, credential_type, user_id, label):
+    def validate(self, material, *, credential_type, user_id, label, expected_role_id=None, agent_id="vault-validator"):
         try:
             data = json.loads(material)
             if credential_type != "aws_role" or not isinstance(data, dict) or not data.get("role_arn"):
@@ -73,11 +73,17 @@ class AwsEc2Validator:
                 session_duration_seconds=900,
                 default_region=self.profile.region,
                 user_id=user_id,
-                agent_id="vault-validator",
+                agent_id=agent_id,
                 task_id="validate",
                 label=label,
                 aws_region=self.profile.region,
             )
+            if expected_role_id is not None:
+                from src.internal.domain_provider_session import verify_session
+
+                verify_session(credentials, data["role_arn"], datetime.now(UTC) + timedelta(seconds=900), issued_at=datetime.now(UTC))
+                if not credentials.assumed_role_id or credentials.assumed_role_id.split(":", 1)[0] != expected_role_id:
+                    raise ValidationUnavailableError("provider role identity changed")
             session = self.session_factory(
                 aws_access_key_id=credentials.access_key_id,
                 aws_secret_access_key=credentials.secret_access_key,

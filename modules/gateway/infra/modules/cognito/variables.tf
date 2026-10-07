@@ -16,23 +16,14 @@ variable "common_tags" {
 
 variable "mfa_configuration" {
   type        = string
-  description = "MFA configuration: ON (required) or OPTIONAL (user-elected). OFF is rejected."
-  # Issue #133: Changed default from OPTIONAL to ON for security
-  # MFA is required for a SaaS platform managing Bedrock access
-  #
-  # #5666 (A11): this default was DEAD CODE from #133 until now — the calling root
-  # module (infra/variables.tf :: cognito_mfa_configuration) passed its own
-  # "OPTIONAL" default over it, so hardening the inner default changed nothing
-  # about any deployed pool. Both layers now default to ON. Keeping the inner
-  # default hardened as well is not redundant: it is what makes a future caller
-  # that forgets to pass the variable fail safe.
-  default = "ON"
+  description = "Cognito MFA configuration: OFF (default), ON (required), or OPTIONAL (user-elected)."
+  # The GitHub auth broker cannot complete Cognito MFA challenges.
+  # Keep both module defaults OFF; enable MFA explicitly after validating sign-in flows.
+  default = "OFF"
+
   validation {
-    # OFF is rejected at BOTH layers deliberately. A validation only on the wrapper
-    # would leave this module permissive for any other caller, and the wrapper is
-    # exactly the layer that silently overrode this one before.
-    condition     = contains(["ON", "OPTIONAL"], var.mfa_configuration)
-    error_message = "MFA configuration must be ON or OPTIONAL. #5666 (A11): OFF is rejected — it disables MFA for every user of a pool gating paid model access."
+    condition     = contains(["OFF", "ON", "OPTIONAL"], var.mfa_configuration)
+    error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
   }
 }
 

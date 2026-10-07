@@ -1,3 +1,4 @@
+import { DEVELOPMENT_TIMEOUT_MS } from "./timeouts.js";
 import { reviewEvents, reviewSignal, reviewOperation, type ReviewObserver } from "./review-observer.js";
 import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex } from "@openai/codex-sdk";
@@ -118,7 +119,7 @@ async function codexVerdict(
   const turn = await runResumableTurn(thread, prompt, {
     outputSchema: reviewOutputSchema,
     signal: reviewSignal(AbortSignal.timeout(
-      Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
+      Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? DEVELOPMENT_TIMEOUT_MS),
     ), observer),
   }, undefined, verifyInstructions, reviewEvents(observer, true));
   return parseVerdict(turn.finalResponse);

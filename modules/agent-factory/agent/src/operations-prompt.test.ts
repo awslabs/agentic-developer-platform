@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { loadHumanCommunication } from './human-communication';
+import { loadCodingGuidelines } from './coding-guidelines';
 import { developerCheckpointGuidance } from './developer-checkpoints';
 import { developerRecoveryContext } from './developer-recovery';
 import { reviewCyclePrompt } from './review-cycle-input';
@@ -43,7 +44,7 @@ describe('hosted operations delivery instructions', () => {
   // gates the mediation section on it, so the assembly needs both states covered.
   function assemble(agentType: string, mediated = false): string {
     const rules = evaluate(`${declaration('loadRules').getText(worker)}; return loadRules();`, {
-      fs, path, CWD: cwd, AGENT_TYPE: agentType, loadHumanCommunication,
+      fs, path, CWD: cwd, AGENT_TYPE: agentType, loadHumanCommunication, loadCodingGuidelines,
     });
     const statements = declaration('runAgent').body!.statements;
     const promptStatement = statements.find(node => ts.isVariableStatement(node) &&
@@ -63,6 +64,7 @@ describe('hosted operations delivery instructions', () => {
     expect(fs.existsSync(path.join(cwd, '.adp-rules/core-workflow.md'))).toBe(false);
     const prompt = assemble('operations');
     expect(prompt).toContain('## Delivery orchestration');
+    expect(prompt.split(loadCodingGuidelines())).toHaveLength(2);
     expect(prompt).toContain('Waiting retains ownership.');
     expect(prompt).toContain('Before ending, reconcile every remaining obligation.');
     expect(prompt).toContain('reviewed and deployed revisions');

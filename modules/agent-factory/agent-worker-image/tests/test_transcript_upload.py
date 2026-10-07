@@ -227,3 +227,29 @@ class TestIndependentTranscript:
         from entrypoint import _read_run_reports
 
         assert _read_run_reports(str(tmp_path)) == ("", "")
+
+
+def test_recover_incremental_record_after_child_crash(tmp_path, monkeypatch):
+    import base64
+    import json
+    from entrypoint import _read_run_reports, _with_worker_exit_observation
+    monkeypatch.setenv("ADP_MESSAGE_ID", "run-42")
+    record = {"version": 1, "invocation_id": "run-42", "latest_checklist": {"tasks": []}}
+    (tmp_path / "adp-run-record.json").write_text(json.dumps(record))
+    github, transcript = _read_run_reports(str(tmp_path))
+    assert github == ""
+    assert transcript.startswith("<!-- adp-run-record:v1 ")
+    encoded = transcript.split(" ")[2]
+    assert json.loads(base64.b64decode(encoded)) == record
+    assert "may be incomplete" in transcript
+    assert "exit code: -9" in _with_worker_exit_observation(transcript, -9)
+    assert "final invocation status" in _with_worker_exit_observation(transcript, 0)
+
+
+@pytest.mark.parametrize("raw", ['{"version":1,"invocation_id":"other"}', '{broken', 'x' * (1024 * 1024 + 1)])
+def test_recovery_rejects_stale_malformed_or_oversized_records(tmp_path, monkeypatch, raw):
+    from entrypoint import _read_run_reports
+    monkeypatch.setenv("ADP_MESSAGE_ID", "run-42")
+    (tmp_path / "adp-run-record.json").write_text(raw)
+    (tmp_path / "adp-run-transcript.md").write_text("Original transcript")
+    assert _read_run_reports(str(tmp_path))[1] == "Original transcript"

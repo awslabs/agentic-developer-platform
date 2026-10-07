@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePlanning, planningReport, readyAssignments, storyMarker, planningIssueContext, planningCorrection } from './planning.js';
+import { parsePlanning, planningContract, planningReport, readyAssignments, storyMarker, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider, type PlanningTransport } from './planning-provider.js';
 const base = { summary: 'Plan', requirements: [{ id: 'one', text: 'Retain audit history', source_refs: ['instructions'] }], assumptions: [], open_questions: [], superseded_requirements: [] };
 const product = { ...base, acceptance_criteria: ['History remains after editing'] };
@@ -106,4 +106,27 @@ test('planning schema repair names the invalid optional field without inventing 
   catch (error) { failure = error; }
   assert.match(planningCorrection(failure), /artifact.draft.motivation/);
   assert.match(planningCorrection(failure), /Omit unknown optional string fields/);
+});
+
+test('direct reports accept long designs and documents while retaining citation and dependency validation', () => {
+  const artifact = { ...base, design: 'Detailed architecture. '.repeat(1800).trim(), stories: [], publish_stories: false };
+  const raw = JSON.stringify({ artifact, clarification: null });
+  assert.ok(Buffer.byteLength(raw) > 32768);
+  assert.deepEqual(parsePlanning(raw, 'architect', refs, undefined, true).artifact, artifact);
+  assert.throws(() => parsePlanning(raw, 'architect', refs));
+  assert.throws(() => parsePlanning(raw, 'architect', new Set(), undefined, true), /source/);
+  const story = { key: 'a', title: 'Audit', description: 'Store history', acceptance_criteria: ['Query history'], source_refs: ['instructions'], blocked_by: ['b'] };
+  const cyclic = JSON.stringify({ artifact: { ...artifact, stories: [story, { ...story, key: 'b', blocked_by: ['a'] }] }, clarification: null });
+  assert.throws(() => parsePlanning(cyclic, 'architect', refs, undefined, true), /Cyclic/);
+});
+
+test('direct contracts omit narrative ceilings for every planning persona', () => {
+  for (const persona of ['architect', 'product', 'pm', 'intent-refinement'] as const) {
+    const direct = planningContract(persona, true);
+    assert.doesNotMatch(direct.instruction, /24000/);
+    const schema = direct.schema as any;
+    assert.equal(schema.properties.artifact.properties.summary.maxLength, undefined);
+    assert.equal(schema.properties.artifact.properties.requirements.maxItems, undefined);
+    assert.match(planningContract(persona).instruction, /24000/);
+  }
 });

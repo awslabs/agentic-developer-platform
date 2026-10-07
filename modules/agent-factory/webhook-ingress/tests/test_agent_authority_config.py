@@ -250,7 +250,8 @@ def test_terraform_renders_protected_fields_only_when_enabled(tmp_path, enabled)
     block = source[start:end].replace(
         "data.aws_ssm_parameter.gateway_apigw_invoke_url.value", "local.test_gateway_url")
     (tmp_path / "main.tf").write_text(
-        'variable "agent_authority_enabled" { type = bool }\nlocals {\n'
+        'variable "agent_authority_enabled" { type = bool }\n'
+        'variable "task_api_worker_enabled" { default = false }\nlocals {\n'
         ' test_gateway_url = "https://fixture.example/dev"\n'
         ' agent_control_verification_keys = { test = "public-key" }\n' + block + '\n}\n')
     shutil.copy(INFRA / "protected-worker-pod.json", tmp_path)

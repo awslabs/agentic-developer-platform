@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.chat_authority import current_chat_member
+from src.agentauth.chat_capability import ChatAuthorizationRefusedError
+from src.agentauth.chat_event_journal import ChatEventJournal
+from src.agentauth.chat_session_cleanup import request_session_end
+from src.agentauth.chat_session_mailbox import ChatSessionMailbox
 from src.auth.dependencies import get_current_user
 from src.chat_logging.scrubber import RegexScrubber
 from src.features.routes import _is_enabled
@@ -53,6 +61,148 @@ def store():
     from src.orchestration.intake_wiring import _get_sessions_table
 
     return _get_sessions_table()
+
+
+def mode_store():
+    from src.orchestration.intake_wiring import _get_context_table
+
+    if os.environ.get("ADP_CHAT_DATA_ENABLED") != "true":
+        raise unavailable()
+    table = _get_context_table()
+    if table is None:
+        raise unavailable()
+    return ChatSessionMailbox(table)
+
+
+class SessionModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mode: Literal["ephemeral", "persistent"]
+
+
+async def owned_session(session_id: str, user: TokenContext, table, db: AsyncSession):
+    human(user)
+    require_store(table)
+    if not SESSION.fullmatch(session_id):
+        raise HTTPException(404, detail={"error": "session_not_found"})
+    row = await run_in_threadpool(lambda: table.get_item(Key={"session_id": session_id}, ConsistentRead=True).get("Item"))
+    if not owned(row, user) or row.get("session_id") != session_id or number(row.get("expires_at")) <= int(time.time()):
+        raise HTTPException(404, detail={"error": "session_not_found"})
+    if not await current_chat_member(db, user.org_id, user.user_id, user.team_id or ""):
+        raise HTTPException(404, detail={"error": "session_not_found"})
+    return row
+
+
+async def owned_mode(session_id: str, user: TokenContext, table, db: AsyncSession):
+    await owned_session(session_id, user, table, db)
+    return user.org_id, user.team_id or "", user.user_id
+
+
+@router.get("/sessions/{session_id}/events")
+@contract_errors
+async def replay_events(
+    session_id: str,
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+    mailbox: Annotated[ChatSessionMailbox, Depends(mode_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    cursor: Annotated[str | None, Query(pattern=r"^[a-f0-9]{32}:[0-9]{1,8}$", max_length=41)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+):
+    row = await owned_session(session_id, user, table, db)
+    generation = number(row.get("created_at"))
+    if not generation:
+        raise unavailable()
+    try:
+        result = await run_in_threadpool(
+            ChatEventJournal(mailbox.table).replay,
+            session_id=session_id,
+            owner=(user.org_id, user.team_id or "", user.user_id),
+            generation=generation,
+            cursor=cursor,
+            limit=limit,
+            now=int(time.time()),
+        )
+        confirmed = await owned_session(session_id, user, table, db)
+        if number(confirmed.get("created_at")) != generation:
+            raise ChatAuthorizationRefusedError("chat replay generation changed")
+        return result
+    except ChatAuthorizationRefusedError:
+        raise HTTPException(404, detail={"error": "session_not_found"}) from None
+
+
+def resolved_session_state(mailbox, *, session_id, owner, now):
+    header = mailbox._header(session_id, owner, now)
+    if header and header.get("sessionPendingMode") == "persistent" and header.get("sessionMode") == "ephemeral":
+        lease = header.get("chatLease", {})
+        from src.agentauth.chat_data_routes import runtime
+
+        authority, capabilities = runtime()
+        launch = capabilities.launches.load(lease.get("run_id", ""))
+        if (
+            launch.session_run_id is not None
+            or (launch.tenant_id, launch.team_id, launch.user_id, launch.session_id) != (*owner, session_id)
+            or (launch.sandbox_uid, launch.lease_generation) != (lease.get("sandbox_uid"), lease.get("generation"))
+        ):
+            raise ChatAuthorizationRefusedError("chat pending mode binding changed")
+        teardown = authority.store._read(f"CHAT-LAUNCH#{launch.run_id}", "TEARDOWN") or {}
+        terminal = authority.store._read(f"CHAT-DELIVERY#{launch.run_id}", "TERMINAL") or {}
+        if "removed_at" in teardown and "completion_receipt" in terminal:
+            mailbox.finish_pending_mode(session_id=session_id, owner=owner, lease=lease, now=now)
+    return mailbox.state(session_id=session_id, owner=owner, now=now)
+
+
+@router.get("/sessions/{session_id}/mode")
+@contract_errors
+async def show_mode(
+    session_id: str,
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+    mailbox: Annotated[ChatSessionMailbox, Depends(mode_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    identity = await owned_mode(session_id, user, table, db)
+    try:
+        return await run_in_threadpool(resolved_session_state, mailbox, session_id=session_id, owner=identity, now=int(time.time()))
+    except ChatAuthorizationRefusedError:
+        raise HTTPException(404, detail={"error": "session_not_found"}) from None
+
+
+@router.put("/sessions/{session_id}/mode")
+@contract_errors
+async def change_mode(
+    session_id: str,
+    body: SessionModeRequest,
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+    mailbox: Annotated[ChatSessionMailbox, Depends(mode_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    identity = await owned_mode(session_id, user, table, db)
+    try:
+        await run_in_threadpool(mailbox.select_mode, session_id=session_id, owner=identity, mode=body.mode, now=int(time.time()))
+        return await run_in_threadpool(resolved_session_state, mailbox, session_id=session_id, owner=identity, now=int(time.time()))
+    except ChatAuthorizationRefusedError as error:
+        if "must end" in str(error) or "mode change pending" in str(error):
+            raise HTTPException(409, detail={"error": "session_mode_pending"}) from None
+        raise HTTPException(404, detail={"error": "session_not_found"}) from None
+
+
+@router.post("/sessions/{session_id}/end")
+@contract_errors
+async def end_session(
+    session_id: str,
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+    mailbox: Annotated[ChatSessionMailbox, Depends(mode_store)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    identity = await owned_mode(session_id, user, table, db)
+    try:
+        await run_in_threadpool(request_session_end, mailbox.table, session_id=session_id, owner=identity, now=int(time.time()), reason="user")
+        return await run_in_threadpool(mailbox.state, session_id=session_id, owner=identity, now=int(time.time()))
+    except ChatAuthorizationRefusedError:
+        raise HTTPException(404, detail={"error": "session_not_found"}) from None
 
 
 def human(user: TokenContext):

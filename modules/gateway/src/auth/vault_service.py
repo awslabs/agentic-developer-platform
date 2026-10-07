@@ -27,7 +27,7 @@ import json
 import logging
 from datetime import UTC
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -142,7 +142,7 @@ async def list_credentials(
     if not conditions:
         return []
 
-    stmt = select(UserCredential).where(or_(*conditions))
+    stmt = select(UserCredential).where(or_(*conditions), ~func.lower(UserCredential.id).like("spda1:%"))
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
@@ -192,6 +192,10 @@ async def _get_owned_credential(
     Raises InsufficientPrivilegesError (→ 403) if the credential is org- or
     team-scoped and the caller is not an org admin (Issue #3989).
     """
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(cred_id):
+        raise CredentialNotFoundError("Credential not found")
     # Tenant-scoped fetch first
     stmt = select(UserCredential).where(
         UserCredential.id == cred_id,

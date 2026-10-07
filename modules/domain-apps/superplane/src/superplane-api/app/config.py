@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
     # by this driver). Empty preserves the existing database-owned search_path.
     superplane_db_schema: str = ""
+    # Shared Harness credentials never inherit the domain ORM connection.
+    superplane_operation_database_url: str = ""
+    superplane_operation_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
     # Deployment-owned tenant/target policy; never accepted from HTTP input.
@@ -34,7 +37,10 @@ class Settings(BaseSettings):
     # Omission preserves existing operation hosts; staged installs set false.
     superplane_operation_dispatch_enabled: bool = True
     # Deployment selection, never supplied by an admission request.
-    superplane_paid_worker_mode: Literal["legacy", "native-controller"] = "legacy"
+    superplane_paid_worker_mode: Literal[
+        "legacy", "native-controller", "native-lifecycle"
+    ] = "legacy"
+    superplane_paid_worker_binding_file: str = ""
 
     @field_validator("superplane_operation_dispatch_enabled", mode="before")
     @classmethod
@@ -161,27 +167,9 @@ class Settings(BaseSettings):
     # long-lived personal access token for a repository this project does not own,
     # and no runtime path reads them any more.
 
-    # ADP vault access for credential evidence and operation-bound delivery
-    # (issue #5528, w6-05).
-    #
-    # Both empty by default, and that default is fail-closed rather than
-    # permissive: with no URL or key configured, `build_vault_client()` returns
-    # None, no evidence reader is installed, and the provider-connection routes
-    # answer 503 "ADP vault evidence is unavailable". That is the honest answer
-    # for a deployment that was never given vault credentials — as opposed to a
-    # 403, which would report a configuration gap as an authorization decision
-    # and send an operator to check permissions that are fine.
-    #
-    # There is deliberately no default URL. A default pointing at some in-cluster
-    # hostname would make a misconfigured deployment silently talk to whatever
-    # answers there, and the thing on the other end of this connection is asked
-    # to hand over credential values.
-    #
-    # `adp_gateway_internal_api_key` is the Gateway's internal shared secret. It
-    # comes from the deployment's secret store via the environment, is sent only
-    # as a request header (never in a URL, which reaches access logs where
-    # headers do not), and is never logged. Nothing in this file holds a real
-    # value.
+    # Evidence uses only the selected API producer's renewable IRSA credentials.
+    # Retain the obsolete key setting solely to reject a mixed configuration.
+    adp_gateway_evidence_auth: str = ""
     adp_gateway_internal_url: str = ""
     adp_gateway_internal_api_key: str = ""
 

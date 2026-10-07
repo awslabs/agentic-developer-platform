@@ -3,6 +3,12 @@ variable "environment" {
   description = "Environment name (dev, test, prod)"
 }
 
+variable "manage_registry_scanning" {
+  description = "Own registry-wide BASIC scanning. Disable when organization/Inspector or another state owns scanning."
+  type        = bool
+  default     = true
+}
+
 variable "name_prefix" {
   type        = string
   description = "Name prefix used by the registry scanning rule filter"

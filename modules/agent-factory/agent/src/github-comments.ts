@@ -10,6 +10,7 @@
 
 import { validateBaseUrl } from './lib/url-guard';
 import { truncateUtf8 } from './reporting-text';
+import { containsSecret } from './experience-save-hook';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,9 @@ export class LiveStatusComment {
   private runStartTime: number;
   private latestMessage = '';
   private latestExplanation = '';
+  private implementationPlan = '';
+  private taskChecklist = '';
+  private taskPlanProgress = '';
   private explanationAt = '';
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
@@ -126,6 +130,16 @@ export class LiveStatusComment {
     // SSRF guard: validateBaseUrl returns the normalized origin, breaking
     // semgrep's taint path from options.apiBaseUrl → fetch() (#3582, #3713)
     this.options.apiBaseUrl = validateBaseUrl(this.options.apiBaseUrl);
+    if (this.options.apiBaseUrl !== 'https://api.github.com') {
+      throw new Error('Live status comments require the GitHub API origin');
+    }
+    if (!/^[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(this.options.owner) ||
+        this.options.owner.length > 39 ||
+        !/^[a-z\d_.-]+$/i.test(this.options.repo) ||
+        this.options.repo === '.' || this.options.repo === '..' ||
+        !Number.isSafeInteger(this.options.issueNumber) || this.options.issueNumber < 1) {
+      throw new Error('Live status comments require a valid GitHub repository and issue');
+    }
     this.runStartTime = Date.now();
     this.heartbeat = setInterval(() => {
       if (this.commentId) this.scheduleUpdate();
@@ -184,6 +198,45 @@ export class LiveStatusComment {
     this.scheduleUpdate();
   }
 
+  /** A task list is a progress snapshot, separate from the rolling tool log. */
+  setTaskChecklist(text: string): void {
+    if (this.finished || !text.trim()) return;
+    if (containsSecret(text) || Object.entries(process.env).some(([key, value]) =>
+      /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|API_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
+      text = '[Checklist omitted because it contains credential-like content.]';
+    }
+    const states: Record<string, string> = { '☑': 'Completed', '☐': 'Not started', '▶': 'In progress', '⛔': 'Blocked' };
+    this.taskPlanProgress = truncateUtf8([...text.matchAll(/^\*\*([☑☐▶⛔]) Plan `[^`]+` — (.+)\*\*$/gm)]
+      .map(parent => `- **${parent[2]}** — ${states[parent[1]]}`).join('\n'), 8 * 1024, '\n_Plan progress shortened for display._');
+    const checklist = truncateUtf8(text.trim(), 8 * 1024, '\n[Checklist shortened for display.]');
+    if (checklist === this.taskChecklist) return;
+    this.taskChecklist = checklist;
+    this.scheduleUpdate();
+  }
+
+  private checklistLines(): string[] {
+    if (!this.taskChecklist) return [];
+    // Keep the outcome steps readable in GitHub; detailed task IDs and evidence
+    // remain available without dominating every progress or closure update.
+    if (!this.taskPlanProgress.length) return ['', '<details><summary>Detailed task checklist</summary>', '', '### Task checklist', '', this.taskChecklist, '', '</details>'];
+    return ['', '### Implementation progress', '', this.taskPlanProgress,
+      '', '<details><summary>Detailed tasks and evidence</summary>', '', '### Task checklist', '', this.taskChecklist, '', '</details>'];
+  }
+
+  /** Retain the first explicit implementation plan while progress changes. */
+  setImplementationPlan(text: string): void {
+    if (this.finished || this.implementationPlan || !text.trim()) return;
+    this.implementationPlan = truncateUtf8(text.trim(), 8 * 1024, '\n\n_Plan shortened for this display._');
+    this.scheduleUpdate();
+  }
+
+  private planLines(collapsed = false): string[] {
+    if (!this.implementationPlan) return [];
+    return collapsed
+      ? ['', '<details><summary>Original implementation plan</summary>', '', this.implementationPlan, '', '</details>']
+      : ['', '### Implementation plan', '', this.implementationPlan];
+  }
+
   /** Keep the latest authored explanation visible, separate from tool/heartbeat activity. */
   setExplanation(text: string): void {
     if (this.finished || !text.trim()) return;
@@ -234,6 +287,7 @@ export class LiveStatusComment {
       '',
       summary.details || 'No outcome report was provided. Task completion has not been verified.',
     ];
+    lines.push(...this.checklistLines(), ...this.planLines(true));
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
     }
@@ -268,6 +322,7 @@ export class LiveStatusComment {
     await this.updateComment([
       '## Agent stopping', '',
       'An operator requested an abort. Finalization is in progress; the final run status will confirm the outcome.',
+      ...this.checklistLines(),
       ...this.explanationLines(),
     ].join('\n'));
   }
@@ -299,7 +354,7 @@ export class LiveStatusComment {
         lines.push(`- ${step}`);
       }
     }
-    lines.push(...this.explanationLines());
+    lines.push(...this.explanationLines(), ...this.checklistLines(), ...this.planLines(true));
     // Include stage summary showing where it failed
     lines.push('', '### Stages');
     for (const stage of this.stages) {
@@ -327,7 +382,7 @@ export class LiveStatusComment {
   // ─── Private ─────────────────────────────────────────────────────────────
 
   private explanationLines(): string[] {
-    return this.latestExplanation
+    return this.latestExplanation && this.latestExplanation !== this.implementationPlan
       ? ['', '### Agent explanation', '', `_Reported ${this.explanationAt}_`, '', this.latestExplanation]
       : [];
   }
@@ -337,7 +392,9 @@ export class LiveStatusComment {
     const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
       `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
+      ...this.planLines(),
       ...this.explanationLines(),
+      ...this.checklistLines(),
       '',
       '### Progress',
     ];

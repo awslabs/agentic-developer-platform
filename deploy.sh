@@ -19,6 +19,7 @@ set -euo pipefail
 #   --aws-profile PROFILE  AWS named profile (overrides inherited credentials)
 #   --confirm-destructive  Authorize destructive plans (requires --update)
 #   --allow-known-claude-gap  Accept only the reviewed Claude pricing source gap
+#   --migrate-workers FILE  Migrate workers using reviewed live qualification evidence
 #   --resume               Resume this checkout’s interrupted deployment
 #   --from PHASE           Rerun a named phase and all later phases
 #   --update               Upgrade an existing deployment (no fresh setup)
@@ -39,6 +40,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
 PLATFORM_SCRIPTS="$ROOT_DIR/platform/scripts"
+source "$PLATFORM_SCRIPTS/deploy-prerequisites.sh"
 
 DEPLOY_START=$(date +%s)
 echo "============================================================================="
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       shift 2 ;;
     --confirm-destructive) CONFIRM_DESTRUCTIVE=true; EXTRA_ARGS+=("$1"); shift ;;
     --allow-known-claude-gap) EXTRA_ARGS+=("$1"); shift ;;
+    --migrate-workers)
+      [ "$#" -ge 2 ] && [[ "$2" != -* ]] || { echo "--migrate-workers requires an evidence file" >&2; exit 2; }
+      ADP_WORKER_MIGRATION_EVIDENCE="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=True))' "$2")" || exit 2
+      export ADP_WORKER_MIGRATION_EVIDENCE; shift 2 ;;
     --resume) RESUME=true; EXTRA_ARGS+=("$1"); shift ;;
     --from)
       [ "$#" -ge 2 ] && [[ "$2" != -* ]] || { echo "--from requires a phase" >&2; exit 2; }
@@ -89,6 +95,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ -n "${ADP_WORKER_MIGRATION_EVIDENCE:-}" ] && { [ "$UPDATE_MODE" = false ] || [ "$SKIP_AGENTS" = true ]; }; then
+  echo "--migrate-workers requires a full --update" >&2; exit 2
+fi
 if [ "$CONFIRM_DESTRUCTIVE" = true ] && [ "$UPDATE_MODE" = false ]; then
   echo "--confirm-destructive requires --update" >&2; exit 2
 fi

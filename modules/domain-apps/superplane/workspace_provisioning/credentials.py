@@ -24,6 +24,14 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
 
     def refresh():
         verify()
+        deadline_reader = getattr(source, "_superplane_authority_deadline", None)
+        if deadline_reader is not None:
+            from datetime import UTC, datetime, timedelta
+
+            if datetime.now(UTC) + timedelta(seconds=900) >= deadline_reader():
+                raise LifecycleRefused(
+                    "remaining provider authority is shorter than the STS minimum"
+                )
         arguments = {
             "RoleArn": role_arn,
             "RoleSessionName": "superplane-lifecycle",
@@ -35,6 +43,13 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
             arguments["Policy"] = policy
         credentials = sts.assume_role(**arguments)["Credentials"]
         verify()
+        if (
+            deadline_reader is not None
+            and credentials["Expiration"] > deadline_reader()
+        ):
+            raise LifecycleRefused(
+                "actor credentials exceed current provider authority"
+            )
         return {
             "access_key": credentials["AccessKeyId"],
             "secret_key": credentials["SecretAccessKey"],
@@ -61,11 +76,19 @@ def assume_session(source, *, role_arn, region, verify, external_id=None, policy
         config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 0}),
     ).get_caller_identity()
     verify()
+    deadline_reader = getattr(source, "_superplane_authority_deadline", None)
+    if (
+        deadline_reader is not None
+        and selected._credentials._expiry_time > deadline_reader()
+    ):
+        raise LifecycleRefused("actor credentials exceed current provider authority")
     if identity["Account"] != parts[4]:
         raise LifecycleRefused("assumed role provider account differs")
     session._superplane_source_session = source
     session._superplane_role_arn = role_arn
     session._superplane_external_id = external_id
+    if getattr(source, "_superplane_authority_deadline", None) is not None:
+        session._superplane_authority_deadline = source._superplane_authority_deadline
     return session
 
 

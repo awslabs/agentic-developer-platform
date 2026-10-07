@@ -13,6 +13,11 @@ code validation remain separate from deployment and live workload acceptance.
 For operational detail, use the [installation contract](installation/README.md),
 [execution contract](executor/README.md) and [onboarding/workload UI](ui/README.md).
 
+All Superplane-specific infrastructure definitions, environment inputs and
+provisioning logic belong to this app. See the [infrastructure ownership
+contract](infra/README.md#infrastructure-ownership) for Terraform ownership,
+shared ADP dependencies and source/state migration requirements.
+
 The governed executor currently supports AWS native EKS capacity only. Restoring
 the original AWS + neocloud GPUs in one EKS cluster requires the
 [hybrid capacity extensions](executor/HYBRID-CAPACITY.md). The

@@ -5,9 +5,8 @@ public version-table implementation hook (Alembic1.14+) without renaming history
 Only the domain Alembic environment imports this dialect implementation.
 """
 
-from sqlalchemy import String
-
 from alembic.ddl.postgresql import PostgresqlImpl
+from sqlalchemy import String
 
 
 class SuperplanePostgresqlImpl(PostgresqlImpl):

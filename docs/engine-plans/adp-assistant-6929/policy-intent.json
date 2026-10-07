@@ -1,0 +1,40 @@
+{
+  "status": "proposed_not_authorized_not_engine_schema",
+  "repository": "aws-e/adp",
+  "org_id": null,
+  "allowed_code_actions": [
+    "develop",
+    "review",
+    "repair",
+    "merge"
+  ],
+  "autonomous_deployment": false,
+  "automatic_live_dispatch": false,
+  "automatic_evaluation_correction": false,
+  "evaluation_acceptance": {
+    "adp-assistant-6929/epic-6929/delivery/repository-evidence": "machine_binding_required",
+    "adp-assistant-6929/epic-6929/qualification/assistant-qualification": "human"
+  },
+  "developer": "agent-codex-developer",
+  "reviewer": "agent-codex-reviewer",
+  "limits": {
+    "proposed_max_attempts_per_node": 3,
+    "proposed_max_concurrent_actions": 1,
+    "max_spend_usd": 1000,
+    "max_wall_clock_seconds": null,
+    "expires_at": null
+  },
+  "unresolved_bindings": [
+    "authenticated organization and repository admission",
+    "budget and execution duration with explicit expiry at acceptance",
+    "compatible deployed personas and current model policy",
+    "repository check names, trusted app IDs, harness digest and evidence specification",
+    "target connection/account/region, deployed revision and resource/spending authority for separate live run",
+    "assistant suite registration/fixtures and actual supported workflow inputs"
+  ],
+  "no_inheritance": "Do not reuse the earlier flow budget, authority window or target approval.",
+  "activation_rule": "Do not register or accept proposal.authored.json alone. Render an explicit supported execution policy and code-evaluation specification, then preview the complete graph. No absent-policy legacy execution.",
+  "merge_boundary": "Code-only engine policy does not suppress push-triggered deployment. Audit/guard touched workflows or obtain explicit target-scoped rollout authority before affected merges. Initial design and plan approval does not grant that authority.",
+  "live_rule": "Readiness gate records authorization and evidence; a gate does not itself deploy, dispatch a workflow or widen policy. An authorized operator invokes the existing workflow. Human evaluation accepts evidence through supported UI/API.",
+  "budget_note": "Owner requested $1000; saved in inert draft version 2. This does not accept the plan or start execution."
+}

@@ -1,0 +1,4 @@
+function handle(req, res) {
+  fetch(req.query.url);
+  setTimeout(req.query.source, 10);
+}

@@ -11,6 +11,8 @@
  * 7. Learning extraction from various output formats
  */
 
+import { knowledgeBridgeUrl } from './lib/knowledgeBridge';
+
 import {
   extractLearnings,
   containsSecret,
@@ -319,15 +321,15 @@ describe('saveExperienceLearnings', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
-    it('sends correct HTTP request with identity headers', async () => {
+    it('sends the request through the run-bound bridge without caller identity headers', async () => {
       await saveExperienceLearnings(baseConfig);
 
       const [url, opts] = mockFetch.mock.calls[0];
-      expect(url).toBe('http://context-server:9090/call');
+      expect(url).toBe(`${knowledgeBridgeUrl()}/call`);
       expect(opts.method).toBe('POST');
       expect(opts.headers['Content-Type']).toBe('application/json');
-      expect(opts.headers['X-Owner-Sub']).toBe('44086498-2091-70e1-bd3a-12c6104c3ebb');
-      expect(opts.headers['X-Tenant-Id']).toBe('org-acme-123');
+      expect(opts.headers['X-Owner-Sub']).toBeUndefined();
+      expect(opts.headers['X-Tenant-Id']).toBeUndefined();
     });
 
     it('sends correct body payload', async () => {
@@ -378,7 +380,7 @@ describe('saveExperienceLearnings', () => {
       );
     });
 
-    it('uses headers from config, not from agent output', async () => {
+    it('does not forward identity headers from config or agent output', async () => {
       // Even if the agent output mentions different headers, we use trusted ones
       const config = {
         ...baseConfig,
@@ -387,10 +389,10 @@ describe('saveExperienceLearnings', () => {
       };
       await saveExperienceLearnings(config);
 
-      // The fetch call should use our trusted headers, not whatever the agent wrote
+      // The bridge supplies run identity; caller and model headers never cross this boundary.
       const opts = mockFetch.mock.calls[0][1];
-      expect(opts.headers['X-Owner-Sub']).toBe('44086498-2091-70e1-bd3a-12c6104c3ebb');
-      expect(opts.headers['X-Tenant-Id']).toBe('org-acme-123');
+      expect(opts.headers['X-Owner-Sub']).toBeUndefined();
+      expect(opts.headers['X-Tenant-Id']).toBeUndefined();
     });
   });
 
@@ -566,19 +568,18 @@ describe('saveExperienceLearnings', () => {
       );
     });
 
-    it('returns early when CONTEXT_MCP_SERVER_URL is not set', async () => {
+    it('uses the run-bound bridge when legacy CONTEXT_MCP_SERVER_URL is absent', async () => {
       delete process.env.CONTEXT_MCP_SERVER_URL;
       const logFn = jest.fn();
       const config = { ...baseConfig, log: logFn };
 
       const result = await saveExperienceLearnings(config);
 
-      expect(result.saved).toBe(0);
-      expect(mockFetch).not.toHaveBeenCalled();
-      expect(logFn).toHaveBeenCalledWith(
-        'WARN',
-        '[experience-save] CONTEXT_MCP_SERVER_URL not set — skipping save',
-      );
+      expect(result.saved).toBe(2);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0][0]).toBe(`${knowledgeBridgeUrl()}/call`);
+      expect(mockFetch.mock.calls[0][1].headers['X-Owner-Sub']).toBeUndefined();
+      expect(mockFetch.mock.calls[0][1].headers['X-Tenant-Id']).toBeUndefined();
     });
 
     it('handles empty agent output gracefully', async () => {

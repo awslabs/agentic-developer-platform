@@ -20,6 +20,7 @@ name: HITL Ticket Contract Tests
 # workflow is here to prevent.
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'contracts/hitl-ticket/**'
@@ -48,7 +49,7 @@ on:
       - main
 
 concurrency:
-  group: hitl-ticket-contract-tests-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-hitl-ticket-contract-tests-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

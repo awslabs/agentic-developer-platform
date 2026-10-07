@@ -1,6 +1,7 @@
 name: Agent Gateway Build Tests
 
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:

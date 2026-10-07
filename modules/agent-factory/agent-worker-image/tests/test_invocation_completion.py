@@ -239,7 +239,7 @@ def worker(delivery, monkeypatch, tmp_path):
     def run(command, **kwargs):
         if command[0] == "node":
             executions.append(envelope["message_id"])
-            return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
+            return MagicMock(returncode=exit_codes[-1], stdout=json.dumps({"status": "merged", "merged": True}), stderr="")
         return MagicMock(
             returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
@@ -483,10 +483,13 @@ def test_stale_pr_review_releases_queue_before_current_review(
     expected, current = "a" * sha_length, "b" * sha_length
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    from lib import review_cycle_input
+    history = MagicMock()
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
     attempts = 0
 
     def verify_obsolete_receipt(*_args):
@@ -521,6 +524,7 @@ def test_stale_pr_review_releases_queue_before_current_review(
     seed(client, envelope)
     assert entrypoint.main() == 0
     assert executions == ["current-review"]
+    history.assert_called_once_with({"baseRefOid": "c" * 40}, run=entrypoint.run_cmd, cwd=entrypoint.WORK_DIR)
     assert row(client, envelope)["status"] == {"S": "complete"}
 
 
@@ -531,7 +535,7 @@ def test_unverifiable_pr_head_does_not_acknowledge(worker, monkeypatch, expected
     client, envelope, executions, _, ack, _ = worker
     envelope["persona"] = "agent-codex-reviewer"
     envelope["source_ref"].update(pr=42, sha=expected)
-    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "c" * 40}}}
     seed(client, envelope)
     monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
@@ -677,6 +681,63 @@ def test_codex_review_archives_progress_before_terminal_status(worker, monkeypat
     archive = MagicMock(return_value="runs/reviewer/transcript.md")
     monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", archive)
     assert entrypoint.main() == 0
-    assert archive.call_args.args[0] == "Live reviewer activity"
+    assert archive.call_args.args[0].startswith("Live reviewer activity")
+    assert "Child process exit code: 0" in archive.call_args.args[0]
     entrypoint._record_session_id.assert_called_once()
     assert row(client, envelope)["transcript_key"] == {"S": "runs/reviewer/transcript.md"}
+
+
+@pytest.mark.parametrize("outcome", ["merged", "blocked", "evidence_error"])
+def test_engine_reviewer_terminal_status_requires_delivery(worker, monkeypatch, outcome):
+    from lib import codex_review_delivery, review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["intent"]["trigger"] = "engine_review_cycle"
+    envelope["review_cycle_input"] = {
+        "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 42,
+        "head_sha": "a" * 40, "accepted_scope": "story-revision", "operation_key": "review:1",
+        "findings": [], "reviewer_owned_delivery": True,
+    }
+    seed(client, envelope)
+    monkeypatch.setattr(review_cycle_input, "checkout_cycle_input", lambda *a, **kw: ("story", "a" * 40))
+    finish = MagicMock(return_value="Evidence recorded")
+    if outcome == "evidence_error":
+        finish.side_effect = RuntimeError("invalid repair lineage")
+    monkeypatch.setattr(codex_review_delivery, "finish_engine_review", finish)
+    if outcome == "blocked":
+        run = entrypoint.subprocess.run
+        def blocked(command, **kwargs):
+            result = run(command, **kwargs)
+            if command[0] == "node":
+                result.stdout = json.dumps({"status": "engine_reviewed", "merged": False,
+                                           "delivery_blocked": "Required design contract missing"})
+            return result
+        monkeypatch.setattr(entrypoint.subprocess, "run", blocked)
+    assert entrypoint.main() == (0 if outcome == "merged" else 1)
+    assert row(client, envelope)["status"] == {"S": "complete" if outcome == "merged" else "failed"}
+    if outcome == "blocked":
+        assert "Required design contract missing" in row(client, envelope)["error_message"]["S"]
+    assert len(executions) == 1
+    ack.assert_called_once()
+
+
+def test_pr_review_history_failure_stops_before_model_execution(worker, monkeypatch):
+    from lib import review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha="a" * 40)
+    envelope["payload"] = {"pull_request": {
+        "number": 42, "head": {"ref": "agent/issue-42"}, "base": {"sha": "b" * 40},
+    }}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="a" * 40)))
+    history = MagicMock(side_effect=RuntimeError("history fetch unavailable"))
+    monkeypatch.setattr(review_cycle_input, "prepare_review_history", history)
+    with pytest.raises(RuntimeError, match="history fetch unavailable"):
+        entrypoint.main()
+    history.assert_called_once()
+    assert executions == []
+    ack.assert_not_called()

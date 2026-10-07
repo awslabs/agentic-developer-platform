@@ -69,6 +69,8 @@ locals {
       actions = ["s3:PutObject", "s3:GetObject"]
       resources = [
         "arn:aws:s3:::adp-terraform-state-${var.account_id}/codebuild/src/${local.resource_prefix}-gateway-build-pr/*",
+        # CI-only evidence: private, conditional writes and bounded retention.
+        "arn:aws:s3:::${local.resource_prefix}-ci-evidence-${var.account_id}/artifacts/*",
       ]
     }
     Identity = {

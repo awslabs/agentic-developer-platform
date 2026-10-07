@@ -694,3 +694,19 @@ describe('independent explanation archive', () => {
     expect(writes.get(githubPath)).toContain('An explanation whose ending must survive.');
   });
 });
+
+it('archives Claude TodoWrite progress without a GitHub check run', () => {
+  const streamer = new CheckRunStreamer(makeConfig({ checkRunId: 0, persona: 'reviewer' }));
+  streamer.onTurn({ turn: 1, content: [{ type: 'tool_use', name: 'TodoWrite', input: { todos: [
+    { content: 'Review security', status: 'in_progress' }, { content: 'Deliver', status: 'pending' },
+  ] } }] });
+  streamer.onTurn({ turn: 2, content: [{ type: 'tool_use', name: 'TodoWrite', input: { todos: [
+    { content: 'Review security', status: 'completed' }, { content: 'Deliver', status: 'pending' },
+  ] } }] });
+  streamer.runRecord.session('claude-session');
+  streamer.destroy();
+  expect(streamer.runRecord.record.first_checklist?.tasks[0].status).toBe('in_progress');
+  expect(streamer.runRecord.record.latest_checklist?.tasks[0].status).toBe('completed');
+  expect(streamer.buildTranscript()).toContain('claude-session');
+  expect(streamer.buildTranscript()).toContain('- [ ] Deliver');
+});

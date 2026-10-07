@@ -110,6 +110,54 @@ def _import_handler(mock_bedrock=None):
     return handler
 
 
+@pytest.mark.parametrize("transport", ["websocket", "http", "slack", "body"])
+def test_pending_recovery_cannot_be_selected_by_public_transport(mocked_aws_services, monkeypatch, transport):
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "true")
+    import pending_chat
+
+    recover = MagicMock()
+    monkeypatch.setattr(pending_chat, "recover_pending_turn", recover)
+    handler = _import_handler()
+    event = {"source": "chat-pending-recovery", "binding": {}}
+    if transport == "websocket":
+        event["requestContext"] = {"connectionId": "attacker", "routeKey": "$default"}
+    elif transport == "http":
+        event["requestContext"] = {"http": {"method": "POST"}}
+    elif transport == "slack":
+        event["headers"] = {"x-slack-signature": "forged"}
+    else:
+        event = {"body": json.dumps(event)}
+    assert handler.lambda_handler(event, None)["statusCode"] in ({200} if transport == "body" else {400, 401, 403})
+    recover.assert_not_called()
+    assert not mocked_aws_services["sqs"].receive_message(QueueUrl=TASKS_QUEUE).get("Messages")
+
+
+@pytest.mark.parametrize("failure,expected", [(None, 200), ("conflict", 409), ("unavailable", 503), ("disabled", 503)])
+def test_direct_pending_recovery_is_bounded_and_does_not_dispatch(mocked_aws_services, monkeypatch, failure, expected):
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "false" if failure == "disabled" else "true")
+    import pending_chat
+
+    recover = MagicMock()
+    if failure == "conflict":
+        recover.side_effect = pending_chat.PendingChatConflict("substitution")
+    elif failure == "unavailable":
+        recover.side_effect = TimeoutError("secret fixture must not leak")
+    monkeypatch.setattr(pending_chat, "recover_pending_turn", recover)
+    handler = _import_handler()
+    handler.send_notification = MagicMock()
+    binding = {"session_id": "owner-session"}
+    result = handler.lambda_handler({"source": "chat-pending-recovery", "binding": binding}, None)
+    assert result["statusCode"] == expected
+    assert "secret fixture" not in result["body"]
+    if failure == "disabled":
+        recover.assert_not_called()
+    else:
+        assert recover.call_args.args == (handler.sessions_table, binding)
+        assert recover.call_args.kwargs["register"] == handler._register_chat_dispatch
+    handler.send_notification.assert_not_called()
+    assert not mocked_aws_services["sqs"].receive_message(QueueUrl=TASKS_QUEUE).get("Messages")
+
+
 PIN_CLAIMS = {
     "sub": "user-pin", "email": "pin@example.com",
     "custom:tenant_id": "test-tenant", "custom:account_type": "user",
@@ -165,6 +213,83 @@ def _drain_queue(sqs) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Adversarial: rejection of untrusted persona values
 # ---------------------------------------------------------------------------
+
+
+class TestRestrictedPendingInput:
+    def _prepare(self, monkeypatch, mocked_aws_services):
+        monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "true")
+        handler = _import_handler(mock_bedrock=MagicMock())
+        import model_root_client
+
+        register = MagicMock(side_effect=lambda envelope, **kwargs: json.dumps(
+            {**envelope, "persona": envelope["agent_type"]}, sort_keys=True, separators=(",", ":"),
+        ))
+        monkeypatch.setattr(model_root_client, "register_model_root", register)
+        first = _send(handler, persona="intent-refinement")
+        assert first["statusCode"] == 200
+        first_body = json.loads(first["body"])
+        _drain_queue(mocked_aws_services["sqs"])
+        return handler, register, first_body
+
+    def test_busy_input_is_registered_without_publishing_or_releasing_lock(self, monkeypatch, mocked_aws_services):
+        handler, register, first = self._prepare(monkeypatch, mocked_aws_services)
+        second = _send(handler, text="Keep my follow-up", persona="intent-refinement")
+        assert json.loads(second["body"])["status"] == "queued"
+        row = mocked_aws_services["table"].get_item(Key={"session_id": first["session_id"]})["Item"]
+        thread = row["threads"][first["thread_id"]]
+        assert thread["processing_task_id"] == first["task_id"]
+        pending = next(iter(thread["pending_turns"].values()))
+        assert pending["status"] == "registered"
+        envelope = json.loads(pending["envelope_json"])
+        assert envelope["message"] == "Keep my follow-up"
+        assert envelope["owner_principal"] == row["owner_principal"]
+        assert envelope["session_generation"] == row["created_at"]
+        assert register.call_count == 2
+        assert register.call_args.kwargs == {"source": "chat", "subject": "user-pin"}
+        assert _drain_queue(mocked_aws_services["sqs"]) == []
+
+    @pytest.mark.parametrize("failure", ["storage", "registration"])
+    def test_failed_retention_never_acknowledges_or_clears_active_turn(self, monkeypatch, mocked_aws_services, failure):
+        handler, register, first = self._prepare(monkeypatch, mocked_aws_services)
+        if failure == "registration":
+            register.side_effect = TimeoutError("synthetic lost registration response")
+        else:
+            update = handler.sessions_table.update_item
+
+            def unavailable(**kwargs):
+                if ":pending" in kwargs.get("ExpressionAttributeValues", {}):
+                    raise RuntimeError("synthetic storage outage")
+                return update(**kwargs)
+
+            monkeypatch.setattr(handler.sessions_table, "update_item", unavailable)
+        second = _send(handler, text="Keep my follow-up", persona="intent-refinement")
+        assert second["statusCode"] == 503
+        row = mocked_aws_services["table"].get_item(Key={"session_id": first["session_id"]})["Item"]
+        thread = row["threads"][first["thread_id"]]
+        assert thread["processing_task_id"] == first["task_id"]
+        assert _drain_queue(mocked_aws_services["sqs"]) == []
+        if failure == "registration":
+            assert next(iter(thread["pending_turns"].values()))["status"] == "registering"
+        else:
+            assert "pending_turns" not in thread
+            assert register.call_count == 1
+
+    def test_duplicate_websocket_notification_keeps_one_buffered_turn(self, monkeypatch, mocked_aws_services):
+        handler, register, first = self._prepare(monkeypatch, mocked_aws_services)
+        event = mock_apigw_event(
+            body={"text": "Follow-up", "session_id": first["session_id"], "persona": "intent-refinement", "message_id": "untrusted"},
+            connection_id="conn-pin", authorizer_claims=dict(PIN_CLAIMS),
+        )
+        event["requestContext"]["messageId"] = "transport-message"
+        for _attempt in range(2):
+            assert handler.lambda_handler(event, None)["statusCode"] == 200
+        row = mocked_aws_services["table"].get_item(Key={"session_id": first["session_id"]})["Item"]
+        thread = row["threads"][first["thread_id"]]
+        assert len(thread["pending_turns"]) == len(thread["messages"]) == 1
+        retained = json.loads(next(iter(thread["pending_turns"].values()))["envelope_json"])
+        assert retained["message_id"].startswith("webchat-")
+        assert register.call_count == 2
+        assert _drain_queue(mocked_aws_services["sqs"]) == []
 
 
 class TestPersonaRejection:
@@ -567,3 +692,29 @@ def test_saved_persona_model_is_selected_for_authenticated_chat_owner(mocked_aws
         assert result["statusCode"] == 200
         assert tasks[0]["model_resolved"] == "saved-model"
         assert tasks[0]["account_type"] == "human"
+
+
+@pytest.mark.parametrize("mode", ["persistent", "ephemeral"])
+def test_queue_failure_preserves_accepted_persistent_turn_for_recovery(mocked_aws_services, monkeypatch, mode):
+    handler = _import_handler(mock_bedrock=MagicMock())
+    monkeypatch.setattr(handler, "_register_chat_dispatch", lambda envelope: json.dumps({**envelope, "session_mode": mode}))
+    monkeypatch.setattr(handler.sqs, "send_message", MagicMock(side_effect=TimeoutError("queue unavailable")))
+    monkeypatch.setattr(handler, "send_notification", MagicMock())
+    monkeypatch.setattr(handler, "_send_ws_response", MagicMock())
+    clear = MagicMock(wraps=handler.set_thread_processing)
+    monkeypatch.setattr(handler, "set_thread_processing", clear)
+    result = _send(handler, persona="intent-refinement")
+    assert result["statusCode"] == (200 if mode == "persistent" else 503)
+    assert any(call.args[-1] is None for call in clear.call_args_list) == (mode == "ephemeral")
+
+
+def test_lost_root_acceptance_response_does_not_clear_the_recoverable_lock(mocked_aws_services, monkeypatch):
+    handler = _import_handler(mock_bedrock=MagicMock())
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "true")
+    monkeypatch.setattr(handler, "_register_chat_dispatch", MagicMock(side_effect=TimeoutError("lost response")))
+    monkeypatch.setattr(handler, "_send_ws_response", MagicMock())
+    clear = MagicMock(wraps=handler.set_thread_processing)
+    monkeypatch.setattr(handler, "set_thread_processing", clear)
+    assert _send(handler, persona="intent-refinement")["statusCode"] == 503
+    assert not any(call.args[-1] is None for call in clear.call_args_list)
+    assert _drain_queue(mocked_aws_services["sqs"]) == []

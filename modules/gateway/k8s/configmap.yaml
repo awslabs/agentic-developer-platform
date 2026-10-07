@@ -471,6 +471,8 @@ data:
   # back flagged `draft_available: false`. Folding the two together would 503 a
   # readback that mostly works.
   BG_INTAKE_SESSIONS_TABLE: "__BG_INTAKE_SESSIONS_TABLE__"
+  ADP_CHAT_RESPONSE_QUEUE_URL: "__ADP_CHAT_RESPONSE_QUEUE_URL__"
+  ADP_CHAT_INPUT_QUEUE_URL: "__ADP_CHAT_INPUT_QUEUE_URL__"
   BG_INTAKE_CONTEXT_TABLE: "__BG_INTAKE_CONTEXT_TABLE__"
   # A Lambda FUNCTION NAME, not a queue URL. The turn enters through the ingest
   # Lambda so it gets the session row, the thread, the transcript and the

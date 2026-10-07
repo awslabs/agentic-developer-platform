@@ -105,7 +105,19 @@ class ExternalTools:
             raise Refusal("injected external failure")
         result, text, code, error = {}, None, 0, ""
         if "get-caller-identity" in args:
-            result = {"Account": env["account_id"]}
+            selected = env["deployment_identity"]
+            result = {
+                "Account": env["account_id"],
+                "Arn": f"arn:aws:sts::{env['account_id']}:assumed-role/test-installer/fixture",
+                "UserId": selected["expected_role_id"] + ":fixture",
+            }
+        elif "get-role" in args:
+            result = {
+                "Role": {
+                    "Arn": env["deployment_identity"]["expected_role_arn"],
+                    "RoleId": env["deployment_identity"]["expected_role_id"],
+                }
+            }
         elif "describe-cluster" in args:
             name = args[args.index("--name") + 1]
             cluster_detail = {
@@ -152,6 +164,19 @@ class ExternalTools:
                     }
                 }
             ]
+        elif "image-contract" in args:
+            result = {
+                "image_contract_version": 1,
+                "configuration_verified": False,
+                "authority_verified": False,
+                "production_ready": False,
+                "required_ports": [
+                    "credential_evidence",
+                    "provider_authority",
+                    "allocation_inventory",
+                    "operation_facade",
+                ],
+            }
         elif "management-capabilities" in args:
             result = {"controller_management": True, "governed_provisioning": False}
         elif any("SUPERPLANE_INSTALLATION_PROFILES" in value for value in args):
@@ -569,9 +594,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
     # from the same lock the receipt is built from would pass for any value at all.
     # Advanced to 036 by #6048 for explicit shared cluster membership.
-    assert (
-        installer.receipt["migration"]["schema"] == "042_controller_cleanup_snapshots"
-    )
+    assert installer.receipt["migration"]["schema"] == "044_organization_grant_changes"
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}
@@ -1131,7 +1154,7 @@ def test_management_restart_waits_for_old_pod_removal(
         return result
 
     monkeypatch.setattr(tools, "call", with_old_pod)
-    clock = iter(range(10000))
+    clock = iter(range(0, 10000))
     monkeypatch.setattr("installation.runner.time.monotonic", lambda: next(clock))
     monkeypatch.setattr("installation.runner.time.sleep", lambda _: None)
     installer.preflight()
@@ -1253,23 +1276,189 @@ def test_refreshed_platform_data_omitted_from_planned_values(
         assert installer.receipt["plan_sha256"]
 
 
-@pytest.mark.parametrize("addresses", [["10.0.11.13"], [], ["not-an-address"]])
-def test_database_resolves_in_selected_management_vpc(
-    tmp_path, environment, release, monkeypatch, addresses
+def domain_build_ownership_fixture(environment):
+    """Prior-state identities from the maintained four-lane naming contract."""
+    result = []
+    for lane in (
+        "superplane-api",
+        "superplane-controller",
+        "superplane-monitor",
+        "superplane-executor",
+    ):
+        account, region, env = (
+            environment[key] for key in ("account_id", "region", "environment")
+        )
+        role = f"adp-{env}-codebuild-{lane}"
+        project = f"adp-{env}-{lane}"
+        project_arn = f"arn:aws:codebuild:{region}:{account}:project/{project}"
+        for kind, label, values in (
+            (
+                "aws_iam_role",
+                "project",
+                {
+                    "name": role,
+                    "id": role,
+                    "arn": f"arn:aws:iam::{account}:role/{role}",
+                },
+            ),
+            (
+                "aws_iam_role_policy",
+                "project",
+                {"name": "build-scope", "role": role, "id": role + ":build-scope"},
+            ),
+            (
+                "aws_codebuild_project",
+                "main",
+                {"name": project, "id": project_arn, "arn": project_arn},
+            ),
+        ):
+            result.append(
+                {
+                    "address": f'module.image_builds.{kind}.{label}["{lane}"]',
+                    "mode": "managed",
+                    "type": kind,
+                    "values": values,
+                }
+            )
+    return result
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "owned",
+        "owned-name-id",
+        "absent",
+        "partial",
+        "changed",
+        "imported",
+        "foreign",
+        "drift",
+        "external",
+    ],
+)
+def test_installer_preserves_only_explicit_existing_domain_build_ownership(
+    tmp_path, environment, release, monkeypatch, scenario
 ):
+    if scenario != "external":
+        environment["image_build_ownership"] = "preserve-domain"
     installer, tools = setup(tmp_path, environment, release, monkeypatch)
-    calls = []
+    original = tools.call
+    seen = {}
 
-    def dns(*args, **kwargs):
-        calls.append(args)
-        return SimpleNamespace(stdout=json.dumps(addresses))
+    def with_build_state(args, **kwargs):
+        result = original(args, **kwargs)
+        if "show" in args:
+            plan = json.loads(result.stdout)
+            owned = domain_build_ownership_fixture(environment)
+            if scenario == "owned-name-id":
+                for resource in owned:
+                    if resource["type"] == "aws_codebuild_project":
+                        resource["values"]["id"] = resource["values"]["name"]
+            prior = copy.deepcopy(owned)
+            changes = [
+                {
+                    "address": resource["address"],
+                    "mode": "managed",
+                    "type": resource["type"],
+                    "change": {
+                        "actions": ["no-op"],
+                        "before": resource["values"],
+                        "after": resource["values"],
+                    },
+                }
+                for resource in owned
+            ]
+            if scenario == "absent":
+                prior = []
+                for change in changes:
+                    change["change"].update(actions=["create"], before=None)
+            elif scenario == "partial":
+                prior.pop()
+            elif scenario == "changed":
+                changes[0]["change"]["actions"] = ["update"]
+            elif scenario == "imported":
+                changes[0]["change"]["importing"] = {"id": "existing-foreign-object"}
+            elif scenario == "foreign":
+                prior[0]["values"]["arn"] = "arn:aws:iam::999999999999:role/foreign"
+            elif scenario == "drift":
+                plan["resource_drift"] = [copy.deepcopy(changes[0])]
+            plan["prior_state"] = {
+                "values": {
+                    "root_module": {
+                        "child_modules": [
+                            {"address": "module.image_builds", "resources": prior}
+                        ]
+                    }
+                }
+            }
+            plan["resource_changes"].extend(changes)
+            seen["plan"] = plan
+            result.stdout = json.dumps(plan)
+        return result
 
-    monkeypatch.setattr(installer, "kube", dns)
-    endpoint = {"Address": "selected.private.example", "Port": 5432}
-    if addresses == ["10.0.11.13"]:
-        assert installer.resolve_database_addresses(endpoint) == addresses
-        assert calls[0][-2:] == (endpoint["Address"], "5432")
-        assert "deployment/bedrockgateway" in calls[0]
+    monkeypatch.setattr(tools, "call", with_build_state)
+    if scenario in ("owned", "owned-name-id"):
+        installer.terraform()
+        assert installer.receipt["plan_sha256"]
+        assert len(seen["plan"]["resource_changes"]) >= 12
     else:
-        with pytest.raises(Refusal, match="resolve|invalid address"):
-            installer.resolve_database_addresses(endpoint)
+        with pytest.raises(Refusal):
+            installer.terraform()
+    variables = json.loads(
+        (tmp_path / "terraform/installation.auto.tfvars.json").read_text()
+    )
+    assert variables["manage_image_builds"] is (scenario != "external")
+    assert not any("apply" in args for args, _ in tools.calls)
+
+
+@pytest.mark.parametrize("intent", [True, "automatic", {}, None])
+def test_invalid_image_build_ownership_intent_is_refused(environment, release, intent):
+    from installation.config import validate
+
+    environment["image_build_ownership"] = intent
+    with pytest.raises(Refusal, match="image_build_ownership"):
+        validate(environment, release)
+
+
+def test_management_image_preflight_has_no_runtime_credentials(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    calls = [(args, kw) for args, kw in tools.calls if "image-contract" in args]
+    assert len(calls) == 1
+    assert "--network=none" in calls[0][0]
+    assert "--env" not in calls[0][0] and "env" not in calls[0][1]
+    assert not any("management-capabilities" in args for args, _ in tools.calls)
+    assert installer.receipt["image_contract"]["production_ready"] is False
+    assert "management_capabilities" not in installer.receipt
+
+
+@pytest.mark.parametrize("exit_code,supported", [(2, True), (0, False)])
+def test_management_runtime_probe_refusal_keeps_public_route_disabled(
+    tmp_path, environment, release, monkeypatch, exit_code, supported
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    original = tools.call
+
+    def refuse_management(args, **kwargs):
+        if "management-capabilities" in args:
+            assert args[0] == "kubectl" and "exec" in args
+            assert "deployment/superplane-api" in args
+            assert ("Deployment", "superplane-api", "superplane") in tools.objects
+            return SimpleNamespace(
+                returncode=exit_code,
+                stdout=json.dumps({"controller_management": supported}),
+                stderr="",
+            )
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(tools, "call", refuse_management)
+    with pytest.raises(Refusal, match="authenticated management mode"):
+        installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert installer.receipt["status"] != "installed-and-verified"
+    assert "public-route" not in installer.receipt["completed"]
+    assert "management_capabilities" not in installer.receipt
+    assert installer.receipt["public_route_enabled"] is False

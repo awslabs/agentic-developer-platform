@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { loadHumanCommunication } from './human-communication';
+import { loadCodingGuidelines } from './coding-guidelines';
 import { composeSystemPrompt } from './complex-task-chat/persona-loader';
 
 const policy = fs.readFileSync(path.resolve(__dirname, '../../rules/personas/shared/human-communication.md'), 'utf8');
@@ -28,14 +29,14 @@ describe('shared communication policy assembly', () => {
     const compiled = ts.transpileModule(source.slice(start, source.indexOf('\n}', end) + 2), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const prompt = new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication',
+    const prompt = new Function('fs', 'path', 'CWD', 'AGENT_TYPE', 'loadHumanCommunication', 'loadCodingGuidelines',
       'beadsPrimeContext', 'agentMemoryContext', `${compiled}; return loadRules();`)(
-      fs, path, cwd, 'pm', loadHumanCommunication, '', '',
+      fs, path, cwd, 'pm', loadHumanCommunication, loadCodingGuidelines, '', '',
     );
     expect(prompt).toContain('REPOSITORY PERSONA');
     expect(prompt).not.toContain('DEFAULT PERSONA');
     expect(prompt.split(policy)).toHaveLength(2);
-    expect(prompt.endsWith(policy)).toBe(true);
+    expect(prompt.endsWith(file === 'agent-worker.ts' ? loadCodingGuidelines() : policy)).toBe(true);
   });
 
   it('chat applies the policy once after memory and the selected persona', () => {

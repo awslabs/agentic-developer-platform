@@ -125,11 +125,10 @@ test("missing/failed terminal events and impossible usage never produce completi
   }
 });
 
-test("aborted or oversized input never starts the SDK; output overflow aborts active work", async () => {
+test("aborted input never starts the SDK; output overflow aborts active work", async () => {
   let calls = 0;
   const inactive = { id: null, async runStreamed() { calls++; throw new Error("must not start"); } };
   await assert.rejects(runSdkTurn(inactive, "x", { ...context(), signal: AbortSignal.abort() }, async () => {}));
-  await assert.rejects(runSdkTurn(inactive, "x".repeat(1025), context(), async () => {}));
   assert.equal(calls, 0);
   let signal: AbortSignal | undefined;
   const running: Pick<Thread, "id" | "runStreamed"> = { id: "thread-1", async runStreamed(_, options) {
@@ -161,4 +160,32 @@ test("serialized snapshot cannot replace composed instructions or skill bodies",
   const snapshot = snapshotPersona(JSON.stringify({ ...definition, skills: [{ id: "cite", sha256: sha256(skill) }] }), new Map([["cite", skill]]));
   assert.throws(() => planVerifiedRun({ ...snapshot, instructions: "Changed authority" }, policy(snapshot.digest), source, undefined, [], 1000), /instruction binding/);
   assert.throws(() => planVerifiedRun({ ...snapshot, skillSources: JSON.stringify([["cite", "changed"]]) }, policy(snapshot.digest), source, undefined, [], 1000), /mismatched skill/);
+});
+
+for (const persona of ['architect', 'product', 'pm', 'intent-refinement', 'developer', 'reviewer', 'operations', 'aidlc']) {
+  test(`${persona}: legacy context allowance does not reject persona admission`, async () => {
+    const { readFile } = await import('node:fs/promises');
+    const raw = JSON.parse(await readFile(new URL(`../personas/${persona}.json`, import.meta.url), 'utf8'));
+    raw.instructions = 'Preserve complete instructions. '.repeat(100);
+    raw.limits.maxContextBytes = 1024;
+    const snapshot = snapshotPersona(JSON.stringify(raw), new Map());
+    const capabilities = [...raw.requiredCapabilities, ...raw.optionalCapabilities];
+    const admitted = planVerifiedRun(snapshot, { ...policy(snapshot.digest), personaKey: raw.key,
+      allowedEfforts: [raw.effort], capabilityLayers: { tenant: capabilities, principal: capabilities, run: capabilities,
+        surface: capabilities, runtime: capabilities },
+      limits: { ...policy(snapshot.digest).limits, maxContextBytes: 1024 } }, source,
+      { provider: 'github', repositoryId: '123', sourceRevision: 'fixture' }, capabilities, 1000);
+    assert.equal(admitted.persona.key, raw.key);
+  });
+}
+test('SDK receives the complete prompt beyond the legacy input allowance', async () => {
+  const prompt = 'Preserve user amendments. '.repeat(5000);
+  let received = '';
+  const sdk = thread([{ type: 'item.completed', item: { id: 'answer', type: 'agent_message', text: 'done' } },
+    { type: 'turn.completed', usage }]);
+  const result = await runSdkTurn({ ...sdk, async runStreamed(input, options) {
+    received = input as string; return sdk.runStreamed(input, options);
+  } }, prompt, context(), async () => {});
+  assert.equal(received, prompt);
+  assert.equal(result.response, 'done');
 });

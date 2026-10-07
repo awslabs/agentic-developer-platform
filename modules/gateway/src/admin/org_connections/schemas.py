@@ -3,7 +3,7 @@
 Issue #4842 (EPIC #4839 · C3).
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GitHubConnectionAttachRequest(BaseModel):
@@ -25,6 +25,19 @@ class GitHubConnectionAttachRequest(BaseModel):
         max_length=255,
         description="GitHub org login, stored for display in the Connections tab.",
     )
+
+
+class ReconcileRoutingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_projection_org_id: str = Field(..., min_length=1, description="Exact owner observed on the stale forward routing row.")
+
+
+class ReconcileRoutingResponse(BaseModel):
+    installation_id: int
+    observed_projection_org_id: str
+    authoritative_org_id: str
+    outcome: str
 
 
 class GitHubConnectionResponse(BaseModel):

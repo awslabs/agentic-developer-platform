@@ -3,6 +3,8 @@
 The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
 This document provides supporting implementation detail or historical evidence;
 its availability statements do not imply that pending design requirements are implemented.
+For the governed workspace lifecycle release gate and evaluator evidence, see
+[the operator handoff](NATIVE-LIFECYCLE-HANDOFF.md).
 
 `modules/domain-apps/superplane/deploy.sh` plans, checks and executes an installation of the API, controller, platform monitor and pinned SkyPilot server on an **existing** ADP installation. It never calls a platform deployment script. Actual installation, database mutation, feature activation and workload operation remain subject to the accepted installation authorization.
 
@@ -33,7 +35,11 @@ AWS CLI v2 with conditional S3 PUT/DELETE support, and kubectl. Set
 `image_execution: cluster` for private RDS or machines without Docker. This path
 verifies ECR manifest/config digests and OCI source labels, tests actual
 NetworkPolicy traffic, and executes pinned image checks in a temporary restricted
-namespace. Probe pods have no AWS/Kubernetes identity; database probes allow only
+namespace. Probe pods have no AWS/Kubernetes identity. Database address discovery
+uses the qualified API image in a credential-free, DNS-only pod, verifies the
+selected resolver over UDP and TCP, and validates a bounded address set for the
+exact RDS endpoint. It does not execute in the shared Gateway. Discovery cleanup
+finishes before a separate database probe receives credentials and allows only
 DNS and the selected RDS addresses/port. Cleanup checks the namespace UID and
 records completion. The default `docker` path requires local Docker and database
 reachability. Keep output directories private and outside the checkout.
@@ -102,6 +108,14 @@ and a valid profile cannot establish that result.
 
 The release lock must remove the three built images from `pending_images`, supply their observed ECR digests in `images`, and record `registry`, `repository` and `source_revision` under each `image_sources` entry. Set the root `source_revision` to the exact clean ADP checkout used by the maintained build lanes. Registry tags and OCI revision labels must match each image’s recorded build revision. An image from an earlier commit is reusable only when Git proves its complete component build context (including its Dockerfile) is identical to the installation revision. Both commits must be available locally; changed or unavailable source is refused. The receipt records reused build revisions and Git tree IDs. Preserve the reviewed SkyPilot 0.12.0 digest. This command consumes completed immutable builds; it does not treat a workflow dispatch as a completed build.
 
+When the API build selects a reviewed Python base, also record the exact
+`repository@sha256:<64 lowercase hex characters>` reference in
+`image_sources.superplane-api.python_image`. Both local Docker and private-cluster
+verification require its `<source revision>-py-<full base digest>` ECR tag and exact
+source/base OCI labels. The installer reads the registry by the locked image
+digest; it never resolves a selected base from a mutable tag. Omit `python_image`
+for the default build to retain the existing full/short source-tag contract.
+
 Both managed VPC CNI and EKS Auto Mode are supported when NetworkPolicy enforcement
 is verified. Set `gateway_namespace` to the existing Gateway's actual namespace.
 Native EKS Auto Mode DNS is discovered automatically during target preflight
@@ -161,7 +175,7 @@ Install Gateway transport version 2 through the normal reviewed platform release
 
 Version 2 no longer reads the legacy SSM route parameter. Preserve it for rollback; do not copy it over an existing S3 registration. A controlled Gateway upgrade disables the legacy route until an authorized installer resume/reinstallation publishes the verified S3 route. Perform this cutover under the existing installation gate. Subsequent activation/removal takes at most five seconds and needs no Gateway restart. An explicit `FEATURE_SUPERPLANE_ENABLED=false` overrides registration. The public proxy forwards only inventoried domain methods/paths and the original ADP bearer token; the domain API performs token and workspace authorization. It does not publish local login/token minting, internal callbacks, OpenAPI or service diagnostics.
 
-The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach the selected image's required migration head (`042_controller_cleanup_snapshots` for this release). An image rollback does not reverse a database migration.
+The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach the selected image's required migration head (`043_workspace_grant_changes` for this release). An image rollback does not reverse a database migration.
 
 Three environment-scoped Secrets Manager references contain these exact JSON string fields:
 
@@ -187,6 +201,52 @@ for an environment already running on the removed placeholder follow
 [the rotation and cutover runbook](../../../../docs/runbooks/superplane-jwt-and-db-credential-rotation.md).
 
 For a fresh installation, `adp_org_id` names the actual ADP organization (for example `aws-e`); the three UUIDs identify the new domain organization, workspace and cluster. After migration, a one-shot bootstrap Job verifies the signed ADP access token and current `org_admin` membership through `/api/auth/workspaces`, checks both again before commit, and stores an explicit organization binding and one initial `administer` workspace grant for that human subject. The policy defines the permissions implied by this grant. Resume is idempotent and never restores a revoked grant, rebinds an existing organization, or adopts an unbound legacy organization. The temporary token Secret is deleted with UID preconditions after terminal bootstrap success; an interrupted or failed Job requires recovery inspection. U21's historical identity mapping, migration and cutover remain separate.
+
+## Selected deployment role
+
+Offline planning and SQL emission remain available without AWS authority. Every
+live phase, including preflight probes, requires a `deployment_identity` mapping
+in the private environment file:
+
+```yaml
+deployment_identity:
+  service: aws
+  connection_label: <authorized connection label>
+  expected_role_arn: <independently verified full IAM role ARN, including path>
+  expected_role_id: <independently verified immutable IAM RoleId>
+```
+
+Resolve these values from the authenticated connection owner and its reviewed
+role inventory **before** requesting a deployment session. Do not populate the
+expected values from whichever identity happens to be active. Keep the selected
+connection, tenant and role evidence with the private installation plan. The
+label is an operator-selected assertion; the installer does not authenticate an
+ADP invocation or prove which broker connection issued the AWS session.
+
+Execute the maintained entry point inside that connection's session, for example
+`adp-cred assume --service aws --label <selected-label> --exec bash
+modules/domain-apps/superplane/deploy.sh ...`. Preserve the broker's separate
+transport identity and private credential store. The selected role requires
+`iam:GetRole` for its own exact ARN in addition to the reviewed domain authority;
+a denial is a readiness failure, never permission to fall back to ambient AWS
+credentials or widen grants automatically.
+
+Before each phase and AWS/Kubernetes mutation, the installer compares STS
+account, assumed-role ARN and `UserId` with the expected role name and immutable
+RoleId, then verifies IAM `GetRole` returns the exact ARN and RoleId. This catches
+a different role in the same account, a role recreated under the same name, and
+credential refresh to another identity. Compensation, probe cleanup, route
+updates and lock recovery use the same check. When identity is lost, cleanup may
+retain resources and the recovery receipt rather than mutate through another
+role. Resume preserves the exact environment and rechecks live authority before
+continuing; a saved successful identity observation cannot authorize a new phase.
+The receipt stores only selected metadata and sanitized observed identity.
+
+Older receipts without this metadata remain readable for offline inspection but
+cannot authorize live recovery. Do not edit their history to manufacture proof;
+reconcile their ownership and prepare an explicit reviewed recovery with the
+installation owner. This guard does not replace cluster/server/CA checks, source
+and plan validation, human bootstrap authorization or workspace runtime grants.
 
 ## Organization bootstrap before the first workspace
 
@@ -291,6 +351,26 @@ modules/domain-apps/superplane/deploy.sh \
 
 Then rerun preflight and resume with the newly reviewed plan hash. A terminal failed migration Job is not silently deleted/retried: diagnose its schema state and follow the named restore owner's recovery decision. A new installation attempt requires the failure to be resolved first. Publication or verification failure attempts to disable the public route. A committed PUT with a lost response is recognized only by its complete recorded payload and unique revision; if the prior version remains, a requested publication retries with its original condition. Compensation instead writes a disabled operation directly, never publishing an uncommitted enable. Its receipt retains the superseded enable identity to fence a late commit. Unavailable or conflicting readback retains the pending operation and installation lock, reports route state as unknown, and requires same-receipt recovery. Before returning a compensated failure, changing rollback workloads, removing cleanup workloads, or releasing a recovery lock, the installer waits out the Gateway-advertised cache lifetime and polls the inventoried public workspace path for the Gateway feature-off response while verifying unrelated ADP health. Failed disable observation retains the recovery marker and lock. It never silently claims the previous release remains available or overwrites a foreign registration.
 
+For a historical `kubectl-patch` image ownership conflict, the optional
+`deployment_image_recovery` environment list pins each selected service's `name`,
+`namespace`, observed `uid`, `spec_sha256` (the canonical JSON digest from
+`installation.config.digest` of its current full `spec`) and `images` (container
+name to prior immutable image reference). Capture and review these live values;
+never generate them from the desired manifest. Changing this input requires a
+new installation selection and plan, not editing an existing resume receipt.
+
+Recovery runs only during rollout after migration and bootstrap, under the
+installation lock. It checks ownership, the reviewed current spec/images, exact
+historical image field managers, and a fresh UID/resourceVersion fence. A server
+apply dry-run holding only the reviewed images at their current values must have
+no conflicts. Only then may the exact desired Deployment be applied with conflict
+recovery. Non-image conflicts, replacement, changed prior configuration or a
+concurrent write refuse the operation. The receipt records the per-object
+pre-apply evidence. A retry whose images already match uses ordinary apply.
+This option never enables global force, edits managedFields or advances rollout
+before schema preparation. Remove it from subsequent routine release selections.
+
+
 Rollback records and fences the current route before preparation, separately from the receipt selecting the release to restore. Both rollback and cleanup require the configured version-2 Gateway transport before mutation.
 
 For image/configuration rollback, pass a prior **successful receipt from this same environment** using `--rollback /secure/previous/receipt.json` and a new output directory. The command verifies schema compatibility, restores pinned secret versions and the prior four-service release, and repeats private/public verification. It refuses cross-schema rollback and performs no downgrade or restore automatically.
@@ -316,17 +396,19 @@ IAM plan and the applied live identity before changing the API service account.
 
 The closed mapping requires `vault`, `dispatcher` and `verification`:
 
-- `vault.url` must be the exact `http://SERVICE.NAMESPACE.svc.cluster.local:PORT`.
-  `secret_key_ref` contains only the existing API-namespace Secret `name` and `key`.
-  `transport` contains `namespace`, `service`, numeric `port` and `target_port`,
-  the actual Service `selector` mapping, and
-  `security: reviewed-cluster-http`. Select this boundary only after reviewing
-  the installation's internal HTTP trust contract. Other transports are refused.
+- `vault.url` must equal the selected `dispatcher.endpoint`; `vault.auth` must be
+  `api-producer-iam`. Evidence uses renewable API workload IRSA credentials to sign
+  the exact POST body for `execute-api`. Shared keys and direct Service evidence
+  URLs are refused. `transport` retains the selected Gateway Service namespace,
+  service, ports, selector and `security: reviewed-cluster-http` for the native
+  worker network and health contract; it is not API evidence authentication.
 - `dispatcher` contains the existing `endpoint`, `region`, `role_arn`, `api_id`
   and `stage`. The endpoint must exactly match that API Gateway invoke API/stage
   in the selected account's region. The dedicated role must trust only the
   management cluster OIDC and API ServiceAccount, and grant only POST invoke on
-  `producer-readiness`, `verify-run` and `dispatch`. Other role authorities require
+  the six controller-execution producer routes and `/internal/v1/credential-evidence`.
+  Only the exact original three- or six-route policies can be upgraded to seven
+  while retaining role identity and trust. Other role authorities require
   separate review and are refused by this installer.
 - `verification` contains an existing `workspace_id`, `connection_id`,
   `credential_id`, `service` and `label`. The installation verification token must
@@ -340,7 +422,7 @@ explicitly disabled. An isolated image contract check is not a production
 capability verdict. The actual installed API must pass the original four composed
 ports, workload STS identity, tenant producer readiness, live credential metadata,
 management reads and a deliberately unapproved admission-refusal control. The
-Secret's UID/resourceVersion and selected Service/role/profile/environment/release
+IAM evidence mode/endpoint/region and selected Service/role/profile/environment/release
 are bound to a private receipt. Full mode activates only a fresh unchanged stage;
 management-only mode stays disabled. Changed metadata or expired proof requires
 verification again. Public routing still uses the existing publication fence.
@@ -350,8 +432,8 @@ checks its internal management process; public routing stays disabled. This does
 not promise uninterrupted management availability or cancel previously admitted
 workers. Credential version proof is unavailable in the current evidence contract;
 the receipt reports that limitation rather than inventing a version. Existing
-broad API TCP443/5432 egress remains; the selected Gateway peer receives only the
-explicit Service/target ports. Cluster-specific denied-neighbor network evidence
+broad API TCP443/5432 egress remains; API evidence uses HTTPS and receives no
+additional direct Gateway HTTP egress. The native worker retains its selected peer. Cluster-specific denied-neighbor network evidence
 and all behavioral tests still require remote CI and authorized live verification.
 
 The rotation check negotiates Kubernetes `PartialObjectMetadata` with no full
@@ -365,3 +447,5 @@ metadata negotiation is response minimization, not a separate RBAC capability.
 ### Optional native paid-worker source preparation
 
 The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused at zero replicas; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.
+
+The separate [domain runtime preparation source](RUNTIME-PREPARATION.md) provides a reviewed-plan entry point for the dedicated queue and IAM roles. It is not connected to the installer until the foreground owner reviews and wires it; shared registry/Gateway/database authority and real binding proof remain independent prerequisites.

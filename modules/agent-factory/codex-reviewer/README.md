@@ -24,6 +24,15 @@ reviewer for repair. There is no developer handoff or extra approval stage.
 It stops for a genuine blocker, a changed PR, or an existing repository merge
 requirement. Source repairs are not restricted to “mechanical” findings.
 
+PR mentions and engine review assignments prepare full base history and the
+authorized repository's sibling branch histories before model execution. This
+makes pinned release baselines and cross-story contract commits available to the
+network-disabled reviewer without changing its assigned head.
+For a PR mention, the triggering human comment is preserved as contextual review
+scope; automatic PR events without a comment retain their existing behavior.
+That context is not design approval and does not waive code findings, authorization,
+current-head/base checks, required CI, or repository merge rules.
+
 Issue-only mentions remain read-only issue-readiness reviews. The shared worker
 owns authentication, checkout and queue delivery. Both PR mentions and engine
 assignments reuse one review/repair loop; their existing publication transports
@@ -33,8 +42,9 @@ remain internal implementation details.
 
 Engine review and repair continuations select `agent-codex-reviewer` and use the
 protected `review_cycle_input`, without requiring a webhook payload or an
-`agent/issue-N` branch. Shared-worker flows with repair permission let the reviewer
-fix against the story and acceptance criteria, then review the final child commit
+`agent/issue-N` branch. Both protected and shared-worker flows default to reviewer-owned
+delivery. Assignments with repair permission let the reviewer
+fix against the story and acceptance criteria, then review the final descendant commit
 before an exact-lease push. Reviews with no repair permission remain read-only.
 There is no mechanical file/line limit in this story repair path.
 
@@ -47,10 +57,26 @@ optional under the existing repository policy. The controller never turns an
 unavailable observation into success.
 
 CI polling does not consume `CODEX_REVIEWER_TURN_TIMEOUT_MS`: that allowance covers
-cumulative model execution across retained review, repair and verification turns.
+cumulative model execution across retained review, repair and verification turns
+and defaults to six hours (21,600,000 ms). The CI/merge delivery allowance also
+defaults to six hours. The shared worker caps the entire developer or reviewer
+process at six hours of wall time, including CI waits, with 30 seconds to exit
+before killing remaining descendants. These allowances do not add together.
+Explicit model-time overrides remain supported; cancellation, turn limits and
+other policy controls can still end a run earlier.
 The gateway still enforces the flow's policy window, spend and claim on every
 observation and model call. A repair that makes no progress returns its real
 findings rather than repeating model calls on the same head.
+
+Repairs are worked as a code/test task board (`src/task-board.ts`), seeded from
+the developer's board in the PR body when present. The repair thread finishes up
+to `CODEX_REVIEWER_MILESTONES_PER_PUBLISH` tasks (default 3, or fewer once 60% of
+the model allowance is spent) before one scoped inspection, one commit named
+after the finished task ids and one push; a full inspection runs when the repair
+reports `complete`. The reviewer starts from `.adp/tasks/<issue>.json` when the
+developer left one, writes its finished tasks back into that file inside each batch
+commit, and keeps the PR body's rendered board and the issue checklist current. Set
+the variable to `1` for the former publish-every-milestone cadence.
 
 The TypeScript reviewer publishes its exact-head verdict through the existing
 Python evidence adapter, then checks current merge permission and repository
@@ -62,9 +88,11 @@ return to the same retained repair thread.
 The engine observes the merged PR, validates the accepted review evidence and
 completes the story. It does not perform a competing merge for these assignments.
 A missing worker terminal report after merge does not require another review.
+Both terminal APIs refuse successful delivery before the provider confirms merge.
+Finalization failures report failure rather than leaving an exited worker live.
 Explicit blockers stop delivery; they do not dispatch another paid agent.
 
-Completed review bytes are retained in the worker's existing S3 reporting spool
+For shared-worker reporting, completed review bytes are retained in the existing S3 spool
 before upload and merge. Reporting retries reuse those bytes and never start a
 model. Legacy assignments retain their original single-pass behavior. Review
 reports stay outside implementation commits.
@@ -148,7 +176,49 @@ The workspace must be a new path; the runner clones the repository there.
 Use `--base branch-name` to develop against a specific base branch. Run the
 standalone command inside an environment where the agent is authorized to use
 the available shell credentials. It has full shell and network access, matching
-the worker's execution model. The default model turn deadline is 30 minutes.
+the worker's execution model.
+
+The developer owns the story: its first turn returns a code/test/infra task board,
+and every later turn takes the next open task to done (code together with the
+test that covers it), commits with the task id, pushes and keeps one ready PR
+current. Turns end in a structured `complete | checkpoint | blocked` outcome; a
+checkpoint continues the same SDK thread, so the run stops only on completion,
+a concrete blocker, or the allowance. `CODEX_DEVELOPER_TURN_TIMEOUT_MS` defaults
+to 360 minutes of cumulative model execution. There is no default turn-count
+cutoff; operators can explicitly set `CODEX_DEVELOPER_MAX_TURNS` to a positive
+integer for an additional limit. Hosted wall-time, spend and cancellation
+controls still apply. A PR is reported only with the honest outcome: a
+`checkpoint` or exhausted run returns `pr_created` with `completion` and
+`remainingWork` so the reviewer finishes from the published board; a `complete`
+claim with open or uncovered tasks is rejected and sent back for correction.
+Controller checks steer rather than fail: a malformed or dishonest outcome is
+corrected to the nearest honest shape (a `complete` with open tasks becomes a
+checkpoint; a prose reply gets one request to restate, then the last board is
+kept), the corrections are fed back on the next turn, and a run that ends with an
+uncommitted tree or no ready PR gets one short finishing turn before the result is
+judged.
+
+Boards follow the shared rule `rules/phases/construction/task-breakdown.md`,
+projected into both the developer and reviewer instructions (and the Claude
+worker's phase rules): one code task and one covering test task per acceptance
+ID from the issue, a negative test per impact-analysis failure row, an explicit
+wiring task for cross-component rows, and `deployed-target:` blocked tasks for
+live evidence. The controller checks a returned board against the issue's
+acceptance IDs and reports gaps as notes on the next turn — never as failures —
+and surfaces a size signal (more than twelve code tasks, or more than two
+criteria needing a deployed target) so the owner can split the story.
+
+The board's home is the story branch: `.adp/tasks/<issue>.json`, written and
+committed only by the controller (`chore(#<issue>): task board after turn N`), so
+the branch history carries the task state next to the code. Whichever process
+comes online next — a restarted developer or the reviewer — reads that file and
+resumes at the first open task instead of re-planning; a file that fails
+validation is reported and rebuilt, never trusted. The PR body carries only the
+rendered board and the issue checklist mirrors it. The controller also maps
+commits to tasks from Git after each turn: a commit whose subject names task ids
+is attributed to them, otherwise to the tasks that became done in that turn; the
+short SHAs appear on each task row. The file stays on the default branch after
+merge as the story's delivery record.
 
 ### Hosted progress reporting
 
@@ -164,3 +234,14 @@ Agent Activity records come from the normal webhook invocation and worker
 lifecycle. A standalone run does not create those records and is not a hosted
 reporting qualification. The native adapter currently exposes the explanation
 stream without advertising Claude-specific pause/resume/steer support.
+
+### Delivery task checklists
+
+Developers and reviewers use the native plan tool to publish logical tasks for
+the whole assignment and update them as work progresses. The current checklist
+and completed-item count remain visible in the existing live issue comment and
+Agent Activity, separately from tool activity. Claude TodoWrite uses the same
+display. Lists remain in the final comment if execution ends or fails; reviewer
+retries read recent persisted lists as untrusted context and verify them against
+the saved branch. This is agent-reported progress, not acceptance evidence or a
+time estimate. Normal review, CI, merge and spending controls still apply.

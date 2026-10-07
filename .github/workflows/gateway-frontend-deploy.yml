@@ -24,6 +24,9 @@ concurrency:
   group: gateway-frontend-release-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
+env:
+  ADP_DEPLOYMENT_EVIDENCE_STORE: s3-oidc-v1
+
 jobs:
   publish:
     if: github.ref == 'refs/heads/main'
@@ -138,9 +141,7 @@ jobs:
           ADP_RELEASE_WORKFLOW: .github/workflows/gateway-frontend-deploy.yml
         run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: adp-release-gateway-frontend-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-release-gateway-frontend/release.json
-          if-no-files-found: error
-          retention-days: 30
+      - name: Publish frontend release evidence to S3
+        env:
+          ADP_WORKFLOW_REVISION: ${{ github.workflow_sha }}
+        run: python3 modules/gateway/scripts/publish-deployment-evidence.py release gateway-frontend "$RUNNER_TEMP/adp-release-gateway-frontend/release.json"

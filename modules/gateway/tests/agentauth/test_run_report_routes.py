@@ -395,3 +395,20 @@ async def test_success_cannot_carry_failure_metadata(reports):
     )
     assert result.status_code == 409
     assert result.json()["detail"] == "failure_requires_failed_outcome"
+
+
+@pytest.mark.parametrize("merged", [False, True])
+async def test_terminal_merge_gate_precedes_success_receipt(reports, monkeypatch, merged):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.run_reports import RunReportError
+
+    await reports.client.post(URL + "/pull-request", headers=reports.headers, json=PR.__dict__)
+    gate = AsyncMock(side_effect=None if merged else RunReportError("reviewer_merge_not_delivered"))
+    monkeypatch.setattr("src.orchestration.review_assignment.require_reviewer_merge", gate)
+    response = await reports.client.post(URL + "/terminal", headers=reports.headers, json={"outcome": "complete"})
+    assert response.status_code == (200 if merged else 409)
+    assert gate.call_args.kwargs["run_id"] == reports.envelope["message_id"]
+    async with reports.sessions() as session:
+        row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
+        assert bool(row.terminal_receipt) is merged

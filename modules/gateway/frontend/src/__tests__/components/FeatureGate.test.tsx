@@ -70,6 +70,9 @@ function renderWithRouter(initialPath: string) {
             </FeatureGate>
           }
         />
+        <Route path="/superplane" element={
+          <FeatureGate feature="superplane"><div data-testid="superplane-page">Superplane</div></FeatureGate>
+        } />
       </Routes>
     </MemoryRouter>
   );
@@ -90,6 +93,18 @@ describe('FeatureGate', () => {
     renderWithRouter('/chat');
     expect(screen.getByTestId('chat-page')).toBeInTheDocument();
     expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('preserves ordinary navigation with Superplane off and reveals it only when enabled', () => {
+    mockFeatures.superplane = false;
+    renderWithRouter('/superplane');
+    expect(screen.getByTestId('home-page')).toBeInTheDocument();
+    expect(screen.queryByTestId('superplane-page')).not.toBeInTheDocument();
+
+    mockFeatures.superplane = true;
+    renderWithRouter('/superplane');
+    expect(screen.getByTestId('superplane-page')).toBeInTheDocument();
+    mockFeatures.superplane = false;
   });
 
   it('redirects to "/" when feature is disabled', () => {

@@ -151,6 +151,8 @@ try:
         "run",
         "--rm",
         "-i",
+        "--user",
+        "1000:1000",
         "--network",
         f"container:{name}",
         "--read-only",

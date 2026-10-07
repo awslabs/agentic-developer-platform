@@ -178,7 +178,9 @@ async def handles(ledger, installation_postgres_url, monkeypatch):  # noqa: F811
             **state.altered,
         }
 
-    execution = HarnessExecutionAuthority(connections.connect, verify_run=verify_run)
+    execution = HarnessExecutionAuthority(
+        connections.connect, domain_connect=connections.connect, verify_run=verify_run
+    )
     validator = HarnessProviderAuthority(execution)
     monkeypatch.setattr(provider_authority, "_validator", validator)
     configured = [

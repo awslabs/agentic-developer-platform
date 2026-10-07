@@ -50,6 +50,7 @@ SUITES = (
     "usage-exports",
     "hosted-coding",
     "hosted-chat",
+    "assistant",
     "vault-lifecycle",
     "knowledge-lifecycle",
     "knowledge",
@@ -150,6 +151,8 @@ CAPABILITY_CONTRAST = "capability_contrast"
 # whether or not anything is listening behind it.
 SUPERPLANE_DOMAIN = "superplane_domain"
 TENANT_ISOLATION = "tenant_isolation"
+ASSISTANT_USERS = "assistant_users"
+ASSISTANT_LEDGER = "assistant_installation_ledger"
 
 CASES = (
     Case(
@@ -446,6 +449,62 @@ CASES = (
         "One enrolled human repository Task uses canonical submit, replay, monitor and control with terminal readback",
         (EC2, PLATFORM, COGNITO, HUMAN_TASK_CODING),
     ),
+    Case(
+        "E43",
+        "#6931/#6932/#147 SEC/DATA/SES",
+        "assistant",
+        "Authenticated WebSocket turn, durable acknowledgement, tool stream, replay and history refresh",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E44",
+        "#6933/#6934 ACT/EXT",
+        "assistant",
+        "Grounded ADP and connected human activity, source coverage and citations",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E45",
+        "#6931/#6932 SEC/DATA",
+        "assistant",
+        "Two-user/two-tenant history, memory, artifact and installation isolation",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E46",
+        "#147 SES",
+        "assistant",
+        "Persistent and ephemeral sessions, concurrency, lease fencing and independent sandbox destruction",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E47",
+        "#147/#6937 SES/QUAL",
+        "assistant",
+        "Bounded worker and queue faults, reconnect and accepted-turn reconciliation",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E48",
+        "#6935 DEP/EXT",
+        "assistant",
+        "Authorized installation diagnostics and upgrade ledger states",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS, ASSISTANT_LEDGER),
+    ),
+    Case(
+        "E49",
+        "#183/#6937 WARM/QUAL",
+        "assistant",
+        "Headless protocol latency and idle capacity/model cost baseline",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
+    Case(
+        "E50",
+        "#6939 HEAD01/HEAD03/HEAD04",
+        "assistant",
+        "Supported authenticated WebSocket baseline with server-owned session and correlated final response",
+        (EC2, PLATFORM, COGNITO, ASSISTANT_USERS),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -506,6 +565,13 @@ BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
 
 def suite_cases(suite):
     """Resolve a suite name to its ordered cases. 'full' is every case."""
+    if suite.startswith("case:"):
+        case_id = suite.removeprefix("case:")
+        if case_id not in BY_ID:
+            raise ValueError(f"Unknown CLI case {case_id!r}")
+        # Every focused journey still uses the clean-host install/auth stages.
+        wanted = {"E01", "C01", case_id}
+        return tuple(case for case in BY_ID.values() if case.id in wanted)
     if suite not in SUITES:
         raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
     if suite == "full":

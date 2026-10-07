@@ -18,7 +18,6 @@ from boto3.dynamodb.types import TypeSerializer
 from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError
-from src.agentauth.bootstrap_failure import is_bootstrap_failure
 from src.agentauth.engine import get_engine_authority_writer, validate_engine_authority
 from src.agentauth.grants import AgentAction, DelegatedGrant, TargetRelationship
 from src.agentauth.launch_configuration import resolve_launch_configuration
@@ -37,6 +36,7 @@ from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import DISPATCH_KIND, CycleBlockedError, CycleObservation
 from .run_store import EngineRunStore
 from .stage_attempts import stage_attempts
+from .startup_recovery import is_retryable_bootstrap_failure
 
 ACTOR = "system:review-cycle"
 
@@ -103,7 +103,6 @@ async def current_author_run(session, *, node, default):
                     and committed.flow_id == node.flow_id
                     and committed.actor_kind == "service"
                     and committed.kind == "agent_dispatched"
-                    and saved.get("authority_mode") == "shared_worker_role"
                     and saved.get("run_id") == run_id
                     and saved.get("action") == Action.REPAIR.value
                     and envelope.get("persona") == "agent-codex-reviewer"
@@ -309,19 +308,24 @@ class ReviewCycleServices:
             raise CycleBlockedError("worker_start_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE)
         return status == "completed"
 
+    async def recovery_snapshot(self, session, context, node, binding, dispatches):
+        from .protected_review_recovery import recovery_snapshot
+
+        return await recovery_snapshot(session, context, node, binding, self, dispatches)
+
     async def facts(self, session, context, node, binding, dispatches):
         active = continuation_run_id(dispatches[-1].operation_key) if dispatches else attempt_run_id(node.id, node.attempts)
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
         status = raw.get("status", {}).get("S")
-        bootstrap_failed = bool(dispatches) and is_bootstrap_failure(raw)
+        bootstrap_failed = bool(dispatches) and is_retryable_bootstrap_failure(raw)
         review_failed = bool(dispatches) and failed_review(raw)
-        if status in {"cancelled", "revoked"} or (
+        if (status in {"cancelled", "revoked"} and not bootstrap_failed) or (
             status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed and not review_failed
         ):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
         return {
             "active_run_id": active,
-            "worker_complete": status == "completed",
+            "worker_complete": status == "completed" or bootstrap_failed,
             "bootstrap_retry_of": active if bootstrap_failed else None,
             "review_retry_of": active if review_failed else None,
             "head_sha": await self.head(binding),
@@ -490,6 +494,10 @@ class ReviewCycleServices:
                 session, context, node, binding, detail["active_run_id"], effect.action, reserve=True
             )
             allow_story_repairs = effect.action is Action.REPAIR
+            allow_review_evidence = effect.action is Action.REVIEW
+            if effect.action is Action.REPAIR:
+                await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REVIEW)
+                allow_review_evidence = True
             if effect.action is Action.REVIEW:
                 try:
                     await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR)
@@ -498,7 +506,20 @@ class ReviewCycleServices:
                     # Explicit review-only policies retain read-only contents
                     # access. The persona itself cannot grant repair authority.
                     pass
-            bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_bootstrap_failure(raw)
+            if detail.get("protected_recovery_decision_id"):
+                from .protected_review_recovery import verified_decision
+
+                await verified_decision(
+                    session,
+                    decision_id=detail["protected_recovery_decision_id"],
+                    context=context,
+                    node=node,
+                    binding=binding,
+                    services=self,
+                    prior_run_id=detail["active_run_id"],
+                    head_sha=detail["head_sha"],
+                )
+            bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_retryable_bootstrap_failure(raw)
             review_retry = detail.get("review_retry_of") == detail["active_run_id"] and failed_review(raw)
             if (
                 not bootstrap_retry
@@ -508,7 +529,13 @@ class ReviewCycleServices:
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
                 raise CycleBlockedError("head_changed_before_dispatch")
+            delegation_parent = parent
             depth = int(raw["chain_depth"]["N"]) + 1
+            if bootstrap_retry or review_retry:
+                # Retrying an engine-owned stage is a sibling execution, not a
+                # new delegation by the failed worker. Keep its attenuated grant
+                # below, but attach it to the same verified delegation parent.
+                delegation_parent, depth = await self.retry_parent(node.org_id, raw, parent)
             if depth > parent.max_chain_depth:
                 raise CycleBlockedError("chain_depth_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
             genesis = await resolve_engine_genesis(session, org_id=node.org_id, decision_id=parent.authority.reference_id)
@@ -529,22 +556,25 @@ class ReviewCycleServices:
                 envelope.update(await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona))
             except Exception:
                 raise CycleBlockedError("persona_model_selection_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
-            envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
+            # Start the worker clock when its assignment is prepared, after any
+            # admission wait. The saved receipt preserves this timestamp on replay.
+            envelope.update(message_id=run_id, arrived_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), work_claim_required=True)
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
             envelope["correlation"].update(
-                correlation_id=attempt_run_id(node.id, node.attempts), chain_depth=depth, parent_principal=parent.principal
+                correlation_id=attempt_run_id(node.id, node.attempts), chain_depth=depth, parent_principal=delegation_parent.principal
             )
             envelope["review_cycle_input"] = {
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
             }
             envelope["review_cycle_input"].update(
                 allow_story_repairs=allow_story_repairs,
+                reviewer_owned_delivery=allow_review_evidence,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
                 operation_key=action.operation_key,
             )
-            if effect.action is Action.REVIEW:
+            if allow_review_evidence:
                 envelope["review_expect"] = {
                     "org_id": node.org_id,
                     "flow_id": node.flow_id,
@@ -571,8 +601,8 @@ class ReviewCycleServices:
                 "orchestration_node_attempt": {"N": str(node.attempts)},
                 "orchestration_continuation_receipt": {"S": receipt_id(action.operation_key)},
                 "orchestration_continuation_action": {"S": effect.action.value},
-                "parent_grant_id": {"S": parent.grant_id},
-                "parent_grant_epoch": {"N": str(parent.revocation_epoch)},
+                "parent_grant_id": {"S": delegation_parent.grant_id},
+                "parent_grant_epoch": {"N": str(delegation_parent.revocation_epoch)},
             }
             if effect.action is Action.REVIEW and allow_story_repairs:
                 # The credential broker reads trusted execution metadata, never
@@ -585,7 +615,7 @@ class ReviewCycleServices:
                 "accepted_plan_version": context.identity.accepted_plan_version,
                 "claim_generation": context.identity.claim_generation,
                 "action": effect.action.value,
-                "parent_principal": parent.principal,
+                "parent_principal": delegation_parent.principal,
                 "authority_reference_id": parent.authority.reference_id,
                 "envelope": envelope,
                 "execution_metadata": metadata,
@@ -647,6 +677,29 @@ class ReviewCycleServices:
             )
             await session.commit()
             return envelope, self.child_grant(parent, run_id, binding.repo), metadata
+
+    async def retry_parent(self, tenant_id, failed, failed_grant):
+        """Reuse verified lineage without resetting depth or widening authority."""
+        try:
+            parent_id, attempt = failed["parent_principal"]["S"].rsplit("#", 1)
+            raw_parent = await self.protected(tenant_id, parent_id)
+            parent = await asyncio.to_thread(
+                self.writer.store.live_grant, invocation_id=parent_id, tenant_id=tenant_id, attempt=int(attempt), now=datetime.now(UTC)
+            )
+            depth = int(raw_parent["chain_depth"]["N"]) + 1
+            if (
+                raw_parent.get("status", {}).get("S") in {"cancelled", "revoked"}
+                or parent.grant_id != failed["parent_grant_id"]["S"]
+                or parent.revocation_epoch != int(failed["parent_grant_epoch"]["N"])
+                or parent.authority != failed_grant.authority
+                or not failed_grant.allowed_actions <= parent.delegable_actions
+                or depth != int(failed["chain_depth"]["N"])
+                or not 0 < depth <= min(parent.max_chain_depth, failed_grant.max_chain_depth)
+            ):
+                raise ValueError("retry lineage changed")
+            return parent, depth
+        except (BootstrapRefusedError, KeyError, TypeError, ValueError):
+            raise CycleBlockedError("retry_parent_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
 
     @staticmethod
     def child_grant(parent, run_id, repo):

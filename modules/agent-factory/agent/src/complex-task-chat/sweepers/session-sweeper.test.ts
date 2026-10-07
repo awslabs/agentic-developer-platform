@@ -51,6 +51,17 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 const OWNER = { orgId: 'org-a', teamId: 'team-1', userId: 'user-alice' };
+const OWNER_ALIASES = {
+  orgId: OWNER.orgId,
+  tenantId: OWNER.orgId,
+  teamId: OWNER.teamId,
+  ownerUserId: OWNER.userId,
+  org_id: OWNER.orgId,
+  tenant_id: OWNER.orgId,
+  team_id: OWNER.teamId,
+  user_id: OWNER.userId,
+  owner_user_id: OWNER.userId,
+};
 
 /** A TTL REMOVE event for an expired session header. */
 function expiryEvent(
@@ -62,7 +73,10 @@ function expiryEvent(
     SK: { S: 'header' },
   };
   if (owner) {
-    if (owner.orgId !== undefined) oldImage.orgId = { S: owner.orgId };
+    if (owner.orgId !== undefined) {
+      oldImage.orgId = { S: owner.orgId };
+      oldImage.tenantId = { S: owner.orgId };
+    }
     if (owner.teamId !== undefined) oldImage.teamId = { S: owner.teamId };
     if (owner.userId !== undefined) oldImage.ownerUserId = { S: owner.userId };
   }
@@ -70,6 +84,7 @@ function expiryEvent(
     Records: [
       {
         eventName: 'REMOVE',
+        userIdentity: { type: 'Service', principalId: 'dynamodb.amazonaws.com' },
         dynamodb: { Keys: { PK: { S: `session#${sessionId}` }, SK: { S: 'header' } }, OldImage: oldImage },
       },
     ],
@@ -141,7 +156,7 @@ describe('deletion scope is derived from the verified owner, never from the id',
   it('conditions every row deletion on the session header remaining absent', async () => {
     mockDdbSend.mockImplementation(async (command: any) => {
       if (command._cmd === 'Query') {
-        return { Items: [{ PK: 'session#sess-expired', SK: 'msg#1' }] };
+        return { Items: [{ PK: 'session#sess-expired', SK: 'msg#1', ...OWNER_ALIASES }] };
       }
       return {};
     });
@@ -159,7 +174,27 @@ describe('deletion scope is derived from the verified owner, never from the id',
     }
   });
 
-  it('deletes only verified artifact rows from a mixed legacy partition', async () => {
+  it('leaves a context child that names another owner quarantined', async () => {
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.CONTEXT_TABLE) {
+        return { Items: [
+          { PK: 'session#sess-expired', SK: 'msg#own', ...OWNER_ALIASES },
+          { PK: 'session#sess-expired', SK: 'sum#foreign', ownerUserId: 'user-bob' },
+          { PK: 'session#sess-expired', SK: 'msg#unverified' },
+        ] };
+      }
+      return { Items: [] };
+    });
+    await handler(expiryEvent('sess-expired'));
+    const deletions = mockDdbSend.mock.calls.flatMap(call =>
+      call[0]._cmd === 'TransactWrite' ? call[0].TransactItems.slice(1).map((entry: any) => entry.Delete?.Key.SK) : [],
+    );
+    expect(deletions).toContain('msg#own');
+    expect(deletions).not.toContain('sum#foreign');
+    expect(deletions).not.toContain('msg#unverified');
+  });
+
+  it('quarantines artifact rows from a mixed legacy partition', async () => {
     const logged: string[] = [];
     jest.spyOn(console, 'log').mockImplementation(message => logged.push(String(message)));
     jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -168,7 +203,7 @@ describe('deletion scope is derived from the verified owner, never from the id',
     mockDdbSend.mockImplementation(async (command: any) => {
       if (command._cmd === 'Get') return {};
       if (command._cmd === 'Query' && command.TableName === process.env.CONTEXT_TABLE) {
-        return { Items: [{ PK: pk, SK: 'msg#1' }] };
+        return { Items: [{ PK: pk, SK: 'msg#1', ...OWNER_ALIASES }] };
       }
       if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
         return {
@@ -210,15 +245,15 @@ describe('deletion scope is derived from the verified owner, never from the id',
     expect(deleted).toContainEqual({
       TableName: process.env.CONTEXT_TABLE,
       Key: { PK: pk, SK: 'msg#1' },
+      ConditionExpression: expect.stringContaining('ownerUserId = :user'),
+      ExpressionAttributeValues: { ':org': OWNER.orgId, ':team': OWNER.teamId, ':user': OWNER.userId, ':null': null },
     });
-    expect(deleted).toContainEqual({
-      TableName: process.env.ARTIFACTS_TABLE,
-      Key: { PK: pk, SK: 'art#owned' },
-    });
-    expect(deleted.filter(item => item.TableName === process.env.ARTIFACTS_TABLE)).toHaveLength(1);
+    expect(deleted.filter(item => item.TableName === process.env.ARTIFACTS_TABLE)).toHaveLength(0);
     expect(deleted.some(item => item.Key.SK === 'art#foreign')).toBe(false);
     expect(deleted.some(item => item.Key.SK === 'art#legacy')).toBe(false);
     expect(deleted.some(item => item.Key.SK === 'art#missing-owner')).toBe(false);
+    expect(listCalls()).toHaveLength(0);
+    expect(deleteCalls()).toHaveLength(0);
     const metric = logged
       .filter(line => line.startsWith('{'))
       .map(line => JSON.parse(line))
@@ -227,6 +262,35 @@ describe('deletion scope is derived from the verified owner, never from the id',
       ArtifactRowsSkipped: 3,
       reason: 'unverified_artifact_owner',
     });
+  });
+
+  it('quarantines the entire object prefix when a later catalog page has ambiguous ownership', async () => {
+    const prefix = 'o/org-a/t/team-1/u/user-alice/s/sess-expired/';
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
+        return command.ExclusiveStartKey
+          ? { Items: [{ PK: 'session#sess-expired', SK: 'art#unowned', s3Key: `${prefix}private.pdf` }] }
+          : { Items: [{ PK: 'session#sess-expired', SK: 'art#owned', s3Key: `${prefix}public.pdf`,
+              org_id: OWNER.orgId, team_id: OWNER.teamId, user_id: OWNER.userId }],
+              LastEvaluatedKey: { PK: 'session#sess-expired', SK: 'art#owned' } };
+      }
+      return { Items: [] };
+    });
+    await handler(expiryEvent('sess-expired'));
+    expect(listCalls()).toHaveLength(0);
+    expect(deleteCalls()).toHaveLength(0);
+    expect(mockDdbSend.mock.calls.some(call => call[0]._cmd === 'TransactWrite' &&
+      call[0].TransactItems.some((item: any) => item.Delete?.TableName === process.env.ARTIFACTS_TABLE))).toBe(false);
+  });
+
+  it('does not report success when S3 acknowledges only a partial deletion', async () => {
+    mockS3Send.mockImplementation(async (command: any) => {
+      if (command._cmd === 'ListObjectsV2') return { Contents: [{ Key: `${command.Prefix}file.pdf` }] };
+      if (command._cmd === 'DeleteObjects') return { Errors: [{ Key: 'file.pdf', Code: 'AccessDenied' }] };
+      return {};
+    });
+    await expect(handler(expiryEvent('sess-expired'))).rejects.toThrow('artifact deletion partially failed');
+    expect(deleteCalls()).toHaveLength(1);
   });
 
   it('REGRESSION: never issues a delete scoped shallower than one session', async () => {
@@ -395,7 +459,252 @@ describe('owner extraction', () => {
   });
 });
 
+describe('personal-session ownership and cleanup', () => {
+  const personalOwner = { ...OWNER, teamId: '' };
+  const personalFields = { orgId: OWNER.orgId, tenantId: OWNER.orgId, teamId: '', ownerUserId: OWNER.userId };
+
+  it('recognizes an explicitly empty team and derives its reserved full-depth prefix', () => {
+    const event = expiryEvent('personal-session', personalOwner);
+    expect(extractSessionOwner(event.Records[0].dynamodb.OldImage)).toEqual(personalOwner);
+    expect(deriveSessionPrefix(personalOwner, 'personal-session')).toBe('o/org-a/t/~personal/u/user-alice/s/personal-session/');
+    expect(isFullDepthSessionPrefix(deriveSessionPrefix(personalOwner, 'personal-session'))).toBe(true);
+    const namedTeam = expiryEvent('personal-session', { ...personalOwner, teamId: '~personal' });
+    expect(extractSessionOwner(namedTeam.Records[0].dynamodb.OldImage)).toBeNull();
+  });
+
+  it.each([undefined, { NULL: true }, { BOOL: false }, { N: '0' }])('rejects a missing or non-string team: %p', attribute => {
+    const image = expiryEvent('personal-session', personalOwner).Records[0].dynamodb.OldImage;
+    if (attribute === undefined) delete image.teamId;
+    else image.teamId = attribute;
+    expect(extractSessionOwner(image)).toBeNull();
+  });
+
+  it.each([{ S: 'other-team' }, { BOOL: true }])('rejects conflicting or malformed optional team aliases: %p', attribute => {
+    const image = expiryEvent('personal-session', personalOwner).Records[0].dynamodb.OldImage;
+    image.team_id = attribute;
+    expect(extractSessionOwner(image)).toBeNull();
+  });
+
+  it('deletes only independently owned context and lists only the reserved artifact prefix', async () => {
+    const pk = 'session#personal-session';
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.CONTEXT_TABLE) {
+        return { Items: [
+          { PK: pk, SK: 'msg#owned', ...personalFields },
+          { PK: pk, SK: 'sum#unverified' },
+          { PK: pk, SK: 'msg#foreign', ...personalFields, ownerUserId: 'other-user' },
+          { PK: pk, SK: 'msg#wrong-team', ...personalFields, team_id: 'other-team' },
+        ] };
+      }
+      return {};
+    });
+
+    await handler(expiryEvent('personal-session', personalOwner));
+
+    const writes = mockDdbSend.mock.calls.map(call => call[0]).filter(command => command._cmd === 'TransactWrite');
+    expect(writes).toHaveLength(1);
+    const deletion = writes[0].TransactItems[1].Delete;
+    expect(writes[0].TransactItems).toHaveLength(2);
+    expect(deletion.Key).toEqual({ PK: pk, SK: 'msg#owned' });
+    expect(deletion.ExpressionAttributeValues[':team']).toBe('');
+    for (const [field, parameter] of [['orgId', ':org'], ['tenantId', ':org'], ['teamId', ':team'], ['ownerUserId', ':user']]) {
+      expect(deletion.ConditionExpression.split(' AND ')).toContain(`${field} = ${parameter}`);
+    }
+    expect(mockDdbSend.mock.calls.some(call => call[0].TableName === process.env.ARTIFACTS_TABLE)).toBe(true);
+    expect(listCalls().map(call => call.Prefix)).toEqual([deriveSessionPrefix(personalOwner, 'personal-session')]);
+  });
+
+  it('honors dry-run and recreated-header guards for personal cleanup', async () => {
+    process.env.SWEEPER_DRY_RUN = 'true';
+    mockDdbSend.mockResolvedValue({ Items: [{ PK: 'session#personal-session', SK: 'msg#owned', ...personalFields }] });
+    await handler(expiryEvent('personal-session', personalOwner));
+    expect(mockDdbSend.mock.calls.some(call => call[0]._cmd === 'Query')).toBe(true);
+    expect(mockDdbSend.mock.calls.some(call => call[0]._cmd === 'TransactWrite')).toBe(false);
+    expect(deleteCalls()).toHaveLength(0);
+
+    mockDdbSend.mockClear();
+    mockS3Send.mockClear();
+    delete process.env.SWEEPER_DRY_RUN;
+    mockDdbSend.mockResolvedValue({ Item: { PK: 'session#personal-session', SK: 'header' } });
+    await handler(expiryEvent('personal-session', personalOwner));
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('requires explicit personal catalog ownership before deleting its prefix: %s', ambiguous => {
+    const prefix = deriveSessionPrefix(personalOwner, 'personal-session');
+    const row = {
+      PK: 'session#personal-session', SK: 'art#owned', s3Key: `${prefix}gateway/out/art_a`,
+      ...personalFields, org_id: OWNER.orgId, team_id: '', user_id: OWNER.userId,
+    };
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
+        const unverified = { PK: row.PK, SK: 'art#unknown', s3Key: `${prefix}gateway/out/art_b` };
+        return { Items: ambiguous ? [row, unverified] : [row] };
+      }
+      return {};
+    });
+    return handler(expiryEvent('personal-session', personalOwner)).then(() => {
+      if (ambiguous) expect(mockS3Send).not.toHaveBeenCalled();
+      else expect(listCalls().map(call => call.Prefix)).toEqual([prefix]);
+    });
+  });
+
+  it.each(
+    Object.entries(personalFields).flatMap(([field, expected]) =>
+      ['removed', 'null'].map(change => ({ field, expected, change })),
+    ),
+  )('stops before S3 when personal artifact $field becomes $change after selection', async ({ field, expected, change }) => {
+    const prefix = deriveSessionPrefix(personalOwner, 'personal-session');
+    const row: Record<string, unknown> = {
+      PK: 'session#personal-session', SK: 'art#owned', s3Key: `${prefix}gateway/out/art_a`,
+      ...personalFields, org_id: OWNER.orgId, team_id: '', user_id: OWNER.userId,
+    };
+    const currentRow = { ...row };
+    let transactionAttempted = false;
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
+        return { Items: [{ ...row }] };
+      }
+      if (command._cmd === 'TransactWrite') {
+        transactionAttempted = true;
+        if (change === 'removed') delete currentRow[field];
+        else currentRow[field] = null;
+        const deletion = command.TransactItems[1].Delete;
+        const parameter = field === 'ownerUserId' ? ':user' : field === 'teamId' ? ':team' : ':org';
+        expect(deletion.Key).toEqual({ PK: row.PK, SK: row.SK });
+        expect(deletion.ConditionExpression.split(' AND ')).toContain(`${field} = ${parameter}`);
+        expect(deletion.ExpressionAttributeValues[parameter]).toBe(expected);
+        expect(currentRow[field]).not.toBe(expected);
+        throw Object.assign(new Error('personal artifact ownership changed'), { name: 'TransactionCanceledException' });
+      }
+      return {};
+    });
+
+    await expect(handler(expiryEvent('personal-session', personalOwner))).rejects.toThrow('personal artifact ownership changed');
+    expect(transactionAttempted).toBe(true);
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+});
+
+describe('ownership aliases and catalog deletion races', () => {
+  const sessionId = 'sess-expired';
+  const catalogRow = {
+    PK: `session#${sessionId}`,
+    SK: 'art#owned',
+    s3Key: `${deriveSessionPrefix(OWNER, sessionId)}task-1/in/file.pdf`,
+    org_id: OWNER.orgId,
+    team_id: OWNER.teamId,
+    user_id: OWNER.userId,
+  };
+
+  it.each(Object.keys(OWNER_ALIASES))('quarantines a header with conflicting %s', async field => {
+    const event = expiryEvent(sessionId);
+    for (const [alias, value] of Object.entries(OWNER_ALIASES)) event.Records[0].dynamodb.OldImage[alias] = { S: value };
+    event.Records[0].dynamodb.OldImage[field] = { S: 'another-owner' };
+
+    await handler(event);
+
+    expect(mockDdbSend).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it.each([{ N: '123' }, { BOOL: false }, { M: {} }])('rejects malformed ownership aliases %j', async attribute => {
+    const event = expiryEvent(sessionId);
+    event.Records[0].dynamodb.OldImage.owner_user_id = attribute;
+    await handler(event);
+    expect(mockDdbSend).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it('accepts matching and null optional header aliases consistently with migration', async () => {
+    const event = expiryEvent(sessionId);
+    const image = event.Records[0].dynamodb.OldImage;
+    for (const [field, value] of Object.entries(OWNER_ALIASES)) image[field] = { S: value };
+    image.owner_user_id = { NULL: true };
+    await handler(event);
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
+  it.each(Object.keys(OWNER_ALIASES))('quarantines a catalog prefix with conflicting %s', async field => {
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
+        const stored = { ...catalogRow, [field]: 'another-owner' };
+        const projected = Object.fromEntries(command.ProjectionExpression.split(', ').map((name: string) => [name, (stored as any)[name]]));
+        return { Items: [projected] };
+      }
+      return { Items: [] };
+    });
+
+    await handler(expiryEvent(sessionId));
+
+    expect(mockDdbSend.mock.calls.some(call => call[0]._cmd === 'TransactWrite')).toBe(false);
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it('conditions catalog deletion on the verified object key and every ownership alias', async () => {
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) {
+        return { Items: [catalogRow] };
+      }
+      return { Items: [] };
+    });
+
+    await handler(expiryEvent(sessionId));
+
+    const transaction = mockDdbSend.mock.calls.find(call => call[0]._cmd === 'TransactWrite')![0];
+    const deletion = transaction.TransactItems[1].Delete;
+    expect(deletion.Key).toEqual({ PK: catalogRow.PK, SK: catalogRow.SK });
+    expect(deletion.ConditionExpression).toContain('s3Key = :s3Key');
+    expect(deletion.ExpressionAttributeValues[':s3Key']).toBe(catalogRow.s3Key);
+    for (const field of Object.keys(OWNER_ALIASES)) expect(deletion.ConditionExpression).toContain(`${field} = `);
+    for (const [field, parameter] of [['org_id', ':org'], ['team_id', ':team'], ['user_id', ':user']]) {
+      expect(deletion.ConditionExpression.split(' AND ')).toContain(`${field} = ${parameter}`);
+      expect(deletion.ExpressionAttributeValues[parameter]).toBe(OWNER_ALIASES[field as keyof typeof OWNER_ALIASES]);
+    }
+    for (const [field, parameter] of [['orgId', ':org'], ['tenantId', ':org'], ['teamId', ':team'], ['ownerUserId', ':user']]) {
+      expect(deletion.ConditionExpression.split(' AND ')).toContain(
+        `(attribute_not_exists(${field}) OR ${field} = :null OR ${field} = ${parameter})`,
+      );
+    }
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
+  it.each(['user_id', 'ownerUserId', 's3Key'])('stops S3 cleanup when %s changes after the query', async field => {
+    const currentRow = { ...catalogRow, [field]: 'changed-after-query' };
+    mockDdbSend.mockImplementation(async (command: any) => {
+      if (command._cmd === 'Query' && command.TableName === process.env.ARTIFACTS_TABLE) return { Items: [{ ...catalogRow }] };
+      if (command._cmd === 'TransactWrite') {
+        const deletion = command.TransactItems[1].Delete;
+        expect((currentRow as any)[field]).not.toBe((catalogRow as any)[field]);
+        expect(deletion.ConditionExpression).toContain(`${field} = `);
+        throw Object.assign(new Error('catalog ownership changed'), { name: 'TransactionCanceledException' });
+      }
+      return { Items: [] };
+    });
+
+    await expect(handler(expiryEvent(sessionId))).rejects.toThrow('catalog ownership changed');
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+});
+
 describe('non-expiry events are ignored', () => {
+
+  it('does not delete data for a manually deleted header', async () => {
+    const event = expiryEvent('sess-manual');
+    delete event.Records[0].userIdentity;
+    await handler(event);
+    expect(mockDdbSend).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it('quarantines a conflicting tenant on the expired header', async () => {
+    const event = expiryEvent('sess-conflict');
+    event.Records[0].dynamodb.OldImage.tenantId = { S: 'another-tenant' };
+    await handler(event);
+    expect(mockDdbSend).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
   it('ignores INSERT and MODIFY', async () => {
     await handler({
       Records: [

@@ -1,4 +1,4 @@
-"""Human plan and budget authority for live shared-flow financial increases."""
+"""Human plan and budget authority for live flow financial increases."""
 
 from typing import Annotated
 

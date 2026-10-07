@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from tests.e2e.cli_uplift.config import REVISION
+from tests.e2e.cli_uplift.cases import SUITES, resolve_suites
 
 REQUIRED = {
     "guards": "Orchestration checks",
@@ -20,7 +21,8 @@ REQUIRED = {
 def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
     verified = isinstance(revision, str) and REVISION.fullmatch(revision)
     ec2_verified = isinstance(ec2_revision, str) and REVISION.fullmatch(ec2_revision)
-    scope_valid = ec2_scope in {"nightly", "login", "full"}
+    scopes = ec2_scope.split(",") if isinstance(ec2_scope, str) else []
+    scope_valid = bool(scopes) and all(scope in SUITES for scope in scopes)
     lines = [
         "## Nightly CLI regression — combined result",
         "",
@@ -42,7 +44,9 @@ def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
         lines.extend(
             [
                 "",
-                "Daily EC2 cases: E01 install, C01 login/refresh, E20 capabilities/doctor, E21 usage/export, E22 Activity, and E23–E38 story scenarios (except the separate E27 tenant-isolation suite). Missing fixtures remain blocked.",
+                "Daily EC2 cases: "
+                + ", ".join(case.id for case in resolve_suites(scopes))
+                + ". Missing fixtures remain blocked.",
                 "**Full CLI story acceptance is not established.** Active controls, "
                 "capability contrasts and marked spend reconciliation need their own fixtures.",
             ]
@@ -61,6 +65,7 @@ def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
             ]
         )
     if verified and ec2_verified and revision != ec2_revision:
+        passed = False
         lines.extend(
             [
                 "",

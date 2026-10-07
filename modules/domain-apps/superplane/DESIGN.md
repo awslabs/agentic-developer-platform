@@ -66,6 +66,15 @@ in a day” has not been resolved into a provisioning-time objective or implemen
 deadline and is not an accepted SLA. Establish prerequisites, timing boundaries and
 provider-specific evidence before adding such a target.
 
+Issue #7135 adds a distinct installation-owned provider authority for a reviewed
+same-account native workspace. Personal platform-account connections remain
+forbidden. Protected owner enrollment pins exact installation, human selectors,
+org/workspace, role/policy and secret generations; Gateway re-establishes live
+identity and releases only operation-bound short-lived sessions. See
+[provider authority](installation/PROVIDER-AUTHORITY.md) for the storage, evidence,
+revocation and delivery contract. Provider policies, mandatory child-role
+boundaries, qualified API/worker images and live acceptance remain separate gates.
+
 ## 2. Logical design
 
 ### 2.1 Terminology and ownership invariants
@@ -819,6 +828,47 @@ recovery requirements are specified in
 [shared-runtime-wiring.md](workspace_provisioning/shared-runtime-wiring.md#version-2-pinned-dependency-descriptor).
 Runtime must refuse missing or incompatible pins; it must not substitute a callback
 that asserts readiness or hash current provider state to manufacture an expectation.
+
+### 7.2 Infrastructure source and lifecycle ownership
+
+Installation-owned platform-account provider execution is a separate protected
+capability; it does not relax personal AWS connection restrictions. Governed
+workspace roles receive an explicit owner-reviewed boundary, bound into the
+approved runtime policy. CNI and primary node interfaces receive immutable
+ownership tags at creation. The unused AWS default security group remains
+unmanaged in this mode, avoiding permission to claim arbitrary untagged groups.
+AWS CreateCluster cannot be constrained to a VPC/subnet by IAM: the protected
+worker, exact source and saved-plan approval enforce the owned network graph.
+See the [provider permission matrix](infra/domain-provider/README.md) for this
+residual service-linked authority, phased preparation and required live proof.
+
+
+All Superplane-specific infrastructure definitions, environment inputs and
+provisioning logic live under `modules/domain-apps/superplane/`. Persistent AWS
+resources, IAM roles/policies and EKS access mappings use app-owned Terraform.
+Kubernetes installation and temporary workspace/bootstrap grants use maintained
+app entrypoints with recorded ownership, verification and cleanup.
+
+Existing ADP management infrastructure remains platform-owned. App modules
+consume explicit references to shared clusters, database instances, state
+storage, identity providers and automation roles. They do not acquire ownership
+of those dependencies or another application's grants. GitHub workflow wrappers
+and shared Terraform composition roots may call app-owned modules; the app owns
+the Superplane-specific definitions they execute.
+
+The installation operator may use an explicitly authorized local AWS role to
+prepare and apply infrastructure. A broker connection is not a prerequisite for
+that operator path. The selected account/immutable role and saved plans must
+still be verified. Runtime provider credentials and workspace delegation are
+separate from installation authority.
+
+Moving source or introducing a child module must preserve existing resource
+identities and backend keys, with reviewed Terraform address migrations where
+needed. Do not recreate resources, expand permissions, or silently transfer
+shared state ownership as part of a directory move. Source completion does not
+establish that live infrastructure or state ownership has changed. The
+[infrastructure ownership contract](infra/README.md#infrastructure-ownership)
+maps the maintained app owners and shared integration boundaries.
 
 ## 8. Delivery and acceptance
 

@@ -1,0 +1,92 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: adp-chat-warm-reserve
+value: -1
+globalDefault: false
+description: "Disposable chat node reservations; fresh chat sandboxes have higher priority"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-sandbox-node-reserve
+  namespace: adp-gateway-agents
+spec:
+  replicas: REPLACE_WITH_WARM_CAPACITY
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chat-sandbox-node-reserve
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chat-sandbox-node-reserve
+    spec:
+      priorityClassName: adp-chat-warm-reserve
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reserve
+          image: REPLACE_WITH_SANDBOX_IMAGE_DIGEST
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+              ephemeral-storage: 256Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: chat-sandbox-image-prepull
+  namespace: adp-gateway-agents
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chat-sandbox-image-prepull
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chat-sandbox-image-prepull
+    spec:
+      priorityClassName: adp-chat-warm-reserve
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cache
+          image: REPLACE_WITH_SANDBOX_IMAGE_DIGEST
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

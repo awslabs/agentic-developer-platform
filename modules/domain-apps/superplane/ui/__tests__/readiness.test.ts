@@ -152,6 +152,11 @@ describe('freshness', () => {
 });
 
 describe('workspace readiness', () => {
+  it('accepts the native bootstrap active status only with healthy fresh evidence', () => {
+    expect(workspaceReading(workspace({ status: 'active' }), NOW).ready).toBe(true);
+    expect(workspaceReading(workspace({ status: 'active', last_heartbeat: LONG_AGO }), NOW).ready).not.toBe(true);
+    expect(workspaceReading(workspace({ status: 'active', cluster_health: 'Degraded' }), NOW).ready).not.toBe(true);
+  });
   it('requires both a successful status and a fresh healthy observation', () => {
     expect(workspaceReading(workspace(), NOW).ready).toBe(true);
   });
@@ -171,6 +176,13 @@ describe('workspace readiness', () => {
     expect(reading.ready).toBeNull();
     expect(reading.freshness).toBe('unknown');
     expect(reading.reason).toMatch(/never reported/i);
+  });
+
+  it('does not turn a fresh heartbeat without a health reading into a failure or a pass', () => {
+    const reading = workspaceReading(workspace({ cluster_health: null }), NOW);
+    expect(reading.ready).toBeNull();
+    expect(reading.freshness).toBe('fresh');
+    expect(reading.reason).toMatch(/health has not been reported/i);
   });
 
   it('reports an unhealthy cluster as not ready, distinct from unknown', () => {

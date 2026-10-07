@@ -1,5 +1,6 @@
 name: Cyber URL Analysis CI
 'on':
+  workflow_call: {}
   pull_request:
     branches:
     - main
@@ -18,7 +19,7 @@ name: Cyber URL Analysis CI
 permissions:
   contents: read
 concurrency:
-  group: cyber-url-analysis-${{ github.ref }}
+  group: ${{ github.workflow }}-cyber-url-analysis-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   research-fixtures:

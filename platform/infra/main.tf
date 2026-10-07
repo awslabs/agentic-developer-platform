@@ -309,7 +309,8 @@ resource "aws_security_group_rule" "vpc_endpoints_from_eks_cluster" {
 # ECR Repositories
 # -----------------------------------------------------------------------------
 module "ecr" {
-  source = "./modules/ecr"
+  source                   = "./modules/ecr"
+  manage_registry_scanning = var.manage_ecr_registry_scanning
 
   environment            = var.environment
   name_prefix            = local.name_prefix

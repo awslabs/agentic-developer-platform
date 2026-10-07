@@ -3,6 +3,7 @@
   "authority": "modules/agent-factory/webhook-ingress/lambda/common/personas.py",
   "claudeCommonSources": [
     "platform-workflow.md",
+    "coding-guidelines.md",
     "core-workflow.md",
     "agents/agent-routing.md",
     "research/research-guide.md",

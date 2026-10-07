@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -56,6 +57,7 @@ class WorkflowDefinition:
     dispatch_revision: str
     caller_path: str | None = None
     caller_blob_sha: str | None = None
+    evidence_transport: str = "github-artifact"
 
 
 @dataclass(frozen=True)
@@ -66,14 +68,16 @@ class WorkflowRun:
     conclusion: str | None
     url: str
     context: WorkflowContext
-    artifact_id: int
+    artifact_id: int | None
     artifact_digest: str
     observed_at: str
+    artifact_ref: str | None = None
 
 
 class WorkflowProvider:
-    def __init__(self, *, client=None, clock=lambda: datetime.now(UTC)):
+    def __init__(self, *, client=None, clock=lambda: datetime.now(UTC), evidence_store=None):
         self.client, self.clock = client, clock
+        self.evidence_store = evidence_store
 
     async def token(self, binding, *, write=False):
         app, key = await resolve_tenant_app_credentials(binding.org_id)
@@ -192,6 +196,9 @@ class WorkflowProvider:
             caller_path = ".github/workflows/gateway-deploy.yml"
             caller = await self.definition(binding, replace(workflow, path=caller_path), source_revision, for_dispatch=for_dispatch)
             caller_blob = caller.blob_sha
+        transport = doc.get("env", {}).get("ADP_DEPLOYMENT_EVIDENCE_STORE", "github-artifact")
+        if transport not in {"github-artifact", "s3-oidc-v1"}:
+            raise CycleBlockedError("deployment_evidence_transport_unknown")
         return WorkflowDefinition(
             workflow.definition_revision,
             source_revision,
@@ -202,6 +209,7 @@ class WorkflowProvider:
             dispatch_revision,
             caller_path,
             caller_blob,
+            transport,
         )
 
     async def runs(self, binding, source_revision, correlation=None):
@@ -242,6 +250,15 @@ class WorkflowProvider:
             raise CycleBlockedError("deployment_context_identity_mismatch")
         return context, int(artifact["id"]), digest
 
+    async def s3_evidence(self, **expected):
+        from deployment_evidence.store import EvidenceStore
+
+        try:
+            return await asyncio.to_thread((self.evidence_store or EvidenceStore()).read, **expected)
+        except Exception:
+            # Credentials, signed tokens and object contents never enter errors.
+            raise CycleBlockedError("deployment_s3_evidence_unverifiable") from None
+
     async def observe(self, binding, *, workflow, definition, target, source_revision, inputs, correlation=None, run_id=None):
         runs = (
             [(await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{run_id}")).json()]
@@ -272,7 +289,34 @@ class WorkflowProvider:
                 continue
             if run.get("event") == "workflow_dispatch" and (not correlation or run.get("display_title") != "ADP deployment " + correlation):
                 continue
-            result = await self.context(binding, run, workflow.path)
+            artifact_ref = None
+            if definition.evidence_transport == "s3-oidc-v1":
+                result = await self.s3_evidence(
+                    account=target.account_id,
+                    environment=inputs.get("environment", definition.defaults.get("environment", "dev")),
+                    region=target.region,
+                    repository=binding.repo,
+                    repository_id=binding.provider_repository_id,
+                    run_id=int(run["id"]),
+                    attempt=int(run["run_attempt"]),
+                    kind="context",
+                    name=workflow.path.rsplit("/", 1)[-1],
+                    workflow_path=workflow.path,
+                    workflow_revision=expected_workflow_revision,
+                )
+                if result is not None:
+                    payload, digest, artifact_ref = result
+                    context = WorkflowContext.model_validate_json(payload)
+                    if (context.repository_id, context.run_id, context.run_attempt, context.workflow_path) != (
+                        binding.provider_repository_id,
+                        int(run["id"]),
+                        int(run["run_attempt"]),
+                        workflow.path,
+                    ):
+                        raise CycleBlockedError("deployment_context_identity_mismatch")
+                    result = context, None, digest
+            else:
+                result = await self.context(binding, run, workflow.path)
             if result is None:
                 incomplete = True
                 continue
@@ -325,6 +369,7 @@ class WorkflowProvider:
                     artifact_id,
                     digest,
                     self.clock().isoformat(),
+                    artifact_ref,
                 )
             )
         if len(matches) > 1:

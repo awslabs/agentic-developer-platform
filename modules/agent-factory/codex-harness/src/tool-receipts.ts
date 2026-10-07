@@ -21,8 +21,8 @@ export class ToolReceipts {
   private pending?: Entry;
   private executing = false;
   private failed = false;
-  constructor(tools: readonly HostTool[], private readonly maxCalls: number, private readonly maxReceiptBytes: number) {
-    if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 128
+  constructor(tools: readonly HostTool[], private readonly maxCalls: number | undefined, private readonly maxReceiptBytes: number) {
+    if ((maxCalls !== undefined && (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 128))
       || !Number.isSafeInteger(maxReceiptBytes) || maxReceiptBytes < 1 || maxReceiptBytes > 32768
       || tools.length > 64 || new Set(tools.map(tool => tool.name)).size !== tools.length) throw new Error("Invalid tool receipt policy");
     this.tools = new Map(tools.map(tool => [tool.name, { ...tool, input: tool.input.strict() }]));
@@ -38,7 +38,7 @@ export class ToolReceipts {
     if (!calls.length) return;
     const call = callSchema.parse(calls[0]);
     const tool = this.tools.get(call.name);
-    if (!tool || this.entries.has(call.call_id) || this.entries.size >= this.maxCalls) throw new Error("Tool call not admitted");
+    if (!tool || this.entries.has(call.call_id) || (this.maxCalls !== undefined && this.entries.size >= this.maxCalls)) throw new Error("Tool call not admitted");
     const args = tool.input.parse(JSON.parse(call.arguments));
     const entry = { call, args };
     this.entries.set(call.call_id, entry);

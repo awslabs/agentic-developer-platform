@@ -119,7 +119,7 @@ async def allowance(session, flow, nodes, inputs, *, cancel=False):
         raise ValueError("accepted allowance unavailable")
     policy = inputs.policy
     spend = await _observed_spend(
-        session, org_id=flow.org_id, flow_slug=flow.slug, nodes=nodes
+        session, org_id=flow.org_id, flow_slug=flow.slug, nodes=nodes, policy=policy
     )
     if spend.total_usd is None or spend.total_usd != 0:
         raise ValueError("unused control fixture spend is not verified zero")

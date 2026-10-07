@@ -103,6 +103,8 @@ _EXPECTED_APP_PERMISSIONS: dict[str, str] = {
     "issues": "write",
     "pull_requests": "write",
     "checks": "write",
+    "actions": "write",
+    "workflows": "write",
     "metadata": "read",
 }
 
@@ -189,7 +191,7 @@ _VERIFICATION_TTL_SECONDS = 60
 # keyed by tenant/org id → (expires_at_monotonic, exists|None)
 _tenant_secret_cache: dict[str, tuple[float, bool | None]] = {}
 # keyed by (kind, key) → (expires_at_monotonic, present|None)
-_identity_row_cache: dict[tuple[str, str], tuple[float, bool | None]] = {}
+_identity_row_cache: dict[tuple[str, ...], tuple[float, bool | None]] = {}
 # platform-wide singleton checks → (expires_at_monotonic, PlatformVerification)
 _platform_verification_cache: tuple[float, Any] | None = None
 
@@ -711,6 +713,13 @@ async def install_callback(
         installation_id=installation_id,
         org_id=resolved_org_id,
     )
+
+    # End the callback's claim/secret/routing transaction before bot seeding
+    # opens its own session. Personal installs and an idempotent org append
+    # can still hold the organization FOR UPDATE lock here; the seed's separate
+    # transaction needs that same row when creating the canonical bot user.
+    # Keep the existing guarded writes ahead of this boundary.
+    await db.commit()
 
     # Seed the platform App's own bot identity so the webhook Lambda
     # recognizes its sender (e.g. the agent editing its own status comment)
@@ -1383,7 +1392,7 @@ async def _check_identity_rows(installation_id: int, org_id: str | None) -> tupl
     """
     from src.admin.identity_index import IdentityIndexClient
 
-    fwd_key = ("forward", str(installation_id))
+    fwd_key = ("forward", str(installation_id), org_id or "")
     rev_key = ("reverse", org_id or "")
 
     fwd_hit, fwd_cached = _verification_cache_get(_identity_row_cache, fwd_key)
@@ -1414,6 +1423,8 @@ async def _check_identity_rows(installation_id: int, org_id: str | None) -> tupl
         return result is not None
 
     forward = _present(results[0])
+    if forward is True and org_id is not None:
+        forward = results[0].get("org_id", {}).get("S") == org_id
     _verification_cache_set(_identity_row_cache, fwd_key, forward)
 
     reverse: bool | None = None

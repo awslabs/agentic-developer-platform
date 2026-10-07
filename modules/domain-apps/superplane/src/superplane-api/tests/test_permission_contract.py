@@ -1,15 +1,30 @@
 """Versioned route and grant contract for #6484; no external services required."""
 
 import ast
+import importlib.util
 import json
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+from harness_jobs.approval import (
+    APPROVAL_PERMISSION,
+    ApprovalBinding,
+    ApprovalRecord,
+    ApprovalResult,
+    ApproverStatus,
+    SpendEnvelope,
+    evaluate_approval,
+)
+from harness_jobs.identity import OperationRequest, ResolvedPrincipal
 
-from app.auth import load_workspace_authorization
+from app import auth
+from app.config import settings
+from app.current_identity import MappedProducerIdentityReader
+from app.auth import VerifiedCaller, authorize_organization_operation, load_workspace_authorization
 from app.endpoint_inventory import (
     DOMAIN_ROUTES,
     PRIVATE_DOMAIN_ROUTES,
@@ -18,11 +33,13 @@ from app.endpoint_inventory import (
 )
 from app.main import app
 from app.models.organization import Organization
+from app.models.organization_grant import OrganizationGrantRecord, ORGANIZATION_ADMINISTER, ORGANIZATION_READ
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from superplane_auth.policy import (
     AuthorizationDeniedError,
     DomainPrincipal,
+    DomainTokenPolicy,
     Permission,
     expand_permissions,
     permissions_for_adp_role,
@@ -41,6 +58,10 @@ def _contract(name):
 MATRIX = _contract("action-permissions-v1.json")
 ACCESS = _contract("access-cases-v1.json")
 CASES = [dict(zip(ACCESS["columns"], values, strict=True)) for values in ACCESS["cases"]]
+APPROVAL_CASES = [dict(zip(ACCESS["approval_columns"], values, strict=True)) for values in ACCESS["approval_cases"]]
+ORGANIZATION_CASES = [
+    dict(zip(ACCESS["organization_columns"], values, strict=True)) for values in ACCESS["organization_cases"]
+]
 
 
 def test_matrix_matches_real_mounted_domain_routes():
@@ -57,9 +78,17 @@ def test_matrix_matches_real_mounted_domain_routes():
         assert action["principal"] in {"human", "service", "human_or_service"}
         assert isinstance(action["extra"], list)
         assert action["surface"] == "absent" or action["surface"].startswith(("cli:", "ui:", "tool:"))
+        assert all(surface.startswith("cli:") and surface != action["surface"] for surface in action.get("also_surfaces", []))
+        assert all(surface.startswith("cli:") and surface not in [action["surface"], *action.get("also_surfaces", [])] for surface in action.get("unavailable_surfaces", []))
+        if action["scope"] == "organization":
+            assert action["organization_grant"] == (
+                ORGANIZATION_READ if action["permission"] == Permission.READ.value else ORGANIZATION_ADMINISTER
+            )
+        else:
+            assert "organization_grant" not in action
         if not action["routes"]:
             assert action["surface"] == "absent"
-            assert action["scope"] in {"workspace", "cluster"}
+            assert action["scope"] in {"workspace", "organization", "cluster"}
         for route in action["routes"]:
             method, path = route.split(" ", 1)
             key = (method, path)
@@ -82,6 +111,150 @@ def test_all_permission_implications_and_non_implications(granted, requested):
     assert not expand_permissions({"unknown-role-or-permission"}) & set(Permission)
 
 
+
+
+@pytest.mark.parametrize("name,permission,surface,routes,requirements", [
+    (
+        "workspace.access.read", Permission.READ.value, "ui:getWorkspaceAccess",
+        ["GET /workspaces/{workspace_id}/access/v1/me"], {"explicit_live_grant"},
+    ),
+    (
+        "workspace.access.manage", Permission.ADMINISTER.value, "ui:grantWorkspaceAccess",
+        ["POST /workspaces/{workspace_id}/access/v1/grants"],
+        {"typed_target", "same_tenant", "explicit_live_grant", "current_membership", "assignable_ceiling"},
+    ),
+])
+def test_mounted_human_workspace_access_surfaces(name, permission, surface, routes, requirements):
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    action = actions[name]
+    assert action["scope"] == "workspace"
+    assert action["permission"] == permission
+    assert action["principal"] == "human"
+    assert action["surface"] == surface
+    assert action["routes"] == routes
+    assert requirements <= set(action["extra"])
+    assert "organization_grant" not in action
+
+
+def test_absent_generalized_effective_access_and_grant_administration_surfaces():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    for name, scope, permission in (
+        ("workspace.access.effective", "workspace", Permission.READ.value),
+        ("org.access.effective", "organization", Permission.READ.value),
+        ("workspace.share", "workspace", Permission.ADMINISTER.value),
+        ("cluster.use", "cluster", "cluster:use"),
+        ("cluster.administer", "cluster", "cluster:administer"),
+        ("cluster.observe", "cluster", "cluster:observe"),
+    ):
+        assert actions[name]["scope"] == scope
+        assert actions[name]["permission"] == permission
+        assert actions[name]["surface"] == "absent"
+        assert actions[name]["routes"] == []
+    workspace_grants = actions["workspace.access.manage"]
+    assert workspace_grants["scope"] == "workspace"
+    assert workspace_grants["permission"] == Permission.ADMINISTER.value
+    assert workspace_grants["surface"] == "ui:grantWorkspaceAccess"
+    assert workspace_grants["routes"] == ["POST /workspaces/{workspace_id}/access/v1/grants"]
+    assert {"typed_target", "same_tenant", "current_membership", "assignable_ceiling"} <= set(workspace_grants["extra"])
+    assert actions["org.access.manage"]["organization_grant"] == ORGANIZATION_ADMINISTER
+    assert actions["org.access.effective"]["organization_grant"] == ORGANIZATION_READ
+    for name in ("org.access.effective", "workspace.access.effective"):
+        assert actions[name]["principal"] == "human_or_service"
+        assert {"self_only", "current_typed_identity", "revocation_aware"} <= set(actions[name]["extra"])
+    assert "no_grant_existence_leak" in actions["workspace.access.effective"]["extra"]
+    assert actions["org.access.manage"]["routes"] == ["POST /orgs/current/access/v1/grants", "POST /orgs/current/access/v1/grants/{grant_id}/revoke"]
+    assert {"assignable_ceiling", "self_mutation_pending_policy", "service_and_presets_pending_policy", "atomic_audit", "durable_replay"} <= set(actions["org.access.manage"]["extra"])
+    assert "cluster_use_authority_separate" in actions["workspace.share"]["extra"]
+    assert actions["org.users.manage"]["routes"]
+    assert actions["org.users.manage"]["surface"] == "absent"
+    assert "Generalized human/service self-effective-access actions are intentionally absent" in MATRIX["format"]
+
+
+def test_fixed_permission_vocabulary_and_separate_cluster_scope():
+    assert {permission.value for permission in Permission} == {
+        "workspace:read", "workspace:spend", "workspace:provision",
+        "workspace:renew_credential", "workspace:administer",
+    }
+    assert {ORGANIZATION_READ, ORGANIZATION_ADMINISTER}.isdisjoint({permission.value for permission in Permission})
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    assert all(actions[name]["scope"] == "organization" for name in (
+        "workspace.create", "workspace.list", "org.settings", "approval.decision",
+    ))
+    assert actions["workspace.create"]["organization_grant"] == ORGANIZATION_ADMINISTER
+    assert actions["workspace.list"]["organization_grant"] == ORGANIZATION_READ
+    for name in ("cluster.use", "cluster.administer", "cluster.observe"):
+        assert actions[name]["scope"] == "cluster"
+        assert actions[name]["permission"] == name.replace("cluster.", "cluster:")
+        assert actions[name]["routes"] == [] and actions[name]["surface"] == "absent"
+    assert actions["workspace.list"]["scope"] == "organization"
+    assert "cli:cluster list" in actions["workspace.list"]["also_surfaces"]
+    assert "first installation grant" in MATRIX["scope_gate"]["bootstrap"]
+    assert "revocation denies fallback" in MATRIX["scope_gate"]["organization"]
+
+
+def test_cluster_discovery_requires_independent_current_cluster_use():
+    action = next(action for action in MATRIX["actions"] if action["id"] == "workspace.list")
+    assert action["organization_grant"] == ORGANIZATION_READ
+    assert action["conditional_authorities"] == [{
+        "query": {"view": "eligible-clusters"},
+        "scope": "cluster",
+        "permission": "cluster:use",
+        "evaluation": "filter_before_metadata",
+        "requires": ["current_typed_identity", "same_bound_organization", "live_parent_and_child"],
+        "not_authority_for": ["cluster:administer", "cluster:observe", "approval", "executor_admission"],
+    }]
+
+
+@pytest.mark.parametrize("case", ORGANIZATION_CASES, ids=lambda case: case["name"])
+@pytest.mark.asyncio
+async def test_bound_org_and_legacy_scope_grant_cases(case):
+    assert ACCESS["version"] == 1
+    org_ids = {name: uuid.uuid4() for name in ("O1", "O2")}
+    subject = case["subject"]
+    workspace_ids = []
+    async with async_session_test() as db:
+        for name, org_id in org_ids.items():
+            db.add(Organization(
+                id=org_id, name=f"contract-org-{name}", billing_plan="free",
+                adp_org_id=f"selected-{name}" if case["bound"] else None,
+            ))
+        for index in range(case["workspace_count"]):
+            workspace_id = uuid.uuid4()
+            workspace_ids.append(workspace_id)
+            db.add(Workspace(
+                id=workspace_id, org_id=org_ids["O1"], name=f"contract-org-w{index}",
+                isolation_mode="shared", status="active",
+            ))
+        if case["grant_org"]:
+            db.add(OrganizationGrantRecord(
+                org_id=org_ids[case["grant_org"]], principal=subject,
+                principal_type=case["grant_type"], permissions=" ".join(case["org_permissions"]),
+                granted_by="fixture", revoked_at=datetime.now(UTC) if case["revoked"] else None,
+            ))
+        for workspace_id in workspace_ids if case["all_workspaces"] else workspace_ids[:1]:
+            if case["workspace_permissions"]:
+                db.add(WorkspaceGrantRecord(
+                    workspace_id=workspace_id, org_id=org_ids["O1"], principal=subject,
+                    principal_type=case["principal_type"], permissions=" ".join(case["workspace_permissions"]),
+                ))
+        await db.commit()
+        principal = DomainPrincipal(
+            subject=subject, org_id=str(org_ids[case["org"]]), client_id="offline-test-client",
+            account_type=case["principal_type"],
+        )
+        caller = VerifiedCaller(principal=principal, safe_headers={})
+        if case["allow"]:
+            assert await authorize_organization_operation(db, caller, Permission(case["request"])) is None
+        else:
+            with pytest.raises(HTTPException) as denied:
+                await authorize_organization_operation(db, caller, Permission(case["request"]))
+            assert denied.value.status_code == 403
+        if case["bound"] and case["allow"] and workspace_ids and not case["workspace_permissions"]:
+            model, stored_org = await load_workspace_authorization(db, workspace_ids[0], subject, case["principal_type"])
+            with pytest.raises(AuthorizationDeniedError):
+                model.authorize(principal, str(workspace_ids[0]), Permission.READ, workspace_org_id=stored_org)
+
+
 def test_sensitive_actions_have_independent_requirements():
     actions = {action["id"]: action for action in MATRIX["actions"]}
     assert actions["serving.delete"]["permission"] == Permission.SPEND.value
@@ -94,7 +267,15 @@ def test_sensitive_actions_have_independent_requirements():
     ))
     assert actions["approval.decision"]["principal"] == "human"
     assert "selected_distinct_current_human_approver" in actions["approval.decision"]["extra"]
-    assert actions["workspace.access.manage"]["routes"] == []
+    assert actions["workspace.access.manage"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants"
+    ]
+    assert actions["workspace.access.revoke"]["routes"] == [
+        "POST /workspaces/{workspace_id}/access/v1/grants/{grant_id}/revoke"
+    ]
+    assert actions["workspace.access.revoke"]["permission"] == Permission.ADMINISTER.value
+    assert actions["workspace.access.revoke"]["principal"] == "human"
+    assert {"expected_revision", "atomic_audit", "durable_replay", "self_removal_pending_policy", "future_authority_only"} <= set(actions["workspace.access.revoke"]["extra"])
     assert actions["cluster.use"]["scope"] != actions["workspace.read"]["scope"]
     # Do not turn first-install bootstrap or machine transport restrictions into
     # blanket action permissions for subsequent workspaces or cluster observers.
@@ -107,15 +288,86 @@ def test_sensitive_actions_have_independent_requirements():
     assert "service_run_delegation_if_service" in actions["serving.submit"]["extra"]
 
 
-def test_maintained_ui_action_names_and_routes_are_real():
-    ui_contract = (DOMAIN / "ui/contract.ts").read_text()
-    ui_actions = {
-        match.group(1): f"{match.group(2)} {match.group(3)}"
-        for match in re.finditer(
-            r"(?m)^  (\w+): \{\s*method: '(\w+)',\s*path: '([^']+)'",
-            ui_contract,
+
+@pytest.mark.parametrize("case", APPROVAL_CASES, ids=lambda case: case["name"])
+def test_exact_human_approval_binding_and_current_status_cases(case):
+    assert APPROVAL_PERMISSION == Permission.ADMINISTER.value
+    now = datetime(2026, 10, 5, tzinfo=UTC)
+    requester = ResolvedPrincipal(org_id="O1", workspace_id="W0", subject="alice")
+    request = OperationRequest(
+        action=case["action"], idempotency_key="contract-approval", parameters={"size": "small"},
+    )
+    envelope = SpendEnvelope(max_resource_units=1, max_runtime_seconds=60, max_cost_micros=1000000)
+    record = ApprovalRecord(
+        approval_id="contract-approval-id", binding=ApprovalBinding.for_request(requester, request),
+        envelope=envelope, result=ApprovalResult(case["result"]),
+        approvers=frozenset({case["approver"]}), decided_by=case["approver"],
+        decided_at=now - timedelta(minutes=1), expires_at=now + timedelta(minutes=10),
+    ) if case["record_present"] else None
+    status = case["status"]
+    current_statuses = {} if status == "missing" else {
+        case["approver"]: ApproverStatus(
+            subject=case["approver"], is_member=status != "stale",
+            revoked=status == "revoked",
+            permissions=frozenset({Permission.READ.value if status == "read_only" else Permission.ADMINISTER.value}),
         )
     }
+    current_principal = ResolvedPrincipal(
+        org_id=case["request_org"], workspace_id=case["request_workspace"], subject="alice",
+    )
+    current_request = OperationRequest(
+        action=case["action"], idempotency_key="contract-approval",
+        parameters={"size": "large" if case["changed_plan"] else "small"},
+    )
+    decision = evaluate_approval(
+        record, principal=current_principal, request=current_request,
+        requested_envelope=envelope, approver_statuses=current_statuses, now=now,
+    )
+    assert decision.permitted is case["allow"]
+
+
+def test_approval_delegation_and_domain_human_checks_stay_separate():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    assert actions["approval.request"]["principal"] == "human"
+    assert {"requester_exact_workspace_grant", "organization_scope_for_first_workspace", "approval_not_execution"} <= set(actions["approval.request"]["extra"])
+    assert actions["approval.decision"]["principal"] == "human"
+    assert {"selected_distinct_current_human_approver", "exact_request_workspace_plan_binding", "approval_not_execution"} <= set(actions["approval.decision"]["extra"])
+    for action_id, conditional in (
+        ("workspace.lifecycle_proposal", "exact_human_approval_on_continue"),
+        ("workspace.retirement", "exact_human_approval_on_admit"),
+    ):
+        assert conditional in actions[action_id]["extra"]
+    for action_id in ("serving.submit", "batch.submit"):
+        assert {"service_run_delegation_if_service", "approval_separate_from_service_delegation", "executor_permission_separate"} <= set(actions[action_id]["extra"])
+        assert actions[action_id]["permission"] == Permission.SPEND.value
+    approval_service = ast.parse((DOMAIN / "src/superplane-api/app/services/operation_approvals.py").read_text())
+    methods = next(node for node in approval_service.body if isinstance(node, ast.ClassDef) and node.name == "ApprovalService")
+    decision_method = next(node for node in methods.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "decide")
+    decision_source = ast.unparse(decision_method)
+    assert "caller.account_type != 'human'" in decision_source
+    assert "caller.subject == row.requester" in decision_source
+    assert "status.may_approve" in decision_source
+    assert "row.revoked" in decision_source
+    authority_source = (DOMAIN / "src/superplane-api/app/adapters/operation_authority_source.py").read_text()
+    assert 'WorkspaceGrantRecord.principal_type == "human"' in authority_source
+    assert 'OrganizationGrantRecord.principal_type == "human"' in authority_source
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "human" and not case["allow"] for case in CASES)
+
+
+def test_maintained_ui_action_names_and_routes_are_real():
+    ui_contract = (DOMAIN / "ui/contract.ts").read_text()
+    ui_actions = {}
+    unserved_routes = set()
+    for match in re.finditer(
+        r"(?m)^  (\w+): \{\s*method: '(\w+)',\s*path: '([^']+)',\s*served: (true|false)",
+        ui_contract,
+    ):
+        name, method, path, served = match.groups()
+        route = f"{method} {path}"
+        if served == "true":
+            ui_actions[name] = route
+        else:
+            unserved_routes.add(route)
     assert len(ui_actions) > 30
     mapped = {}
     for action in MATRIX["actions"]:
@@ -125,33 +377,164 @@ def test_maintained_ui_action_names_and_routes_are_real():
                 assert ui_actions[name] in action["routes"]
                 mapped[name] = ui_actions[name]
     assert mapped == ui_actions
+    assert not unserved_routes & {route for action in MATRIX["actions"] for route in action["routes"]}
+
+
+
+def test_maintained_cli_and_tool_surface_parity():
+    actions = {action["id"]: action for action in MATRIX["actions"]}
+    cli = {
+        surface
+        for action in actions.values()
+        for surface in [action["surface"], *action.get("also_surfaces", [])]
+        if surface.startswith("cli:")
+    }
+    assert cli == {
+        "cli:workspace delete", "cli:deploy profiles", "cli:events --workspace",
+        "cli:events", "cli:provider-connection create", "cli:provider-connection show",
+        "cli:provider-connection validate", "cli:provider-connection rotate",
+        "cli:provider-connection revoke", "cli:research findings/proposal list/show, sources/stats",
+        "cli:research proposal create", "cli:research proposal approve/reject",
+        "cli:onboarding capabilities", "cli:workspace create", "cli:onboarding plan",
+        "cli:onboarding create", "cli:onboarding adopt", "cli:workspace list", "cli:cluster list",
+        "cli:workspace describe", "cli:node list", "cli:quota show", "cli:workspace kubeconfig",
+        "cli:onboarding lifecycle list", "cli:onboarding lifecycle preview", "cli:onboarding lifecycle continue",
+        "cli:deploy list", "cli:deploy create", "cli:deploy preview", "cli:deploy delete",
+        "cli:deploy teardown-preview", "cli:quota set", "cli:cost --workspace", "cli:cost --org",
+        "cli:onboarding operation show", "cli:onboarding operation recover",
+        "cli:onboarding approval request", "cli:deploy preview --request-approval",
+        "cli:onboarding approval show", "cli:onboarding approval decide", "cli:account list",
+        "cli:provider list", "cli:onboarding connection credentials", "cli:account onboard",
+        "cli:account delete", "cli:aws-onboard register", "cli:provider add", "cli:provider delete",
+        "cli:onboarding connection bind", "cli:onboarding connection show",
+        "cli:onboarding connection validate", "cli:onboarding connection revoke",
+    }
+    lifecycle = (DOMAIN / "cli/adp-superplane-lifecycle.py").read_text()
+    assert '"delete"' in lifecycle and '"profiles"' in lifecycle
+    assert 'for action in ("create", "show", "validate", "rotate", "revoke"):' in lifecycle
+    assert 'base = BASE + "/workspaces/" + workspace + "/provider-connections"' in lifecycle
+    assert '"validate": "/validation", "rotate": "/rotation"' in lifecycle
+    assert '"DELETE" if action == "revoke" else "POST"' in lifecycle
+    assert '"DELETE",\n        None,\n        before,' in lifecycle
+    for name, route in {
+        "workspace.retire": "DELETE /workspaces/{workspace_id}",
+        "serving.read": "GET /workspaces/{workspace_id}/deployment-profiles",
+        "provider_connection.create": "POST /workspaces/{workspace_id}/provider-connections",
+        "provider_connection.read": "GET /workspaces/{workspace_id}/provider-connections/{connection_id}",
+        "provider_connection.validate": "POST /workspaces/{workspace_id}/provider-connections/{connection_id}/validation",
+        "provider_connection.rotate": "POST /workspaces/{workspace_id}/provider-connections/{connection_id}/rotation",
+        "provider_connection.revoke": "DELETE /workspaces/{workspace_id}/provider-connections/{connection_id}",
+        "workspace.events.read": "GET /events/workspaces/{workspace_id}",
+    }.items():
+        assert route in actions[name]["routes"]
+    research = ast.parse((DOMAIN / "cli/adp-superplane-research.py").read_text())
+    run = next(node for node in research.body if isinstance(node, ast.FunctionDef) and node.name == "execute")
+    first_guard = next(node for node in ast.walk(run) if isinstance(node, ast.If) and "scan" in ast.unparse(node.test) and "generate" in ast.unparse(node.test))
+    access_token = next(node for node in ast.walk(run) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "access_token")
+    assert first_guard.lineno < access_token.lineno
+    assert '"unavailable"' in ast.unparse(first_guard) or "'unavailable'" in ast.unparse(first_guard)
+    gateway = (REPO / "modules/gateway/cli/adp-superplane.py").read_text()
+    for fragment in (
+        'args.subcommand == "kubeconfig"', 'api.request("POST", f"{API_BASE}/workspaces/{segment(identifier)}/kubeconfig")',
+        'api.request("PATCH", path, body)', 'API_BASE + "/orgs/cost"',
+        'API_BASE + "/workspaces"', 'API_BASE + "/accounts"',
+        'DOMAIN_CREDENTIALS = "/vault/credentials"',
+        'api.request("POST", API_BASE + DOMAIN_CREDENTIALS, body)',
+        'api.request("POST", API_BASE + "/operation-approvals", approval)',
+    ):
+        assert fragment in gateway
+    onboarding = ast.parse((REPO / "modules/gateway/cli/adp-superplane-onboarding.py").read_text())
+    endpoint_table = next(node.value for node in onboarding.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "ENDPOINTS" for target in node.targets))
+    endpoints = ast.literal_eval(endpoint_table)
+    for action_id, endpoint_names in {
+        "capabilities.read": ("capabilities",),
+        "workspace.create": ("previewWorkspace", "createWorkspace", "adoptWorkspace"),
+        "workspace.lifecycle_proposal": ("listLifecycleProposals", "previewLifecycleProposal", "continueLifecycleProposal"),
+        "approval.request": ("requestApproval",),
+        "approval.read": ("getApproval",),
+        "approval.decision": ("decideApproval",),
+        "org.operations.read": ("getOperation", "recoverOperation"),
+        "provider_connection.create": ("registerConnection",),
+        "provider_connection.read": ("getConnection",),
+        "provider_connection.validate": ("validateConnection",),
+        "provider_connection.revoke": ("revokeConnection",),
+    }.items():
+        for name in endpoint_names:
+            endpoint = endpoints[name]
+            assert endpoint["served"] is True
+            assert f'{endpoint["method"]} {endpoint["path"]}' in actions[action_id]["routes"]
+    assert '"org":' in gateway and '"user":' in gateway
+    assert actions["org.settings"]["surface"] == actions["org.users.manage"]["surface"] == "absent"
+    assert 'if argv and argv[0] in REDIRECTED:' in gateway
+    assert actions["workspace.kubeconfig"]["surface"] == "cli:workspace kubeconfig"
+    assert actions["workspace.quota.change"]["surface"] == "cli:quota set"
+    assert actions["workspace.cost.read"]["surface"] == "cli:cost --workspace"
+    assert actions["org.accounts.manage"]["surface"] == "cli:account onboard"
+    assert actions["research.scan"]["surface"] == "absent"
+    assert actions["research.scan"]["unavailable_surfaces"] == ["cli:research scan"]
+    assert actions["research.propose"]["unavailable_surfaces"] == ["cli:research proposal generate"]
+    assert "POST /api/v1/research/proposals/generate" in actions["research.propose"]["routes"]
+    assert MATRIX["verification"]["surfaces"] == "ui_routes_checked_cli_gateway_lifecycle_onboarding_research_checked_no_mcp_domain_api_action"
+    mcp = (DOMAIN / "tools/superplane-mcp/superplane_mcp/server.py").read_text()
+    assert "from .contract import CONTRACT_VERSION, IS_MOCK, CapacityContract, ContractError" in mcp
+    assert not any("tool:" in surface for action in actions.values() for surface in [action["surface"], *action.get("also_surfaces", [])])
 
 
 def test_platform_roles_are_not_workspace_presets():
-    source = (REPO / "modules/gateway/src/admin/config.py").read_text()
+    gateway_config = REPO / "modules/gateway/src/admin/config.py"
+    source = gateway_config.read_text()
     tree = ast.parse(source)
     admin_role = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "AdminRole")
     names = {node.value.value for node in admin_role.body if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)}
-    assert {"platform_admin", "org_admin", "dept_admin", "member"} <= names
+    assert names == {"platform_admin", "org_admin", "dept_admin", "member"}
     assert not {"workspace_viewer", "workspace_operator", "workspace_provisioner", "workspace_owner"} & names
+    spec = importlib.util.spec_from_file_location("gateway_admin_config_contract", gateway_config)
+    gateway_roles = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gateway_roles)
+    assert gateway_roles.ASSIGNABLE_ROLES == ("member", "dept_admin", "org_admin", "platform_admin")
+    for stored_role in ("platform_admin", "admin", "org_admin"):
+        assert gateway_roles.membership_role_to_admin_role(stored_role) is gateway_roles.AdminRole.ORG_ADMIN
+    for stored_role in ("member", "unknown_role", "workspace_owner", None):
+        assert gateway_roles.membership_role_to_admin_role(stored_role) is gateway_roles.AdminRole.MEMBER
     for role in ("platform_admin", "org_admin", "dept_admin", "member", "service", "unknown_role"):
         assert permissions_for_adp_role(role) == frozenset()
     assert set(permissions_for_adp_role("workspace_viewer")) == {Permission.READ}
-    assert "membership_role_to_admin_role" in source
-    assert "account_type == \"service\"" in (REPO / "modules/gateway/src/auth/dependencies.py").read_text()
-    assert "memberships_for_login" in (REPO / "modules/gateway/src/auth/workspaces.py").read_text()
+    dependencies = ast.parse((REPO / "modules/gateway/src/auth/dependencies.py").read_text())
+    context_factory = next(node for node in dependencies.body if isinstance(node, ast.FunctionDef) and node.name == "_cognito_claims_to_context")
+    context_source = ast.unparse(context_factory)
+    assert "claims.role == 'platform_admin'" in context_source
+    assert "claims.role == 'org_admin'" not in context_source
+    assert "account_type == 'service'" in context_source
+    assert "if not claims.client_id:" in context_source
+    assert "user_id = claims.client_id" in context_source
+    workspaces = ast.parse((REPO / "modules/gateway/src/auth/workspaces.py").read_text())
+    selection = next(node for node in workspaces.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "select_workspace")
+    assert {node.func.id for node in ast.walk(selection) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)} >= {"_require_human", "_memberships"}
+    assert any(isinstance(node, ast.Name) and node.id == "membership_role_to_admin_role" for node in ast.walk(workspaces))
+
+
+def test_role_labels_do_not_supply_domain_grants():
+    without_grants = [case for case in CASES if case["grant_workspace"] is None and case["active"]]
+    assert {case["adp_role"] for case in without_grants} >= {
+        "platform_admin", "org_admin", "dept_admin", "member", "service", "unknown_role", "workspace_owner"
+    }
+    assert all(not case["allow"] for case in without_grants)
+    for role in ("platform_admin", "org_admin", "dept_admin"):
+        assert any(case["adp_role"] == role and case["grant_workspace"] and case["allow"] for case in CASES)
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "service" and case["allow"] for case in CASES)
+    assert any(case["principal_type"] == "service" and case["grant_type"] == "human" and not case["allow"] for case in CASES)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 @pytest.mark.asyncio
-async def test_named_tenant_and_principal_grant_cases(case):
+async def test_named_tenant_and_principal_grant_cases(case, client, monkeypatch):
     assert ACCESS["version"] == 1
     org_ids = {name: uuid.uuid4() for name in ("O1", "O2")}
     workspace_ids = {name: uuid.uuid4() for name in ("W1", "W2")}
     workspace_owner = "O2" if case["grant_org"] == "O2" else "O1"
     async with async_session_test() as db:
         for name, org_id in org_ids.items():
-            db.add(Organization(id=org_id, name=f"contract-{name}", billing_plan="free"))
+            db.add(Organization(id=org_id, name=f"contract-{name}", billing_plan="free", adp_org_id=name))
         for name, workspace_id in workspace_ids.items():
             owner = workspace_owner if name == case["workspace"] else "O1"
             db.add(Workspace(id=workspace_id, org_id=org_ids[owner], name=f"contract-{name}", isolation_mode="shared", status="active"))
@@ -173,6 +556,47 @@ async def test_named_tenant_and_principal_grant_cases(case):
     except AuthorizationDeniedError:
         allowed = False
     if not case["active"]:
-        assert allowed, "fixture must expose the missing ADP active-membership gate"
-        pytest.xfail("#6127: active ADP membership/disabled-principal check not yet consumed by domain ingress")
+        assert allowed, "a durable grant alone must not establish current identity"
+        monkeypatch.setattr(auth, "verify_access_token", lambda token: {
+            "sub": case["subject"], "custom:org_id": case["org"],
+            "custom:account_type": case["principal_type"], "custom:role": case["adp_role"],
+            "token_use": "access", "iss": "https://issuer.example", "client_id": "test-client",
+        })
+        monkeypatch.setattr(app.state, "domain_policy", DomainTokenPolicy(
+            allowed_client_ids=["test-client"], expected_issuer="https://issuer.example",
+        ))
+        monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+        class IdentityProducer:
+            active = True
+            enabled = True
+            calls = 0
+
+            async def post(self, path, body, *, distinguish_denial=False):
+                assert path == "/current-identity"
+                assert distinguish_denial is True
+                assert body == {
+                    "domain": "superplane", "org_id": str(org_ids[case["org"]]),
+                    "subject": case["subject"], "principal_type": case["principal_type"],
+                }
+                self.calls += 1
+                return {
+                    "version": 1, "subject": case["subject"], "principal_type": case["principal_type"],
+                    "adp_org_id": case["org"], "membership_id": "contract-membership",
+                    "active": self.active, "enabled": self.enabled,
+                }
+
+        producer = IdentityProducer()
+        monkeypatch.setattr(app.state, "current_identity_reader", MappedProducerIdentityReader(
+            producer, async_session_test,
+        ), raising=False)
+        path = f"/workspaces/{workspace_ids[case['workspace']]}"
+        headers = {"Authorization": "Bearer contract-token"}
+        assert (await client.get(path, headers=headers)).status_code == 200
+        for producer.active, producer.enabled in ((False, True), (True, False)):
+            response = await client.get(path, headers=headers)
+            assert response.status_code == 403
+            assert response.json()["detail"] == "current ADP identity required"
+        assert producer.calls == 3
+        allowed = response.status_code == 200
     assert allowed is case["allow"]

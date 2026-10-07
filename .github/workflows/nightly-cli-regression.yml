@@ -1,12 +1,30 @@
 name: Nightly CLI Regression
 
-# One run owns all three suites. Child workflows have no independent schedules.
+# Reusable CLI lane. adp-regression.yml owns the daily and weekly schedules.
 # The shared child lock also serializes standalone diagnostic runs with nightlies.
 # Engine qualification producer contract: docs/design-notes/cli-live-evaluation.md.
-# Existing partial reports do not satisfy that contract; triggers remain unchanged.
+# Existing partial reports do not satisfy that contract.
 on:
-  schedule:
-    - cron: '0 5 * * *'
+  workflow_call:
+    inputs:
+      ec2_scope:
+        type: string
+        required: false
+        default: nightly
+      fixtures_json:
+        type: string
+        required: false
+        default: ''
+    outputs:
+      cleanup_ok:
+        description: All CLI suites completed their cleanup
+        value: ${{ jobs.summary.outputs.cleanup_ok }}
+      revision:
+        description: Initial deployed revision
+        value: ${{ jobs.prepare.outputs.revision }}
+      ec2_revision:
+        description: EC2 deployed revision
+        value: ${{ jobs.ec2.outputs.revision }}
   workflow_dispatch:
     inputs:
       ec2_scope:
@@ -113,6 +131,9 @@ jobs:
 
       - name: Snapshot deployment identity (read only)
         id: snapshot
+        env:
+          CLI_UPLIFT_EVAL_BINDINGS_JSON: ${{ secrets.CLI_UPLIFT_EVAL_BINDINGS_JSON }}
+          CLI_UPLIFT_EVAL_GATEWAY_CATALOG: ${{ secrets.CLI_UPLIFT_EVAL_GATEWAY_CATALOG }}
         run: python -m tests.e2e.cli_regression.prepare
 
   onboarding:
@@ -156,6 +177,8 @@ jobs:
       fixtures_json: ${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
 
   summary:
+    outputs:
+      cleanup_ok: ${{ (needs.prepare.result != 'success' && needs.onboarding.result == 'skipped' && needs.budgets.result == 'skipped' && needs.ec2.result == 'skipped') || (needs.onboarding.outputs.cleanup_ok == 'true' && needs.budgets.outputs.cleanup_ok == 'true' && needs.ec2.outputs.cleanup_ok == 'true') }}
     name: Nightly regression result
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [guards, prepare, onboarding, budgets, ec2]

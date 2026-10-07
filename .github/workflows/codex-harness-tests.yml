@@ -1,6 +1,7 @@
 name: Shared Codex Harness Tests
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'modules/agent-factory/codex-harness/**'

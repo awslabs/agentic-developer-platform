@@ -34,10 +34,13 @@ case "${AGENT_ENTRYPOINT:-github}" in
     ;;
 
   complex-task-chat)
-    # New path: SQS FIFO consumer, process one message and exit
-    # No health server needed — KEDA ScaledJob pods are ephemeral
-    echo "Starting complex-task-chat agent..."
+    # Retired worker refuses before receiving any FIFO message.
+    echo "Checking complex-task-chat worker retirement..."
     node dist/complex-task-chat/complex-task-chat-agent.js
+    ;;
+
+  chat-supervisor)
+    exec node dist/complex-task-chat/chat-supervisor.js
     ;;
 
   *)

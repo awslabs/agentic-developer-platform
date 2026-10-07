@@ -528,6 +528,17 @@ resource "aws_launch_template" "node" {
     tags          = merge(local.common_tags, { Name = "${local.name_prefix}-node-root" })
   }
 
+  # CNI may update a primary ENI only after ownership already exists. The launch
+  # template tags it atomically so CNI never needs permission to claim arbitrary
+  # untagged interfaces. Additional CNI interfaces receive the same IDs at create.
+  dynamic "tag_specifications" {
+    for_each = var.workspace_role_permissions_boundary_arn == "" ? [] : [true]
+    content {
+      resource_type = "network-interface"
+      tags          = local.common_tags
+    }
+  }
+
   tags = {
     Name = "${local.name_prefix}-node"
   }

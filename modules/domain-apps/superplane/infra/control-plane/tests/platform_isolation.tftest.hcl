@@ -80,19 +80,17 @@ run "gateway_route_grant_is_owned_by_superplane" {
   command = plan
 
   assert {
-    condition = toset(keys(module.image_builds.project_names)) == toset([
-      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
-    ])
-    error_message = "The Superplane root must own exactly its four declared image build jobs."
+    condition     = length(module.image_builds.project_names) == 0
+    error_message = "An ordinary installation must preserve the current owner of existing build lanes."
   }
 
   assert {
-    condition     = aws_iam_role_policy.gateway_route_read.role == "adp-dev-role-gateway-service"
+    condition     = aws_iam_role_policy_attachment.gateway_route_read.role == "adp-dev-role-gateway-service" && aws_iam_role_policy_attachment.gateway_route_read.policy_arn == "arn:aws:iam::111122223333:policy/adp-dev-superplane-gateway-route-read"
     error_message = "Superplane must attach its route grant to the gateway role exported by platform."
   }
 
   assert {
-    condition = jsondecode(aws_iam_role_policy.gateway_route_read.policy).Statement == [{
+    condition = jsondecode(aws_iam_policy.gateway_route_read.policy).Statement == [{
       Effect   = "Allow"
       Action   = ["s3:GetObject"]
       Resource = "arn:aws:s3:::adp-terraform-state-111122223333/domain-routes/dev/superplane/public-route.json"
@@ -418,7 +416,7 @@ run "all_resource_names_are_domain_prefixed" {
         aws_iam_role.skypilot.name,
         aws_iam_role_policy.control_plane.name,
         aws_iam_role_policy.skypilot.name,
-        aws_iam_role_policy.gateway_route_read.name,
+        aws_iam_policy.gateway_route_read.name,
       ] : startswith(name, "adp-dev-superplane-")
     ])
     error_message = "every IAM resource must carry the adp-<env>-superplane- prefix so domain-owned resources are distinguishable from platform-owned ones."
@@ -440,5 +438,16 @@ run "all_resource_names_are_domain_prefixed" {
   assert {
     condition     = length(aws_ecr_repository.superplane) >= 3
     error_message = "the three Superplane image repositories from releases/superplane.lock.yaml must be created here; an empty set would satisfy the prefix check vacuously."
+  }
+}
+
+run "reviewed_builder_enrollment_is_explicit" {
+  command = plan
+  variables { manage_image_builds = true }
+  assert {
+    condition = toset(keys(module.image_builds.project_names)) == toset([
+      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
+    ])
+    error_message = "Explicit enrollment retains the same four lane keys and excludes the separate paid builder."
   }
 }

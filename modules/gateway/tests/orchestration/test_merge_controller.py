@@ -37,9 +37,13 @@ async def merge(cycle, monkeypatch):  # noqa: F811
 
 
 @asynccontextmanager
-async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
+async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40, reviewer_owned=False):
     result = await review_tick(ctx)
     assert result.effects_succeeded == 1, ((await state(ctx))[0].block_detail, result)
+    if "run_report" not in ctx.calls[-1] and not reviewer_owned:
+        from tests.orchestration.test_review_cycle import legacy_delivery
+
+        await legacy_delivery(ctx)
     execution, claim, node, actions = await state(ctx)
     reviewer = claim.active_run_id
     await ctx.finish(reviewer)
@@ -234,7 +238,7 @@ async def test_engine_expected_head_merge_then_verified_code_completion(merge, s
     second = await tick(ctx)
     execution, claim, node, _ = await state(ctx)
     assert node.state == "passed", second
-    assert execution.phase == "deployment_pending" and execution.status == "runnable"
+    assert execution.phase == "concluded" and execution.status == "concluded"
     assert claim.state == "held" and claim.generation == 5
     receipt = MergeReceipt.model_validate((await merge_actions(ctx))[0].detail["merge_receipt"])
     assert receipt.merge_sha == "c" * 40 and not receipt.adopted
@@ -274,7 +278,7 @@ async def test_external_merge_completes_with_current_verified_evidence_without_m
     result = await tick(merge)
     execution, _, node, _ = await state(merge)
     assert node.state == "passed", result
-    assert execution.phase == "deployment_pending"
+    assert execution.phase == "concluded"
     assert merge.mutations == []
     actions = await merge_actions(merge)
     assert len(actions) == 1 and actions[0].status == "succeeded"
@@ -297,10 +301,13 @@ async def test_external_merge_completes_with_current_verified_evidence_without_m
     ):
         with pytest.raises(ValueError):
             MergeReceipt.model_validate({**receipt.model_dump(), **change})
+    from src.agentauth.bootstrap import BootstrapRefusedError
     from src.orchestration.deployment_authority import load_delivery_merge
 
     async with merge.factory() as db:
-        _, _, delivery_receipt = await load_delivery_merge(db, identity=merge.identity, node=node)
+        with pytest.raises(BootstrapRefusedError, match="delivery execution unavailable"):
+            await load_delivery_merge(db, identity=merge.identity, node=node)
+        _, _, delivery_receipt = await load_delivery_merge(db, identity=merge.identity, node=node, allow_concluded=True)
         assert delivery_receipt == receipt
 
 
@@ -748,7 +755,7 @@ async def test_protected_merge_with_default_pending_container_settles(merge):
     await tick(merge)
     execution, claim, node, _ = await state(merge)
     assert node.state == "passed"
-    assert execution.phase == "deployment_pending"
+    assert execution.phase == "concluded"
     assert claim.generation == merge.identity.claim_generation
     assert len(merge.mutations) == 1
     async with merge.factory() as db:

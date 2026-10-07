@@ -36,6 +36,7 @@ describe('aws-creds-injector', () => {
     process.env.AWS_ROLE_ARN = 'arn:aws:iam::879318057152:role/adp-dev-agent-runner-role';
     process.env.AWS_WEB_IDENTITY_TOKEN_FILE = '/var/run/secrets/eks.amazonaws.com/serviceaccount/token';
     process.env.AWS_PROFILE = 'some-profile';
+    process.env.VAULT_GATEWAY_URL = 'http://gateway:8080';
 
     client = new VaultGatewayClient({
       baseUrl: 'http://gateway:8080',

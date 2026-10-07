@@ -36,14 +36,28 @@ data:
   MEMORY_STRATEGY: "dynamo"
   ARTIFACT_STRATEGY: "s3"
 
+  # Legacy direct store values remain for manifest compatibility, but the
+  # credentialed worker now refuses startup and direct-store construction.
+  # Enablement of scoped data is one coordinated change:
+  #   ADP_CHAT_DATA_ENABLED: "true"
+  #   CONTEXT_STRATEGY / MEMORY_STRATEGY / ARTIFACT_STRATEGY: "gateway"
+  #   ADP_CHAT_DATA_URL: https origin of the gateway (no path/query); the
+  #     worker exchanges the projected ADP_WORKLOAD_TOKEN_FILE for a session-
+  #     bound capability at <origin>/v1/chat/data/bootstrap.
+  # No value enables the legacy worker: delegated model and response paths
+  # require the separate sandbox and supervisor before chat can be served.
+  # Installed permissions and older images require #6937 qualification.
+  ADP_CHAT_DATA_ENABLED: "false"
+  ADP_CHAT_DATA_URL: ""
+
   # Token + model config
   CONTEXT_TOKEN_BUDGET: "150000"
   ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-5"
   LCM_SUMMARY_MODEL: "global.anthropic.claude-sonnet-5"
   LCM_SUMMARY_ENDPOINT: "bedrock"
   MODEL_ENDPOINT: "bedrock"
-  # The worker starts a local sigv4-proxy with the registered run identity.
-  # Claude and summarization both use it. Startup failure stops inference.
+  # Legacy proxy configuration is inert in the retired worker; its model
+  # router refuses every call. Do not use these values to re-enable chat.
   ADP_BEDROCK_VIA: "gateway"
   SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
   SIGV4_PROXY_PORT: "9090"
@@ -53,8 +67,7 @@ data:
   # Personas baked into the image
   PERSONAS_DIR: "/app/personas"
 ---
-# TriggerAuthentication reused from the Python worker (same SA, same SQS role).
-# If not already present from keda-scaledjob.yaml, apply it here too.
+# KEDA assumes the dedicated chat role through the adp-agent service account.
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:

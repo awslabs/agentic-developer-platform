@@ -1,3 +1,5 @@
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2ea72b3f76d6e2f8b584c9ec780811a14bc94dc983d94382bc751363bb59a020 AS openssh-security
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkgconf libpopt-dev libacl1-dev libxxhash-dev libzstd-dev \
@@ -25,4 +27,45 @@ COPY --from=build /out/rsync_3.5.1-0+adp1_amd64.deb /tmp/adp-rsync.deb
 RUN dpkg -i /tmp/adp-rsync.deb && rm /tmp/adp-rsync.deb
 COPY --from=build /provenance/ /opt/adp-rsync-security/
 COPY --from=build /src/COPYING /src/NEWS.md /opt/adp-rsync-security/
+# Maintain the runtime's JWT verifier even when this recipe inherits an older pin.
+ADD --checksum=sha256:ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc https://files.pythonhosted.org/packages/9c/97/672cb32ce0dfea44b740cb7b4f97038463b9cf7c0ead1aacf595572851d6/pyjwt-2.14.0-py3-none-any.whl /tmp/pyjwt-2.14.0-py3-none-any.whl
+RUN --network=none python -m pip list --format=json > /tmp/jwt-before.json \
+    && python -m pip install --no-index --no-deps --no-cache-dir /tmp/pyjwt-2.14.0-py3-none-any.whl \
+    && python -m pip check \
+    && python -c "import json,importlib.metadata as m; from pathlib import Path; before={d['name'].lower():d['version'] for d in json.loads(Path('/tmp/jwt-before.json').read_text())}; after={d.metadata['Name'].lower():d.version for d in m.distributions()}; assert after['pyjwt']=='2.14.0'; assert {k:v for k,v in before.items() if k!='pyjwt'}=={k:v for k,v in after.items() if k!='pyjwt'}; p=Path('/opt/adp-security/requirements-security.txt'); s=p.read_text(); assert 'PyJWT==2.13.0' in s or 'PyJWT==2.14.0' in s; p.write_text(s.replace('PyJWT==2.13.0','PyJWT==2.14.0'))" \
+    && rm /tmp/jwt-before.json /tmp/pyjwt-2.14.0-py3-none-any.whl
+# Preserve all three SSH packages with the reviewed critical/high backports.
+COPY --from=openssh-security /out/ /tmp/adp-openssh-packages/
+RUN python - <<'PYTHON'
+import grp, os, pwd, subprocess, shutil
+from pathlib import Path
+root = Path('/tmp/adp-openssh-packages')
+packages = sorted(root.glob('openssh-*.deb'))
+assert len(packages) == 3
+existing = set(Path('/etc/ssh').glob('ssh_host_*'))
+subprocess.run(['dpkg', '--force-confold', '-i', *map(str, packages)], check=True, env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'})
+for path in set(Path('/etc/ssh').glob('ssh_host_*')) - existing:
+    path.unlink()
+for name in ['openssh-client', 'openssh-server', 'openssh-sftp-server']:
+    assert subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', name], text=True) == '1:10.0p1-7+deb13u4+adp.security.2'
+out = Path('/opt/adp-openssh-security')
+out.mkdir(exist_ok=True, parents=True)
+for name in ['source-lock.json', 'NOTICE', 'patched-source-sha256.txt']:
+    shutil.copyfile(root / name, out / name)
+shutil.copytree(root / 'source-authentication', out / 'source-authentication', dirs_exist_ok=True)
+shutil.rmtree(root)
+# Native SSH requires a passwd entry for the deployment's existing UID/GID1000.
+try:
+    pwd.getpwuid(1000)
+except KeyError:
+    try:
+        grp.getgrgid(1000)
+    except KeyError:
+        subprocess.run(['groupadd', '--gid', '1000', 'sky'], check=True)
+    subprocess.run(['useradd', '--uid', '1000', '--gid', '1000', '--create-home', '--home-dir', '/home/sky', '--shell', '/bin/sh', 'sky'], check=True)
+PYTHON
+# Apply the same offline, checksum-locked maintenance to every SkyPilot variant.
+# The installer rejects unreviewed inputs and checks the full provider environment.
+RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
+    python3 /maintenance-input/maintenance/install.py /maintenance-input
 USER 1000:1000

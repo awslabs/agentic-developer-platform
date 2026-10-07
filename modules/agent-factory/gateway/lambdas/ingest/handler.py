@@ -234,6 +234,22 @@ def _handle_unresolved_user(
 
 
 def lambda_handler(event, context):
+    if event.get("source") == "chat-pending-recovery":
+        if set(event) != {"source", "binding"}:
+            return {"statusCode": 403, "body": "Recovery requires direct invocation"}
+        if os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED") != "true":
+            return {"statusCode": 503, "body": "Chat recovery unavailable"}
+        from pending_chat import PendingChatConflict, recover_pending_turn
+
+        try:
+            recover_pending_turn(
+                sessions_table, event["binding"], now=time.time(), register=_register_chat_dispatch
+            )
+        except PendingChatConflict:
+            return {"statusCode": 409, "body": "Chat recovery binding changed"}
+        except Exception:
+            return {"statusCode": 503, "body": "Chat recovery unavailable"}
+        return {"statusCode": 200, "body": "Chat registration retried"}
     route_key = event.get("requestContext", {}).get("routeKey", "")
     connection_id = event.get("requestContext", {}).get("connectionId", "")
 
@@ -300,6 +316,13 @@ def lambda_handler(event, context):
         return {"statusCode": 400, "body": json.dumps(payload)}
     if message is None:
         return {"statusCode": 200, "body": "OK"}
+
+    if channel_name == "webchat" and os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true":
+        transport_id = event.get("requestContext", {}).get("messageId")
+        if isinstance(transport_id, str) and transport_id:
+            message.message_id = "webchat-" + hashlib.sha256(
+                json.dumps([connection_id, transport_id]).encode()
+            ).hexdigest()
 
     # Vault Phase 5 (#138): resolve provider identity to internal user.
     # WebChat (provider=cognito) is already resolved via Cognito $connect claims
@@ -1400,11 +1423,13 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         and classification.follow_up_thread_id in threads
     )
 
+    pending_task = None
     if is_follow_up:
         thread_id = classification.follow_up_thread_id
         thread = threads.get(thread_id, {})
 
-        if thread.get("processing_task_id"):
+        pending_task = thread.get("processing_task_id")
+        if pending_task and os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() != "true":
             # Thread is busy — buffer message, it'll be picked up on completion
             append_thread_message(session_id, thread_id, "user", message.text, now)
             notify = classification.escalation_note or "Your message has been queued. I'll address it once the current task completes."
@@ -1413,7 +1438,8 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
 
         # Idle follow-up: reuse the existing thread. Don't call create_thread
         # (it clobbers messages/topic). Just mark it as processing the new task.
-        set_thread_processing(session_id, thread_id, task_id)
+        if not pending_task:
+            set_thread_processing(session_id, thread_id, task_id)
     else:
         # New thread
         thread_id = str(uuid.uuid4())[:8]
@@ -1485,43 +1511,38 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     # destination. Persist it BEFORE dispatch; capture failure must not enqueue
     # a job that would otherwise spend using the shared worker's account.
     try:
-        if not message.user_id or not pd.get("tenant_id"):
-            raise ValueError("Missing chat run owner or tenant")
-        registered = log_invocation(
-            WEBHOOK_EVENTS_TABLE,
-            event_id=message.message_id,
-            arrived_at=arrived_at,
-            user_id=message.user_id or "unattributed",
-            channel=message.channel.value,
-            topic=message.text[:120] or "(untitled)",
-            persona=classification.persona,
-            status="webhook_received",
-            tenant_id=pd.get("tenant_id", ""),
-            region=REGION,
-            account_type=pd.get("account_type") or "human",
-        )
-        if registered is None:
-            raise RuntimeError("Chat run registration unavailable")
-        if os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true":
-            from model_root_client import register_model_root
+        if pending_task:
+            from pending_chat import buffer_pending_turn
 
-            send_kwargs["MessageBody"] = register_model_root(sqs_body, source="chat", subject=message.user_id)
-        elif os.environ.get("PERSONA_MODEL_MAPPING_ENABLED", "false").lower() == "true":
-            from persona_model_client import select_persona_model
-
-            send_kwargs["MessageBody"] = json.dumps(select_persona_model(sqs_body, user_id=message.user_id))
-        sqs.send_message(**send_kwargs)
+            buffer_pending_turn(sessions_table, sqs_body, processing_task=pending_task,
+                                now=now, register=_register_chat_dispatch)
+        else:
+            send_kwargs["MessageBody"] = _register_chat_dispatch(sqs_body)
+            try:
+                sqs.send_message(**send_kwargs)
+            except Exception:
+                if json.loads(send_kwargs["MessageBody"]).get("session_mode") != "persistent":
+                    raise
+                logger.warning("Persistent chat notification deferred to durable recovery")
     except Exception:
-        set_thread_processing(session_id, thread_id, None)
+        uncertain = not pending_task and os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true"
+        if not pending_task and not uncertain:
+            set_thread_processing(session_id, thread_id, None)
         logger.exception("Chat dispatch failed before acknowledgement")
+        error_text = ("Dispatch confirmation is unavailable. Your turn may already be accepted; do not resend while recovery checks it."
+                      if uncertain else "Could not start this persona. Please retry.")
         failure = {"type": "response", "status": "failed", "session_id": session_id,
-                   "error": "Could not start this persona. Please retry.",
-                   "content": "Could not start this persona. Please retry."}
+                   "error": error_text, "content": error_text}
         if connection_id:
             # WebSocket integrations discard HTTP response bodies. Show a
             # refused selection immediately instead of leaving the UI spinning.
             _send_ws_response(connection_id, "", failure)
         return {"statusCode": 503, "body": json.dumps(failure)}
+
+    if pending_task:
+        notify = classification.escalation_note or "Your message has been queued. I'll address it once the current task completes."
+        send_notification(session_id, task_id, connection_id, message, notify, now)
+        return {"statusCode": 200, "body": json.dumps({"task_id": None, "session_id": session_id, "thread_id": thread_id, "status": "queued"})}
 
     # Always send an acknowledgement. The classifier prompt asks for
     # escalation_note on non-direct paths, but LLMs occasionally omit it —
@@ -1534,6 +1555,30 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
 
 
 # ─── Helpers ──────────────────────────────────────────────────
+
+def _register_chat_dispatch(envelope):
+    if not envelope.get("user_id") or not envelope.get("tenant_id"):
+        raise ValueError("Missing chat run owner or tenant")
+    registered = log_invocation(
+        WEBHOOK_EVENTS_TABLE,
+        event_id=envelope["message_id"], arrived_at=envelope["arrived_at"],
+        user_id=envelope["user_id"], channel=envelope["channel"],
+        topic=envelope["message"][:120] or "(untitled)", persona=envelope["agent_type"],
+        status="webhook_received", tenant_id=envelope["tenant_id"], region=REGION,
+        account_type=envelope["platform_data"].get("account_type") or "human",
+    )
+    if registered is None:
+        raise RuntimeError("Chat run registration unavailable")
+    if os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true":
+        from model_root_client import register_model_root
+
+        return register_model_root(envelope, source="chat", subject=envelope["user_id"])
+    if os.environ.get("PERSONA_MODEL_MAPPING_ENABLED", "false").lower() == "true":
+        from persona_model_client import select_persona_model
+
+        return json.dumps(select_persona_model(envelope, user_id=envelope["user_id"]))
+    return json.dumps(envelope)
+
 
 def send_notification(session_id, task_id, connection_id, message, text, now):
     append_message(session_id, "assistant", text, now)

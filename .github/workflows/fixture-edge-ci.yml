@@ -58,6 +58,7 @@
 name: Fixture Edge CI
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       # This component. Intentionally the whole directory: main.tf, variables.tf,
@@ -95,7 +96,7 @@ on:
       - main
 
 concurrency:
-  group: fixture-edge-ci-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-fixture-edge-ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:

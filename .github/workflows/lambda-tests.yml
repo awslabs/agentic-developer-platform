@@ -10,6 +10,7 @@ name: Lambda Tests
 # explicit file pinning.
 
 on:
+  workflow_call: {}
   # Both PR and post-merge push to main. The push trigger is not redundant: a
   # pull_request-only workflow never attaches a check-run to a main commit, so
   # "does this gate exist on main?" is unanswerable via the commit check-runs
@@ -66,7 +67,7 @@ on:
       - main
 
 concurrency:
-  group: lambda-tests-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-lambda-tests-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

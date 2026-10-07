@@ -1,0 +1,246 @@
+name: ADP Regression
+'on':
+  schedule:
+  - cron: 17 2 * * 1-6
+  - cron: 17 2 * * 0
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Weekly includes daily and owned lifecycle diagnostics; missing fixtures remain blocked
+        type: choice
+        options:
+        - daily
+        - weekly
+        default: daily
+      modules:
+        description: Module IDs (MOD-001,MOD-002), names separated by semicolons, or all. Blank uses the profile.
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: adp-regression-dev
+  cancel-in-progress: false
+jobs:
+  before:
+    uses: ./.github/workflows/_regression-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.profile.result == 'success' }}
+    needs: profile
+  after:
+    uses: ./.github/workflows/_regression-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ always() && github.ref == 'refs/heads/main' && needs.profile.result == 'success' && needs.before.result == 'success'
+      }}
+    needs:
+    - smoke
+    - chat
+    - browser
+    - gateway
+    - credentials
+    - cli
+    - integrations
+    - profile
+    - before
+    - module-onboarding
+    - module-budgets
+    - module-cli
+  profile:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    outputs:
+      profile: ${{ steps.profile.outputs.profile }}
+      cli_scope: ${{ steps.profile.outputs.cli_scope }}
+      modules: ${{ steps.modules.outputs.modules }}
+      lanes: ${{ steps.modules.outputs.lanes }}
+      module_cli_scope: ${{ steps.modules.outputs.cli_scope }}
+    steps:
+    - uses: actions/checkout@v7
+    - id: profile
+      env:
+        REGRESSION_SCHEDULE: ${{ github.event.schedule }}
+        REGRESSION_PROFILE: ${{ inputs.profile || 'daily' }}
+      run: python3 .github/scripts/regression_report.py profile
+    - id: modules
+      env:
+        REGRESSION_MODULES: ${{ inputs.modules }}
+      run: python3 .github/scripts/regression_modules.py
+    - uses: actions/upload-artifact@v7
+      if: ${{ always() && inputs.modules != '' }}
+      with:
+        name: module-test-plan
+        path: test-results/module-plan.json
+        if-no-files-found: warn
+  offline:
+    needs: profile
+    uses: ./.github/workflows/adp-ci.yml
+    permissions:
+      contents: read
+    if: ${{ !cancelled() && needs.profile.result == 'success' && inputs.modules == '' }}
+  smoke:
+    needs:
+    - profile
+    - before
+    if: ${{ !cancelled() && needs.profile.result == 'success' && needs.before.result == 'success' }}
+    uses: ./.github/workflows/gateway-smoke.yml
+    with:
+      require_token: true
+    permissions:
+      contents: read
+      id-token: write
+  chat:
+    needs:
+    - profile
+    - smoke
+    if: ${{ (!cancelled() && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
+      || '[]'), 'chat')) }}
+    uses: ./.github/workflows/e2e-chat-playwright.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      require_interactions: true
+      modules: ${{ needs.profile.outputs.modules }}
+  browser:
+    needs:
+    - profile
+    - chat
+    if: ${{ (!cancelled() && needs.profile.result == 'success') && (inputs.modules == '' || contains(fromJSON(needs.profile.outputs.lanes
+      || '[]'), 'browser')) }}
+    uses: ./.github/workflows/e2e-new-ui-playwright.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      modules: ${{ needs.profile.outputs.modules }}
+  gateway:
+    needs:
+    - profile
+    - browser
+    if: ${{ (!cancelled() && needs.profile.result == 'success') && inputs.modules == '' }}
+    uses: ./.github/workflows/gateway-live-tests.yml
+    permissions:
+      contents: read
+      id-token: write
+  credentials:
+    needs:
+    - profile
+    - integrations
+    if: ${{ (!cancelled() && needs.profile.result == 'success' && needs.integrations.outputs.cleanup_ok == 'true') && inputs.modules
+      == '' }}
+    uses: ./.github/workflows/credential-binding-adversarial-e2e.yml
+    permissions:
+      contents: read
+      id-token: write
+  cli:
+    needs:
+    - profile
+    - gateway
+    if: ${{ (!cancelled() && needs.profile.result == 'success' && needs.gateway.outputs.cleanup_ok == 'true') && inputs.modules
+      == '' }}
+    uses: ./.github/workflows/nightly-cli-regression.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      ec2_scope: ${{ needs.profile.outputs.cli_scope }}
+    secrets: inherit
+  summary:
+    if: ${{ always() }}
+    needs:
+    - profile
+    - offline
+    - smoke
+    - chat
+    - browser
+    - gateway
+    - credentials
+    - cli
+    - before
+    - after
+    - integrations
+    - module-onboarding
+    - module-budgets
+    - module-cli
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - name: Combined verdict
+      env:
+        REGRESSION_JOBS: ${{ toJSON(needs) }}
+        REGRESSION_REVISION_BEFORE: ${{ needs.before.outputs.revision }}
+        REGRESSION_REVISION_AFTER: ${{ needs.after.outputs.revision }}
+        REGRESSION_MODULES: ${{ inputs.modules }}
+      run: python .github/scripts/regression_report.py aggregate --required profile offline smoke chat browser gateway credentials
+        cli before after integrations
+  integrations:
+    needs:
+    - cli
+    if: ${{ (!cancelled() && needs.cli.outputs.cleanup_ok == 'true') && inputs.modules == '' }}
+    uses: ./.github/workflows/gitlab-integration-tests.yml
+    permissions:
+      contents: read
+      id-token: write
+  module-onboarding:
+    needs:
+    - profile
+    - before
+    - smoke
+    - browser
+    if: ${{ !cancelled() && needs.profile.result == 'success' && needs.before.result == 'success' && needs.smoke.result ==
+      'success' && contains(fromJSON(needs.profile.outputs.lanes || '[]'), 'module-onboarding') }}
+    uses: ./.github/workflows/eval-cli-onboarding.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      environment: dev
+  module-budgets:
+    needs:
+    - profile
+    - before
+    - smoke
+    - module-onboarding
+    if: ${{ !cancelled() && needs.profile.result == 'success' && needs.before.result == 'success' && needs.smoke.result ==
+      'success' && contains(fromJSON(needs.profile.outputs.lanes || '[]'), 'module-budgets') && (!contains(fromJSON(needs.profile.outputs.lanes
+      || '[]'), 'module-onboarding') || needs.module-onboarding.outputs.cleanup_ok == 'true') }}
+    uses: ./.github/workflows/eval-budget-ratelimit.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      environment: dev
+  module-cli:
+    needs:
+    - profile
+    - before
+    - smoke
+    - module-budgets
+    - module-onboarding
+    if: ${{ !cancelled() && needs.profile.result == 'success' && needs.before.result == 'success' && needs.smoke.result ==
+      'success' && contains(fromJSON(needs.profile.outputs.lanes || '[]'), 'module-cli') && (!contains(fromJSON(needs.profile.outputs.lanes
+      || '[]'), 'module-budgets') || needs.module-budgets.outputs.cleanup_ok == 'true') && (!contains(fromJSON(needs.profile.outputs.lanes
+      || '[]'), 'module-onboarding') || needs.module-onboarding.outputs.cleanup_ok == 'true') }}
+    uses: ./.github/workflows/eval-cli-uplift.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      environment: dev
+      expected_revision: ${{ needs.before.outputs.revision }}
+      resolve_revision: true
+      suites: ${{ needs.profile.outputs.module_cli_scope }}
+      fixtures_json: ${{ vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
+    secrets: inherit

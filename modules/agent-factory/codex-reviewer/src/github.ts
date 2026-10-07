@@ -65,6 +65,7 @@ export function formatIssueReviewComment(
 }
 
 interface IssueResponse {
+  comments?: number;
   number: number;
   title: string;
   body: string | null;
@@ -75,12 +76,12 @@ interface IssueCommentResponse {
 }
 
 interface CheckRunsResponse {
-  check_runs: Array<{ name: string; status: string; conclusion: string | null }>;
+  check_runs: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 interface CombinedStatusResponse {
   state: string;
-  statuses: Array<{ context: string; state: string }>;
+  statuses: Array<{ context: string; state: string; target_url?: string }>;
 }
 
 export interface ChecksState {
@@ -88,6 +89,8 @@ export interface ChecksState {
   failing: string[];
   pending: string[];
   total: number;
+  /** Named evidence for final-revision review, not just an aggregate boolean. */
+  observations?: Array<{ name: string; status: string; conclusion: string | null; details_url?: string }>;
 }
 
 // This live-fleet diagnostic is intentionally not a required merge context:
@@ -139,6 +142,11 @@ export class GitHubClient {
   private async request<T>(path: string, init: RequestInit = {}, refreshed = false): Promise<T> {
     if (!isRootedPath(path)) {
       throw new Error(`GitHub request path must start with "/": ${path}`);
+    }
+    const repositoryParts = this.repository.split("/");
+    if (repositoryParts.length !== 2 || !repositoryParts.every(part =>
+      /^[a-z0-9_.-]+$/i.test(part) && part !== "." && part !== "..")) {
+      throw new Error("GitHub repository must be a single owner/name pair");
     }
     const token = await this.tokenProvider(refreshed);
     const options: RequestInit = {
@@ -207,6 +215,24 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/issues/${number}`);
   }
 
+  /** Controller-owned PR description update (task board section). */
+  async updatePullRequestBody(number: number, body: string): Promise<void> {
+    await this.request(`/repos/${this.repository}/pulls/${number}`, { method: "PATCH", body: JSON.stringify({ body }) });
+  }
+
+  /** Recent persisted plans are task context, never verified acceptance evidence. */
+  async taskChecklists(number: number, total = 0): Promise<string[]> {
+    if (!Number.isSafeInteger(total) || total <= 0) return [];
+    const last = Math.ceil(total / 100);
+    const comments: IssueCommentResponse[] = [];
+    for (let page = Math.max(1, last - 1); page <= last; page++) {
+      comments.push(...await this.request<IssueCommentResponse[]>(
+        `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`));
+    }
+    return comments.filter(comment => comment.body?.includes('### Task checklist')).slice(-3)
+      .map(comment => comment.body!.slice(comment.body!.indexOf('### Task checklist')).split(/\n#{1,3} /)[0]!.slice(0, 8192));
+  }
+
   async comment(number: number, body: string): Promise<void> {
     await this.request(`/repos/${this.repository}/issues/${number}/comments`, {
       method: "POST",
@@ -259,7 +285,14 @@ export class GitHubClient {
       else if (status.state !== "success") failing.push(status.context);
     }
     const total = blockingChecks.length + blockingStatuses.length;
-    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
+    const observations = [
+      ...blockingChecks.map(({ name, status, conclusion, details_url }) =>
+        ({ name, status, conclusion, ...(details_url ? { details_url } : {}) })),
+      ...blockingStatuses.map(({ context, state, target_url }) => ({ name: context,
+        status: state === "pending" ? "pending" : "completed", conclusion: state === "pending" ? null : state,
+        ...(target_url ? { details_url: target_url } : {}) })),
+    ];
+    return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total, observations };
   }
 
   async markReady(nodeId: string): Promise<void> {

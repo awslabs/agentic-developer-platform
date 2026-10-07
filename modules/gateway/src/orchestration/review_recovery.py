@@ -168,6 +168,29 @@ async def request_review_recovery(session, *, org_id, node_id, actor_id, actor_r
             raise CycleBlockedError("recovery_actor_invalid")
     elif not actor_id or actor_role not in {"owner", "org_admin", "platform_admin"}:
         raise CycleBlockedError("human_plan_approver_required")
+    # The existing owner recovery endpoint covers both accepted transports.
+    # Never select another transport after a shared-worker validation failure.
+    if not autonomous:
+        from .models import OrchestrationAcceptedPlan
+
+        node = await session.scalar(select(OrchestrationNode).where(OrchestrationNode.org_id == org_id, OrchestrationNode.id == node_id))
+        plan = (
+            await session.scalar(
+                select(OrchestrationAcceptedPlan).where(
+                    OrchestrationAcceptedPlan.org_id == org_id,
+                    OrchestrationAcceptedPlan.flow_id == node.flow_id,
+                    OrchestrationAcceptedPlan.superseded_at.is_(None),
+                )
+            )
+            if node
+            else None
+        )
+        if plan is not None and (plan.plan_document or {}).get("execution_continuation") is None:
+            from .protected_review_recovery import request_recovery
+
+            return await request_recovery(
+                session, org_id=org_id, node_id=node_id, actor_id=actor_id, actor_role=actor_role, request=request, accept=accept
+            )
     actor_kind = "service" if autonomous else "human"
     decision_id = str(
         uuid5(NAMESPACE_URL, CONTRACT + ":" + digest({"org": org_id, "node": node_id, "actor": actor_id, "snapshot": request.expected_snapshot}))

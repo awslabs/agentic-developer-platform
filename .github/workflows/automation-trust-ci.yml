@@ -1,5 +1,6 @@
 name: Automation trust contracts
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - .github/workflows/**
@@ -8,6 +9,7 @@ on:
       - modules/agent-factory/infra/**
       - modules/agent-factory/runner-infra/**
       - platform/automation-infra/**
+      - modules/domain-apps/superplane/infra/automation/**
       - platform/infra/modules/codebuild/**
       - modules/domain-apps/cyber/image-builder/**
       - modules/domain-apps/cyber/ci/**
@@ -21,7 +23,7 @@ on:
       - '!**/*.rst'
   workflow_dispatch:
 concurrency:
-  group: automation-trust-${{ github.ref }}
+  group: ${{ github.workflow }}-automation-trust-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read

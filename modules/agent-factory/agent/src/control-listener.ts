@@ -33,7 +33,7 @@
  */
 
 import * as http from 'http';
-import { ExplanationEvents, explanationsEnabled } from './explanation-events';
+import { ExplanationEvents, explanationsEnabled, HISTORY_BYTES } from './explanation-events';
 import { timingSafeEqual, type KeyObject } from 'crypto';
 import { AddressInfo } from 'net';
 
@@ -440,23 +440,62 @@ export class ControlListener {
       this.writeJson(res, 400, { error: 'invalid_cursor_or_generation' }); return;
     }
     let unsubscribe: () => void;
+    let blocked = false, ending = false, queuedBytes = 0;
+    let drainTimeout: ReturnType<typeof setTimeout> | undefined;
+    const queue: string[] = [];
+    const flush = () => {
+      if (blocked || res.destroyed || res.writableEnded) return;
+      while (queue.length) {
+        const next = queue.shift()!;
+        queuedBytes -= Buffer.byteLength(next);
+        // false means the frame was accepted but the socket needs time to drain.
+        // Destroying here drops ordinary retained-history replay on reconnect.
+        if (!res.write(next)) {
+          blocked = true;
+          drainTimeout = setTimeout(() => res.destroy(), 5000);
+          drainTimeout.unref();
+          return;
+        }
+      }
+      if (ending) res.end();
+    };
+    const enqueue = (frame: string) => {
+      if (res.destroyed || res.writableEnded) return;
+      queuedBytes += Buffer.byteLength(frame);
+      // Allow retained history plus SSE framing and concurrent updates, while
+      // keeping a genuinely stalled subscriber from accumulating live data.
+      if (queuedBytes > HISTORY_BYTES * 2) { res.destroy(); return; }
+      queue.push(frame);
+      flush();
+    };
+    const drained = () => {
+      clearTimeout(drainTimeout);
+      blocked = false;
+      flush();
+    };
     const send = (event: import('./explanation-events').ExplanationEvent) => {
-      if (!res.write(`id: ${events.cursor(event.sequence)}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)) res.destroy();
-      if (event.kind === 'terminal') res.end();
+      if (ending) return;
+      if (event.kind === 'terminal') ending = true;
+      enqueue(`id: ${events.cursor(event.sequence)}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`);
     };
     try { unsubscribe = events.subscribe(send); }
     catch { this.writeJson(res, 429, { error: 'subscriber_limit' }); return; }
     this.streams.add(res);
+    res.on('drain', drained);
     const heartbeat = setInterval(() => {
-      if (!this.authenticate(req)) { res.end(); return; }
-      if (!res.write(`event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`)) res.destroy();
+      if (!this.authenticate(req)) { res.destroy(); return; }
+      if (!ending) enqueue(`event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`);
     }, 2000);
     heartbeat.unref();
-    res.on('close', () => { clearInterval(heartbeat); unsubscribe(); this.streams.delete(res); });
+    res.on('close', () => {
+      clearInterval(heartbeat); clearTimeout(drainTimeout); res.off('drain', drained);
+      queue.length = 0; queuedBytes = 0;
+      unsubscribe(); this.streams.delete(res);
+    });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' });
     res.flushHeaders();
     const replay = events.replay(cursor as string | undefined);
-    if (replay.reset) res.write('event: reset\ndata: {"reason":"History unavailable; showing retained updates."}\n\n');
+    if (replay.reset) enqueue('event: reset\ndata: {"reason":"History unavailable; showing retained updates."}\n\n');
     for (const event of replay.events) { if (res.destroyed || res.writableEnded) break; send(event); }
   }
 

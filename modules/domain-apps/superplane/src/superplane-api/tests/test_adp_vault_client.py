@@ -30,6 +30,8 @@ import asyncio
 import json
 import logging
 import pickle
+from types import SimpleNamespace
+from botocore.credentials import Credentials
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -57,6 +59,8 @@ from app.adapters.executor_vault_channel import (
 )
 from app.services.credential_evidence import VerifiedCredentialEvidence
 
+ENDPOINT = "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+REGION = "us-east-1"
 ORG = "org-acme"
 WORKSPACE = "ws-1"
 CRED = "cred-1"
@@ -75,6 +79,15 @@ class _Response:
         self.status_code = status_code
         self._body = body
         self._raise = raise_on_json
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_bytes(self):
+        yield b"invalid" if self._raise else json.dumps(self._body).encode()
 
     def json(self):
         if self._raise:
@@ -124,11 +137,14 @@ class _StubClient:
 
 
 class _AsyncStubClient(_StubClient):
-    async def post(self, path, json=None, headers=None):
-        return self._next(path, json, headers)
+    def stream(self, method, url, content, headers):
+        assert method == "POST"
+        response = self._next(url.removeprefix(ENDPOINT), json.loads(content), headers)
+        self._recorder[-1].update(url=url, content=content)
+        return response
 
 
-def _client(responses, *, is_async: bool = False, api_key: str = "internal-key"):
+def _client(responses, *, is_async: bool = False):
     """Build an adapter wired to a stub transport, plus the recorded requests."""
     recorder: list[dict] = []
     cls = _AsyncStubClient if is_async else _StubClient
@@ -149,7 +165,17 @@ def _client(responses, *, is_async: bool = False, api_key: str = "internal-key")
 
     adapter = (
         AdpVaultClient(
-            base_url="http://gateway.internal", api_key=api_key, client_factory=factory
+            base_url=ENDPOINT,
+            region=REGION,
+            client_factory=factory,
+            session=SimpleNamespace(
+                get_credentials=lambda: Credentials(
+                    "AKIDEXAMPLE",
+                    "secret-example",
+                    "token-example",
+                    method="assume-role-with-web-identity",
+                )
+            ),
         )
         if is_async
         else ExecutorVaultChannel(transport=DeliveryTransport())
@@ -254,12 +280,12 @@ class TestSeparatedVaultProtocols:
                 f"{forbidden} reintroduces a raw-read surface"
             )
 
-    def test_construction_without_a_key_fails_fast(self):
+    def test_construction_without_a_valid_iam_endpoint_fails_fast(self):
         """Unconfigured must not look like "the vault denied us" at runtime."""
         with pytest.raises(ValueError):
-            AdpVaultClient(base_url="http://gw", api_key="")
+            AdpVaultClient(base_url="http://gw", region=REGION)
         with pytest.raises(ValueError):
-            AdpVaultClient(base_url="", api_key="k")
+            AdpVaultClient(base_url="", region=REGION)
 
 
 # ---------------------------------------------------------------------------
@@ -479,12 +505,11 @@ class TestReaderHappyPath:
         assert result.expires_at.utcoffset() is not None
         assert recorder[0]["path"] == EVIDENCE_PATH
 
-    def test_the_api_key_travels_in_a_header_and_not_the_path(self):
+    def test_the_request_uses_iam_without_shared_key_or_caller_assertions(self):
         """A URL reaches access logs even where headers do not."""
         adapter, recorder = _client(
             [_Response(200, _evidence_body())],
             is_async=True,
-            api_key="super-secret-key",
         )
         asyncio.run(
             adapter.read(
@@ -495,8 +520,12 @@ class TestReaderHappyPath:
                 report_digest=None,
             )
         )
-        assert recorder[0]["headers"]["X-Internal-Api-Key"] == "super-secret-key"
-        assert "super-secret-key" not in recorder[0]["path"]
+        assert recorder[0]["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+        assert "X-Internal-Api-Key" not in recorder[0]["headers"]
+        assert not any(
+            "caller" in name.lower() or "provenance" in name.lower()
+            for name in recorder[0]["headers"]
+        )
 
     def test_a_confirmed_attestation_is_carried_through(self):
         checked = datetime.now(timezone.utc) - timedelta(minutes=5)
@@ -935,8 +964,11 @@ class TestTenantScoping:
 
 def test_singleton_client_has_no_delivery_identity_even_with_legacy_token_settings():
     class Settings:
-        adp_gateway_internal_url = "http://gateway.internal"
-        adp_gateway_internal_api_key = "key"
+        adp_gateway_internal_url = ENDPOINT
+        adp_gateway_internal_api_key = ""
+        adp_gateway_evidence_auth = "api-producer-iam"
+        superplane_operation_gateway_url = ENDPOINT
+        superplane_operation_gateway_region = REGION
         adp_gateway_run_credential = "legacy-ignored"
         adp_gateway_workload_token = "legacy-ignored"
 
@@ -1099,8 +1131,11 @@ class TestUnrelatedVaultClientsAreUnchanged:
 
     def test_build_vault_client_constructs_when_configured(self):
         class _Settings:
-            adp_gateway_internal_url = "http://gateway.internal"
-            adp_gateway_internal_api_key = "key"
+            adp_gateway_internal_url = ENDPOINT
+            adp_gateway_internal_api_key = ""
+            adp_gateway_evidence_auth = "api-producer-iam"
+            superplane_operation_gateway_url = ENDPOINT
+            superplane_operation_gateway_region = REGION
 
         assert isinstance(build_vault_client(_Settings()), AdpVaultClient)
 
@@ -1120,8 +1155,10 @@ class TestUnrelatedVaultClientsAreUnchanged:
             adp_gateway_internal_url = ""
             adp_gateway_internal_api_key = "key"
 
-        assert build_vault_client(_UrlOnly()) is None
-        assert build_vault_client(_KeyOnly()) is None
+        with pytest.raises(ValueError):
+            build_vault_client(_UrlOnly())
+        with pytest.raises(ValueError):
+            build_vault_client(_KeyOnly())
 
 
 class TestStartupComposition:
@@ -1135,13 +1172,23 @@ class TestStartupComposition:
         monkeypatch.setattr(
             main.settings,
             "adp_gateway_internal_url",
-            "http://gateway.internal",
+            ENDPOINT,
             raising=False,
         )
         monkeypatch.setattr(
-            main.settings, "adp_gateway_internal_api_key", "key", raising=False
+            main.settings, "adp_gateway_internal_api_key", "", raising=False
         )
 
+        if main.settings.adp_gateway_internal_url:
+            monkeypatch.setattr(
+                main.settings, "adp_gateway_evidence_auth", "api-producer-iam"
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_url", ENDPOINT
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_region", REGION
+            )
         main.compose_vault_client()
         assert isinstance(evidence.get_credential_evidence_reader(), AdpVaultClient)
 
@@ -1187,13 +1234,23 @@ class TestStartupComposition:
         monkeypatch.setattr(
             main.settings,
             "adp_gateway_internal_url",
-            "http://gateway.internal",
+            ENDPOINT,
             raising=False,
         )
         monkeypatch.setattr(
-            main.settings, "adp_gateway_internal_api_key", "key", raising=False
+            main.settings, "adp_gateway_internal_api_key", "", raising=False
         )
 
+        if main.settings.adp_gateway_internal_url:
+            monkeypatch.setattr(
+                main.settings, "adp_gateway_evidence_auth", "api-producer-iam"
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_url", ENDPOINT
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_region", REGION
+            )
         main.compose_vault_client()  # must not raise
         assert evidence.get_credential_evidence_reader() is sentinel
 
@@ -1206,15 +1263,35 @@ class TestStartupComposition:
         monkeypatch.setattr(
             main.settings,
             "adp_gateway_internal_url",
-            "http://gateway.internal",
+            ENDPOINT,
             raising=False,
         )
         monkeypatch.setattr(
-            main.settings, "adp_gateway_internal_api_key", "key", raising=False
+            main.settings, "adp_gateway_internal_api_key", "", raising=False
         )
 
+        if main.settings.adp_gateway_internal_url:
+            monkeypatch.setattr(
+                main.settings, "adp_gateway_evidence_auth", "api-producer-iam"
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_url", ENDPOINT
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_region", REGION
+            )
         main.compose_vault_client()
         first = evidence.get_credential_evidence_reader()
+        if main.settings.adp_gateway_internal_url:
+            monkeypatch.setattr(
+                main.settings, "adp_gateway_evidence_auth", "api-producer-iam"
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_url", ENDPOINT
+            )
+            monkeypatch.setattr(
+                main.settings, "superplane_operation_gateway_region", REGION
+            )
         main.compose_vault_client()
         assert evidence.get_credential_evidence_reader() is first
 
@@ -1263,3 +1340,113 @@ def test_delivery_refuses_missing_durable_identity_before_transport():
     with pytest.raises(DeliveryRefused):
         adapter.fetch_material(lease)
     assert recorder == []
+
+
+@pytest.mark.parametrize("field", ["service", "label"])
+def test_evidence_refuses_a_different_service_or_label(field):
+    adapter, _ = _client(
+        [_Response(200, _evidence_body(**{field: "other"}))], is_async=True
+    )
+    assert (
+        asyncio.run(
+            adapter.read(
+                org_id=ORG,
+                workspace_id=WORKSPACE,
+                reference=_reference(),
+                principal=PRINCIPAL,
+                report_digest=None,
+            )
+        )
+        is None
+    )
+
+
+def test_transport_error_hides_remote_exception_chain():
+    import traceback
+
+    adapter, _ = _client([RuntimeError(SECRET_VALUE)], is_async=True)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(
+            adapter.read(
+                org_id=ORG,
+                workspace_id=WORKSPACE,
+                reference=_reference(),
+                principal=PRINCIPAL,
+                report_digest=None,
+            )
+        )
+    assert SECRET_VALUE not in "".join(traceback.format_exception(caught.value))
+
+
+def test_response_stream_is_bounded():
+    adapter, _ = _client([_Response(200, {"unexpected": "x" * 65536})], is_async=True)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        asyncio.run(
+            adapter.read(
+                org_id=ORG,
+                workspace_id=WORKSPACE,
+                reference=_reference(),
+                principal=PRINCIPAL,
+                report_digest=None,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "endpoint,region",
+    [
+        ("http://abcdefghij.execute-api.us-east-1.amazonaws.com/dev", REGION),
+        (ENDPOINT + "/", REGION),
+        (ENDPOINT + "?key=x", REGION),
+        (ENDPOINT, "us-west-2"),
+        ("https://gateway.internal/dev", REGION),
+    ],
+)
+def test_evidence_requires_exact_regional_https_endpoint(endpoint, region):
+    with pytest.raises(ValueError):
+        AdpVaultClient(base_url=endpoint, region=region)
+
+
+def test_signing_resolves_current_irsa_credentials_for_each_send():
+    credentials = iter(
+        [
+            Credentials(
+                "FIRST", "secret", "token1", method="assume-role-with-web-identity"
+            ),
+            Credentials(
+                "SECOND", "secret", "token2", method="assume-role-with-web-identity"
+            ),
+        ]
+    )
+    adapter, recorder = _client([_Response(403, {})], is_async=True)
+    adapter._session = SimpleNamespace(get_credentials=lambda: next(credentials))
+    for _ in range(2):
+        asyncio.run(
+            adapter._post_async(EVIDENCE_PATH, {"principal": "user:é", "org_id": ORG})
+        )
+    assert "Credential=FIRST/" in recorder[0]["headers"]["Authorization"]
+    assert "Credential=SECOND/" in recorder[1]["headers"]["Authorization"]
+    assert recorder[0]["content"] == b'{"principal":"user:\\u00e9","org_id":"org-acme"}'
+    assert recorder[0]["headers"]["X-Amz-Security-Token"] == "token1"
+    assert recorder[1]["headers"]["X-Amz-Security-Token"] == "token2"
+
+
+@pytest.mark.parametrize("method", ["env", "iam-role", "explicit", None])
+def test_evidence_refuses_credential_provider_fallback(method):
+    adapter, recorder = _client([_Response(200, _evidence_body())], is_async=True)
+    adapter._session = SimpleNamespace(
+        get_credentials=lambda: Credentials("key", "secret", method=method)
+        if method
+        else None
+    )
+    with pytest.raises(RuntimeError, match="unavailable"):
+        asyncio.run(
+            adapter.read(
+                org_id=ORG,
+                workspace_id=WORKSPACE,
+                reference=_reference(),
+                principal=PRINCIPAL,
+                report_digest=None,
+            )
+        )
+    assert not recorder

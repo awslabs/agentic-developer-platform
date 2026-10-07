@@ -4,24 +4,29 @@ name: E2E New UI Playwright Acceptance Suite
 # DEPLOYED environment. Issue #5135: nothing referenced that directory, so the
 # twelve tests in it never ran anywhere.
 #
-# This is a POST-DEPLOY suite: it drives a browser against the deployed SPA and
-# asserts the live /api/features flag. Running it on push, concurrently with
-# gateway-deploy.yml, would test the PREVIOUS bundle — so the on-merge trigger is
-# `workflow_run` completion of Gateway Deploy rather than a `paths` filter.
-# It also cannot run in gateway-ci.yml's pull_request job: no browser, no
-# deployed target.
+# The deploy-check and scheduled coordinators call this suite against the
+# deployed SPA and its live /api/features flag. Manual diagnostics remain
+# available; component PR jobs do not establish deployed browser acceptance.
 
 on:
-  # Fires after Gateway Deploy finishes on main, so the bundle under test is the
-  # one that was just published. Gated on conclusion == 'success' in the job `if`.
-  workflow_run:
-    workflows: ['Gateway Deploy']
-    types: [completed]
-    branches: [main]
-  schedule:
-    # Nightly at 04:00 UTC. Deliberately offset from e2e-chat-playwright.yml's
-    # 03:00 so the two suites do not contend for the ARC runner pool.
-    - cron: '0 4 * * *'
+  workflow_call:
+    inputs:
+      modules:
+        type: string
+        required: false
+        default: ''
+      environment:
+        type: string
+        required: false
+        default: dev
+      cloudfront_url:
+        type: string
+        required: false
+        default: ''
+      expected_flag:
+        type: string
+        required: false
+        default: auto
   workflow_dispatch:
     inputs:
       environment:
@@ -49,25 +54,26 @@ permissions:
 concurrency:
   # A nightly run and a post-deploy run must not drive the same environment at
   # the same time; queue instead of cancelling so neither result is lost.
-  group: e2e-new-ui-${{ github.event.inputs.environment || 'dev' }}
+  group: cli-live-eval-dev
   cancel-in-progress: false
 
 jobs:
   e2e-new-ui:
     name: Playwright New UI Acceptance
-    # Skip when the upstream deploy failed — there is no new bundle to accept.
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
+    # Coordinators own deploy-success gating; live execution requires main.
+    if: github.ref == 'refs/heads/main'
+    environment: adp-browser-checks-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
+    env:
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}
+      REGRESSION_MODULES: ${{ inputs.modules }}
+      REGRESSION_KIND: ${{ inputs.modules != '' && 'E2E' || 'all' }}
+      REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/new-ui-inventory.json
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          # On workflow_run, check out the commit that was deployed rather than
-          # whatever main has drifted to since.
-          ref: ${{ github.event.workflow_run.head_sha || '' }}
 
       # Use the browser fixture identity before SSM and Secrets Manager reads.
       - name: Establish trusted browser checks identity
@@ -78,7 +84,7 @@ jobs:
 
       - name: Resolve environment
         env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
         run: |
           set -euo pipefail
           if [[ ! "$INPUT_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
@@ -94,7 +100,7 @@ jobs:
       # in the chat workflow and silently exercised a different account.
       - name: Resolve dashboard URL
         env:
-          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
+          INPUT_CLOUDFRONT_URL: ${{ inputs.cloudfront_url }}
         run: bash .github/scripts/resolve-dashboard-url.sh
 
       # tests/e2e/new_ui/conftest.py requires E2E_NEW_UI_EXPECTED_FLAG=on|off
@@ -108,7 +114,7 @@ jobs:
       # an absent parameter means disabled, and anything else is disabled too.
       - name: Resolve preview flag mode
         env:
-          INPUT_EXPECTED_FLAG: ${{ github.event.inputs.expected_flag || 'auto' }}
+          INPUT_EXPECTED_FLAG: ${{ inputs.expected_flag || 'auto' }}
         run: |
           set -euo pipefail
           FORCED="$INPUT_EXPECTED_FLAG"
@@ -174,7 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results
-          python -m pytest tests/e2e/new_ui/ \
+          python -m pytest tests/e2e/new_ui/ -p regression_pytest \
             -v \
             --tb=short \
             --junitxml=test-results/e2e-new-ui-junit.xml \
@@ -231,6 +237,14 @@ jobs:
                        "skipped everything is not a pass — check E2E_NEW_UI_ENABLED and "
                        "E2E_NEW_UI_EXPECTED_FLAG." % (total, skipped))
           PY
+
+      - name: Verify complete scenario evidence
+        if: always()
+        run: >-
+          python .github/scripts/regression_report.py junit
+          --suite new-ui --junit test-results/e2e-new-ui-junit.xml
+          --inventory test-results/new-ui-inventory.json
+          --output test-results/new-ui-result.json
 
       - name: Upload test results
         if: always()

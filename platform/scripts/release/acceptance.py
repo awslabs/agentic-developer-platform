@@ -29,6 +29,16 @@ def http(url, data=None, headers=None):
         return error.code, error.read()
 
 
+def check_worker_admission(scaled, name):
+    # KEDA versions may treat annotation presence as a pause, even "false".
+    annotations = scaled.get('metadata', {}).get('annotations', {})
+    require(not any(key.startswith('autoscaling.keda.sh/paused') for key in annotations),
+            f'{name} admission is paused; maintenance is not release acceptance')
+    conditions = scaled.get('status', {}).get('conditions', [])
+    require(not any(c.get('type') == 'Paused' and c.get('status') == 'True' for c in conditions),
+            f'{name} reports paused admission')
+
+
 def check(directory, environment, upgrade_directory):
     manifest = load(directory)
     account = ACCOUNTS[environment]
@@ -45,6 +55,7 @@ def check(directory, environment, upgrade_directory):
                                    ('agent-gateway-worker', 'adp-gateway-agents', 'agent-gateway'),
                                    ('chat-agent-worker', 'adp-gateway-agents', 'chat-agent')]:
         scaled = kube('scaledjob', name, namespace)
+        check_worker_admission(scaled, name)
         require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in scaled['status']['conditions']), f'{name} is not Ready')
         require(scaled['spec']['jobTargetRef']['template']['spec']['containers'][0]['image'] == image_uri(manifest, image, account), f'{name} image differs from release')
     for name, namespace, image in [('agent-image-prepull', 'adp-agents', 'agent-runtime'),
@@ -59,6 +70,14 @@ def check(directory, environment, upgrade_directory):
     functions.update({'github-auth-broker': 'bedrockgw-dev-github-auth-broker', 'webhook-github': 'adp-dev-github-webhook'})
     # GitLab is optional; validate its package if Terraform says it is installed.
     state = json.loads((upgrade_directory / 'webhook-ingress-after.tfstate').read_text())
+    worker_rollout = state.get('outputs', {}).get('worker_security_rollout', {}).get('value', {})
+    before = json.loads((upgrade_directory / 'webhook-ingress-before.tfstate').read_text())
+    prior_rollout = before.get('outputs', {}).get('worker_security_rollout', {}).get('value', {})
+    require(isinstance(worker_rollout.get('active'), bool), 'Worker identity mode is unknown')
+    require(worker_rollout.get('active') is prior_rollout.get('active') or
+            (upgrade_directory / 'worker-migration.json').exists(), 'Worker identity changed outside the migration flow')
+    worker_mode = 'protected' if worker_rollout.get('active') is True else 'legacy'
+    checks.append('worker_identity_mode_' + worker_mode)
     if any(r['type'] == 'aws_lambda_function' and r['name'] == 'gitlab_webhook' and r.get('instances') for r in state['resources']):
         functions['webhook-gitlab'] = 'adp-dev-gitlab-webhook'
     for name, deployed in functions.items():

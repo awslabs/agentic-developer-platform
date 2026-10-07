@@ -52,7 +52,7 @@ terraform_update_apply() { printf '%s\\n' "$*" >> "$CALLS"; }
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(calls.read_text().splitlines(), [
-                        'quiesce', 'init', f'gateway gateway.json -var preserved-albs -var orchestration_tick_image_digest={digest}'])
+                        'quiesce', 'quiesce', 'init', f'gateway gateway.json -var preserved-albs -var orchestration_tick_image_digest={digest}'])
 
     def test_gateway_retry_does_not_restart_unchanged_pods(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
@@ -113,7 +113,7 @@ terraform_update_apply() { echo "terraform $1"; }
                 env = dict(os.environ, ROOT_DIR=str(ROOT), DEPLOY_GATEWAY=str(gateway).lower(),
                            DEPLOY_WEBHOOK=str(webhook).lower(), UPDATE_MODE="true", CONFIRM_DESTRUCTIVE="false",
                            SKIP_WEBHOOK_INGRESS="false", ENVIRONMENT="dev", AWS_REGION="us-east-1",
-                           GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json")
+                           GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json", WORKER_MIGRATION="false")
                 result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 expected = ["webhook"] if webhook else []
@@ -153,7 +153,8 @@ terraform_update_apply() { echo "terraform $1"; }
         policy["spec"]["egress"][0]["to"] = [{"podSelector": {}}]
         self.assertFalse(network.collector_allowed(policy))
 
-    def finalize(self, audit_fail=False, ci_mode=False, deferred=False, engine_fail=False):
+    def finalize(self, audit_fail=False, ci_mode=False, deferred=False, engine_fail=False,
+                 worker_migration=False, admission_fail=False):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index("if deploy_phase_begin finalize; then")
         block = source[start:source.index("# Summary\n", start)]
@@ -178,6 +179,10 @@ terraform_update_apply() {
   fi
 }
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }
+worker_migration() {
+  echo "migration $1" >> "$CALLS"
+  [ "$1" != admit ] || [ "$ADMISSION_FAIL" = false ]
+}
 bash() { echo "frontend $*" >> "$CALLS"; }
 aws() { echo frontend.example.test; }
 curl() { echo '{"status":"healthy"}'; }
@@ -189,6 +194,7 @@ curl() { echo '{"status":"healthy"}'; }
                        GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json", IMAGE_TAG="a" * 40,
                        GATEWAY_IMAGE="customer-gateway@sha256:" + "b" * 64, ACCOUNT_ID="925091290508",
                        ENGINE_FAIL=str(engine_fail).lower(),
+                       WORKER_MIGRATION=str(worker_migration).lower(), ADMISSION_FAIL=str(admission_fail).lower(),
                        ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower(),
                        CI_MODE=str(ci_mode).lower(), ADP_BEDROCK_VERIFY_DEFERRED=str(deferred).lower())
             result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
@@ -209,6 +215,22 @@ curl() { echo '{"status":"healthy"}'; }
         result, calls = self.finalize(engine_fail=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any("deploy-frontend.sh" in line or "upgrade-state.py verify" in line for line in calls))
+
+    def test_worker_admission_follows_finalization_and_precedes_schedule_restore(self):
+        result, calls = self.finalize(worker_migration=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        admitted = calls.index('migration admit')
+        complete = calls.index('migration complete')
+        self.assertTrue(any('deploy-frontend.sh' in line for line in calls[:admitted]))
+        self.assertIn('deploy-webhook-ingress.sh', calls[admitted + 1])
+        self.assertIn('--update --skip-image --skip-lambda', calls[admitted + 1])
+        self.assertEqual(calls[complete + 1], 'terraform gateway-final check=false')
+        self.assertIn('upgrade-state.py verify', calls[complete + 2])
+
+    def test_failed_admission_does_not_restore_schedule_or_declare_success(self):
+        result, calls = self.finalize(worker_migration=True, admission_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1], 'migration admit')
 
     def test_default_model_invocations_skip_ci_and_wrapper_deferred_checks(self):
         for ci_mode, deferred in ((True, False), (False, True)):

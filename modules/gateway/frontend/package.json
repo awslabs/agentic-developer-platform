@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "5.62.0",
-    "axios": "^1.18.0",
+    "axios": "^1.20.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-markdown": "^9.0.3",
@@ -27,7 +27,8 @@
     "handlebars": ">=4.7.9",
     "undici": ">=7.29.0 <8",
     "brace-expansion@^1": ">=1.1.18 <2",
-    "brace-expansion@^2": ">=2.1.4 <3"
+    "brace-expansion@^2": ">=2.1.4 <3",
+    "source-map-js": ">=1.2.2 <2"
   },
   "devDependencies": {
     "@eslint/js": "9.18.0",

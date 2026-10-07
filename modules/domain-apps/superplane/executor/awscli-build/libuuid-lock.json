@@ -1,0 +1,10 @@
+{
+  "package": "libuuid1",
+  "architecture": "amd64",
+  "version": "2.42.4-1+adp131",
+  "minimum_vendor_version": "2.42.4",
+  "source": "/usr/lib/x86_64-linux-gnu/libuuid.so.1.3.0",
+  "sha256": "8200f1a2cd5b1e2e839d681f1baf85ee02735af79e9bcbc1a90db059271523df",
+  "destination": "/opt/awscli-adp/lib/aws-cli/libuuid.so.1",
+  "original_sha256": "632fd43a9d8d6f3496833b7e62e7840f397163373dddf8b8eb0b2b7f36593117"
+}

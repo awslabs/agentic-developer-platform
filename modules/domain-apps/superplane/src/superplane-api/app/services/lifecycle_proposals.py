@@ -39,7 +39,7 @@ async def verified_proposal(composition, org_id, workspace_id, artifact_id):
     from workspace_provisioning.artifacts import read_artifact
 
     artifact = await read_artifact(
-        composition.operation_connect,
+        composition.domain_connect,
         artifact_id=artifact_id,
         org_id=str(org_id),
         workspace_id=str(workspace_id),
@@ -151,9 +151,9 @@ async def preview_continuation(
 async def continue_lifecycle(
     composition, db, org_id, workspace_id, artifact_id, request_id, approval_id
 ):
-    from app.operation_activation import require_admission_enabled
+    from app.operation_activation import require_installed_lifecycle_binding
 
-    require_admission_enabled(lifecycle=True)
+    await require_installed_lifecycle_binding(str(org_id))
     workspace, _ = await workspace_scope(db, org_id, workspace_id)
     async with composition.operation_connect() as connection:
         existing = await connection.fetchrow(

@@ -92,7 +92,7 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
 CODEX_PERSONA_PREFIX = "agent-codex-"
-SHARED_CODEX_PERSONAS = frozenset({"agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
+SHARED_CODEX_PERSONAS = frozenset({"agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -191,7 +191,7 @@ def worker_command(persona: str) -> list[str]:
         return ["node", AGENT_BINARY]
     if persona == "agent-codex-reviewer":
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
-    if persona == "agent-codex-developer":
+    if persona in {"agent-codex-developer", "agent-codex-architect"}:
         return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
     if persona in SHARED_CODEX_PERSONAS:
         return ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
@@ -916,7 +916,43 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
             if github_text
             else ""
         )
+    # The child writes this atomically after each observation. Preserve its last
+    # checklist even when it exits before CheckRunStreamer can flush a transcript.
+    # The invocation match prevents stale artifacts from crossing run boundaries.
+    if not transcript_text.startswith("<!-- adp-run-record:v1 "):
+        try:
+            import base64
+            with open(os.path.join(directory, "adp-run-record.json"), "rb") as fh:
+                raw = fh.read(1024 * 1024 + 1)
+            if len(raw) <= 1024 * 1024:
+                record = json.loads(raw)
+                invocation = os.environ.get("ADP_MESSAGE_ID")
+                if (isinstance(record, dict) and record.get("version") == 1
+                        and invocation and record.get("invocation_id") == invocation):
+                    encoded = base64.b64encode(raw).decode("ascii")
+                    transcript_text = (
+                        f"<!-- adp-run-record:v1 {encoded} -->\n\n"
+                        "## Partial run record\n\n"
+                        "Recovered the last saved observations after the child exited. "
+                        "The explanation transcript may be incomplete. "
+                        "Checklist state is agent-reported, not proof of acceptance.\n\n"
+                        + transcript_text
+                    )
+        except (OSError, ValueError, UnicodeError):
+            pass  # A missing or malformed report cannot block terminal handling.
     return github_text, transcript_text
+
+
+def _with_worker_exit_observation(transcript: str, returncode: int) -> str:
+    """Retain the observed process exit without predicting the final delivery outcome."""
+    if not transcript:
+        return transcript
+    return transcript + (
+        "\n\n## Worker exit observation\n\n"
+        f"Child process exit code: {returncode}. "
+        "This records process exit only. Delivery validation and final invocation "
+        "status are recorded separately by the platform.\n"
+    )
 
 
 def _upload_transcript_to_s3(
@@ -1798,7 +1834,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     review_delivery = prepare_review_delivery(envelope)
-    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input
+    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input, prepare_review_history
     cycle_input = prepare_cycle_input(envelope)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
@@ -2484,6 +2520,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                     f"review head changed before checkout: expected {expected_review_sha}, "
                     f"found {actual_review_sha}"
                 )
+            prepare_review_history(
+                {"baseRefOid": envelope["payload"]["pull_request"]["base"]["sha"]},
+                run=run_cmd, cwd=WORK_DIR,
+            )
             bootstrap_step = "review_branch"
         else:
             branch_name = (
@@ -2973,6 +3013,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if is_codex_review and abort_outcome is None:
         _record_session_id(message_id, arrived_at)
         _, transcript_text = _read_run_reports()
+        transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
         transcript_key = _upload_transcript_to_s3(
             transcript_text, repo, issue, message_id, arrived_at, persona
         )
@@ -2982,17 +3023,38 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
             if cycle_input is not None:
-                from lib.codex_review_delivery import finish_engine_review
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, finish_engine_review, require_delivery_success
                 try:
                     summary = finish_engine_review(
                         result.stdout or "", envelope=envelope, delivery=review_delivery,
                         run=run_cmd, cwd=WORK_DIR,
                     )
+                    require_delivery_success(result.stdout or "", envelope)
                 except Exception as exc:
-                    logger.warning("Codex engine evidence delivery failed (%s)", type(exc).__name__)
-                    # Reporting failure is not an agent crash and must not admit
-                    # another paid review. Keep the delivery available for replay.
-                    return AGENT_EXIT_RETRYABLE
+                    # A finished process with undelivered evidence is not live or
+                    # successful. Preserve the concrete delivery outcome instead
+                    # of leaving a phantom worker for the engine to wait on.
+                    error = str(exc) if isinstance(exc, ReviewDeliveryBlocked) else f"Reviewer evidence delivery failed ({type(exc).__name__}); PR merge was not verified"
+                    failure = {"category": "inspection" if isinstance(exc, ReviewDeliveryBlocked) else "contract", "exit_code": 1}
+                    if run_report.enabled():
+                        try:
+                            run_report.spool_undelivered_failure(failure=failure)
+                            run_report.terminal("failed", failure=failure)
+                        except run_report.RunReportError as report_error:
+                            logger.error("Reviewer failure reporting deferred: %s", report_error.code)
+                            return AGENT_EXIT_RETRYABLE
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.error("%s", error)
+                    return 1
+            if cycle_input is None:
+                from lib.codex_review_delivery import ReviewDeliveryBlocked, require_delivery_success
+                try:
+                    require_delivery_success(result.stdout or "", envelope)
+                except ReviewDeliveryBlocked as exc:
+                    update_invocation_status(message_id, arrived_at, "failed", error_message=str(exc))
+                    _delete_message(queue_url, region, receipt_handle)
+                    return 1
             if run_report.enabled():
                 try:
                     run_report.terminal("complete")
@@ -3060,6 +3122,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # GitHub's clipped display is separate from the readable explanation archive.
     # Read outside the check-run block so archival remains independent of finalize.
     final_text, transcript_text = _read_run_reports()
+    transcript_text = _with_worker_exit_observation(transcript_text, result.returncode)
     if review_note:
         final_text = _join_notes(final_text or "", review_note)
         transcript_text = _join_notes(transcript_text or "", review_note)
@@ -3324,7 +3387,10 @@ def _start_sigv4_proxy(env: dict, tenant_id: str) -> subprocess.Popen | None:
         proc = subprocess.Popen(
             ["node", SIGV4_PROXY_SCRIPT],
             env=proxy_env,
-            stdout=subprocess.PIPE,
+            # No reader drains a private pipe after the health check. Inherit
+            # the worker log stream so long runs cannot fill that pipe and hide
+            # proxy errors or accumulate buffered output in the child.
+            stdout=None,
             stderr=subprocess.STDOUT,
         )
     except Exception as exc:

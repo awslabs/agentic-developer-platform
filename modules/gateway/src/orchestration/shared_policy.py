@@ -18,7 +18,7 @@ from .developer_personas import DEVELOPER_PERSONAS
 from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, ResourceRef, authorize_action
 from .execution_state import BlockCode
-from .flow_meter import meter_target, read_flow_meter
+from .flow_meter import meter_target, read_flow_meter, reconcile_flow_meter
 from .models import (
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
@@ -271,7 +271,11 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
 
     if not binding_scope_matches(binding, node):
         _refuse("binding_scope_changed")
-    meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+    meter = (
+        await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+        if reserve
+        else await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+    )
     if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         _refuse("budget_unavailable", BlockCode.BUDGET_EXHAUSTED)
     principal = inputs.policy.principal_id
@@ -331,9 +335,9 @@ async def _release_finished_admissions(session, policy, flow_id, metered_usd):
 
     The caller has already read the existing model meter successfully. That meter
     retains actual charges and outstanding provider reservations; it is never
-    modified here. Require both engine-owned terminal state and authenticated
-    terminal reports for the current attempt. A queued or active successor keeps
-    the hold. Initial and continuation admissions share this flow lock, so a new
+    modified here. Require engine-owned terminal state with authenticated terminal
+    reports, or a concluded current execution with an evidenced claim release.
+    A queued or active successor keeps the hold. Initial and continuation admissions share this flow lock, so a new
     worker cannot be admitted between this check and its replacement reservation.
     """
     from .flow_budget import release_flow_admission
@@ -363,6 +367,9 @@ async def _release_finished_admissions(session, policy, flow_id, metered_usd):
     )
     for stopped in nodes:
         current = [report for report in reports if report.node_id == stopped.id and report.attempt == stopped.attempts]
+        if await _released_execution_admission(session, stopped):
+            await release_flow_admission(org_id=policy.org_id, flow_id=flow_id, policy=policy, settled_usd=metered_usd, node_id=stopped.id)
+            continue
         if not current or any(
             not isinstance(report.terminal_receipt, dict)
             or report.terminal_receipt.get("contract_version") != 1
@@ -373,6 +380,53 @@ async def _release_finished_admissions(session, policy, flow_id, metered_usd):
         ):
             continue
         await release_flow_admission(org_id=policy.org_id, flow_id=flow_id, policy=policy, settled_usd=metered_usd, node_id=stopped.id)
+
+
+async def _released_execution_admission(session, node):
+    """A concluded execution and evidenced claim release also close capacity.
+
+    This covers a missing worker callback and pre-reporting assignments. Neither
+    a failed node, elapsed lease, nor a replaced claim alone is exit evidence.
+    The flow lock held by admission fences a successor until its new hold exists.
+    """
+    from .handoff import outstanding_continuation
+    from .models import OrchestrationExecution
+    from .work_claims import ReleaseReason
+
+    execution = await session.scalar(
+        select(OrchestrationExecution).where(
+            OrchestrationExecution.org_id == node.org_id,
+            OrchestrationExecution.flow_id == node.flow_id,
+            OrchestrationExecution.node_id == node.id,
+            OrchestrationExecution.cycle == node.attempts,
+            OrchestrationExecution.status == "concluded",
+            OrchestrationExecution.phase == "concluded",
+        )
+    )
+    if execution is None:
+        return False
+    claim = await session.scalar(
+        select(OrchestrationWorkClaim)
+        .where(
+            OrchestrationWorkClaim.id == execution.claim_id,
+            OrchestrationWorkClaim.org_id == node.org_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        claim is None
+        or claim.owner_kind != "engine_flow"
+        or claim.owner_ref != node.flow_id
+        or str(claim.issue_number) != str(node.issue_ref).lstrip("#")
+        or claim.generation != execution.claim_generation
+        or claim.state != "released"
+        or claim.active_run_id is not None
+        or claim.released_at is None
+        or claim.release_reason not in {ReleaseReason.COMPLETED.value, ReleaseReason.FAILED.value, ReleaseReason.ABANDONED.value}
+    ):
+        return False
+    return await outstanding_continuation(session, org_id=node.org_id, claim_id=claim.id, claim_generation=claim.generation) is None
 
 
 async def authorize_shared_model(session, assignment):
@@ -520,7 +574,7 @@ async def authorize_shared_dispatch(
     )
     if claim is None or str(claim.issue_number) != str(node.issue_ref).lstrip("#"):
         return Decision.block(DenyReason.WORK_NOT_OWNED, "Shared dispatch requires its current server-assigned work claim.")
-    meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
+    meter = await reconcile_flow_meter(session, org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
     if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "The accepted shared model budget is unavailable; it cannot be reset.")
     auth = await resolve_authorization_context(

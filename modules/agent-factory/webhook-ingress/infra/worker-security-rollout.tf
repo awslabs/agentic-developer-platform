@@ -20,6 +20,19 @@ variable "agent_worker_admission_paused" {
   default     = true
 }
 
+variable "agent_legacy_upgrade_role_arn" {
+  description = "Transient deploy.sh evidence of the installed serving legacy role. Retains its identity during a code upgrade; never enables protected authority or qualifies a security migration. Fresh installs leave this empty."
+  type        = string
+  default     = ""
+}
+
+locals {
+  agent_preserve_legacy_upgrade = (
+    var.agent_legacy_upgrade_role_arn == "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-agent-scaledjob-role" &&
+    !var.agent_authority_enabled && !var.agent_legacy_worker_admin_retired && !var.agent_task_source_isolation_confirmed
+  )
+}
+
 variable "agent_legacy_worker_admin_retired" {
   description = "After drain and verified Kubernetes source isolation, exclusively manage legacy role attachments as empty, removing out-of-band AdministratorAccess through Terraform."
   type        = bool
@@ -59,10 +72,10 @@ resource "terraform_data" "worker_security_rollout" {
 
   lifecycle {
     precondition {
-      condition = var.agent_worker_admission_paused || (
+      condition = var.agent_worker_admission_paused || local.agent_preserve_legacy_upgrade || (
         var.agent_authority_enabled && var.agent_legacy_worker_admin_retired && var.agent_task_source_isolation_confirmed
       )
-      error_message = "Worker admission requires protected identity, retired legacy admin access and verified Kubernetes isolation. Pause admission while preparing the migration."
+      error_message = "Worker admission requires protected identity and source isolation, or deploy.sh's verified existing legacy identity for a code upgrade. Pause admission while preparing an identity migration."
     }
     precondition {
       condition     = !var.agent_authority_enabled || var.agent_authority_runtime_ready

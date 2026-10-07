@@ -135,7 +135,8 @@ def test_short_health_revision_cannot_become_a_revision_pin():
 
 def test_only_the_parent_schedules_and_all_suites_share_one_live_lock():
     parent, triggers = workflow("nightly-cli-regression.yml")
-    assert triggers["schedule"] == [{"cron": "0 5 * * *"}]
+    assert "schedule" not in triggers
+    assert "workflow_call" in triggers
     assert "workflow_dispatch" in triggers
     locks = []
     for name in CHILDREN:
@@ -351,12 +352,12 @@ def test_ec2_must_publish_its_own_verified_revision(revision):
     assert "EC2 pinned revision: `unverified`" in text
 
 
-def test_key_scenarios_pass_without_claiming_full_acceptance():
+def test_revision_drift_cannot_claim_single_revision_acceptance():
     text, code = report.render(outcomes(), SHA, "b" * 40)
-    assert code == 0
-    assert "E20 capabilities/doctor" in text
-    assert "E21 usage/export" in text
-    assert "E22 Activity" in text
+    assert code == 1
+    assert "E20" in text
+    assert "E27" in text
+    assert "E42" in text
     assert "not a single-revision acceptance run" in text
     assert "Full CLI story acceptance is not established" in text
 
@@ -393,6 +394,10 @@ def test_ec2_snapshot_replaces_only_the_revision_and_publishes_it(
 ):
     for key in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
         monkeypatch.setenv(key, str(tmp_path / key))
+    monkeypatch.setenv(
+        "CLI_UPLIFT_EVAL_BINDINGS_JSON",
+        json.dumps({"platform_account": "000000000101"}),
+    )
     monkeypatch.setenv("CLI_UPLIFT_EVAL_EXPECTED_REVISION", "c" * 40)
     monkeypatch.setattr(
         ports, "default_ports", lambda cfg: {"aws": Aws(), "http": Http()}
@@ -581,6 +586,8 @@ fail() { echo "$*" >&2; }
         env={
             **os.environ,
             "HOME": str(home),
+            "BG_CONFIG_DIR": str(home / ".config/bedrockgateway"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
             "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
             "TEST_CLI_FILES": str(ROOT / "modules/gateway/cli"),
         },
@@ -886,7 +893,8 @@ def test_nightly_forwards_optional_fixtures_without_changing_scheduled_scope():
         "${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}"
     )
     assert ec2["with"]["suites"] == "${{ inputs.ec2_scope || 'nightly' }}"
-    assert triggers["schedule"] == [{"cron": "0 5 * * *"}]
+    assert "schedule" not in triggers
+    assert "workflow_call" in triggers
     child, child_triggers = workflow("eval-cli-uplift.yml")
     assert (
         child_triggers["workflow_call"]["inputs"]["fixtures_json"]["type"] == "string"
@@ -958,6 +966,15 @@ def test_parent_snapshot_uses_reviewed_gateway_binding(tmp_path, monkeypatch):
     # Parent always targets reviewed dev, regardless of unrelated runner config.
     monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", "/untrusted/missing.json")
     monkeypatch.setenv("CLI_UPLIFT_EVAL_GATEWAY_URL", "https://foreign.invalid")
+    monkeypatch.setenv(
+        "CLI_UPLIFT_EVAL_BINDINGS_JSON",
+        json.dumps(
+            {
+                "platform_account": "000000000999",
+                "gateway_url": "https://reviewed.example.com/api",
+            }
+        ),
+    )
     seen = {}
 
     def transport(cfg):
@@ -966,8 +983,8 @@ def test_parent_snapshot_uses_reviewed_gateway_binding(tmp_path, monkeypatch):
 
     def snapshot(cfg, aws, http):
         assert cfg["gateway_deployment"] == "dev"
-        assert cfg["platform_account"] == "000000000101"
-        assert cfg["gateway_url"] == "https://gateway-101.example.com/api"
+        assert cfg["platform_account"] == "000000000999"
+        assert cfg["gateway_url"] == "https://reviewed.example.com/api"
         return SHA, "gateway_deployment_receipt"
 
     monkeypatch.setattr(ports, "default_ports", transport)

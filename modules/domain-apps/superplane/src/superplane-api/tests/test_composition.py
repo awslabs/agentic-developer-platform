@@ -24,8 +24,13 @@ from app.composition import (
 
 
 class _Configured:
-    adp_gateway_internal_url = "https://gateway.internal"
-    adp_gateway_internal_api_key = "internal-key"
+    adp_gateway_internal_url = (
+        "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+    )
+    adp_gateway_internal_api_key = ""
+    adp_gateway_evidence_auth = "api-producer-iam"
+    superplane_operation_gateway_url = adp_gateway_internal_url
+    superplane_operation_gateway_region = "us-east-1"
     # No `database_url`, so the three harness-backed ports report "no operation
     # store configured" rather than composing. That is the point for most of this
     # file: it isolates the vault port. `TestTheHarnessPortsAreComposed` supplies
@@ -61,6 +66,11 @@ class _WithOperationStore(_Configured):
     """
 
     database_url = "postgresql+asyncpg://composition-test@127.0.0.1:1/superplane"
+    superplane_db_schema = "domain"
+    superplane_operation_database_url = (
+        "postgresql+asyncpg://shared-test@127.0.0.1:1/superplane"
+    )
+    superplane_operation_db_schema = "operations"
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +88,7 @@ def _no_preinstalled_adapters(monkeypatch):
     import app.services.credential_evidence as evidence
     import app.services.provider_authority as authority
     import app.services.provider_inventory as inventory
-    import app.services.provisioning as provisioning
+    from app.services import provisioning
 
     monkeypatch.setattr(evidence, "_reader", None)
     monkeypatch.setattr(authority, "_validator", None)
@@ -405,7 +415,7 @@ class TestShutdown:
         because `compose()` correctly declines to displace a pre-existing adapter,
         the port would then be empty with nobody able to refill it.
         """
-        import app.services.provisioning as provisioning
+        from app.services import provisioning
 
         sentinel = object()
         monkeypatch.setattr(provisioning, "_facade", sentinel)
@@ -542,3 +552,69 @@ class TestTheVaultTimeoutIsConfigurable:
         from app.config import Settings
 
         assert Settings().adp_vault_timeout_seconds == _DEFAULT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_composition_passes_its_actual_producer_to_lifecycle_facade():
+    from app.services.provisioning import get_operation_facade
+
+    class ConfiguredProducer(_WithOperationStore):
+        superplane_operation_gateway_url = (
+            "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+        )
+        superplane_operation_gateway_region = "us-east-1"
+        superplane_operation_dispatch_enabled = True
+
+    composition = compose(ConfiguredProducer())
+    try:
+        facade = get_operation_facade()
+        assert composition.dispatcher is not None
+        assert facade._lifecycle_verify.__self__ is composition.dispatcher
+        assert (
+            facade._lifecycle_verify.__func__
+            is type(composition.dispatcher).binding_ready
+        )
+    finally:
+        await composition.aclose()
+
+
+async def test_current_identity_composition_shares_registered_producer_transport():
+    from app.current_identity import MappedProducerIdentityReader
+
+    class Configured(_WithOperationStore):
+        superplane_operation_gateway_url = (
+            "https://abcdefghij.execute-api.us-east-1.amazonaws.com/dev"
+        )
+        superplane_operation_gateway_region = "us-east-1"
+
+    result = compose(Configured())
+    try:
+        assert result.dispatcher is not None
+        assert isinstance(result.identity_reader, MappedProducerIdentityReader)
+        assert result.identity_reader.transport is result.dispatcher.transport
+    finally:
+        await result.aclose()
+
+
+def test_shared_database_configuration_cannot_fall_back_to_domain_credentials():
+    from types import SimpleNamespace
+    from app.adapters.harness_connection import (
+        HarnessDatabaseUnavailable,
+        build_harness_connections,
+    )
+
+    domain = "postgresql://domain@127.0.0.1:1/database"
+    values = dict(database_url=domain, superplane_db_schema="domain")
+    assert build_harness_connections(SimpleNamespace(**values)) is None
+    for url, schema in (
+        (domain, "operations"),
+        ("postgresql://shared@127.0.0.1:1/database", "domain"),
+    ):
+        with pytest.raises(HarnessDatabaseUnavailable):
+            build_harness_connections(
+                SimpleNamespace(
+                    **values,
+                    superplane_operation_database_url=url,
+                    superplane_operation_db_schema=schema,
+                )
+            )

@@ -74,7 +74,7 @@ test('shared progress receives partial messages, searches and plan updates with 
     { text: 'Checking tests now.', id: 'm', category: 'message', state: 'completed' },
     { text: 'Searching the web: SDK docs', id: 's', category: 'tool', state: 'running' },
     { text: 'Searched the web: SDK docs', id: 's', category: 'tool', state: 'completed' },
-    { text: '✓ Run tests', id: 'p', category: 'plan', state: 'running' },
+    { text: '**1 of 1 tasks complete** (agent-reported)\n\n- ☑ Run tests', id: 'p', category: 'plan', state: 'running' },
   ]);
 });
 
@@ -87,4 +87,52 @@ test('reused SDK item IDs in later turns cannot overwrite an earlier turn in the
   const event: ThreadEvent = { type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'Done' } };
   publishDeveloperEvent(event, first); publishDeveloperEvent(event, first); publishDeveloperEvent(event, second);
   assert.equal(ids[0], ids[1]); assert.notEqual(ids[0], ids[2]);
+});
+
+for (const terminalFailure of [false, true]) {
+  test(`developer preserves native reconnects before ${terminalFailure ? 'terminal failure' : 'success'}`, async () => {
+    const { reporter } = recorder();
+    let starts = 0, notifications = 0;
+    reporter.observeEvent = event => { if (event.type === 'error') notifications++; };
+    const run = runDeveloperStream({ id: 'retained-thread', runStreamed: async () => {
+      starts++;
+      return { events: (async function* (): AsyncGenerator<ThreadEvent> {
+        for (let retry = 1; retry <= 5; retry++) {
+          yield { type: 'error', message: `Reconnecting... ${retry}/5 (stream disconnected before completion)` };
+        }
+        if (terminalFailure) yield { type: 'turn.failed', error: { message: 'stream disconnected before completion: retries exhausted' } };
+        else yield { type: 'turn.completed', usage };
+      })() };
+    } }, 'task', {}, reporter);
+    if (terminalFailure) await assert.rejects(run, /retries exhausted/);
+    else assert.equal((await run).usage, usage);
+    assert.equal(starts, terminalFailure ? 2 : 1);
+    assert.equal(notifications, starts * 5);
+  });
+}
+
+test('structured turns publish human plans, hide outcome JSON, and isolate scratch task lists', async () => {
+  const { reporter, seen } = recorder();
+  const progress: Array<{ text: string; plan_scope?: string }> = [];
+  reporter.progress = (text, detail) => progress.push({ text, ...detail });
+  const events = async function* (): AsyncGenerator<ThreadEvent> {
+    yield { type: 'item.completed', item: { id: 'plan', type: 'agent_message', text: 'Keep conversations available after reconnecting.' } };
+    yield { type: 'item.completed', item: { id: 'scratch', type: 'todo_list', items: [{ text: 'Read files', completed: true }] } };
+    yield { type: 'item.updated', item: { id: 'outcome', type: 'agent_message', text: '{"outcome":' } };
+    yield { type: 'item.completed', item: { id: 'outcome', type: 'agent_message', text: '{"outcome":"checkpoint"}' } };
+    yield { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, reasoning_output_tokens: 0 } };
+  };
+  const result = await runDeveloperStream({ id: 'session', runStreamed: async () => ({ events: events() }) }, 'work', {}, reporter, () => {}, true);
+  assert.equal(result.finalResponse, '{"outcome":"checkpoint"}');
+  assert.equal(progress.length, 2);
+  assert.match(progress[0]!.text, /Keep conversations/);
+  assert.equal(progress[1]!.plan_scope, 'inspection');
+  assert.ok(!JSON.stringify(progress).includes('checkpoint'));
+  assert.deepEqual(seen, []);
+});
+
+test('SDK diagnostics remain in technical activity without replacing the human explanation', () => {
+  const { reporter, seen } = recorder();
+  publishDeveloperEvent({ type: 'item.completed', item: { id: 'warning', type: 'error', message: 'Model metadata unavailable' } }, reporter);
+  assert.deepEqual(seen, ['activity:Agent reported: Model metadata unavailable']);
 });

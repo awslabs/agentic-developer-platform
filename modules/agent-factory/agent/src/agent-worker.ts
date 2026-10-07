@@ -21,9 +21,10 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
  */
 
 import { loadHumanCommunication } from './human-communication';
+import { loadCodingGuidelines } from './coding-guidelines';
 import { assistantText } from './reporting-text';
 import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
-import { ClaudeProgress } from './claude-progress';
+import { ClaudeProgress, claudeTaskChecklist } from './claude-progress';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
@@ -803,8 +804,8 @@ function loadRules(): string {
   const phaseMap: Record<string, string[]> = {
     product: ['phases/inception/requirements-analysis.md', 'phases/inception/user-stories.md'],
     architect: ['phases/inception/application-design.md', 'phases/inception/units-generation.md', 'phases/construction/functional-design.md'],
-    developer: ['phases/construction/code-generation.md'],
-    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md'],
+    developer: ['phases/construction/code-generation.md', 'phases/construction/task-breakdown.md'],
+    reviewer: ['phases/construction/pr-review.md', 'phases/construction/build-and-test.md', 'phases/construction/task-breakdown.md'],
     operations: ['phases/operations/deployment.md'],
   };
 
@@ -823,6 +824,7 @@ function loadRules(): string {
   }
 
   rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
+  rules.push(loadCodingGuidelines());
 
   return rules.join('\n\n---\n\n');
 }
@@ -1120,19 +1122,6 @@ matches \`agent/issue-*\`. A branch with any other name will:
 If you need to push multiple branches for a single issue (rare), still prefix
 with \`agent/issue-${ISSUE_NUMBER}-\` followed by a short suffix
 (e.g. \`agent/issue-${ISSUE_NUMBER}-followup\`). The prefix match is what the trigger needs.
-
-## Coding Guidelines (MANDATORY for all code changes)
-
-Before editing or creating any code file, read and internalize \`docs/agent-coding-guidelines.md\`. Four principles:
-
-1. **Think before coding** — state assumptions, surface tradeoffs, ask when unclear
-2. **Simplicity first** — minimum code that solves the stated problem; no speculative features
-3. **Surgical changes** — every changed line must trace directly to the user's request
-4. **Goal-driven execution** — transform tasks into verifiable goals; state plans with per-step verification
-
-**Hard rule**: if a file or line in your diff doesn't trace to an acceptance criterion in the issue, delete it before opening the PR.
-
-Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
 ${AGENT_TYPE === 'developer' ? `## Developer delivery and review handoff
 
@@ -1485,6 +1474,11 @@ Now, complete the assigned task.`;
       log('INFO', `CheckRunStreamer active for check run ${crId}`);
     }
   }
+  if (!checkRunStreamer) checkRunStreamer = new CheckRunStreamer({
+    checkRunId: 0, repo: `${REPO_OWNER}/${REPO_NAME}`, tokenProvider: () => '',
+    persona: AGENT_TYPE, issueNumber: parseInt(ISSUE_NUMBER) || 0, model: MODEL,
+    log: msg => log('WARN', msg),
+  });
   // ─────────────────────────────────────────────────────────────────────────
 
   // ── Codex Event Watcher ───────────────────────────────────────────────────
@@ -1633,7 +1627,7 @@ Now, complete the assigned task.`;
             model: MODEL,
             cwd: CWD,
             allowedTools: [
-              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
+              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill', 'TodoWrite',
               ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
               ...(AIDLC_ENABLED ? ['Task'] : []),
             ],
@@ -1711,6 +1705,7 @@ Now, complete the assigned task.`;
         onSessionId: (sessionId) => {
           log('INFO', `SDK session id captured: ${sessionId}`, { phase: 'session-id', sessionId });
           writeResultMetadata({ session_id: sessionId });
+          checkRunStreamer?.runRecord.session(sessionId);
         },
         log: (msg) => log('WARN', msg),
       })) {
@@ -1737,6 +1732,8 @@ Now, complete the assigned task.`;
             if (activeLiveComment) {
               activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
+                const checklist = claudeTaskChecklist(block);
+                if (checklist) activeLiveComment.setTaskChecklist(checklist);
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
                   activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);

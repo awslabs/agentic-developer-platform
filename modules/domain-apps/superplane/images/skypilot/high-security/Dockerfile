@@ -1,6 +1,7 @@
 # Maintenance layer over the verified SkyPilot release; application/provider
 # versions remain pinned except for the explicitly tested dependencies below.
 ARG BASE_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:0a5115d0840164c9cf9b17d5c455322bda2c35f68902f28f91ef6d9dd84214c2 AS high-maintenance
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:9cf0a78c494248b3c03adc65658de9e76438e34d8089b417965dfb20d3f42352 AS os-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:65e92431d58468d1a662591c0158a0c623e11915304eb3a9ac2a1728037b9164 AS go-security
 FROM ${BASE_IMAGE} AS expat-builder
@@ -80,4 +81,15 @@ RUN javac -cp ray.jar HttpCoreRegression.java \
 FROM patched-runtime
 COPY --from=java-test /test/httpcore-regression.txt /opt/adp-security/high-dependencies/httpcore-regression.txt
 # Match the existing authenticated deployment's enforced runtime identity.
+# Maintain the runtime's JWT verifier even when this recipe inherits an older pin.
+ADD --checksum=sha256:ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc https://files.pythonhosted.org/packages/9c/97/672cb32ce0dfea44b740cb7b4f97038463b9cf7c0ead1aacf595572851d6/pyjwt-2.14.0-py3-none-any.whl /tmp/pyjwt-2.14.0-py3-none-any.whl
+RUN --network=none python -m pip list --format=json > /tmp/jwt-before.json \
+    && python -m pip install --no-index --no-deps --no-cache-dir /tmp/pyjwt-2.14.0-py3-none-any.whl \
+    && python -m pip check \
+    && python -c "import json,importlib.metadata as m; from pathlib import Path; before={d['name'].lower():d['version'] for d in json.loads(Path('/tmp/jwt-before.json').read_text())}; after={d.metadata['Name'].lower():d.version for d in m.distributions()}; assert after['pyjwt']=='2.14.0'; assert {k:v for k,v in before.items() if k!='pyjwt'}=={k:v for k,v in after.items() if k!='pyjwt'}; p=Path('/opt/adp-security/requirements-security.txt'); s=p.read_text(); assert 'PyJWT==2.13.0' in s or 'PyJWT==2.14.0' in s; p.write_text(s.replace('PyJWT==2.13.0','PyJWT==2.14.0'))" \
+    && rm /tmp/jwt-before.json /tmp/pyjwt-2.14.0-py3-none-any.whl
+# Apply the same offline, checksum-locked maintenance to every SkyPilot variant.
+# The installer rejects unreviewed inputs and checks the full provider environment.
+RUN --network=none --mount=type=bind,from=high-maintenance,source=/,target=/maintenance-input \
+    python3 /maintenance-input/maintenance/install.py /maintenance-input
 USER 1000:1000

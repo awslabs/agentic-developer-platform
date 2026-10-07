@@ -70,8 +70,7 @@ after WebSocket refusal. This is protocol evidence, not Task API integration,
 authority-safe resume, or a live quality/latency/cost result.
 
 A credential-free text Responses bridge now provides loopback token authentication,
-strict SDK request normalization, model/effort checks, output/operation/deadline
-limits, validated SSE completion and refusal of further requests after uncertain
+strict SDK request normalization, model/effort checks, output/deadline limits and optional host-granted operation limits, validated SSE completion and refusal of further requests after uncertain
 host outcomes. It discards SDK cache IDs and metadata and removes the two residual
 native tool declarations from the host request. The host callback must supply a
 confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
@@ -176,3 +175,39 @@ to an empty set in every environment; `codex_otel_endpoint` uses the existing AD
 `enable_agent_otel` is true, and otherwise defaults to disabled export. No legacy mention or automatic routing is added. The gateway
 still requires a reviewed catalogue, current model evidence and explicit service
 policy; enabling a worker is not an admission grant.
+
+### Context handling
+
+The shared harness does not reject persona instructions or user prompts against
+an ADP context-byte budget. The legacy `maxContextBytes` snapshot field remains
+readable for compatibility with frozen runs, but is not enforced. Direct GitHub/GitLab model HTTP requests also have no local prompt/history byte
+ceiling or history-item count cap. Model/provider context limits still apply.
+Task API retains its existing IPC frame limit; this is a distinct transport. Execution, spending,
+output and capability controls are independent of context handling.
+
+
+Direct GitHub persona runs do not enforce the legacy 20-model-call or
+32-tool-call ceilings. Model and tool operations are still authorized and
+journaled individually; interrupted effects cannot be replayed and publication
+still fences further work. Legacy `maxTurns`/`maxTools` session fields remain
+readable for mixed-version rollout compatibility. Task API retains explicit
+operation budgets from its task grant; removing the GitHub defaults does not
+expand a Task API grant.
+
+
+Direct GitHub report execution also omits a local `max_output_tokens` override
+and response-byte ceiling. Provider output limits and the admitted run deadline
+apply; Task API retains its explicit output grant and IPC limits. Direct model
+requests use the remaining run deadline rather than a separate two-minute
+subdeadline. Completed provider output must still pass schema, usage and tool
+receipt validation. The GitHub operation journal preserves complete receipts;
+underlying service limits, including DynamoDB item size, still apply. Planning
+artifacts retain their declared document schema and size contract.
+
+
+GitHub report personas request provider SSE and consume the terminal completed
+Responses object before settling a model operation. This uses the same streaming
+inference path as the native developer instead of waiting for a complete JSON
+answer on the gateway's non-streaming transport. Partial output, failed/incomplete
+events, malformed streams and disconnects never become confirmed receipts and
+are not automatically retried. Caller cancellation interrupts the stream.

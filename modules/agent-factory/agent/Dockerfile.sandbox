@@ -1,0 +1,18 @@
+FROM public.ecr.aws/docker/library/node:22-alpine AS builder
+WORKDIR /app
+COPY agent/package*.json ./
+RUN npm ci
+COPY agent/src/ ./src/
+RUN npm run build:sandbox && npm prune --omit=dev
+
+FROM public.ecr.aws/docker/library/node:22-alpine
+RUN addgroup -g 10001 agent && adduser -u 10001 -G agent -s /bin/sh -D agent
+RUN apk upgrade --no-cache && apk add --no-cache bash curl aws-cli
+WORKDIR /app
+COPY --from=builder --chown=agent:agent /app/dist/chat-sandbox-entrypoint.js ./dist/chat-sandbox-entrypoint.js
+COPY --from=builder --chown=agent:agent /app/node_modules ./node_modules
+COPY --chown=agent:agent agent/chat-sandbox-entrypoint ./chat-sandbox-entrypoint
+COPY --chown=agent:agent agent/scripts/chat-sandbox-probe.sh ./chat-sandbox-probe
+RUN chmod +x ./chat-sandbox-entrypoint ./chat-sandbox-probe
+USER agent:agent
+ENTRYPOINT ["/app/chat-sandbox-entrypoint"]

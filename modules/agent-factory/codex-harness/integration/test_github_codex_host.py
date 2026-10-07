@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("persona,mode", [(p, "success") for p in ["architect", "product", "pm", "intent-refinement"]]
-                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read"]])
+                         + [("architect", m) for m in ["steer", "unknown", "tampered", "repository-mismatch", "repository-read", "transient", "persistent-http", "budget-http", "long-discussion", "large-discussion", "many-tools", "large-output", "broken-stream"]])
 def test_packaged_github_sdk(tmp_path, persona, mode):
     node = shutil.which("node")
     assert node
@@ -37,7 +38,9 @@ def test_packaged_github_sdk(tmp_path, persona, mode):
     context = {"version": 1, "persona": f"agent-codex-{persona}", "repository": "owner/repo", "repositoryId": "123",
                "issue": 12, "snapshot": snapshot, "capabilities": ["artifacts.publish"], "maxTurns": 20, "maxTools": 0,
                "maxOutputTokens": 4096, "harnessRevision": "codex-sdk-0.155.1/adp-v1"}
-    if mode == "repository-read":
+    if mode == "budget-http":
+        context["maxTurns"] = 1
+    if mode in {"repository-read", "many-tools"}:
         context["capabilities"].append("repository.read")
         context["maxTools"] = 32
     if mode == "tampered":
@@ -76,7 +79,7 @@ import { writeFileSync } from 'node:fs';
 export async function createCodexPersonaReporter() {
  return { log() {}, progress() {}, async finish(result, provenance) {
   writeFileSync(process.env.FIXTURE_ARTIFACTS + '/report.json', JSON.stringify({ result, provenance }));
- }, async fail() { writeFileSync(process.env.FIXTURE_ARTIFACTS + '/failed', 'true'); } };
+ }, async fail(error) { writeFileSync(process.env.FIXTURE_ARTIFACTS + '/failed', String(error)); } };
 }
 ''')
     binaries = tmp_path / "bin"
@@ -84,6 +87,14 @@ export async function createCodexPersonaReporter() {
     gh = binaries / "gh"
     gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id": ' + ('999' if mode == 'repository-mismatch' else '123')
                   + '} if sys.argv[1] == "api" and "/issues/" not in sys.argv[2] else [] if sys.argv[1] == "api" else {"number":12,"title":"Fixture architecture request","body":"Inspect supplied evidence", "comments":[]}))\n')
+    if mode in {'long-discussion', 'large-discussion'}:
+        # Shared architect rules consume ~49 KiB before task/schema text.
+        # Preserve a substantial issue and amendments rather than dropping them.
+        issue_payload = {"number": 12, "title": "Fixture architecture request", "body": "Original requirement. " * 250,
+                         "comments": [{"id": "human-amendment", "author": {"login": "human"},
+                                       "body": "Preserve this amendment. " * (12000 if mode == "large-discussion" else 650)}]}
+        gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id":123} if sys.argv[1] == "api" else '
+                      + repr(issue_payload) + '))\n')
     gh.chmod(0o700)
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -102,19 +113,32 @@ export async function createCodexPersonaReporter() {
         def do_POST(self):
             requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
             if mode == 'unknown':
-                self.send_response(503)
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.connection.close()
+                return
+            if mode in {'persistent-http', 'budget-http'} or (mode == 'transient' and len(requests) == 1):
+                self.send_response(500)
                 self.end_headers()
                 return
             response = {"id": "resp_fixture", "status": "completed", "output": [
                 {"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
                  "content": [{"type": "output_text", "text": json.dumps(planning_output(persona, "issue")), "annotations": []}]}],
                         "usage": {"input_tokens": 100, "output_tokens": 10}}
-            if mode == 'repository-read' and len(requests) == 1:
-                response["output"] = [{"id": "fc_fixture", "type": "function_call", "call_id": "call_fixture", "name": "repository_file",
+            if (mode == 'repository-read' and len(requests) == 1) or (mode == 'many-tools' and len(requests) <= 35):
+                response["output"] = [{"id": f"fc_fixture_{len(requests)}", "type": "function_call", "call_id": f"call_fixture_{len(requests)}", "name": "repository_file",
                                        "namespace": "mcp__adp", "arguments": json.dumps({"path": "README.md"}), "status": "completed"}]
-            body = json.dumps(response).encode()
+            if mode == 'large-output':
+                artifact = planning_output(persona, "issue")
+                artifact['artifact']['design'] = 'Detailed architecture. ' * 1800
+                response['output'][0]['content'][0]['text'] = json.dumps(artifact)
+                response['output'].insert(0, {"id": "reasoning_fixture", "type": "reasoning", "encrypted_content": "x" * 70000, "summary": []})
+                response['usage']['output_tokens'] = 12000
+            body = ('event: response.completed\ndata: ' + json.dumps({'type': 'response.completed', 'response': response}) + '\n\n').encode()
+            if mode == 'broken-stream':
+                body = b'event: response.created\ndata: {"type":"response.created","response":{"status":"in_progress"}}\n\n'
+
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -132,12 +156,18 @@ export async function createCodexPersonaReporter() {
         server.shutdown()
         server.server_close()
         thread.join()
-    success = mode in {'success', 'steer', 'repository-read'}
+    success = mode in {'success', 'steer', 'repository-read', 'transient', 'long-discussion', 'large-discussion', 'many-tools', 'large-output'}
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
-    assert len(requests) == (2 if mode in {'steer', 'repository-read'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
+    assert len(requests) == (36 if mode == 'many-tools' else 3 if mode in {'persistent-http', 'budget-http'} else 2 if mode in {'steer', 'repository-read', 'transient'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
-        assert 'Working through' in (artifacts / 'progress.txt').read_text()
+        progress = (artifacts / 'progress.txt').read_text()
+        assert progress.count('Starting the repository assessment.') == 1
+        assert 'Working through the admitted task' not in progress
+        if mode in {'repository-read', 'many-tools'}:
+            assert 'Reading README.md (lines 1–100)' in progress
+            assert 'Read README.md (lines 1–100)' in progress
+            assert 'Pinned repository evidence 471.' not in progress
         assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
     if requests:
         assert f'personas/{persona}.md' in json.dumps(requests[0])
@@ -154,3 +184,36 @@ export async function createCodexPersonaReporter() {
         operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'claim')) == 1
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'settle')) == 1
+
+    if mode in {'transient', 'persistent-http', 'budget-http'}:
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        model_ops = [value for value in operations if value['kind'] == 'model']
+        assert [value['action'] for value in model_ops] == ['claim', 'settle'] * len(requests)
+        assert len({value['operation_id'] for value in model_ops}) == len(requests)
+        assert json.loads(model_ops[1]['result']) == {'httpStatus': 500}
+        if mode == 'persistent-http':
+            assert 'HTTP 500' in (artifacts / 'failed').read_text()
+
+    if mode in {'long-discussion', 'large-discussion'}:
+        prompt = json.dumps(requests[0])
+        assert 'Original requirement. ' * 250 in prompt
+        assert ('Preserve this amendment. ' * (12000 if mode == 'large-discussion' else 650)).strip() in prompt
+        if mode == 'large-discussion':
+            assert len(prompt.encode()) > 256 * 1024
+
+    if mode == 'many-tools':
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        assert sum(op['kind'] == 'tool' and op['action'] == 'settle' for op in operations) == 35
+        assert sum(op['kind'] == 'model' and op['action'] == 'settle' for op in operations) == 36
+
+    if requests:
+        assert 'max_output_tokens' not in requests[0]
+        assert requests[0]['stream'] is True
+    if mode == 'large-output':
+        report = json.loads((artifacts / 'report.json').read_text())
+        assert ('Detailed architecture. ' * 1800).strip() in report['result']['response']
+        assert report['result']['usage']['output_tokens'] == 12000
+
+    if mode == 'broken-stream':
+        operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
+        assert [(value['kind'], value['action']) for value in operations] == [('model', 'claim')]

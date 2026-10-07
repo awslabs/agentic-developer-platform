@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.agentauth.engine import EngineAuthorityWriter
@@ -196,6 +196,9 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
         return SimpleNamespace(total_usd=ctx.spend)
 
     monkeypatch.setattr("src.orchestration.flow_meter.read_flow_meter", meter)
+    monkeypatch.setattr(
+        "src.orchestration.flow_meter.reconcile_flow_meter", AsyncMock(side_effect=lambda session, **kwargs: SimpleNamespace(total_usd=ctx.spend))
+    )
 
     async def authorization(db, **kwargs):
         return AuthorizationContext(
@@ -306,7 +309,32 @@ async def review(ctx, *, approve=False, findings=None, publication=False):
     await ctx.finish(claim.active_run_id)
 
 
-async def test_develop_review_repair_fresh_review_merge_ready(cycle):
+async def legacy_delivery(ctx):
+    """Represent a retained pre-upgrade dispatch, which has no merge ownership."""
+    run_id = ctx.calls[-1]["message_id"]
+    ctx.calls[-1]["review_cycle_input"].pop("reviewer_owned_delivery", None)
+    async with ctx.factory() as db:
+        rows = (
+            await db.scalars(
+                select(OrchestrationDecision).where(OrchestrationDecision.node_id == ctx.node.id, OrchestrationDecision.kind == "agent_dispatched")
+            )
+        ).all()
+        for row in rows:
+            saved = json.loads(row.reason)
+            if saved.get("run_id") == run_id:
+                saved["envelope"]["review_cycle_input"].pop("reviewer_owned_delivery", None)
+                # Seed a pre-upgrade receipt in the isolated test database.
+                # Production decisions remain append-only.
+                await db.execute(
+                    update(OrchestrationDecision.__table__)
+                    .where(OrchestrationDecision.__table__.c.id == row.id)
+                    .values(reason=json.dumps(saved))
+                    .execution_options(synchronize_session=False)
+                )
+        await db.commit()
+
+
+async def test_legacy_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx = cycle
     from src.agentauth.model_policy import _persist_snapshot
     from tests.agentauth.test_model_policy import live_snapshot
@@ -333,6 +361,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx.service.queue.send_message = assert_snapshot_before_send
     result = await tick(ctx)
     assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
+    await legacy_delivery(ctx)
     first = ctx.calls[-1]
     assert first["persona"] == "agent-codex-reviewer"
     assert first["model_resolved"] == "openai.gpt-6-sol"
@@ -345,6 +374,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
+    await legacy_delivery(ctx)
     repair = ctx.calls[-1]
     assert repair["persona"] == "agent-codex-reviewer"
     assert repair["review_cycle_input"]["findings"][0]["finding_id"] == "F1"
@@ -356,6 +386,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     await ctx.finish(repair["message_id"])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
+    await legacy_delivery(ctx)
     fresh = ctx.calls[-1]
     assert fresh["review_expect"]["expected_head_sha"] == ctx.head
     assert fresh["review_expect"]["author_run_id"] == repair["message_id"]
@@ -607,8 +638,10 @@ async def test_repair_has_separate_allowance_and_review_retains_its_history(cycl
         plan.plan_document = document
         await db.commit()
     assert (await tick(cycle)).effects_succeeded == 1
+    await legacy_delivery(cycle)
     await review(cycle, findings=[{"finding_id": "F1", "summary": "Correction required"}])
     assert (await tick(cycle)).effects_succeeded == 1
+    await legacy_delivery(cycle)
     await cycle.finish(cycle.calls[-1]["message_id"])
     cycle.head = "b" * 40
     result = await tick(cycle)
@@ -796,3 +829,162 @@ async def test_failed_reviewer_retries_retained_pr_with_remaining_allowance(cycl
     await review(cycle, approve=True)
     await tick(cycle)
     assert (await state(cycle))[0].phase == "merge_ready"
+
+
+@pytest.mark.parametrize("terminal", ["complete", "failed"])
+async def test_protected_reviewer_owns_delivery_by_default_and_blockers_do_not_dispatch_another_pass(cycle, terminal):
+    assert (await tick(cycle)).effects_succeeded == 1
+    envelope = cycle.calls[-1]
+    assert envelope["review_cycle_input"]["reviewer_owned_delivery"] is True
+    await review(cycle, findings=[{"finding_id": "external", "summary": "Missing required evidence"}])
+    if terminal == "failed":
+        raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+        raw["terminal_outcome"] = {"S": "failed"}
+        cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    result = await tick(cycle)
+    execution, _, _, _ = await state(cycle)
+    assert result.effects_attempted == 0
+    assert len(cycle.calls) == 1
+    assert execution.block_detail == "reviewer_delivery_blocked"
+
+
+async def test_reviewer_retries_at_depth_limit_preserve_authority_and_attempt_budget(cycle):
+    ctx = cycle
+    root_grant = ctx.store._read(f"TENANT#{ORG}", f"GRANT#{ctx.root}#1")
+    root_grant["max_chain_depth"] = {"N": "1"}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=root_grant)
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = 10
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(ctx)).effects_succeeded == 1
+    first = ctx.calls[-1]["message_id"]
+    # Retry must not regain the ancestor's longer expiry or broader permissions.
+    grant = ctx.store._read(f"TENANT#{ORG}", f"GRANT#{first}#1")
+    expiry = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    grant["expires_at"] = {"S": expiry}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=grant)
+    for index in range(10):
+        run = ctx.calls[-1]["message_id"]
+        raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+        raw.update(status={"S": "completed"}, terminal_outcome={"S": "failed"})
+        ctx.store.client.put_item(TableName=ctx.store.table, Item=raw)
+        result = await tick(ctx)
+        if index == 9:
+            assert result.effects_succeeded == 0
+            assert (await state(ctx))[0].block_code == "attempts_exhausted"
+            break
+        assert result.effects_succeeded == 1
+        retry = ctx.calls[-1]
+        assert retry["correlation"]["chain_depth"] == 1
+        assert retry["correlation"]["parent_principal"] == f"{ctx.root}#1"
+        assert retry["review_expect"]["author_run_id"] == ctx.root
+        live = ctx.store.live_grant(invocation_id=retry["message_id"], tenant_id=ORG, attempt=1, now=datetime.now(UTC))
+        assert live.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ") == expiry
+        assert live.max_chain_depth == 1 and live.repo_scope == frozenset({REPO})
+        assert {action.value for action in live.allowed_actions} == {"monitor"}
+    assert len(ctx.calls) == 10
+    assert len({call["message_id"] for call in ctx.calls}) == 10
+    assert (await state(ctx))[2].attempts == 1
+
+
+@pytest.mark.parametrize("change", ["missing", "revoked", "epoch", "depth"])
+async def test_retry_lineage_refuses_missing_revoked_or_changed_parent(cycle, change):
+    from src.orchestration.review_cycle import CycleBlockedError
+
+    ctx = cycle
+    assert (await tick(ctx)).effects_succeeded == 1
+    run = ctx.calls[-1]["message_id"]
+    raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+    grant = ctx.store.live_grant(invocation_id=run, tenant_id=ORG, attempt=1, now=datetime.now(UTC))
+    if change == "missing":
+        raw.pop("parent_principal")
+    elif change == "epoch":
+        raw["parent_grant_epoch"] = {"N": "999"}
+    elif change == "depth":
+        raw["chain_depth"] = {"N": "0"}
+    else:
+        parent = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{ctx.root}")
+        parent["status"] = {"S": "revoked"}
+        ctx.store.client.put_item(TableName=ctx.store.table, Item=parent)
+    with pytest.raises(CycleBlockedError, match="retry_parent_unverifiable"):
+        await ctx.service.retry_parent(ORG, raw, grant)
+    assert len(ctx.calls) == 1
+
+
+async def test_budget_delayed_review_gets_fresh_startup_clock(cycle):
+    from src.orchestration.execution_policy import DenyReason
+    from src.orchestration.work_admission import cancel_unstarted_claim
+
+    cycle.reserve.return_value = Decision.block(DenyReason.SPEND_LIMIT_EXCEEDED, "budget wait")
+    await tick(cycle)
+    _, _, _, actions = await state(cycle)
+    assert len(actions) == 1 and not cycle.calls
+    async with cycle.factory() as db:
+        action = await db.get(OrchestrationAction, actions[0].id)
+        action.detail = {**action.detail, "arrived_at": (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        await db.commit()
+    cycle.reserve.return_value = Decision.permit("budget restored")
+    before = datetime.now(UTC) - timedelta(seconds=1)
+    assert (await tick(cycle)).effects_succeeded == 1
+    envelope = cycle.calls[-1]
+    assert datetime.fromisoformat(envelope["arrived_at"].replace("Z", "+00:00")) >= before
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+    assert not cancel_unstarted_claim(cycle.store, raw, now=datetime.now(UTC))
+
+
+@pytest.mark.parametrize("allowance", [1, 2])
+async def test_startup_cancelled_review_retries_with_same_claim_and_bounded_attempts(cycle, allowance):
+    from src.orchestration.work_admission import cancel_unstarted_claim, recover_exited_claims
+
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = allowance
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(cycle)).effects_succeeded == 1
+    failed_run = cycle.calls[-1]["message_id"]
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
+    assert cancel_unstarted_claim(cycle.store, raw, now=datetime.now(UTC) + timedelta(hours=1))
+    async with cycle.factory() as db:
+        recovery = await recover_exited_claims(db, store=cycle.store, workloads=SimpleNamespace())
+        await db.commit()
+    assert recovery.released == 0
+    result = await tick(cycle)
+    execution, claim, node, actions = await state(cycle)
+    assert node.attempts == 1 and claim.generation == 5
+    assert cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")["status"] == {"S": "cancelled"}
+    if allowance == 1:
+        assert result.effects_succeeded == 0 and len(actions) == 1
+        assert execution.block_code == "attempts_exhausted"
+    else:
+        assert result.effects_succeeded == 1, (result, execution.block_detail)
+        assert len(actions) == 2 and execution.attempts == 2
+        retry = cycle.calls[-1]
+        assert retry["message_id"] != failed_run
+        assert retry["review_expect"]["author_run_id"] == cycle.root
+        assert retry["correlation"]["parent_principal"] == f"{cycle.root}#1"
+        assert claim.active_run_id == retry["message_id"]
+        assert actions[-1].detail["bootstrap_retry_of"] == failed_run
+
+
+@pytest.mark.parametrize("change", ["binding", "issued", "revoked", "unrelated_cancellation"])
+async def test_startup_retry_refuses_other_cancellations(cycle, change):
+    assert (await tick(cycle)).effects_succeeded == 1
+    run = cycle.calls[-1]["message_id"]
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+    raw.update(status={"S": "cancelled"}, work_claim_cancellation={"S": "startup_deadline_exceeded"})
+    if change == "binding":
+        raw["workload_binding"] = {"S": "a-worker-existed"}
+    elif change == "issued":
+        raw["bootstrap_authority_issued_at"] = {"S": "2026-10-05T00:00:00Z"}
+    elif change == "revoked":
+        raw["status"] = {"S": "revoked"}
+    else:
+        raw["work_claim_cancellation"] = {"S": "operator_cancelled"}
+    cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    assert (await tick(cycle)).effects_succeeded == 0
+    assert len(cycle.calls) == 1

@@ -1,6 +1,7 @@
 name: Gateway Hardening CI
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - '**/Dockerfile'
@@ -27,7 +28,7 @@ on:
       - main
 
 concurrency:
-  group: gateway-hardening-ci-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-gateway-hardening-ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

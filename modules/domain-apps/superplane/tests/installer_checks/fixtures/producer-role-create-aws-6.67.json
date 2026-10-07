@@ -1,0 +1,119 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.14.0",
+  "resource_changes": [
+    {
+      "address": "aws_iam_role.api_producer[0]",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "api_producer",
+      "index": 0,
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRoleWithWebIdentity\",\"Condition\":{\"StringEquals\":{\"oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:aud\":\"sts.amazonaws.com\",\"oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:sub\":\"system:serviceaccount:superplane:superplane-api\"}},\"Effect\":\"Allow\",\"Principal\":{\"Federated\":\"arn:aws:iam::111111111111:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE\"}}],\"Version\":\"2012-10-17\"}",
+          "description": null,
+          "force_detach_policies": false,
+          "inline_policy": [
+            {
+              "name": "adp-dev-superplane-api-producer",
+              "policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Action\":\"execute-api:Invoke\",\"Effect\":\"Allow\",\"Resource\":[\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/producer-readiness\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/verify-run\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/dispatch\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/binding-proof\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/controller-execution/current-identity/readiness\",\"arn:aws:execute-api:us-east-1:111111111111:abcdefghij/dev/POST/internal/v1/credential-evidence\"]}]}"
+            }
+          ],
+          "max_session_duration": 3600,
+          "name": "adp-dev-superplane-api-producer",
+          "path": "/",
+          "permissions_boundary": null,
+          "tags": null,
+          "tags_all": {
+            "Component": "superplane-control-plane",
+            "DomainApp": "superplane",
+            "Environment": "dev",
+            "ManagedBy": "terraform",
+            "Module": "domain-apps/superplane",
+            "Project": "adp"
+          }
+        },
+        "after_unknown": {
+          "arn": true,
+          "create_date": true,
+          "id": true,
+          "inline_policy": [
+            {}
+          ],
+          "managed_policy_arns": true,
+          "name_prefix": true,
+          "tags_all": {},
+          "unique_id": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "inline_policy": [
+            {}
+          ],
+          "managed_policy_arns": [],
+          "tags_all": {}
+        },
+        "after_identity": {
+          "account_id": null,
+          "name": null
+        }
+      }
+    }
+  ],
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role.api_producer",
+          "mode": "managed",
+          "type": "aws_iam_role",
+          "name": "api_producer",
+          "provider_config_key": "aws",
+          "expressions": {
+            "assume_role_policy": {
+              "references": [
+                "local.api_producer_trust"
+              ]
+            },
+            "inline_policy": [
+              {
+                "name": {
+                  "references": [
+                    "local.api_producer_name"
+                  ]
+                },
+                "policy": {
+                  "references": [
+                    "local.api_producer_policy"
+                  ]
+                }
+              }
+            ],
+            "managed_policy_arns": {
+              "constant_value": []
+            },
+            "name": {
+              "references": [
+                "local.name_prefix"
+              ]
+            },
+            "path": {
+              "constant_value": "/"
+            }
+          },
+          "schema_version": 0,
+          "count_expression": {
+            "references": [
+              "var.api_producer_role"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -10,18 +10,17 @@ ARG AWSCLI_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent
 FROM ${CURL_SECURITY_IMAGE} AS curl-security
 FROM ${AWSCLI_SECURITY_IMAGE} AS awscli-security
 
-FROM public.ecr.aws/docker/library/python:3.13-slim AS stdlib-security
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS stdlib-security
 COPY security/stdlib/ /opt/stdlib-security/
-RUN apt-get update && apt-get install -y --no-install-recommends patch \
-    && python /opt/stdlib-security/apply.py \
+RUN python /opt/stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/stdlib-security/check.py
 
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 COPY --from=stdlib-security /usr/local/lib/python3.13/stringprep.py /usr/local/lib/python3.13/stringprep.py
 COPY --from=stdlib-security /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
 COPY --from=stdlib-security /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
 COPY security/stdlib/ /opt/stdlib-security/
-RUN python /opt/stdlib-security/apply.py --verify-only \
+RUN python /opt/stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/stdlib-security/check.py
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \

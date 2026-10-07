@@ -1,10 +1,12 @@
 """Verify selected image coverage and the real Superplane staging contract."""
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "codebuild"))
 import scan_security_images as runner
-from security_image_targets import SUPERPLANE, discover
+from security_image_targets import DOC_API_COMPAT, ORIGINAL_COVERAGE, ORIGINAL_GAPS, REQUIRED_CONTEXT_DOCKERFILES, SUPERPLANE, discover, non_runtime_fixtures
 
 
 @pytest.fixture
@@ -166,6 +168,157 @@ def test_all_scope_inventory_uses_production_contexts_and_preparation():
     assert targets["modules/gateway/Dockerfile"]["prepare"] == [
         ["run", "bash", "modules/gateway/scripts/stage-contracts.sh"]
     ]
+
+
+def test_original_seven_gaps_keep_their_inventory_identity():
+    targets = {target["name"] for target in discover(ROOT)}
+    excluded = non_runtime_fixtures(ROOT)
+    assert len(ORIGINAL_GAPS) == 7
+    assert len(excluded) == 1
+    assert excluded[0]["name"] == "docs-security-runs-2026-09-27-admin-closure-api-compat"
+    assert excluded[0]["original_status"] == "failed"
+    assert excluded[0]["name"] not in targets
+    assert set(ORIGINAL_GAPS) == (targets & set(ORIGINAL_GAPS)) | {excluded[0]["name"]}
+    # The frozen denominator belongs to the original run. New image recipes
+    # must still be discovered and scanned without rewriting that baseline.
+    assert ORIGINAL_COVERAGE["expected"] == 41
+    assert ORIGINAL_COVERAGE["succeeded"] == 34
+    assert len(targets) + len(excluded) >= ORIGINAL_COVERAGE["expected"]
+
+
+def test_new_image_recipes_expand_coverage_without_rewriting_baseline(source):
+    before = {target["name"] for target in discover(source)}
+    recipe = source / "modules/new-service/Dockerfile"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text("FROM scratch\n")
+    after = {target["name"] for target in discover(source)}
+    assert after == before | {"modules-new-service"}
+    assert ORIGINAL_COVERAGE["expected"] == 41
+    assert ORIGINAL_COVERAGE["succeeded"] == 34
+
+
+def test_coverage_reconciles_old_and_new_denominators(source, monkeypatch):
+    fixture = source / DOC_API_COMPAT
+    fixture.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / DOC_API_COMPAT, fixture)
+    shutil.copyfile((ROOT / DOC_API_COMPAT).with_name("README.md"), fixture.with_name("README.md"))
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("SECURITY_IMAGE_SCOPE", "all")
+    monkeypatch.setenv("SECURITY_SCAN_DATE", "2026/10/05")
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "scan:fixture")
+    monkeypatch.setenv("ADP_SOURCE_SHA", "a" * 40)
+    monkeypatch.setenv("SECURITY_SCANS_BUCKET", "private-test-bucket")
+    monkeypatch.setattr(sys, "argv", ["scan_security_images.py", "syft"])
+    reports = []
+
+    def scanned(target, tool, output, root):
+        output.write_text('{"bomFormat":"CycloneDX"}')
+        return "sha256:" + "b" * 64
+
+    def upload(args, **kwargs):
+        if args[:3] == ["aws", "s3", "cp"] and args[3].endswith("coverage.json"):
+            reports.append(json.loads(Path(args[3]).read_text()))
+
+    monkeypatch.setattr(runner, "scan", scanned)
+    monkeypatch.setattr(runner, "command", upload)
+    assert runner.main() == 0
+    report = reports[0]
+    assert report["expected"] == report["succeeded"] == 5
+    assert report["discovered"] == 6
+    assert report["excluded_non_runtime"][0]["original_status"] == "failed"
+    assert report["original_gap"] == {
+        "run": "37278531434/1", "expected": 41, "succeeded": 34,
+        "failures": ORIGINAL_GAPS,
+    }
+    assert len(report["targets"]) == 5
+    assert all(item["status"] == "succeeded" for item in report["targets"])
+
+
+def test_docs_fixture_classification_requires_original_example_inputs(source):
+    fixture = source / DOC_API_COMPAT
+    fixture.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / DOC_API_COMPAT, fixture)
+    shutil.copyfile((ROOT / DOC_API_COMPAT).with_name("README.md"), fixture.with_name("README.md"))
+    assert len(non_runtime_fixtures(source)) == 1
+    assert DOC_API_COMPAT not in {target["dockerfile"] for target in discover(source)}
+    original = fixture.read_text()
+    fixture.write_text(original.replace("000000000101", "123456789012", 1))
+    with pytest.raises(ValueError, match="review its scan classification"):
+        discover(source)
+    fixture.write_text(original)
+    fixture.with_name("README.md").write_text("No reviewed classification")
+    with pytest.raises(ValueError, match="review its scan classification"):
+        discover(source)
+
+
+@pytest.mark.parametrize("image", ("codegraph-context", "context-mcp", "litellm-proxy"))
+def test_shared_stdlib_recipe_uses_reviewed_base_and_regressions(image):
+    dockerfile = ROOT / "modules/agent-context/images" / image / "Dockerfile"
+    source = dockerfile.read_text()
+    gateway_base = (ROOT / "modules/gateway/Dockerfile").read_text().splitlines()[7].split(" AS ", 1)[0]
+    assert gateway_base.startswith("FROM public.ecr.aws/docker/library/python:3.13.16-slim@sha256:")
+    assert gateway_base in source
+    assert "COPY security-stdlib/ /opt/adp-stdlib-security/" in source
+    assert "python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json" in source
+    assert "&& python /opt/adp-stdlib-security/check.py" in source
+    assert "apt-get install -y --no-install-recommends patch" not in source
+    assert any(step[1] == "modules/gateway/security/stdlib" for step in
+               next(target for target in discover(ROOT) if target["dockerfile"] == str(dockerfile.relative_to(ROOT)))["prepare"])
+
+
+@pytest.mark.parametrize("image", ("ingestion", "parser"))
+def test_ingestion_family_keeps_exact_donor_and_reviewed_stdlib(image):
+    root = ROOT / "modules/agent-context/images"
+    recipe = (root / image / "Dockerfile").read_text()
+    donor = (root / "ingestion/high-security/Dockerfile").read_text().splitlines()[0]
+    donor = donor.removesuffix(" AS tools")
+    assert donor.endswith("@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2")
+    assert recipe.count(donor) == 1
+    gateway_base = (ROOT / "modules/gateway/Dockerfile").read_text().splitlines()[7].split(" AS ", 1)[0]
+    assert gateway_base in recipe
+    assert "COPY security-stdlib/ /opt/adp-stdlib-security/" in recipe
+    assert "python /opt/adp-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json" in recipe
+    assert "&& python /opt/adp-stdlib-security/check.py" in recipe
+    assert "apt-get install -y --no-install-recommends patch" not in recipe
+
+
+def test_reviewed_stdlib_sources_and_security_boundaries(tmp_path):
+    if sys.version_info[:3] != (3, 13, 16):
+        pytest.skip("CPython 3.13.16 source verification requires the reviewed interpreter")
+    bundle = ROOT / "modules/gateway/security/stdlib"
+    spec = importlib.util.spec_from_file_location("stdlib_security_apply", bundle / "apply.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads((bundle / "manifest-3.13.16.json").read_text())
+    stdlib = Path(sysconfig.get_path("stdlib"))
+    module.verify(stdlib, manifest, "after")
+    with pytest.raises(RuntimeError, match="Unexpected CPython source"):
+        module.verify(stdlib, json.loads((bundle / "manifest.json").read_text()), "before")
+    subprocess.run([sys.executable, str(bundle / "check.py")], check=True)
+    for name in manifest:
+        destination = tmp_path / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(stdlib / name, destination)
+    (tmp_path / "stringprep.py").write_text("unexpected upstream source")
+    with pytest.raises(RuntimeError, match="Unexpected CPython source"):
+        module.verify(tmp_path, manifest, "after")
+
+
+def test_full_scan_requires_every_context_image_recipe(source):
+    images = {target["dockerfile"]: target for target in discover(ROOT)}
+    assert set(REQUIRED_CONTEXT_DOCKERFILES) == {path for path in images if path in REQUIRED_CONTEXT_DOCKERFILES}
+    assert all(images[path]["required"] for path in REQUIRED_CONTEXT_DOCKERFILES)
+    (source / "codebuild/security_image_targets.py").touch()
+    for dockerfile in REQUIRED_CONTEXT_DOCKERFILES:
+        destination = source / dockerfile
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / dockerfile, destination)
+    assert len(discover(source, "all")) == len(discover(source, "superplane")) + len(REQUIRED_CONTEXT_DOCKERFILES)
+    missing = source / "modules/agent-context/images/parser/Dockerfile"
+    missing.unlink()
+    with pytest.raises(ValueError, match="Missing maintained image Dockerfiles:.*parser/Dockerfile"):
+        discover(source, "all")
+    assert len(discover(source, "superplane")) == 5
 
 
 def test_copy_tree_preparation_replaces_stale_build_inputs(tmp_path):

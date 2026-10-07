@@ -1,6 +1,7 @@
 name: Agent Context CI
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - '.github/workflows/agent-context-ci.yml'
@@ -46,7 +47,7 @@ on:
       - main
 
 concurrency:
-  group: agent-context-ci-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-agent-context-ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

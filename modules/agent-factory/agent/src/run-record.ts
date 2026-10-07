@@ -1,0 +1,204 @@
+/** Per-invocation, agent-reported progress. Never an acceptance or billing receipt. */
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync, renameSync } from 'node:fs';
+import { containsSecret } from './experience-save-hook';
+import { truncateUtf8 } from './reporting-text';
+
+export interface RecordedTask {
+  id: string; text: string; status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  taskId?: string; kind?: 'code' | 'test' | 'infra';
+  planStep?: { id: string; title: string; status: RecordedTask['status'] };
+}
+export interface ChecklistSnapshot { at: string; tasks: RecordedTask[] }
+export interface ClosureReport {
+  summary: string; completed: string[]; remaining: string[]; delivery: string;
+  reviewed_revision?: string; reporting_notes: string[];
+}
+/** One human outcome report for GitHub and the retained transcript. */
+export function renderClosureReport(report: ClosureReport): string {
+  return [report.summary, '', report.delivery,
+    '', '### What was completed', ...(report.completed.length ? report.completed.map(item => '- ' + item) : ['No completed work was recorded.']),
+    '', '### Remaining work and next steps', ...(report.remaining.length ? report.remaining.map(item => '- ' + item) : ['No remaining work was reported for this assignment.']),
+    ...(report.reviewed_revision ? ['', `Reviewed revision: \`${report.reviewed_revision}\``] : []),
+    ...report.reporting_notes.map(item => `Reporting note: ${item}`)].join('\n');
+}
+
+export interface RunRecord {
+  version: 1; invocation_id: string; persona: string; model: string; repository: string; issue: number;
+  started_at: string; captured_at: string; capture_closed_at?: string;
+  worker?: string; region?: string; starting_revision?: string; saved_revision?: string;
+  session_ids: string[]; first_checklist?: ChecklistSnapshot; latest_checklist?: ChecklistSnapshot;
+  task_transitions: Array<{ at: string; id: string; from: string; to: string }>;
+  history_truncated: boolean;
+  evidence: Array<{ at: string; text: string }>;
+  closure_report?: ClosureReport;
+}
+export function recordText(value: string, limit = 4096): string {
+  let text = value;
+  for (const [key, secret] of Object.entries(process.env)) {
+    if (/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|API_KEY/.test(key) && secret && secret.length >= 8) {
+      text = text.split(secret).join('[redacted]');
+    }
+  }
+  return containsSecret(text) ? '[Credential-like content omitted.]' : truncateUtf8(text, limit, '…');
+}
+/** Parse only our runtime's checklist format; prose and tool output are not task state. */
+export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
+  const tasks: RecordedTask[] = [];
+  let planStep: RecordedTask['planStep'];
+  for (const line of text.split('\n')) {
+    const parent = /^\*\*([☑☐▶⛔]) Plan `([A-Za-z0-9][A-Za-z0-9._-]{0,63})` — (.{1,300})\*\*$/.exec(line.trim());
+    if (parent) {
+      if (recordText(parent[3]) !== parent[3]) return;
+      planStep = { id: parent[2], title: parent[3], status: parent[1] === '☑' ? 'completed' : parent[1] === '▶' ? 'in_progress' : parent[1] === '⛔' ? 'blocked' : 'pending' };
+      continue;
+    }
+    if (/^\*\*.+\*\*$/.test(line.trim())) planStep = undefined;
+    const match = /^- ([☑☐▶⛔]) (.+)$/.exec(line.trim());
+    if (!match) continue;
+    const inProgress = match[2].endsWith(' (in progress)');
+    const label = (inProgress ? match[2].slice(0, -14) : match[2]).trim();
+    if (!label || tasks.length >= 100 || label.length > 16384) return;
+    // Evidence notes can make a valid task row longer than its saved display.
+    // Check the entire row for secrets and derive identity before shortening it;
+    // otherwise a long note freezes the whole checklist or collides with another.
+    const safe = recordText(label, Buffer.byteLength(label, 'utf8'));
+    if (safe !== label) return; // Redaction must not fabricate a different task identity.
+    const explicit = /^`(code|test|infra)` ([A-Za-z0-9][A-Za-z0-9._-]{0,63}) — /.exec(label);
+    const id = createHash('sha256').update(explicit ? `task:${explicit[2]}` : label).digest('hex').slice(0, 24);
+    if (tasks.some(task => task.id === id)) return;
+    tasks.push({ id, text: truncateUtf8(label, 1024, '… [Task text shortened; see task board.]'),
+      status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : match[1] === '⛔' ? 'blocked' : 'pending',
+      ...(explicit ? { taskId: explicit[2], kind: explicit[1] as RecordedTask['kind'] } : {}),
+      ...(planStep ? { planStep } : {}),
+    });
+  }
+  return tasks.length ? tasks : undefined;
+}
+function revision(): string | undefined {
+  try {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return /^[a-f0-9]{40}$/.test(head) ? head : undefined;
+  } catch { return undefined; }
+}
+export class RunRecordCapture {
+  readonly record: RunRecord;
+  constructor(context: { persona: string; model: string; repo: string; issueNumber: number },
+    private readonly path = '/tmp/adp-run-record.json', private readonly now = () => new Date().toISOString()) {
+    this.record = {
+      version: 1, invocation_id: recordText(process.env.ADP_MESSAGE_ID ?? '', 512),
+      persona: recordText(context.persona), model: recordText(context.model), repository: recordText(context.repo),
+      issue: context.issueNumber, started_at: now(), captured_at: now(), session_ids: [],
+      worker: recordText(process.env.JOB_NAME || process.env.HOSTNAME || '', 512),
+      region: recordText(process.env.AWS_REGION ?? '', 128), starting_revision: revision(),
+      task_transitions: [], history_truncated: false, evidence: [],
+    };
+    this.persist();
+  }
+  checklist(text: string): void {
+    if (this.record.capture_closed_at) return;
+    const tasks = parseTaskChecklist(text);
+    if (!tasks) return;
+    const prior = this.record.latest_checklist;
+    if (JSON.stringify(prior?.tasks) === JSON.stringify(tasks)) return;
+    const at = this.now();
+    this.record.first_checklist ??= { at, tasks: structuredClone(tasks) };
+    if (prior) {
+      for (const task of tasks) {
+        const before = prior.tasks.find(item => item.id === task.id)?.status ?? 'not_listed';
+        if (before !== task.status) this.record.task_transitions.push({ at, id: task.id, from: before, to: task.status });
+      }
+      for (const task of prior.tasks) {
+        if (!tasks.some(item => item.id === task.id)) this.record.task_transitions.push({ at, id: task.id, from: task.status, to: 'not_listed' });
+      }
+    }
+    if (this.record.task_transitions.length > 1000) {
+      this.record.history_truncated = true;
+      this.record.task_transitions = this.record.task_transitions.slice(-1000);
+    }
+    this.record.latest_checklist = { at, tasks };
+    this.record.saved_revision = revision();
+    this.persist();
+  }
+  session(id: string): void {
+    if (this.record.capture_closed_at || !/^[a-zA-Z0-9:_-]{1,256}$/.test(id) || recordText(id, 256) !== id || this.record.session_ids.includes(id)) return;
+    if (this.record.session_ids.length < 32) this.record.session_ids.push(id);
+    this.persist();
+  }
+  evidence(text: string): void {
+    if (this.record.capture_closed_at || !text.trim()) return;
+    const safe = recordText(text);
+    if (this.record.evidence.at(-1)?.text === safe) return;
+    this.record.evidence.push({ at: this.now(), text: safe });
+    if (this.record.evidence.length > 32) this.record.evidence.shift();
+    this.persist();
+  }
+  close(): void {
+    if (this.record.capture_closed_at) return;
+    this.closeReport('The run ended without a closing summary.');
+    this.record.capture_closed_at = this.now();
+    this.record.saved_revision = revision();
+    this.persist();
+  }
+  closure(report: ClosureReport): void {
+    if (this.record.capture_closed_at) return;
+    const lines = (items: string[]) => items.slice(0, 32).map(item => recordText(item, 1024));
+    this.record.closure_report = {
+      summary: recordText(report.summary, 8192), delivery: recordText(report.delivery, 1024),
+      completed: lines(report.completed), remaining: lines(report.remaining),
+      reporting_notes: [...lines(report.reporting_notes),
+        ...([report.completed, report.remaining].some(items => items.length > 32)
+          ? ['The closure report was shortened; see the saved checklist for additional items.'] : [])],
+      ...(report.reviewed_revision && /^[a-f0-9]{40}$/.test(report.reviewed_revision)
+        ? { reviewed_revision: report.reviewed_revision } : {}),
+    };
+    this.persist();
+  }
+  /** All personas get a truthful fallback; a final review can supply richer prose. */
+  closeReport(summary: string): void {
+    if (this.record.closure_report || this.record.capture_closed_at) return;
+    const tasks = this.record.latest_checklist?.tasks ?? [];
+    this.closure({ summary, delivery: 'See the run outcome for delivery status.',
+      completed: tasks.filter(t => t.status === 'completed').map(t => t.text),
+      remaining: tasks.filter(t => t.status !== 'completed').map(t => t.text),
+      reporting_notes: ['Based on the saved checklist; completion is agent-reported.'],
+    });
+  }
+  private persist(): void {
+    this.record.captured_at = this.now();
+    try {
+      writeFileSync(this.path + '.tmp', JSON.stringify(this.record), { mode: 0o600 });
+      renameSync(this.path + '.tmp', this.path);
+    } catch { /* Reporting must never terminate agent execution. */ }
+  }
+  markdown(): string {
+    const r = this.record;
+    const tasks = r.latest_checklist?.tasks;
+    const first = r.first_checklist?.tasks;
+    const lines = [
+      '<!-- adp-run-record:v1 ' + Buffer.from(JSON.stringify(r), 'utf8').toString('base64') + ' -->',
+      ...(r.closure_report ? ['## Closure report', renderClosureReport(r.closure_report)] : []),
+      '## Run record',
+      'Run ID: ' + (r.invocation_id || 'Unavailable'),
+      'Persona: ' + r.persona + ' · Model: ' + r.model,
+      'Repository: ' + r.repository + ' · Issue: ' + r.issue,
+      'Capture started: ' + r.started_at + ' · Last observation: ' + r.captured_at,
+      'Worker: ' + (r.worker || 'Unavailable') + ' · Region: ' + (r.region || 'Unavailable'),
+      'Starting revision: ' + (r.starting_revision || 'Unavailable') + ' · Last observed commit: ' + (r.saved_revision || 'Unavailable'),
+      'SDK sessions: ' + (r.session_ids.join(', ') || 'Not captured'),
+      'This is an agent-reported record, not proof of acceptance, merge, publication or billed usage. '
+        + 'The first checklist is the first observed plan, not necessarily the state at dispatch. '
+        + 'Detailed board tasks retain stable IDs and parent steps; legacy checklist identity uses exact wording. Removed tasks are not silently counted as completed.',
+      '### Checklist at last observation',
+      ...(tasks ? tasks.map(t => '- [' + (t.status === 'completed' ? 'x' : ' ') + '] ' + t.text
+        + (t.status === 'in_progress' ? ' (in progress)' : '')) : ['No assignment checklist was captured.']),
+      '### First observed checklist',
+      ...(first ? first.map(t => '- [' + (t.status === 'completed' ? 'x' : ' ') + '] ' + t.text) : ['Unavailable.']),
+      '### Recent reported evidence and handoff',
+      ...(r.evidence.length ? r.evidence.map(e => e.at + '\n\n' + e.text) : ['See the original transcript for captured activity.']),
+      '---',
+    ];
+    return lines.join('\n\n');
+  }
+}

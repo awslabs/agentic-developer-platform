@@ -21,6 +21,19 @@ async def delivery_session(operation, context, account_id, region):
     from .credentials import assume_session
 
     await current_operation(operation, context)
+    if getattr(context, "brokered_provider", False):
+
+        async def verify_broker():
+            await current_operation(operation, context)
+
+        session = await context.authority.provider_session(
+            operation, region, verify=verify_broker
+        )
+        if not session._superplane_role_arn.startswith(
+            f"arn:aws:iam::{account_id}:role/"
+        ):
+            raise LifecycleRefused("brokered provider names another AWS account")
+        return session
     delivered = await context.authority.delivery_role(operation)
     if not delivered["role_arn"].startswith(f"arn:aws:iam::{account_id}:role/"):
         raise LifecycleRefused("delivered provider role names another AWS account")
@@ -345,14 +358,23 @@ async def _run_validated_lifecycle(operation, context, phase_state):
         return (
             CallOutcome.SUCCEEDED,
             "bounded lifecycle phase prepared its next reviewed proposal",
-            result["artifact_id"],
+            None if phase == "apply-infrastructure" else result["artifact_id"],
         )
 
     async def authenticate(_token):
         return (await current_operation(operation, context)).grant
 
+    async def after_step(_grant, step_result):
+        if phase == "apply-infrastructure":
+            from .applied_inventory import seal_applied_inventory
+
+            await seal_applied_inventory(operation, context, step_result)
+
     server = ExecutionRPCServer(
-        connect=context.connect, provider_call=hook, authenticate=authenticate
+        connect=context.connect,
+        provider_call=hook,
+        authenticate=authenticate,
+        after_step=after_step,
     )
     runtime = OperationExecutor(lease, connect=context.connect, provider_call=hook)
 

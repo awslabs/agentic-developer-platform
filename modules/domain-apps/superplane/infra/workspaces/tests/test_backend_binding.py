@@ -94,3 +94,14 @@ def test_apply_cannot_bypass_backend_binding(tmp_path, problem):
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode != 0
     assert not record.exists()
+
+
+@pytest.mark.parametrize("prefix", ["env:", "", "dev/modules/foreign/workspaces", None])
+def test_governed_backend_discovery_cannot_be_replaced_in_saved_plan(tmp_path, prefix):
+    config = backend_config(TARGET)
+    config["workspace_key_prefix"] = config["key"].rsplit("/", 1)[0] + "/workspaces"
+    initialize(tmp_path, config)
+    planned = {**config, "workspace_key_prefix": prefix}
+    saved_plan(tmp_path / "plan", PLAN, planned)
+    with pytest.raises(WorkspaceOwnershipError):
+        verify_backend(tmp_path / "plan", PLAN, tmp_path, TARGET)

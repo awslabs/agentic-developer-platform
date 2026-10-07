@@ -41,12 +41,18 @@ on:
     branches: [main]
     paths:
       - 'modules/domain-apps/superplane/infra/control-plane/**'
+      - 'modules/domain-apps/superplane/infra/installer-access/**'
+      - 'modules/domain-apps/superplane/infra/shared-operation-authority/**'
       # The workspaces root module (#5532, w6-09). Its tests run in the matrixed `tests`
       # job below; it has no entry in the credentialed `plan` job, which is deliberate —
       # see the matrix comment there.
       - 'modules/domain-apps/superplane/infra/workspaces/**'
-      - 'environments/dev/modules/superplane.tfvars'
-      - 'environments/dev/modules/superplane-backend.tfvars'
+      - 'modules/domain-apps/superplane/infra/domain-runtime/**'
+      - 'modules/domain-apps/superplane/infra/lifecycle-foundations/**'
+      - 'modules/domain-apps/superplane/infra/provider-authority/**'
+      - 'modules/domain-apps/superplane/infra/domain-provider/**'
+      - 'modules/domain-apps/superplane/environments/dev/superplane.tfvars'
+      - 'modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
       # config.tf derives the digest-pinned SkyPilot image. A lock change alters the plan,
       # so it must be able to trigger the lane that shows the plan.
@@ -70,8 +76,8 @@ env:
   TF_VAR_environment: dev
   MODULE_NAME: superplane
   TF_WORKING_DIR: modules/domain-apps/superplane/infra/control-plane
-  BACKEND_CONFIG: environments/dev/modules/superplane-backend.tfvars
-  VAR_FILE: environments/dev/modules/superplane.tfvars
+  BACKEND_CONFIG: modules/domain-apps/superplane/environments/dev/superplane-backend.tfvars
+  VAR_FILE: modules/domain-apps/superplane/environments/dev/superplane.tfvars
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -102,6 +108,18 @@ jobs:
             dir: modules/domain-apps/superplane/infra/control-plane
           - name: workspaces
             dir: modules/domain-apps/superplane/infra/workspaces
+          - name: domain-runtime
+            dir: modules/domain-apps/superplane/infra/domain-runtime
+          - name: lifecycle-foundations
+            dir: modules/domain-apps/superplane/infra/lifecycle-foundations
+          - name: provider-authority
+            dir: modules/domain-apps/superplane/infra/provider-authority
+          - name: domain-provider
+            dir: modules/domain-apps/superplane/infra/domain-provider
+          - name: installer-access
+            dir: modules/domain-apps/superplane/infra/installer-access
+          - name: shared-operation-authority
+            dir: modules/domain-apps/superplane/infra/shared-operation-authority
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
     env:
@@ -147,6 +165,15 @@ jobs:
       - name: Terraform validate
         working-directory: ${{ matrix.dir }}
         run: terraform validate
+
+      - name: Validate and test installer Namespace RBAC root (no backend)
+        if: matrix.name == 'installer-access'
+        working-directory: modules/domain-apps/superplane/infra/installer-access/namespace-rbac
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          test -f tests/authority.tftest.hcl
+          terraform test -no-color
 
       - name: Run every .tftest.hcl and prove none was skipped
         working-directory: ${{ matrix.dir }}

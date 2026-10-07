@@ -1,6 +1,6 @@
 {
   "deepwiki": {
-    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:17c3cabaf3804f8fbd6c81053fc4f48d8dcf1b2acc05268c5c87d89971b005a5",
     "user": "appuser"
   },
   "worker": {

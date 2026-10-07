@@ -202,7 +202,7 @@ class ApprovalEnforcementMiddleware:
         from src.shared.database import get_session_factory, reset_engine
 
         settings = get_settings()
-        if settings.rds_iam_auth and settings.rds_host:
+        if settings.rds_iam_auth and settings.rds_host and settings.rds_pool_enabled is not True:
             reset_engine()
         return get_session_factory()()
 

@@ -135,6 +135,7 @@ def _identity(kind, config, workspace, target):
         "encrypt",
         "dynamodb_table",
         "allowed_account_ids",
+        "workspace_key_prefix",
     }
     if any(value is not None and name not in allowed for name, value in config.items()):
         _deny(
@@ -142,6 +143,12 @@ def _identity(kind, config, workspace, target):
         )
     if config.get("allowed_account_ids") not in (None, [target["account_id"]]):
         _deny("Backend allowed account differs from the selected account")
+    workspace_prefix = config.get("workspace_key_prefix")
+    if (
+        workspace_prefix is not None
+        and workspace_prefix != key.rsplit("/", 1)[0] + "/workspaces"
+    ):
+        _deny("Backend workspace discovery prefix differs from the selected workspace")
     return {
         "type": kind,
         "workspace": workspace,
@@ -149,6 +156,11 @@ def _identity(kind, config, workspace, target):
             name: config[name]
             for name in ("bucket", "region", "key", "encrypt", "dynamodb_table")
         },
+        **(
+            {"workspace_key_prefix": workspace_prefix}
+            if workspace_prefix is not None
+            else {}
+        ),
     }
 
 

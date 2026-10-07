@@ -230,7 +230,7 @@ resource "aws_iam_role_policy" "keda_operator_gateway_sqs" {
         Sid      = "AssumeWorkloadRole"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
-        Resource = aws_iam_role.gateway_agent.arn
+        Resource = [aws_iam_role.gateway_agent.arn, aws_iam_role.chat_worker.arn]
       }
     ]
   })
@@ -261,7 +261,7 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
 # =============================================================================
 # Gateway Agent IAM Role (IRSA) — for SQS consumer pods in adp-gateway-agents
 # =============================================================================
-# This role is assumed by the `adp-agent` service account in the
+# This role is assumed by the `adp-gateway-worker` service account in the
 # `adp-gateway-agents` namespace. It grants the worker pods permissions to:
 #   - Invoke Bedrock models (foundation-model + inference-profile ARNs)
 #   - Consume from the tasks SQS queue and send to the responses queue
@@ -287,7 +287,7 @@ resource "aws_iam_role" "gateway_agent" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-agent"
+            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-gateway-worker"
             "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
           }
         }
@@ -420,10 +420,10 @@ resource "aws_iam_role_policy" "gateway_agent_secrets" {
 }
 
 # =============================================================================
-# Kubernetes Service Account — adp-agent in adp-gateway-agents namespace
+# Chat service account — retain adp-agent for gateway workload verification
 # =============================================================================
-# IRSA-annotated service account for the gateway worker pods. Referenced by
-# the KEDA ScaledJob (keda-scaledjob.yaml) as serviceAccountName: adp-agent.
+# IRSA-annotated chat service account. Its name remains stable for gateway
+# workload verification; the Python consumer has a separate service account.
 #
 # This was previously created by deploy-gateway.sh via kubectl apply of
 # k8s/serviceaccount.yaml. Now Terraform-managed so it survives destroy/apply.
@@ -435,7 +435,7 @@ resource "kubernetes_service_account" "gateway_agent" {
     namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.gateway_agent.arn
+      "eks.amazonaws.com/role-arn" = aws_iam_role.chat_worker.arn
     }
 
     labels = {
@@ -505,7 +505,7 @@ resource "kubernetes_config_map" "agent_gateway_config" {
 # Setup failures are diagnosable after the pod is GC'd by KEDA.
 #
 # SCOPE: this grant covers aws_iam_role.gateway_agent only — service account
-# "adp-agent" in the gateway namespace. It does NOT cover the KEDA agent-worker
+# "adp-gateway-worker" in the gateway namespace. It does NOT cover the KEDA agent-worker
 # (SA "agent-scaledjob-sa" in adp-agents), which assumes a separate role defined
 # in webhook-ingress/infra/scaledjob-iam.tf. #1690 landed this grant on this role
 # alone, so the KEDA worker's bootstrap logging was silently denied until #4028

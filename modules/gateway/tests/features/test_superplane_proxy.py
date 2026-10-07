@@ -20,6 +20,38 @@ def client(monkeypatch):
         yield value
 
 
+@pytest.mark.parametrize("revoke", [False, True])
+@pytest.mark.parametrize("upstream_status", [200, 403, 409])
+def test_organization_mutations_preserve_authentication_body_and_conflicts(client, monkeypatch, revoke, upstream_status):
+    path = "/orgs/current/access/v1/grants" + ("/example-grant/revoke" if revoke else "")
+    body = {
+        "target_subject": "other-human",
+        "principal_type": "human",
+        "expected_revision": 1 if revoke else 0,
+        "request_id": "11111111-1111-1111-1111-111111111111",
+        "reason": "access_revocation" if revoke else "access_assignment",
+    }
+    if not revoke:
+        body["permissions"] = ["organization:read"]
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(upstream_status, json={"result": "domain-result"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    assert client.post(f"/superplane/v1{path}", json=body).status_code == 401
+    assert calls == []
+    response = client.post(f"/superplane/v1{path}", json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == upstream_status and response.json() == {"result": "domain-result"}
+    assert len(calls) == 1 and calls[0].url.path == path
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert json.loads(calls[0].content) == body
+    assert client.delete(f"/superplane/v1{path}", headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
+
+
 def test_all_public_routes_come_from_maintained_inventory():
     root = Path(__file__).resolve().parents[4]
     inventory = root / "modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py"
@@ -28,6 +60,94 @@ def test_all_public_routes_come_from_maintained_inventory():
     expected = {ast.literal_eval(k) for k in value.keys} - {("POST", "/auth/token")}
     actual = {tuple(x) for x in json.loads(Path(proxy.__file__).with_name("superplane_routes.json").read_text())}
     assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "method,tail",
+    [
+        ("GET", "me"),
+        ("POST", "grants"),
+        ("POST", "grants/example-grant/revoke"),
+    ],
+)
+def test_workspace_access_routes_forward_only_with_bearer(client, monkeypatch, method, tail):
+    calls = []
+    body = (
+        {
+            "target_subject": "human-approver",
+            "principal_type": "human",
+            "permissions": ["workspace:read"],
+            "reason": "approver_setup",
+            "expected_revision": 0,
+            "request_id": "11111111-1111-1111-1111-111111111111",
+        }
+        if method == "POST"
+        else None
+    )
+    if tail.endswith("/revoke"):
+        body.pop("permissions")
+        body.update(reason="access_revocation", expected_revision=1)
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(403, json={"detail": "workspace authority refused"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    route = f"/superplane/v1/workspaces/example/access/v1/{tail}"
+    assert client.request(method, route).status_code == 401
+    assert calls == []
+    response = client.request(method, route, json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == 403
+    assert len(calls) == 1
+    assert calls[0].method == method
+    assert str(calls[0].url).endswith(f"/workspaces/example/access/v1/{tail}")
+    if body is not None:
+        assert json.loads(calls[0].content) == body
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspaces/example/access/v1/grants",
+        "/orgs/current/access/v1/me",
+        "/orgs/current/access/v1/grants",
+    ],
+)
+@pytest.mark.parametrize("status", [200, 403])
+def test_access_reads_preserve_authentication_pagination_and_domain_denials(client, monkeypatch, path, status):
+    calls = []
+    params = {"limit": "2", "after": "11111111-1111-1111-1111-111111111111"} if path.endswith("/grants") else {}
+    payload = (
+        {"detail": "explicit scoped authority required"}
+        if status == 403
+        else {"assignments": [], "next_after": None}
+        if path.endswith("/grants")
+        else {"subject": "human-reader", "effective_permissions": ["organization:read"]}
+    )
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(status, json=payload, headers={"cache-control": "no-store"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    route = "/superplane/v1" + path
+    assert client.get(route, params=params).status_code == 401
+    assert calls == []
+    response = client.get(route, params=params, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == status
+    assert response.json() == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0].method == "GET" and calls[0].url.path == path
+    assert dict(calls[0].url.params) == params
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert client.delete(route, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert client.get(route + "/unexpected", headers={"Authorization": "Bearer user-token"}).status_code == 404
+    monkeypatch.setenv("FEATURE_SUPERPLANE_ENABLED", "false")
+    assert client.get(route, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -249,3 +369,46 @@ async def test_transport_capability_requires_deployed_configuration(route_store,
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
     monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     assert (await proxy.installation_support())["configured"] is False
+
+
+def test_kubeconfig_post_forwards_only_bearer_and_preserves_domain_denial(client, monkeypatch):
+    forwarded = []
+
+    def upstream(request):
+        forwarded.append(request)
+        return httpx.Response(403, json={"detail": "workspace access denied"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        proxy.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    path = "/superplane/v1/workspaces/example/kubeconfig"
+    assert client.post(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer example-token"}).status_code == 404
+    assert (
+        client.post(
+            "/superplane/v1/internal/workspaces/example/kubeconfig",
+            headers={"Authorization": "Bearer example-token"},
+        ).status_code
+        == 404
+    )
+    assert forwarded == []
+
+    response = client.post(
+        path,
+        headers={
+            "Authorization": "Bearer example-token",
+            "X-Org-Id": "another-org",
+            "X-ADP-Principal": "workspace-owner",
+            "X-Workspace-Id": "other-workspace",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "workspace access denied"}
+    assert len(forwarded) == 1
+    assert forwarded[0].method == "POST"
+    assert forwarded[0].url.path == "/workspaces/example/kubeconfig"
+    assert forwarded[0].headers["authorization"] == "Bearer example-token"
+    assert all(header not in forwarded[0].headers for header in ("x-org-id", "x-adp-principal", "x-workspace-id"))

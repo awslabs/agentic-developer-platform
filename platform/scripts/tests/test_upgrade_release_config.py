@@ -106,4 +106,6 @@ class ConfigTests(unittest.TestCase):
             variables = set(re.findall(r'variable "([a-z0-9_]+)"', content))
             self.assertFalse(set(contract[module]) - variables)
             output = (ROOT / folder / 'release-configuration.tf').read_text()
-            self.assertEqual(set(re.findall(r'= var\.([a-z0-9_]+)', output)), set(contract[module]))
+            # A transient hold is a recovery marker, not a retained operator input.
+            declared = set(re.findall(r'= var\.([a-z0-9_]+)', output)) - {'orchestration_tick_upgrade_hold'}
+            self.assertEqual(declared, set(contract[module]))

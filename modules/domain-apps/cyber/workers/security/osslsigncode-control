@@ -1,0 +1,9 @@
+Package: osslsigncode
+Version: 2.14-0+adp1
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: ADP Security <security@example.invalid>
+Depends: libc6 (>= 2.34), libssl3t64 (>= 3.0.0), zlib1g (>= 1:1.2.0)
+Description: Source-pinned Authenticode verifier with signing-key usage validation
+ Built from the maintained upstream 2.14 release for the Cyber runtime.

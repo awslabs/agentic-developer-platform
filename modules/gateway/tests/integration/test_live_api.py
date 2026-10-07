@@ -5,7 +5,7 @@ Issue #219: These are REAL integration tests against the live deployed gateway.
 No mocks for Bedrock or database - verifies the full stack:
 CloudFront -> ALB -> EKS pods -> RDS database -> Bedrock API
 
-Uses pytest + httpx against https://dp7n42m5j4pl6.cloudfront.net/api
+Uses pytest + httpx against the explicitly configured GATEWAY_URL.
 
 Requirements:
 - AWS credentials with access to Secrets Manager (for M2M token)
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections.abc import Generator
@@ -37,9 +38,9 @@ pytestmark = pytest.mark.live_only
 # Configuration
 # =============================================================================
 
-BASE_URL = "https://dp7n42m5j4pl6.cloudfront.net/api"
-SECRET_ID = "bedrockgw-dev-agent-cognito-credentials"
-AWS_REGION = "us-east-1"
+BASE_URL = os.environ.get("GATEWAY_URL", "").rstrip("/") + "/api"
+SECRET_ID = os.environ.get("GATEWAY_M2M_SECRET", "")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Model to use for Bedrock tests - using inference profile
 TEST_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -62,6 +63,8 @@ def auth_token() -> str:
 
     This token is valid for 60 minutes and is reused for all tests.
     """
+    if not SECRET_ID or not os.environ.get("GATEWAY_URL"):
+        pytest.fail("Live API tests require reviewed GATEWAY_URL and GATEWAY_M2M_SECRET bindings")
     sm = boto3.client("secretsmanager", region_name=AWS_REGION)
     secret = sm.get_secret_value(SecretId=SECRET_ID)
     creds = json.loads(secret["SecretString"])
@@ -119,26 +122,18 @@ def unauthenticated_client() -> Generator[httpx.Client, None, None]:
 @pytest.fixture(scope="module")
 def test_org_id(client: httpx.Client) -> str:
     """
-    Get an existing organization ID for tests.
-
-    Returns the first available organization - assumes at least one exists.
+    Verify the explicitly owned fixture; never select an arbitrary first tenant.
     """
-    response = client.get("/admin/organizations")
+    organization_id = os.environ.get("GATEWAY_TEST_ORG_ID", "")
+    organization_name = os.environ.get("GATEWAY_TEST_ORG_NAME", "")
+    if not organization_id or not organization_name.startswith("eval-regression-"):
+        pytest.fail("Configure an owned eval-regression-* organization before live tests")
+    response = client.get(f"/admin/organizations/{organization_id}")
     response.raise_for_status()
-    orgs = response.json()
-
-    # Handle paginated response
-    if isinstance(orgs, dict) and "items" in orgs:
-        items = orgs["items"]
-    elif isinstance(orgs, list):
-        items = orgs
-    else:
-        pytest.fail(f"Unexpected organizations response format: {orgs}")
-
-    if not items:
-        pytest.skip("No organizations found - cannot run admin tests")
-
-    return items[0]["id"]
+    organization = response.json()
+    assert organization["id"] == organization_id
+    assert organization["name"] == organization_name, "Gateway fixture ownership changed"
+    return organization_id
 
 
 @pytest.fixture(scope="module")
@@ -180,19 +175,26 @@ def cleanup_test_data(
     """Clean up test data after all tests in the module."""
     yield
 
-    # Clean up budgets
+    errors = []
+    # Sweep every recorded intent, including mutations whose response was lost.
     for org_id, entity_type, entity_id, period_type in data_tracker.budgets_to_delete:
         try:
-            client.delete(f"/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}")
+            response = client.delete(f"/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}")
+            if response.status_code not in {200, 204, 404}:
+                errors.append("budget cleanup failed")
         except Exception:
-            pass  # Best effort cleanup
+            errors.append("budget cleanup unavailable")
 
     # Clean up rate limits
     for org_id, entity_type, entity_id in data_tracker.ratelimits_to_delete:
         try:
-            client.delete(f"/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}")
+            response = client.delete(f"/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}")
+            if response.status_code not in {200, 204, 404}:
+                errors.append("rate-limit cleanup failed")
         except Exception:
-            pass  # Best effort cleanup
+            errors.append("rate-limit cleanup unavailable")
+    if errors:
+        pytest.fail("; ".join(errors))
 
 
 # =============================================================================
@@ -530,6 +532,8 @@ class TestBudgetCRUD:
         entity_type = "team"
         period_type = "monthly"
 
+        # Record cleanup intent before the mutation, not after its response.
+        data_tracker.add_budget(test_org_id, entity_type, entity_id, period_type)
         # CREATE
         create_response = client.post(
             f"/admin/organizations/{test_org_id}/budgets",
@@ -545,9 +549,6 @@ class TestBudgetCRUD:
         assert create_response.status_code == 201, f"Create failed: {create_response.text}"
         created = create_response.json()
         assert created["entity_id"] == entity_id
-
-        # Track for cleanup
-        data_tracker.add_budget(test_org_id, entity_type, entity_id, period_type)
 
         # READ
         read_response = client.get(f"/admin/organizations/{test_org_id}/budget/{entity_type}/{entity_id}")
@@ -591,6 +592,7 @@ class TestRateLimitCRUD:
         entity_id = f"test-entity-{unique_id}"
         entity_type = "team"
 
+        data_tracker.add_ratelimit(test_org_id, entity_type, entity_id)
         # CREATE
         create_response = client.post(
             f"/admin/organizations/{test_org_id}/ratelimits",
@@ -605,9 +607,6 @@ class TestRateLimitCRUD:
         assert create_response.status_code == 201, f"Create failed: {create_response.text}"
         created = create_response.json()
         assert created["entity_id"] == entity_id
-
-        # Track for cleanup
-        data_tracker.add_ratelimit(test_org_id, entity_type, entity_id)
 
         # READ
         read_response = client.get(f"/admin/organizations/{test_org_id}/ratelimit/{entity_type}/{entity_id}")
@@ -785,13 +784,17 @@ class TestValidation:
         self,
         client: httpx.Client,
         test_org_id: str,
+        unique_id: str,
+        data_tracker: _TestDataTracker,
     ):
         """Negative budget amounts -> 422."""
+        entity_id = f"test-validation-{unique_id}"
+        data_tracker.add_budget(test_org_id, "team", entity_id, "monthly")
         response = client.post(
             f"/admin/organizations/{test_org_id}/budgets",
             json={
                 "entity_type": "team",
-                "entity_id": "test-validation",
+                "entity_id": entity_id,
                 "period_type": "monthly",
                 "budget_amount": -100.0,  # Negative amount
             },

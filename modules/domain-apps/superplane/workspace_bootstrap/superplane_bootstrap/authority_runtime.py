@@ -120,6 +120,20 @@ class WorkspaceAuthority(TemporaryAuthority):
                 for record in components.values()
             ):
                 raise BootstrapRefused("durable component inventory is incomplete")
+            if self.journal.original_allocation_id is not None:
+                from .kube_grants import KubeGrants
+                from .workload_inventory import capture_system_baseline
+
+                self.backend.clients.verify()
+                progress["system_workload_baseline"] = capture_system_baseline(
+                    KubeGrants(
+                        self.backend.clients.registrar_kubernetes, self.journal.target
+                    ),
+                    self.journal,
+                    components,
+                    previous=progress.get("system_workload_baseline"),
+                )
+                self.backend.clients.verify()
             progress["component_inventory_complete"] = True
             progress["component_inventory_mode"] = (
                 "management" if management else "legacy"
@@ -201,9 +215,17 @@ class BootstrapAuthorityFactory:
     from its request. No ambient-credential fallback exists in this factory.
     """
 
-    def __init__(self, resolve_clients, release, *, resolve_observation=None):
+    def __init__(
+        self,
+        resolve_clients,
+        release,
+        *,
+        resolve_observation=None,
+        original_allocation_id=None,
+    ):
         self.resolve_clients, self.release = resolve_clients, release
         self.resolve_observation = resolve_observation
+        self.original_allocation_id = original_allocation_id
         self._resolved = []
 
     def _backend(self, binding, target, state_store):
@@ -232,12 +254,21 @@ class BootstrapAuthorityFactory:
             raise BootstrapRefused(
                 "production bootstrap authority requires the transactional registration store"
             )
+        if self.original_allocation_id is not None and (
+            target.is_adopted
+            or not isinstance(self.original_allocation_id, str)
+            or not 1 <= len(self.original_allocation_id) <= 255
+        ):
+            raise BootstrapRefused(
+                "cleanup capability requires the original managed allocation"
+            )
         journal = AuthorityJournal(
             store.store,
             binding,
             target,
             generation_for(binding, reservation),
             claim_fingerprint(reservation.attempt_token),
+            self.original_allocation_id,
         )
         backend = self._backend(binding, target, state_store)
         if getattr(

@@ -1,0 +1,29 @@
+name: Retain private CI evidence in S3
+description: Upload checksummed, revision-bound evidence with the self-hosted runner's scoped IRSA identity.
+inputs:
+  name:
+    description: Artifact name, unique within this job attempt
+    required: true
+  path:
+    description: File or directory inside the checkout or runner temporary directory
+    required: true
+  retention-days:
+    description: Retention class (7, 14, or 90 days)
+    default: '90'
+outputs:
+  manifest-uri:
+    description: Private S3 manifest URI
+    value: ${{ steps.upload.outputs.manifest-uri }}
+  manifest-version:
+    description: Immutable S3 manifest version
+    value: ${{ steps.upload.outputs.manifest-version }}
+runs:
+  using: composite
+  steps:
+    - id: upload
+      shell: bash
+      env:
+        CI_EVIDENCE_NAME: ${{ inputs.name }}
+        CI_EVIDENCE_PATH: ${{ inputs.path }}
+        CI_EVIDENCE_RETENTION_DAYS: ${{ inputs.retention-days }}
+      run: python3 "$GITHUB_ACTION_PATH/../../scripts/upload_ci_evidence_s3.py"

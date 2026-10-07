@@ -22,6 +22,7 @@ from botocore.exceptions import ClientError
 from routers.websocket import WebSocketRouter
 from routers.slack import SlackRouter
 from routers.rest import RestRouter
+from terminal_delivery import deliver_terminal
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,6 +51,9 @@ def lambda_handler(event: dict, context) -> dict:
     records = event.get("Records", [])
     failures = []
     for record in records:
+        if failures:
+            failures.append({"itemIdentifier": record.get("messageId", "")})
+            continue
         try:
             _process_response(json.loads(record["body"]))
         except Exception as e:
@@ -59,6 +63,9 @@ def lambda_handler(event: dict, context) -> dict:
 
 
 def _process_response(response: dict) -> None:
+    if "terminal_delivery" in response:
+        deliver_terminal(response, sessions_table, ws_router)
+        return
     task_id = response.get("task_id", "")
     session_id = response.get("session_id", "")
     thread_id = response.get("thread_id", "")
@@ -108,6 +115,8 @@ def _process_response(response: dict) -> None:
         metadata["session_id"] = session_id
     if owner_principal:
         metadata["owner_principal"] = owner_principal
+
+    _bind_strict_delivery(response, metadata)
 
     # 1. Persist. Skip for progress frames — they're UI ephemera, not
     # conversation history. The chat agent records the final assistant turn
@@ -171,6 +180,18 @@ def _process_response(response: dict) -> None:
         )
 
 
+def _bind_strict_delivery(response: dict, metadata: dict) -> None:
+    metadata.pop("strict_delivery", None)
+    if response.get("strict_delivery") is True:
+        metadata.update(
+            strict_delivery=True,
+            session_id=response.get("session_id"),
+            session_generation=response.get("session_generation"),
+            thread_id=response.get("thread_id"),
+            task_id=response.get("task_id"),
+        )
+
+
 def _route_ag_ui_event(response: dict, ag_ui_payload: dict, task_id: str) -> None:
     """Route an AG-UI event to the appropriate channel.
 
@@ -188,6 +209,8 @@ def _route_ag_ui_event(response: dict, ag_ui_payload: dict, task_id: str) -> Non
     owner_principal = str(response.get("owner_principal", "") or "")
     if owner_principal:
         metadata["owner_principal"] = owner_principal
+
+    _bind_strict_delivery(response, metadata)
 
     # Mark as AG-UI so the WS router emits `type: "ag_ui"` instead of `type: "response"`
     metadata["response_type"] = "ag_ui"

@@ -1,0 +1,11 @@
+# Cyber worker critical package repairs
+
+The worker uses the digest-pinned official Python 3.13.16 runtime in both build and runtime stages. This includes the upstream fix for the TLS SNI context lifetime defect, CVE-2026-19445.
+
+Binwalk was the only consumer of the extra Debian Python installation. Its exact Debian application payload is now packaged for the worker's existing Python interpreter. Every copied application file is hashed, the command remains `/usr/bin/binwalk`, and its launcher selects the fixed interpreter and a private module path with site startup disabled. This preserves the original dependency visibility: exposing the worker’s extra optional packages changes Binwalk’s default module selection. The retained package copyright and generated receipt document the source. The vulnerable duplicate interpreter is not installed. Firmware signature detection and the other advertised worker commands are checked in `verify_runtime.py`, alongside the upstream TLS MemoryBIO regression.
+
+`osslsigncode` is compiled from the checksum-pinned upstream 2.14 commit, which includes the signing-key usage check from upstream PR 477 for CVE-2025-70888. It remains a normal Debian package at `/usr/bin/osslsigncode`; its license, source pin and binary hash are retained in the image. The upstream test suite runs offline during the build. `verify_osslsigncode.py` exercises real PowerShell Authenticode signatures: a signing-capable key is accepted, a key restricted to encipherment is rejected, and unsigned input is rejected.
+
+Run both verification scripts in the exact candidate image with network disabled, the normal worker user, a read-only root filesystem and a disposable writable `/tmp`. Mount this directory read-only at `/checks`. Neither fixture needs cloud credentials or external services.
+
+Keep native scan output intact. Debian's advisory feed may still flag the locally built 2.14 package because its stable distribution entry lacks a fixed version. Any candidate-specific disposition must bind the scan and image digests to the installed source receipt, binary hash and successful positive/negative verification. A version string alone is insufficient. High findings and live deployment require separate verification.

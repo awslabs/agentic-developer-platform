@@ -1,0 +1,106 @@
+{
+  "repository": "aws-e/adp",
+  "audited_source_revision": "0ff2ff15d5b818554684b594a59eb93d1b09517a",
+  "design": {
+    "path": "docs/architecture/adp-assistant-6929.md",
+    "revision": "6db1df61a63cf7ce36ca4e58d491956d12f474a7",
+    "sha256": "56234b4a17efd148f58eb9639ef3fb088f854754cf5ca4fe856da9098e683f80",
+    "pr": 6938,
+    "status": "draft_not_merged",
+    "excluded_from_graph_issue": 6930
+  },
+  "issues": [
+    {
+      "number": 6939,
+      "title": "Extend nightly EC2 regression harness with ADP assistant end-to-end tests",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6939",
+      "updated_at": "2026-10-03T14:47:15Z",
+      "body_sha256": "87de9151968c262141f00ad8789769c06c910548d2bc15a3ccb060a238de201f"
+    },
+    {
+      "number": 6932,
+      "title": "Expose user-scoped chat history, memory and artifacts through the ADP gateway",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6932",
+      "updated_at": "2026-10-03T14:31:43Z",
+      "body_sha256": "08a694e6356ed63fdb81c12b71ec2e8543bc0051504f1b601c683d2b3fa68815"
+    },
+    {
+      "number": 6931,
+      "title": "Isolate model-controlled chat execution from platform credentials and shared service access",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6931",
+      "updated_at": "2026-10-03T14:31:44Z",
+      "body_sha256": "96226a89fb3103f2f4cd39441fbc9f62487f653df8c741ce73f5a08acf9853dd"
+    },
+    {
+      "number": 6933,
+      "title": "Connect chat to existing user-owned ADP activity and task APIs",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6933",
+      "updated_at": "2026-10-03T14:31:46Z",
+      "body_sha256": "9ac39e1f7b119ef79747fd3bd6b88303781c050021da77e036077671f2c469de"
+    },
+    {
+      "number": 6934,
+      "title": "Add authorized GitHub/GitLab activity to the personal work summary",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6934",
+      "updated_at": "2026-10-03T14:31:47Z",
+      "body_sha256": "2af5922ebf89f9691f31dcbe6d5bd1973427ddb686fa3b4b38c470a2ed25e4b5"
+    },
+    {
+      "number": 6935,
+      "title": "Add authorized deployment status and version tools to the ADP assistant",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6935",
+      "updated_at": "2026-10-03T14:31:49Z",
+      "body_sha256": "9cea09a3490107d5c11cc101d70a3bc0244cb31dba31a3cc0c44c24a4f33e85c"
+    },
+    {
+      "number": 147,
+      "title": "Stateful chat sessions: in-pod wait loop on the existing KEDA/SQS stack",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/147",
+      "updated_at": "2026-10-03T14:31:51Z",
+      "body_sha256": "2002e2ce87bdf79e877ea1416f5d094a7cfd685af26be576620140847c703814"
+    },
+    {
+      "number": 183,
+      "title": "feat(chat-agent): warm-worker-pool leg (Deployment + ScaledObject, presence-based routing)",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/183",
+      "updated_at": "2026-10-03T14:31:52Z",
+      "body_sha256": "862092e9ade0a3f59000d66747a7a577ab87b3b0d5e758ed0ba0788d909eafe9"
+    },
+    {
+      "number": 6936,
+      "title": "Integrate the ADP assistant UI with activity context, streaming and persistent-session controls",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6936",
+      "updated_at": "2026-10-03T14:31:54Z",
+      "body_sha256": "13c8efce06ee2416279f1d10f22139d8f3bc8ab4a5ccb7b7651b85b821172261"
+    },
+    {
+      "number": 6937,
+      "title": "Qualify and roll out the integrated ADP assistant with isolation and latency evidence",
+      "state": "open",
+      "url": "https://github.com/aws-e/adp/issues/6937",
+      "updated_at": "2026-10-03T14:47:16Z",
+      "body_sha256": "672d0874af234880c2ccce7056922fd6095c278760bc9b875995e2b1564f9b9f"
+    }
+  ],
+  "external_ledger_issue": {
+    "number": 6896,
+    "state": "OPEN",
+    "title": "Architecture: component versions, release manifests and simple patch deployments",
+    "updatedAt": "2026-10-03T11:26:32Z"
+  },
+  "external_ledger_pr": {
+    "headRefOid": "4671eb1e2797f7f1dd180cef285570a57c1f49da",
+    "number": 6927,
+    "state": "OPEN",
+    "title": "docs: component release manifests and safe patch deployment design"
+  }
+}

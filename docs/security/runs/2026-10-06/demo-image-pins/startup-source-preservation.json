@@ -1,0 +1,18 @@
+{
+  "record_type": "sanitized-current-image-derivation",
+  "platform_digest": "sha256:7ec95594bb097c251c39066179b31918053e4feff42662904c08563b9599bdc4",
+  "config_digest": "sha256:13b37339105846307b05f19a696ad500fc286643581a0842dfe77c25d0dd3d52",
+  "previous_source_inventory": "docs/security/runs/2026-09-27/high-skypilot/startup-source-preservation.json",
+  "previous_source_inventory_sha256": "1fac139d43af5f361c4679e21c7647714799d2e78839de89249de7e726753e9d",
+  "all_skypilot_python_files_identical": true,
+  "file_count": 555,
+  "canonical_source_map_sha256": "e8dc60ed0eae763b824fba9495fe7b9110f314b69856363d9514f284d5fa8c3c",
+  "passwd_content_sha256": "50ea38474218c7b1cc39ec1bebf3bc123d6b60982a5bfd0524f384ad5d8d1e55",
+  "uid1000_observed": true,
+  "current_config_sha256": "13b37339105846307b05f19a696ad500fc286643581a0842dfe77c25d0dd3d52",
+  "filesystem_inventory_sha256": "cb85e7bdf384b5b2ef3b5a15b03f2d9287406fef07a591b8b98abcf5f80f92d1",
+  "sbom_sha256": "a58c9d2775d907896e4cc80ad6a031abb435a27f39180c6d302837c197657e89",
+  "raw_scan_sha256": "647a4ebf510f8e31f0e6b10ab4f2c8c7714117ecda1b865721a7af3c75535839",
+  "packaged_runtime_log_sha256": "c395a6770d1faa20204a010ff33901f74e563025e2b54ed1d0b3f53a7a7a7c1b",
+  "scope": "Current config and UID/home/package observations derive from retained qualified content. Startup source facts are retained only after whole 555-file equality. Historical fixtures/observations remain separate. No new container, scanner or collector invocation; no live deployment claim."
+}

@@ -665,7 +665,9 @@ async def validate_live_decision(
     The snapshot freezes *which* model the root selected.  It must never freeze
     whether that model is still usable.  This check therefore runs for every
     hop at the trusted gateway bootstrap boundary and reads PMM-03's exact
-    destination/harness/request-shape evidence.  It performs no model call,
+    destination/harness/request-shape evidence for evidence-gated runtimes.
+    GitHub Codex report personas retain authorization and compatibility
+    checks without requiring cached probe evidence. It performs no model call,
     STS lookup, or additional HTTP round trip.
 
     A successful result enriches the signed decision with the exact
@@ -728,6 +730,11 @@ async def validate_live_decision(
     account_id = target.account_id or (settings.platform_bedrock_account_id if target.is_platform else None)
     region = target.region or settings.aws_region or None
 
+    # Probe freshness is diagnostic, not authority, for GitHub Codex report
+    # personas. Keep live identity, policy and harness compatibility checks.
+    from src.agentauth.codex_github_session import REPORT_PERSONAS
+
+    require_probe_evidence = decision.persona not in REPORT_PERSONAS
     validation = await validate_selection(
         session,
         org_id=snapshot.tenant_id,
@@ -735,6 +742,7 @@ async def validate_live_decision(
         canonical_principal_id=snapshot.principal_id,
         persona_key=decision.persona,
         model=decision.resolved_model_id,
+        require_evidence=require_probe_evidence,
         account_id=account_id,
         region=region,
         tenant_allowed_patterns=active_policy.tenant_patterns,
@@ -760,7 +768,7 @@ async def validate_live_decision(
         validation.canonical_model_id != decision.resolved_model_id
         or validation.compatibility_class != decision.compatibility_class
         or validation.harness_contract_revision != decision.harness_contract_revision
-        or validation.evidence_verified_at is None
+        or (require_probe_evidence and validation.evidence_verified_at is None)
     ):
         raise ModelPolicyError("model_validation_mismatch", evidence=revision_evidence)
     return replace(

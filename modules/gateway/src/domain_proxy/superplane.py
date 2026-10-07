@@ -53,10 +53,10 @@ def route_bucket() -> str:
     return f"adp-terraform-state-{account_id}" if re.fullmatch(r"[0-9]{12}", account_id) else ""
 
 
-def registration() -> dict:
+def registration(*, fresh=False) -> dict:
     global _cache
     now = time.monotonic()
-    if now < _cache[0]:
+    if not fresh and now < _cache[0]:
         return _cache[1]
     environment = os.environ.get("BG_ENVIRONMENT", "")
     result = {}
@@ -244,6 +244,10 @@ async def register_account(
         username=token_context.cognito_username,
     )
     org_id = await resolve_effective_org_id(token_context, db)
+    from src.shared.domain_provider_contract import reserved
+
+    if reserved(body.adp_credential_id):
+        return await register_governed_account(body, request, token_context, db, secrets, org_id)
     credential = await owned_aws_connection(db, body.adp_credential_id, db_user_id, org_id)
     evidence = verified_connection_evidence(credential)
     scopes = credential.scopes or {}
@@ -331,6 +335,51 @@ async def register_account(
         return _public_account_response(response, role_arn=role_arn, external_id=external_id)
     finally:
         await db.rollback()
+
+
+async def register_governed_account(body, request, token, db, secrets, org_id):
+    from src.internal.domain_provider_authority import material, require, resolve
+
+    args = {"subject": token.user_id, "adp_org_id": org_id}
+    record = await resolve(db, secrets, body.adp_credential_id, **args)
+    require(record["account_id"] == body.account_id)
+    secret = await material(secrets, record)
+    content = _DomainAccountRegistration(
+        name=body.name,
+        provider="aws",
+        account_id=body.account_id,
+        role_arn=record["role_arn"],
+        external_id=secret["external_id"],
+        adp_credential_ids=[record["credential_id"]],
+    ).model_dump(mode="json")
+
+    async def before_send():
+        require(await resolve(db, secrets, body.adp_credential_id, **args) == record)
+
+    response = await _proxy_to_domain(request, "/accounts", content=json.dumps(content).encode(), before_send=before_send)
+    return _public_account_response(response, role_arn=record["role_arn"], external_id=secret["external_id"])
+
+
+@router.post("/v1/provider-authorities/{credential_id}/validation")
+async def validate_governed_provider(
+    credential_id: str,
+    request: Request,
+    token: TokenContext = Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    secrets: SecretsManagerHelper = Depends(get_secrets_manager),
+):
+    from src.internal.domain_provider_authority import require, validate_provider
+    from src.shared.domain_provider_contract import reserved
+
+    require(token.account_type == "human" and reserved(credential_id))
+    # No caller readings, scope selectors or profile can enter this refresh.
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        require(len(raw) <= 2)
+    require(bytes(raw) in {b"", b"{}"})
+    org_id = await resolve_effective_org_id(token, db)
+    return await validate_provider(db, secrets, credential_id, subject=token.user_id, adp_org_id=org_id)
 
 
 @router.api_route(

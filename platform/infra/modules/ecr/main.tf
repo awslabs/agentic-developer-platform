@@ -149,6 +149,7 @@ data "aws_caller_identity" "current" {}
 
 # ECR Registry Scanning Configuration (registry-wide, not per-repo)
 resource "aws_ecr_registry_scanning_configuration" "main" {
+  count     = var.manage_registry_scanning ? 1 : 0
   scan_type = "BASIC"
 
   rule {
@@ -158,6 +159,11 @@ resource "aws_ecr_registry_scanning_configuration" "main" {
       filter_type = "WILDCARD"
     }
   }
+}
+
+moved {
+  from = aws_ecr_registry_scanning_configuration.main
+  to   = aws_ecr_registry_scanning_configuration.main[0]
 }
 
 # ECR Pull Through Cache Rules (for base images)

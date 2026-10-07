@@ -106,9 +106,8 @@ def _is_sqlite_url(url: str) -> bool:
 def get_engine() -> AsyncEngine:
     """Get or create the async database engine.
 
-    For IAM auth, uses NullPool so each request gets a fresh connection
-    with a fresh IAM token. This avoids the token expiry issue where
-    pooled connections use stale tokens.
+    IAM connections resolve their password at connection time, including
+    connections made by background tasks holding a long-lived session factory.
     """
     global _engine
     if _engine is None:
@@ -131,11 +130,22 @@ def get_engine() -> AsyncEngine:
             }
 
             if settings.rds_iam_auth and settings.rds_host:
-                # Use NullPool — no connection reuse. Each request gets a fresh
-                # connection with a fresh IAM token from get_database_url().
-                from sqlalchemy.pool import NullPool
+                # NullPool alone cannot refresh the password stored in the URL.
+                # asyncpg calls this password provider for each new connection.
+                if settings.rds_pool_enabled is True:
+                    # Authentication is checked when a connection is established,
+                    # not on each query. The callable password provider below
+                    # renews IAM tokens for replacement/recycled connections.
+                    engine_kwargs.update(
+                        pool_size=settings.rds_pool_size,
+                        max_overflow=settings.rds_pool_max_overflow,
+                        pool_timeout=settings.rds_pool_timeout_seconds,
+                        pool_recycle=settings.rds_pool_recycle_seconds,
+                    )
+                else:
+                    from sqlalchemy.pool import NullPool
 
-                engine_kwargs["poolclass"] = NullPool
+                    engine_kwargs["poolclass"] = NullPool
 
                 if settings.rds_tls_verify:
                     ssl_ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE_PATH)
@@ -145,7 +155,10 @@ def get_engine() -> AsyncEngine:
                     ssl_ctx = ssl.create_default_context()
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
-                engine_kwargs["connect_args"] = {"ssl": ssl_ctx}
+                engine_kwargs["connect_args"] = {
+                    "ssl": ssl_ctx,
+                    "password": lambda: get_rds_auth_token(settings.rds_host, settings.rds_port, settings.rds_username, settings.aws_region),
+                }
             else:
                 engine_kwargs["pool_size"] = 20
                 engine_kwargs["max_overflow"] = 10
@@ -172,12 +185,6 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 async def get_db() -> AsyncSession:
     """FastAPI dependency that yields a database session."""
-    settings = get_settings()
-
-    # For IAM auth, recreate engine periodically to pick up fresh tokens
-    if settings.rds_iam_auth and settings.rds_host:
-        reset_engine()
-
     factory = get_session_factory()
     async with factory() as session:
         yield session

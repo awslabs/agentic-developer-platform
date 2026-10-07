@@ -113,10 +113,6 @@ class WorkerProcesses:
             raise LifecycleRefused("worker executable is outside the reviewed set")
         command[0] = self.binaries[selected]
         self.verify()
-        credentials = self.session.get_credentials()
-        if credentials is None:
-            raise LifecycleRefused("operation-bound AWS credentials are unavailable")
-        frozen = credentials.get_frozen_credentials()
         # This process-local environment never modifies the agent host's HOME,
         # AWS profile, Terraform workspace or kubeconfig. It is built from scratch.
         environment = {
@@ -133,15 +129,15 @@ class WorkerProcesses:
             "AWS_RETRY_MODE": "standard",
             "AWS_REGION": self.region,
             "AWS_DEFAULT_REGION": self.region,
-            "AWS_ACCESS_KEY_ID": frozen.access_key,
-            "AWS_SECRET_ACCESS_KEY": frozen.secret_key,
-            "AWS_SESSION_TOKEN": frozen.token or "",
             "TF_IN_AUTOMATION": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         started = time.monotonic()
         checked_at = started
+        from .credential_bridge import credential_environment
+
         with (
+            credential_environment(self.session, self.verify) as credential_env,
             tempfile.TemporaryFile(dir=self.directory) as stdout,
             tempfile.TemporaryFile(dir=self.directory) as stderr,
             tempfile.TemporaryFile(dir=self.directory) as stdin,
@@ -149,6 +145,7 @@ class WorkerProcesses:
             if supplied is not None:
                 stdin.write(supplied)
                 stdin.seek(0)
+            environment.update(credential_env)
             process = subprocess.Popen(
                 command,
                 cwd=cwd or self.directory,

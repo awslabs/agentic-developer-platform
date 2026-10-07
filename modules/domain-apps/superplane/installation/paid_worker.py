@@ -1,7 +1,7 @@
-"""Native paid-worker source preparation; shared binding activation is unavailable.
+"""Native lifecycle worker preparation and deployment-owned configuration.
 
-The default installer plan renders an inert projection. No caller-authored
-receipt can turn it into authority, and preflight refuses before external tools.
+Controller-only projections remain inert. Native lifecycle activation requires
+separate authenticated prepared and executable checks in the maintained installer.
 """
 
 import copy
@@ -22,6 +22,7 @@ def validate(env, lock):
     if "paid_worker" not in env:
         return
     config = env["paid_worker"]
+    lifecycle = config.get("mode") == "native-lifecycle"
     closed(
         config,
         {
@@ -32,8 +33,6 @@ def validate(env, lock):
             "queue_url",
             "queue_arn",
             "database_secret",
-            "workspace_credentials_secret",
-            "provider_secret",
             "operation_schema",
             "skypilot_url",
             "management_api_server",
@@ -41,12 +40,21 @@ def validate(env, lock):
             "egress",
             "max_replica_count",
             "active_deadline_seconds",
-        },
+        }
+        | (
+            {
+                "lifecycle_policy_configmap",
+                "lifecycle_state_claim",
+                "lifecycle_policy_sha256",
+            }
+            if lifecycle
+            else {"workspace_credentials_secret", "provider_secret"}
+        ),
         "paid_worker",
     )
     require(
-        config["mode"] == "native-controller",
-        "paid_worker supports native-controller only",
+        config["mode"] in {"native-controller", "native-lifecycle"},
+        "paid_worker requires an explicit supported native mode",
     )
     require(
         config["namespace"] == env.get("namespace"),
@@ -96,34 +104,42 @@ def validate(env, lock):
         match and config["queue_arn"] == f"arn:aws:sqs:{region}:{account}:{match[1]}",
         "paid_worker queue URL/ARN must identify one standard queue in the selected account and region",
     )
-    for key in ("database_secret", "workspace_credentials_secret", "provider_secret"):
+    secret_keys = (
+        ("database_secret",)
+        if lifecycle
+        else ("database_secret", "workspace_credentials_secret", "provider_secret")
+    )
+    for key in secret_keys:
         require(name(config[key]), "paid_worker requires exact existing Secret names")
     require(
-        len(
-            {
-                config[k]
-                for k in (
-                    "database_secret",
-                    "workspace_credentials_secret",
-                    "provider_secret",
-                )
-            }
-        )
-        == 3,
+        len({config[key] for key in secret_keys}) == len(secret_keys),
         "paid_worker Secret purposes must be separate",
     )
-    require(
-        config["workspace_credentials_secret"] != "superplane-workspace-access",
-        "paid_worker cannot use read-only manager credentials",
-    )
+    if not lifecycle:
+        require(
+            config["workspace_credentials_secret"] != "superplane-workspace-access",
+            "paid_worker cannot use read-only manager credentials",
+        )
     schema = config["operation_schema"]
     require(
         isinstance(schema, str)
         and SCHEMA.fullmatch(schema)
         and schema != "public"
-        and schema == env.get("database", {}).get("schema"),
-        "paid_worker operation schema must match the dedicated domain schema",
+        and (
+            (schema != env.get("database", {}).get("schema"))
+            if lifecycle
+            else (schema == env.get("database", {}).get("schema"))
+        ),
+        "paid_worker native lifecycle requires separate domain and operation schemas",
     )
+    if lifecycle:
+        require(
+            name(config["lifecycle_policy_configmap"])
+            and name(config["lifecycle_state_claim"])
+            and isinstance(config["lifecycle_policy_sha256"], str)
+            and re.fullmatch(r"[a-f0-9]{64}", config["lifecycle_policy_sha256"]),
+            "native lifecycle requires exact policy, persistent state and policy digest",
+        )
     require(
         config["skypilot_url"]
         == f"http://skypilot-api.{env.get('skypilot_namespace')}.svc.cluster.local:46580",
@@ -151,12 +167,19 @@ def validate(env, lock):
             type(config[key]) is int and 1 <= config[key] <= maximum,
             "paid_worker concurrency and deadline must be bounded",
         )
-    closed(
-        config["egress"],
-        {"gateway", "sts", "database", "skypilot", "workspace", "management"},
-        "paid_worker.egress",
-    )
-    for endpoint in config["egress"].values():
+    from . import native_egress
+
+    if native_egress.enabled(env):
+        native_egress.validate(env)
+        endpoints = ()
+    else:
+        closed(
+            config["egress"],
+            {"gateway", "sts", "database", "skypilot", "workspace", "management"},
+            "paid_worker.egress",
+        )
+        endpoints = config["egress"].values()
+    for endpoint in endpoints:
         closed(endpoint, {"cidr", "port"}, "paid_worker egress endpoint")
         try:
             network = ipaddress.ip_network(endpoint["cidr"], strict=True)
@@ -204,6 +227,7 @@ def project(env, lock, docs):
     if not env.get("paid_worker"):
         return
     config = env["paid_worker"]
+    lifecycle = config["mode"] == "native-lifecycle"
     labels = copy.deepcopy(docs[0]["metadata"]["labels"])
     labels["app.kubernetes.io/name"] = WORKER
 
@@ -238,12 +262,33 @@ def project(env, lock, docs):
     worker["env"] = [
         value
         for value in worker["env"]
-        if not value["name"].startswith("SUPERPLANE_LIFECYCLE_")
+        if lifecycle or not value["name"].startswith("SUPERPLANE_LIFECYCLE_")
     ]
+    if lifecycle:
+        pod.pop("initContainers", None)
+        worker["env"] = [
+            value
+            for value in worker["env"]
+            if value["name"]
+            not in {
+                "SUPERPLANE_WORKSPACE_CREDENTIALS_DIR",
+                "SKYPILOT_SERVICE_TOKEN_FILE",
+            }
+        ]
+        worker["volumeMounts"] = [
+            value
+            for value in worker["volumeMounts"]
+            if value["name"] not in {"workspaces", "provider"}
+        ]
+        pod["volumes"] = [
+            value
+            for value in pod["volumes"]
+            if value["name"] not in {"workspaces", "provider"}
+        ]
     worker["env"].extend(
         {"name": key, "value": value}
         for key, value in {
-            "SUPERPLANE_PAID_WORKER_MODE": "native-controller",
+            "SUPERPLANE_PAID_WORKER_MODE": config["mode"],
             "AWS_EC2_METADATA_DISABLED": "true",
             "AWS_STS_REGIONAL_ENDPOINTS": "regional",
         }.items()
@@ -251,12 +296,20 @@ def project(env, lock, docs):
     worker["volumeMounts"] = [
         value
         for value in worker["volumeMounts"]
-        if value["name"] not in {"state", "policy"}
+        if lifecycle or value["name"] not in {"state", "policy"}
     ]
     pod["volumes"] = [
-        value for value in pod["volumes"] if value["name"] not in {"state", "policy"}
+        value
+        for value in pod["volumes"]
+        if lifecycle or value["name"] not in {"state", "policy"}
     ]
     for volume in pod["volumes"]:
+        if lifecycle and volume["name"] == "state":
+            volume["persistentVolumeClaim"]["claimName"] = config[
+                "lifecycle_state_claim"
+            ]
+        if lifecycle and volume["name"] == "policy":
+            volume["configMap"]["name"] = config["lifecycle_policy_configmap"]
         key = {
             "database": "database_secret",
             "workspaces": "workspace_credentials_secret",
@@ -303,6 +356,8 @@ def project(env, lock, docs):
                 "endpoint"
             ],
             "SUPERPLANE_OPERATION_SCHEMA": config["operation_schema"],
+            "SUPERPLANE_DOMAIN_SCHEMA": env["database"]["schema"],
+            "SUPERPLANE_DOMAIN_SCHEMA_HEAD": lock["schema"]["observed"]["head"],
             "SKYPILOT_URL": config["skypilot_url"],
             "SUPERPLANE_MANAGEMENT_API_SERVER": config["management_api_server"],
         },
@@ -318,19 +373,35 @@ def project(env, lock, docs):
             "egress": [],
         },
     )
+    from . import native_egress
+
+    if native_egress.enabled(env):
+        import json
+
+        policy["metadata"].setdefault("annotations", {})[
+            "adp.aws-e.io/activation-egress"
+        ] = json.dumps(native_egress.rules(env), sort_keys=True, separators=(",", ":"))
     policy["apiVersion"] = "networking.k8s.io/v1"
     docs.extend([service_account, configmap, authentication, policy, scaled])
+    from .lifecycle_worker import project_api
+
+    project_api(env, lock, docs)
+    from .lifecycle_foundations import documents
+
+    docs.extend(documents(env))
 
 
 def preparation_report(env, lock):
     return {
         "version": 1,
-        "mode": "native-controller",
+        "mode": env["paid_worker"]["mode"],
         "state": "source-preparation-only",
         "configuration_sha256": digest(env["paid_worker"]),
         "paid_worker_image": image(lock, COMPONENT),
         "activation_available": False,
-        "gate": UNAVAILABLE,
+        "gate": "native-worker-live-proof-required"
+        if env["paid_worker"]["mode"] == "native-lifecycle"
+        else UNAVAILABLE,
         "live_identity_verified": False,
         "live_schema_verified": False,
         "live_network_verified": False,
@@ -339,6 +410,9 @@ def preparation_report(env, lock):
 
 
 def require_activation_available(env):
+    if env.get("paid_worker", {}).get("mode") == "native-lifecycle":
+        validate(env, None)
+        return
     if env.get("paid_worker"):
         require(
             False,

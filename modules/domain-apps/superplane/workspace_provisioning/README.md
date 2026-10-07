@@ -209,3 +209,45 @@ managed/adopt phase handoffs, persisted artifacts and network intents; its boots
 boundary refuses and never fabricates readiness. `test_bootstrap_runtime_postgres.py`
 separately executes the production bootstrap composer, real read-token issuance,
 grant journal and canonical registration against stateful transport doubles.
+
+Dedicated bootstrap requires `runtime.bootstrap_credential_reference_id` to equal
+`credential_id` from the admitted operation. The reference is resolved and
+revalidated through the existing paid credential broker; a separate configured
+label cannot stand in for an authorized vault connection. Canonical registration
+retains that exact reference. Shared membership credential delivery remains bound
+to its separate generation.
+
+### Public endpoint bootstrap from a separate management VPC
+
+The native managed path can explicitly select a public EKS endpoint when private
+routing between management and a new owned workspace VPC has not been prepared.
+Set both `workspace_variables.cluster_endpoint_public_access: true` and exact
+global IPv4 NAT `/32` values in `cluster_endpoint_public_access_cidrs`, plus the
+closed deployment-owned `management_public_access` recipe:
+
+```yaml
+management_public_access:
+  vpc_id: <verified-management-vpc-id>
+  nat_gateway_ids:
+    - <verified-public-management-nat-id>
+```
+
+These are reviewed configuration references, not observations. Before bootstrap
+and again at its network prerequisite gate, the original authorized provider reads
+the actual EKS endpoint, CA, VPC, public/private flags and exact allowlist, then the
+configured available public NAT identities and their EIP allocations. Every NAT
+must belong to the exact management VPC, and the EIPs must equal the full allowlist.
+The worker verifies the EKS TLS certificate against the recorded EKS CA over a
+public IPv4 address and observes its own public source through the fixed HTTPS
+AWS checkip endpoint without redirects or proxy environment. That source must be
+one of the verified NAT addresses. No token is sent during these transport checks.
+A replaced CA, extra CIDR, foreign NAT, private DNS answer or different source
+refuses before Kubernetes access is granted.
+
+This path creates no cross-VPC security-group rule. Bootstrap records a distinct
+nonremovable `EksPublicEndpoint` prerequisite identified by the exact cluster ARN;
+its endpoint lifecycle remains part of the Terraform-owned cluster. The private
+STS prerequisite is still verified and retained. Private mode keeps its existing
+mandatory SG/network proof; it does not silently opt into public connectivity.
+Workspace retirement never converts the public endpoint observation into separate
+delete authority and the managed Terraform plan still owns cluster removal.

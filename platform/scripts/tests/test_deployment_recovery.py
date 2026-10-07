@@ -77,7 +77,7 @@ class CheckpointTests(unittest.TestCase):
     def test_prepared_account_placeholders_resume_but_operator_edits_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / 'environments/dev/modules/superplane.tfvars'
+            config = root / 'environments/dev/modules/gateway.tfvars'
             config.parent.mkdir(parents=True)
             config.write_text('role = "arn:aws:iam::ACCOUNT_ID:role/test"\nsize = 2\n')
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
@@ -166,6 +166,7 @@ class EntrypointTests(unittest.TestCase):
             shutil.copy(ROOT / 'deploy.sh', root / 'deploy.sh')
             target = root / 'platform/scripts/deploy-all.sh'
             target.parent.mkdir(parents=True)
+            shutil.copy(SCRIPTS / 'deploy-prerequisites.sh', target.parent / 'deploy-prerequisites.sh')
             target.write_text('printf "%s\\n" "$@"\n')
             result = subprocess.run(['bash', str(root / 'deploy.sh'), '--update', '--confirm-destructive',
                                      '--allow-known-claude-gap', '--from', 'webhook', '--skip-agents',
@@ -182,6 +183,7 @@ class EntrypointTests(unittest.TestCase):
             shutil.copy(ROOT / 'deploy.sh', root / 'deploy.sh')
             target = root / 'platform/scripts/deploy-all.sh'
             target.parent.mkdir(parents=True)
+            shutil.copy(SCRIPTS / 'deploy-prerequisites.sh', target.parent / 'deploy-prerequisites.sh')
             target.write_text('printf "%s\\n" "$@"\n')
             result = subprocess.run(['bash', str(root / 'deploy.sh'), '--resume'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -196,6 +198,7 @@ class EntrypointTests(unittest.TestCase):
                 shutil.copy(ROOT / 'deploy.sh', root / 'deploy.sh')
                 scripts = root / 'platform/scripts'
                 scripts.mkdir(parents=True)
+                (scripts / 'deploy-prerequisites.sh').write_text((ROOT / 'platform/scripts/deploy-prerequisites.sh').read_text())
                 (scripts / 'deploy-all.sh').write_text('printf "ARG:%s\\n" "$@"; exit 19\n')
                 (root / 'environments/dev/modules').mkdir(parents=True)
                 (root / 'environments/dev/platform.tfvars').touch()

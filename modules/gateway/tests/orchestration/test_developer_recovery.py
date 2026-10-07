@@ -29,6 +29,9 @@ async def settled(cycle, monkeypatch, failure=None, backoff=False, persona="deve
     monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
     monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "test-only-signing-key")
     async with cycle.factory() as db:
+        # These scenarios fail before development hands over to review. The
+        # shared review-cycle fixture otherwise seeds a committed handoff.
+        (await db.get(OrchestrationExecution, cycle.execution.id)).handoff_receipt_ref = None
         db.add(
             OrchestrationDecision(
                 org_id=ORG,

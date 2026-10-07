@@ -23,19 +23,14 @@ def validate(env):
     if "api_adapters" not in env:
         return
     adapters = env["api_adapters"]
+    lifecycle = env.get("paid_worker", {}).get("mode") == "native-lifecycle"
     closed(adapters, {"vault", "dispatcher", "verification"}, "api_adapters")
     vault, dispatcher, control = (
         adapters[k] for k in ("vault", "dispatcher", "verification")
     )
-    closed(vault, {"url", "secret_key_ref", "transport"}, "api_adapters.vault")
-    ref, transport = vault["secret_key_ref"], vault["transport"]
-    closed(ref, {"name", "key"}, "vault.secret_key_ref")
-    require(
-        name(ref["name"])
-        and isinstance(ref["key"], str)
-        and re.fullmatch(r"[A-Za-z0-9._-]{1,253}", ref["key"]),
-        "vault requires an existing Secret name and key",
-    )
+    closed(vault, {"url", "auth", "transport"}, "api_adapters.vault")
+    require(vault["auth"] == "api-producer-iam", "Evidence requires API producer IAM")
+    transport = vault["transport"]
     closed(
         transport,
         {"namespace", "service", "port", "target_port", "selector", "security"},
@@ -50,16 +45,11 @@ def validate(env):
             type(transport[field]) is int and 1 <= transport[field] <= 65535,
             "vault transport ports must be explicit TCP ports",
         )
-    # First supported boundary is the reviewed cluster-only Gateway Service.
-    # TLS termination at an ALB/custom name needs its own transport verifier.
+    # This Service is a native-worker network/health dependency, not an
+    # authenticated evidence endpoint. Evidence always traverses the IAM edge.
     require(
         transport["security"] == "reviewed-cluster-http",
-        "vault transport requires explicit reviewed-cluster-http boundary",
-    )
-    require(
-        vault["url"]
-        == f"http://{transport['service']}.{transport['namespace']}.svc.cluster.local:{transport['port']}",
-        "vault URL must exactly match the selected internal Service",
+        "Gateway Service requires explicit reviewed-cluster-http boundary",
     )
     selector = transport["selector"]
     require(
@@ -78,7 +68,8 @@ def validate(env):
     )
     closed(
         dispatcher,
-        {"endpoint", "region", "role_arn", "api_id", "stage"},
+        {"endpoint", "region", "role_arn", "api_id", "stage"}
+        | ({"operation_database_secret_ref"} if lifecycle else set()),
         "api_adapters.dispatcher",
     )
     require(
@@ -100,6 +91,19 @@ def validate(env):
         dispatcher["endpoint"] == expected,
         "dispatcher endpoint must match the exact invoke API, region and stage",
     )
+    require(
+        vault["url"] == expected,
+        "Evidence endpoint must match the selected producer API",
+    )
+    if lifecycle:
+        ref = dispatcher["operation_database_secret_ref"]
+        closed(ref, {"name", "key"}, "dispatcher.operation_database_secret_ref")
+        require(
+            name(ref["name"])
+            and ref["key"] == "dsn"
+            and ref["name"] != env["paid_worker"]["database_secret"],
+            "API requires a separate shared-store service Secret",
+        )
     # No query, credentials, fragment, alternate port, suffix or normalization.
     require(urlsplit(expected).scheme == "https", "dispatcher endpoint must use TLS")
     require(
@@ -112,6 +116,11 @@ def validate(env):
         ),
         "dispatcher requires an existing role in the target account",
     )
+    if control == {"mode": "organization-bootstrap"}:
+        require(
+            lifecycle, "organization bootstrap control requires native lifecycle mode"
+        )
+        return
     closed(
         control,
         {"workspace_id", "connection_id", "credential_id", "service", "label"},
@@ -147,6 +156,7 @@ def project(env, docs, *, active=False):
     vault, producer = adapters["vault"], adapters["dispatcher"]
     values = {
         "ADP_GATEWAY_INTERNAL_URL": vault["url"],
+        "ADP_GATEWAY_EVIDENCE_AUTH": vault["auth"],
         "SUPERPLANE_OPERATION_GATEWAY_URL": producer["endpoint"],
         "SUPERPLANE_OPERATION_GATEWAY_REGION": producer["region"],
         "SUPERPLANE_OPERATION_DISPATCH_ENABLED": "true" if active else "false",
@@ -155,6 +165,11 @@ def project(env, docs, *, active=False):
         "AWS_EC2_METADATA_DISABLED": "true",
         "AWS_STS_REGIONAL_ENDPOINTS": "regional",
     }
+    if env.get("paid_worker", {}).get("mode") == "native-lifecycle":
+        values["SUPERPLANE_OPERATION_DB_SCHEMA"] = env["paid_worker"][
+            "operation_schema"
+        ]
+        values["CURRENT_IDENTITY_ENFORCED"] = "true"
     for doc in docs:
         if (
             doc["metadata"]["name"] != "superplane-api"
@@ -170,40 +185,29 @@ def project(env, docs, *, active=False):
             container["env"] = [
                 v
                 for v in container["env"]
-                if v["name"] not in {*values, "ADP_GATEWAY_INTERNAL_API_KEY"}
+                if v["name"]
+                not in {
+                    *values,
+                    "ADP_GATEWAY_INTERNAL_API_KEY",
+                    "SUPERPLANE_OPERATION_DATABASE_URL",
+                }
             ]
             container["env"].extend({"name": k, "value": v} for k, v in values.items())
-            container["env"].append(
-                {
-                    "name": "ADP_GATEWAY_INTERNAL_API_KEY",
-                    "valueFrom": {
-                        "secretKeyRef": {**vault["secret_key_ref"], "optional": False}
-                    },
-                }
-            )
-        if doc["kind"] == "NetworkPolicy":
-            transport = vault["transport"]
-            rule = {
-                "to": [
+            if "operation_database_secret_ref" in producer:
+                container["env"].append(
                     {
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": transport["namespace"]
+                        "name": "SUPERPLANE_OPERATION_DATABASE_URL",
+                        "valueFrom": {
+                            "secretKeyRef": {
+                                **producer["operation_database_secret_ref"],
+                                "optional": False,
                             }
                         },
-                        "podSelector": {"matchLabels": transport["selector"]},
                     }
-                ],
-                "ports": [
-                    {"protocol": "TCP", "port": p}
-                    for p in sorted({transport["port"], transport["target_port"]})
-                ],
-            }
-            if rule not in doc["spec"]["egress"]:
-                doc["spec"]["egress"].append(rule)
+                )
 
 
-def verify_role(env, role, documents, oidc):
+def verify_role(env, role, documents, oidc, *, legacy_routes=False):
     """Closed dedicated API producer role; effective access still needs live proof."""
     producer = env["api_adapters"]["dispatcher"]
     require(
@@ -233,7 +237,22 @@ def verify_role(env, role, documents, oidc):
     )
     prefix = f"arn:aws:execute-api:{producer['region']}:{env['account_id']}:{producer['api_id']}/{producer['stage']}/POST/internal/v1/controller-execution/"
     allowed = {
-        prefix + route for route in ("producer-readiness", "verify-run", "dispatch")
+        prefix + route
+        for route in (
+            "producer-readiness",
+            "verify-run",
+            "dispatch",
+            "binding-proof",
+            "current-identity",
+            "current-identity/readiness",
+        )
+    }
+    original_six = set(allowed)
+    allowed.add(prefix.removesuffix("controller-execution/") + "credential-evidence")
+    original_three = original_six - {
+        prefix + "binding-proof",
+        prefix + "current-identity",
+        prefix + "current-identity/readiness",
     }
     observed = set()
     for document in documents:
@@ -260,7 +279,12 @@ def verify_role(env, role, documents, oidc):
                 "API producer role grants authority beyond the selected producer routes",
             )
             observed.update(resources)
-    require(observed == allowed, "API producer role lacks required producer routes")
+    require(
+        observed in (original_three, original_six)
+        if legacy_routes
+        else observed == allowed,
+        "API producer role lacks required producer routes",
+    )
 
 
 def image_contract_valid(report):

@@ -85,6 +85,9 @@ on:
         default: none
   workflow_call:
     outputs:
+      cleanup_ok:
+        description: True only after the recovery job succeeds
+        value: ${{ jobs.recover.outputs.cleanup_ok }}
       revision:
         description: 'The exact deployed revision pinned immediately before EC2 evaluation'
         value: ${{ jobs.evaluate.outputs.revision }}
@@ -121,6 +124,7 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
+      - 'tests/unit/test_cli_assistant_harness.py'
       - 'tests/unit/test_cli_workflow_context.py'
       - 'tests/unit/test_cli_tenant_scenarios.py'
       - 'tests/unit/test_cli_usage_exports.py'
@@ -178,11 +182,19 @@ jobs:
         # unenforced in the one place that enforces them.
         run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6 boto3
 
+      - name: Install assistant isolation test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libseccomp2 openssl
+          python -c 'import ctypes; ctypes.CDLL("libseccomp.so.2")'
+          openssl version
+
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -196,7 +208,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_assistant_harness.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket --allow-unix-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -600,6 +612,8 @@ jobs:
           retention-days: 30
 
   recover:
+    outputs:
+      cleanup_ok: ${{ steps.cleaned.outputs.cleanup_ok }}
     name: Recovery sweep (this run, plus anything expired)
     # `always()` is not enough on its own — a cancelled run or a lost runner
     # never reaches the evaluate job's cleanup steps at all. This job depends on
@@ -906,3 +920,7 @@ jobs:
             echo
             echo "GitHub Apps are never deleted by automation (a reused fixture is preserved by design; a created one needs its owner). If the report lists an outstanding \`github_app\`, remove it manually."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish verified cleanup outcome
+        id: cleaned
+        run: echo 'cleanup_ok=true' >> "$GITHUB_OUTPUT"

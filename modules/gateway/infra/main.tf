@@ -1035,6 +1035,8 @@ module "rds_bootstrap" {
   common_tags            = local.common_tags
   rds_instance_id        = module.rds.db_instance_id
 
+  db_connect_arn = "arn:${data.aws_partition.current.partition}:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${module.rds.db_instance_resource_id}/${var.rds_username}"
+
   depends_on = [
     module.rds,
   ]
@@ -1197,7 +1199,8 @@ module "orchestration_tick" {
   redis_username          = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : ""
   redis_cache_name        = var.enable_redis ? module.redis[0].replication_group_id : ""
 
-  tick_schedule = var.orchestration_tick_schedule
+  tick_schedule    = var.orchestration_tick_schedule
+  schedule_enabled = var.orchestration_tick_schedule_enabled && !var.orchestration_tick_upgrade_hold
 
   # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's
   # description for why an unsubscribed topic is visible rather than fatal.
